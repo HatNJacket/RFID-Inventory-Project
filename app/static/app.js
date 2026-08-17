@@ -483,9 +483,57 @@ el.barcode.addEventListener("keydown", async (event) => {
   await stationBarcodeScan(barcode);
 });
 
+// Shell-style history in the barcode box: ArrowUp walks the last 10 RAW
+// entries (exactly what was typed or wedge-read — never the SKU a lookup
+// resolved to), newest first; ArrowDown walks back toward the fresh
+// draft. Survives reloads (per device, like the other station settings).
+let barcodeHistory = [];
+try {
+  barcodeHistory =
+    JSON.parse(localStorage.getItem("barcodeHistory")) || [];
+} catch (err) {
+  barcodeHistory = [];
+}
+let barcodeHistIdx = -1; // -1 = not browsing; 0 = newest entry
+let barcodeDraft = "";
+
+function rememberBarcodeEntry(code) {
+  const c = (code || "").trim();
+  if (!c) return;
+  // A repeat moves to the front rather than filling the list with dupes.
+  barcodeHistory = [c, ...barcodeHistory.filter((x) => x !== c)].slice(0, 10);
+  localStorage.setItem("barcodeHistory", JSON.stringify(barcodeHistory));
+  barcodeHistIdx = -1;
+}
+
+el.barcode.addEventListener("keydown", (event) => {
+  if (event.key === "ArrowUp") {
+    if (!barcodeHistory.length) return;
+    event.preventDefault();
+    if (barcodeHistIdx === -1) barcodeDraft = el.barcode.value;
+    barcodeHistIdx = Math.min(barcodeHistIdx + 1, barcodeHistory.length - 1);
+    el.barcode.value = barcodeHistory[barcodeHistIdx];
+    el.barcode.select();
+  } else if (event.key === "ArrowDown") {
+    if (barcodeHistIdx === -1) return;
+    event.preventDefault();
+    barcodeHistIdx -= 1;
+    el.barcode.value =
+      barcodeHistIdx === -1 ? barcodeDraft : barcodeHistory[barcodeHistIdx];
+    if (barcodeHistIdx >= 0) el.barcode.select();
+  }
+});
+// Typing anything by hand ends the browsing session.
+el.barcode.addEventListener("input", () => {
+  barcodeHistIdx = -1;
+});
+
 // Callable form of the barcode-input Enter handler, so C72 LINK relays can
 // run the exact same path the wedge scanner does (guards, windows and all).
 async function stationBarcodeScan(barcode) {
+  // The RAW entry goes into ArrowUp history no matter how it arrived
+  // (typed, wedge, or C72 LINK relay) and no matter what it resolves to.
+  rememberBarcodeEntry(barcode);
   setResult("Looking up product…", "busy");
   try {
     const res = await apiFetch(
