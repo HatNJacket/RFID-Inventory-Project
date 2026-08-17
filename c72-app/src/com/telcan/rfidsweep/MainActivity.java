@@ -1236,6 +1236,22 @@ public class MainActivity extends Activity {
             new java.util.LinkedHashMap<>();   // EPC -> last rssi heard
     private final java.util.HashSet<String> locFound =
             new java.util.HashSet<>();
+    // ---- live-tunable locate parameters (server: /api/c72/tuning) ----
+    // Polled every ~2 s while the Locate tab is up; changes apply on the
+    // next tick, no APK build. Defaults = shipped behaviour.
+    private volatile int tunFreshMs = 1200;    // silence before fading
+    private volatile double tunFade = 0.7;     // per-tick fade when quiet
+    private volatile double tunBlend = 0.5;    // EMA weight of a new read
+    private volatile double tunRssiLo = -75;   // RSSI that reads as 0%
+    private volatile double tunRssiSpan = 45;  // dB from 0% to 100%
+    private volatile boolean tunDebug = false; // stream telemetry to server
+    private String tunApplied = "";            // last raw JSON applied
+    private int tunPollCounter = 0;
+    private volatile boolean tunPollBusy = false;
+    private volatile int locReadsInWindow = 0;
+    private final java.util.ArrayList<String> dbgBuf =
+            new java.util.ArrayList<>();
+
     private String locNarrow = null;           // one EPC, or null = all
     private volatile boolean locating = false;
     private boolean locSound = true;
@@ -1683,12 +1699,13 @@ public class MainActivity extends Activity {
         if (rssi > locBestRssi || now - locLastHeard > 700) {
             locBestRssi = rssi;
         }
+        locReadsInWindow++;
         locLastHeard = now;
     }
 
-    private static double locPctOf(double rssi) {
+    private double locPctOf(double rssi) {
         if (rssi <= -998) return 0;
-        double pct = (rssi + 75) / 45 * 100;
+        double pct = (rssi - tunRssiLo) / tunRssiSpan * 100;
         return Math.max(0, Math.min(100, pct));
     }
 
@@ -1700,14 +1717,16 @@ public class MainActivity extends Activity {
         // rolls into the next window instead of being wiped by the reset.
         double best = locBestRssi;
         locBestRssi = -999;
+        int reads = locReadsInWindow;
+        locReadsInWindow = 0;
         boolean heardThisTick = best > -998;
-        boolean fresh = locating && now - locLastHeard < 1200;
+        boolean fresh = locating && now - locLastHeard < tunFreshMs;
         if (heardThisTick) {
-            locEma = 0.5 * locEma + 0.5 * locPctOf(best);
+            locEma = (1 - tunBlend) * locEma + tunBlend * locPctOf(best);
         } else if (!fresh) {
-            locEma *= 0.7;   // truly quiet: fade rather than snap
+            locEma *= tunFade;   // truly quiet: fade rather than snap
         }
-        // else: no read in THIS 400 ms window but one within 1200 ms —
+        // else: no read in THIS 400 ms window but one within tunFreshMs —
         // HOLD the needle. Mixing locPctOf(-999)=0 in here was Nick's
         // sawtooth: reads often arrive slower than the tick, so the
         // percentage halved on every readless tick, then leapt back up
@@ -1722,7 +1741,80 @@ public class MainActivity extends Activity {
             if (e.getValue() > -998) heard++;
         }
         locHeardCount = heard;
+        if (tunDebug && locating) {
+            dbgLine("tick reads=" + reads
+                    + " best=" + (heardThisTick
+                        ? String.format(java.util.Locale.ROOT, "%.0f", best)
+                        : "-")
+                    + " ema=" + String.format(java.util.Locale.ROOT,
+                        "%.1f", locEma)
+                    + " pct=" + pct
+                    + (fresh ? "" : " QUIET")
+                    + " pow=" + locPower
+                    + " gap=" + (now - locLastHeard) + "ms");
+        }
         updateLocateUi();
+    }
+
+    // ---- live tuning poll + telemetry stream ------------------------------
+    /** Piggybacks the 400 ms refreshTick: every 5th tick on the Locate
+     *  tab, fetch /api/c72/tuning and apply. Unknown keys are ignored;
+     *  missing keys mean built-in defaults. */
+    private void tuningTick() {
+        if (activeTab != TAB_LOCATE) return;
+        if (++tunPollCounter % 5 != 0 || tunPollBusy) return;
+        tunPollBusy = true;
+        new Thread(() -> {
+            try {
+                JSONObject resp = api("GET", "/api/c72/tuning", null);
+                JSONObject v = resp.optJSONObject("values");
+                if (v == null) v = new JSONObject();
+                String raw = v.toString();
+                if (!raw.equals(tunApplied)) {
+                    tunApplied = raw;
+                    tunFreshMs = v.optInt("fresh_ms", 1200);
+                    tunFade = v.optDouble("fade", 0.7);
+                    tunBlend = v.optDouble("blend", 0.5);
+                    tunRssiLo = v.optDouble("rssi_lo", -75);
+                    tunRssiSpan = v.optDouble("rssi_span", 45);
+                    tunDebug = v.optBoolean("debug", false);
+                    dbgLine("applied " + raw);
+                    ui.post(() -> status.setText("Live tuning applied: "
+                            + raw));
+                }
+            } catch (Exception ignored) {
+                // Tuning is best-effort; the hunt never depends on it.
+            } finally {
+                tunPollBusy = false;
+            }
+        }).start();
+    }
+
+    /** Buffer a telemetry line; flush to the server in small batches. */
+    private void dbgLine(String line) {
+        if (!tunDebug) return;
+        java.util.ArrayList<String> flush = null;
+        synchronized (dbgBuf) {
+            dbgBuf.add(line);
+            if (dbgBuf.size() >= 5) {
+                flush = new java.util.ArrayList<>(dbgBuf);
+                dbgBuf.clear();
+            }
+        }
+        if (flush == null) return;
+        final java.util.ArrayList<String> out = flush;
+        new Thread(() -> {
+            try {
+                JSONObject body = new JSONObject()
+                        .put("device", prefs.getString("device", "C72"));
+                org.json.JSONArray arr = new org.json.JSONArray();
+                for (String s : out) arr.put(s);
+                body.put("lines", arr);
+                api("POST", "/api/c72/debug-log", body);
+            } catch (Exception ignored) {
+                // Telemetry is a window, not a dependency.
+            }
+        }).start();
     }
 
     private void updateLocateUi() {
@@ -1745,7 +1837,8 @@ public class MainActivity extends Activity {
     private void scheduleLocateBeep() {
         if (!locating) return;
         long delay = 300;
-        boolean fresh = System.currentTimeMillis() - locLastHeard < 1200;
+        boolean fresh = System.currentTimeMillis() - locLastHeard
+                < tunFreshMs;
         if (fresh && locEma > 3) {
             delay = (long) Math.max(90, 1000 - locEma * 9);
             if (locSound && tones != null) {
@@ -7648,6 +7741,7 @@ public class MainActivity extends Activity {
             }
         }
         locateTick();
+        tuningTick();
         ui.postDelayed(this::refreshTick, 400);
     }
 

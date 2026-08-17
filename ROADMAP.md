@@ -41,6 +41,18 @@ Nick's demo-prep pass (widget previews approved before build):
   ticks now HOLD the needle; the ×0.7 fade waits for real silence; the
   window best is captured-then-reset so mid-tick reads count toward the
   next window instead of being wiped. Hash-verified on prod.
+- **v3.38 (code 56, same day): live tuning + telemetry channel.** Nick
+  (still seeing 63→40→27→63 next to the box — the quiet-fade firing on
+  real read gaps) asked for on-the-fly debugging instead of APK loops.
+  The gun now polls `/api/c72/tuning` every ~2 s on the Locate tab and
+  applies parameter changes live: fresh_ms, fade, blend, rssi_lo,
+  rssi_span, debug. With debug on it streams per-tick telemetry
+  (reads-in-window, best RSSI, EMA, pct, QUIET marker, power, gap) to
+  `/api/c72/debug-log` (2000-row ring, pruned server-side). Claude
+  reads the log and POSTs tuning with the station key — field tuning is
+  now a conversation. Diagnostic plumbing: deliberately NOT in History.
+  Initial prod tuning seeded: fresh_ms=2500, fade=0.85, debug=on.
+  test_c72_debug (10 checks), 20/20 suites, APK hash verified.
 - NEXT: Nick wants a broader Locate-tab rework (his spec pending).
 
 ## 📡 Locate list (web → C72) — ✅ DEPLOYED 2026-08-17 (C72 v3.35)

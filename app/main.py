@@ -6,6 +6,7 @@ Request flow (mirrors what runs on Azure):
 No terminal input anywhere. The scanner types into browser fields exactly
 as it would type into Notepad, and JavaScript forwards each scan here.
 """
+import json
 import logging
 import re
 import secrets
@@ -41,6 +42,8 @@ from app.models import (
     BatchItem,
     BinMapEntry,
     BundleContent,
+    C72DebugEvent,
+    C72Tuning,
     CaseCode,
     EpcCapture,
     FlaggedBin,
@@ -1764,6 +1767,111 @@ def rebin_tags(payload: RebinTagsIn, session: Session = Depends(get_session)):
     ))
     session.commit()
     return {"sku": sku, "bin": new_bin, "tags_moved": len(tags)}
+
+
+# ---- C72 live tuning + telemetry (diagnostic plumbing) -------------------
+# Not inventory data: no History rows, no undo. The gun polls tuning and
+# streams locate telemetry so field tuning happens without APK builds.
+
+class C72TuningIn(BaseModel):
+    values: dict
+    merge: bool = True
+    worker: str | None = Field(default=None, max_length=100)
+
+
+class C72DebugIn(BaseModel):
+    device: str | None = Field(default=None, max_length=100)
+    lines: list[str]
+
+
+def _tuning_row(session: Session) -> C72Tuning:
+    row = session.scalar(select(C72Tuning).limit(1))
+    if row is None:
+        row = C72Tuning(values="{}")
+        session.add(row)
+        session.flush()
+    return row
+
+
+@app.get("/api/c72/tuning", dependencies=[Depends(require_user)])
+def get_c72_tuning(session: Session = Depends(get_session)):
+    row = session.scalar(select(C72Tuning).limit(1))
+    try:
+        values = json.loads(row.values) if row else {}
+    except Exception:
+        values = {}
+    return {
+        "values": values,
+        "updated_by": row.updated_by if row else None,
+        "updated_at": (row.updated_at.isoformat()
+                       if row and row.updated_at else None),
+    }
+
+
+@app.post("/api/c72/tuning", dependencies=[Depends(require_user)])
+def set_c72_tuning(
+    payload: C72TuningIn, session: Session = Depends(get_session)
+):
+    """Set (merge by default) the gun's live parameters. A key set to
+    null deletes it, so the gun falls back to its built-in default."""
+    row = _tuning_row(session)
+    try:
+        current = json.loads(row.values or "{}")
+    except Exception:
+        current = {}
+    if payload.merge:
+        for k, v in payload.values.items():
+            if v is None:
+                current.pop(k, None)
+            else:
+                current[k] = v
+    else:
+        current = {k: v for k, v in payload.values.items()
+                   if v is not None}
+    row.values = json.dumps(current)[:2000]
+    row.updated_by = payload.worker
+    session.commit()
+    return {"values": current}
+
+
+@app.post(
+    "/api/c72/debug-log",
+    status_code=201,
+    dependencies=[Depends(require_user)],
+)
+def post_c72_debug(
+    payload: C72DebugIn, session: Session = Depends(get_session)
+):
+    for line in payload.lines[:100]:
+        session.add(C72DebugEvent(device=payload.device,
+                                  line=str(line)[:400]))
+    # Ring prune: keep the newest ~2000 rows. Flush first so the batch
+    # just added counts toward the cap.
+    session.flush()
+    max_id = session.scalar(select(func.max(C72DebugEvent.id))) or 0
+    if max_id > 2000:
+        session.execute(delete(C72DebugEvent).where(
+            C72DebugEvent.id <= max_id - 2000
+        ))
+    session.commit()
+    return {"ok": True, "stored": min(len(payload.lines), 100)}
+
+
+@app.get("/api/c72/debug-log", dependencies=[Depends(require_user)])
+def get_c72_debug(
+    limit: int = 200, session: Session = Depends(get_session)
+):
+    rows = session.scalars(
+        select(C72DebugEvent).order_by(C72DebugEvent.id.desc())
+        .limit(max(1, min(limit, 1000)))
+    ).all()
+    return {"lines": [
+        {
+            "at": r.created_at.isoformat() if r.created_at else None,
+            "device": r.device,
+            "line": r.line,
+        } for r in rows
+    ]}
 
 
 class LocateQueueIn(BaseModel):

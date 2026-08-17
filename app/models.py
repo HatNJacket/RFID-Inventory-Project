@@ -723,6 +723,38 @@ class MismatchDismissal(Base):
     )
 
 
+class C72Tuning(Base):
+    """Live-tunable C72 parameters, one JSON row. The gun polls this
+    every ~2 s while its Locate tab is up and applies changes without an
+    APK build — field tuning happens as a conversation instead of a
+    deploy loop. Diagnostic plumbing, not inventory data."""
+
+    __tablename__ = "rfid_c72_tuning"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    values: Mapped[str] = mapped_column(String(2000), nullable=False,
+                                        default="{}")
+    updated_by: Mapped[str | None] = mapped_column(String(100))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(),
+        onupdate=func.now(), nullable=False
+    )
+
+
+class C72DebugEvent(Base):
+    """One telemetry line from the gun (locate ticks, applied tuning),
+    kept as a pruned ring so the table can't grow unbounded."""
+
+    __tablename__ = "rfid_c72_debug"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    device: Mapped[str | None] = mapped_column(String(100))
+    line: Mapped[str] = mapped_column(String(400), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class LocateQueueEntry(Base):
     """A product queued for a physical tag hunt. Added from any product
     preview on the web terminal (Review is the usual source — mismatched
