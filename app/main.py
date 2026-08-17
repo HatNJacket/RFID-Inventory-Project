@@ -1789,10 +1789,18 @@ def list_locate_queue(session: Session = Depends(get_session)):
         ).all()
         bins = sorted({(t.bin_location or "").strip() for t in tags
                        if (t.bin_location or "").strip()})
+        # Image + title fallback from the live bin map, so the C72's list
+        # shows the same preview card a loaded product does.
+        map_row = session.scalar(
+            select(BinMapEntry).where(
+                func.upper(BinMapEntry.sku) == e.sku.upper()
+            )
+        )
         entries.append({
             "id": e.id,
             "sku": e.sku,
-            "label": e.label,
+            "label": e.label or (map_row.product_title if map_row else None),
+            "image_url": map_row.image_url if map_row else None,
             "added_by": e.added_by,
             "created_at": e.created_at.isoformat() if e.created_at else None,
             "tag_count": len(tags),

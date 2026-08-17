@@ -98,26 +98,125 @@ public class MainActivity extends Activity {
     private static final int TAB_COUNT = 6;
 
     // ------------------------------------------------------------ colors ----
-    private static final int C_BG = Color.parseColor("#f1f2f4");
-    private static final int C_TEXT = Color.parseColor("#202223");
-    private static final int C_MUTED = Color.parseColor("#6d7175");
-    private static final int C_BLUE = Color.parseColor("#005bd3");
-    private static final int C_CHIP = Color.parseColor("#d9dbdd");
-    // Style tokens matching the web terminal (Shopify-admin look): hairline
-    // borders on white cards over the gray workspace, blue accents, rounded
-    // pills instead of stock square gray buttons.
-    private static final int C_LINE = Color.parseColor("#e1e3e5");
-    private static final int C_PRESS = Color.parseColor("#e7e9eb");
-    private static final int C_BLUE_DK = Color.parseColor("#00449e");
-    private static final int C_SOFT = Color.parseColor("#e3edfb");
-    private static final int C_SOFT_DK = Color.parseColor("#cbdef6");
-    // Pair-step outcome colours, matching the web's glow states. The fills
-    // are deliberately faint (alpha 0x22) so the product photo and text stay
-    // readable; the tracker number carries the saturated colour.
-    private static final int C_OK = Color.parseColor("#29845a");
-    private static final int C_OVER = Color.parseColor("#d72c0d");
-    private static final int C_OK_BG = Color.parseColor("#2229845a");
-    private static final int C_OVER_BG = Color.parseColor("#22d72c0d");
+    // NOT constants any more: the whole palette is derived in
+    // applyThemePalette() from the theme mode (system/light/dark) plus the
+    // operator's slot overrides (Settings → Theme: Main colour, Highlight,
+    // Good, Warning, Alert). Views are built once in onCreate, so a theme
+    // change recreates the activity. Every C_* reference below stays as it
+    // was — only the values move.
+    private int C_BG;
+    private int C_CARD;     // card / field surface (was hardcoded WHITE)
+    private int C_TEXT;
+    private int C_MUTED;
+    private int C_BLUE;     // "Highlight" slot — kept the old name so the
+    private int C_CHIP;     // hundred call sites don't churn
+    private int C_LINE;
+    private int C_PRESS;
+    private int C_BLUE_DK;
+    private int C_SOFT;
+    private int C_SOFT_DK;
+    private int C_OK;       // "Good" slot
+    private int C_OVER;     // "Alert" slot
+    private int C_OK_BG;
+    private int C_OVER_BG;
+    private int C_WARN;     // "Warning" slot (flag chips, edit warnings)
+    private int C_WARN_BG;
+    private boolean themeDark = false;
+
+    private static final int DEF_MAIN_LIGHT = 0xFFF1F2F4;
+    private static final int DEF_MAIN_DARK = 0xFF16181A;
+    private static final int DEF_HI_LIGHT = 0xFF005BD3;
+    private static final int DEF_HI_DARK = 0xFF2F7DE1;
+    private static final int DEF_OK_LIGHT = 0xFF29845A;
+    private static final int DEF_OK_DARK = 0xFF35A273;
+    private static final int DEF_WARN_LIGHT = 0xFF8A6116;
+    private static final int DEF_WARN_DARK = 0xFFD9B25C;
+    private static final int DEF_BAD_LIGHT = 0xFFD72C0D;
+    private static final int DEF_BAD_DARK = 0xFFE5533D;
+
+    private static int mix(int a, int b, float f) {
+        return Color.rgb(
+                (int) (Color.red(a) + (Color.red(b) - Color.red(a)) * f),
+                (int) (Color.green(a)
+                        + (Color.green(b) - Color.green(a)) * f),
+                (int) (Color.blue(a) + (Color.blue(b) - Color.blue(a)) * f));
+    }
+
+    private static int withAlpha(int c, int alpha) {
+        return Color.argb(alpha, Color.red(c), Color.green(c), Color.blue(c));
+    }
+
+    private boolean systemDark() {
+        return (getResources().getConfiguration().uiMode
+                & android.content.res.Configuration.UI_MODE_NIGHT_MASK)
+                == android.content.res.Configuration.UI_MODE_NIGHT_YES;
+    }
+
+    /** Resolve the palette. Text/surface shades derive from Main colour by
+     *  mixing toward black/white, so any override stays readable; Soft/BG
+     *  tints derive from their slot colour over the background. */
+    private void applyThemePalette() {
+        String mode = prefs.getString("theme_mode", "system");
+        themeDark = "dark".equals(mode)
+                || ("system".equals(mode) && systemDark());
+        C_BG = prefs.getInt("theme_main",
+                themeDark ? DEF_MAIN_DARK : DEF_MAIN_LIGHT);
+        C_BLUE = prefs.getInt("theme_hi",
+                themeDark ? DEF_HI_DARK : DEF_HI_LIGHT);
+        C_OK = prefs.getInt("theme_ok",
+                themeDark ? DEF_OK_DARK : DEF_OK_LIGHT);
+        C_WARN = prefs.getInt("theme_warn",
+                themeDark ? DEF_WARN_DARK : DEF_WARN_LIGHT);
+        C_OVER = prefs.getInt("theme_bad",
+                themeDark ? DEF_BAD_DARK : DEF_BAD_LIGHT);
+        int fg = themeDark ? 0xFFFFFFFF : 0xFF000000;
+        C_CARD = themeDark ? mix(C_BG, fg, 0.045f) : 0xFFFFFFFF;
+        C_TEXT = themeDark ? 0xFFE6E8EA : 0xFF202223;
+        C_MUTED = themeDark ? 0xFF9BA0A5 : 0xFF6D7175;
+        C_LINE = mix(C_BG, fg, themeDark ? 0.14f : 0.075f);
+        C_PRESS = mix(C_BG, fg, themeDark ? 0.10f : 0.045f);
+        C_CHIP = mix(C_BG, fg, themeDark ? 0.10f : 0.11f);
+        C_BLUE_DK = themeDark ? mix(C_BLUE, 0xFFFFFFFF, 0.35f)
+                : mix(C_BLUE, 0xFF000000, 0.3f);
+        C_SOFT = mix(C_BG, C_BLUE, themeDark ? 0.22f : 0.12f);
+        C_SOFT_DK = mix(C_BG, C_BLUE, themeDark ? 0.34f : 0.24f);
+        C_OK_BG = withAlpha(C_OK, 0x22);
+        C_OVER_BG = withAlpha(C_OVER, 0x22);
+        C_WARN_BG = withAlpha(C_WARN, themeDark ? 0x30 : 0x26);
+    }
+
+    /** Dialog builder matching the theme — every dialog goes through
+     *  here so dark mode doesn't produce white frames around dark
+     *  content. */
+    private AlertDialog.Builder dlg() {
+        return new AlertDialog.Builder(this, themeDark
+                ? android.R.style.Theme_DeviceDefault_Dialog_Alert
+                : android.R.style.Theme_DeviceDefault_Light_Dialog_Alert);
+    }
+
+    // ---- status card with a severity edge ---------------------------------
+    private boolean statusAlertOnce = false;
+
+    /** The status card: rounded, hairline, with a coloured strip down the
+     *  left edge — guidance blue normally, Alert red via alertStatus().
+     *  Layer 0 is a rounded rect in the edge colour; layer 1 is the card
+     *  inset 4dp on the left, so exactly that much edge shows. */
+    private android.graphics.drawable.LayerDrawable statusBg(int edge) {
+        android.graphics.drawable.LayerDrawable l =
+                new android.graphics.drawable.LayerDrawable(
+                        new android.graphics.drawable.Drawable[]{
+                                rr(edge, 0, 8), rr(C_CARD, C_LINE, 8)});
+        l.setLayerInset(1, dp(4), 0, 0, 0);
+        return l;
+    }
+
+    /** One error message with the Alert-coloured edge; the next ordinary
+     *  status.setText() flips the edge back automatically. */
+    private void alertStatus(String msg) {
+        statusAlertOnce = true;
+        status.setBackground(statusBg(C_OVER));
+        status.setText(msg);
+    }
 
     private RFIDWithUHFUART reader;
     private volatile boolean readerReady = false;
@@ -150,7 +249,9 @@ public class MainActivity extends Activity {
     // batch widgets
     private TextView binChip;
     private TextView phaseChip;
-    private Button pickBtn;
+    private ScrollView batchPickerScroll;
+    private LinearLayout batchPickerPane;
+    private boolean batchPickerLoading = false;
     private Button btnNext;
     private Button btnUndo;
     private Button btnSweep;
@@ -344,6 +445,8 @@ public class MainActivity extends Activity {
 
     private void buildUi(Bundle savedInstanceState) {
         prefs = getSharedPreferences("sweep", MODE_PRIVATE);
+        // Palette FIRST — every view built below reads the C_* fields.
+        applyThemePalette();
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         // Alarm stream: audible regardless of the device's media volume —
         // field testing showed STREAM_MUSIC tones can be silently muted.
@@ -380,7 +483,7 @@ public class MainActivity extends Activity {
         btInput.setHint("BT scanner…");
         btInput.setTextSize(13);
         btInput.setPadding(dp(10), dp(7), dp(10), dp(7));
-        btInput.setBackground(rr(Color.WHITE, C_LINE, 8));
+        btInput.setBackground(rr(C_CARD, C_LINE, 8));
         btInput.setInputType(InputType.TYPE_CLASS_TEXT
                 | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
         btInput.setShowSoftInputOnFocus(false);
@@ -441,9 +544,31 @@ public class MainActivity extends Activity {
         status = new TextView(this);
         status.setTextSize(13);
         status.setTextColor(C_MUTED);
-        status.setPadding(dp(10), dp(6), dp(10), dp(6));
+        status.setPadding(dp(12), dp(6), dp(10), dp(6));
         status.setMaxLines(3);
-        status.setBackground(rr(Color.WHITE, C_LINE, 8));
+        status.setBackground(statusBg(C_BLUE));
+        // Guidance wears the highlight edge; alertStatus() paints it Alert
+        // for one message. The watcher resets the edge on the NEXT normal
+        // setText, so no call site ever has to clean up after an error.
+        status.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int a, int b,
+                                          int c) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence s, int a, int b, int c) {
+            }
+
+            @Override
+            public void afterTextChanged(Editable s) {
+                if (statusAlertOnce) {
+                    statusAlertOnce = false;
+                } else {
+                    status.setBackground(statusBg(C_BLUE));
+                }
+            }
+        });
         LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT);
@@ -474,7 +599,7 @@ public class MainActivity extends Activity {
 
         drawerPanel = new LinearLayout(this);
         drawerPanel.setOrientation(LinearLayout.VERTICAL);
-        drawerPanel.setBackgroundColor(Color.WHITE);
+        drawerPanel.setBackgroundColor(C_CARD);
         drawerPanel.setPadding(dp(10), dp(14), dp(10), dp(14));
         drawerPanel.setClickable(true); // taps inside don't close
         TextView dTitle = new TextView(this);
@@ -520,7 +645,7 @@ public class MainActivity extends Activity {
         TextView ver = new TextView(this);
         ver.setText("TC RFID Sweep  v" + appVersion());
         ver.setTextSize(11);
-        ver.setTextColor(Color.parseColor("#777777"));
+        ver.setTextColor(C_MUTED);
         LinearLayout.LayoutParams vl = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT);
@@ -591,8 +716,8 @@ public class MainActivity extends Activity {
         phaseChip.setTextSize(15);
         phaseChip.setTypeface(null, Typeface.BOLD);
         phaseChip.setTextColor(Color.WHITE);
-        phaseChip.setBackgroundColor(C_BLUE);
-        phaseChip.setPadding(dp(10), dp(4), dp(10), dp(4));
+        phaseChip.setBackground(rr(C_BLUE, 0, 14));
+        phaseChip.setPadding(dp(12), dp(4), dp(12), dp(4));
         phaseChip.setOnClickListener(x -> togglePhase());
         LinearLayout.LayoutParams pcl = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -601,10 +726,15 @@ public class MainActivity extends Activity {
         header.addView(phaseChip, pcl);
         v.addView(header);
 
-        pickBtn = new Button(this);
-        pickBtn.setText("PICK OPEN BATCH…");
-        pickBtn.setOnClickListener(x -> openBatchPicker());
-        v.addView(pickBtn);
+        // No PICK button any more (Nick, v3.36): with no batch loaded the
+        // list area below IS the picker — open batches as tappable cards,
+        // plus the scan-a-BIN path spelled out.
+        batchPickerScroll = new ScrollView(this);
+        batchPickerPane = new LinearLayout(this);
+        batchPickerPane.setOrientation(LinearLayout.VERTICAL);
+        batchPickerScroll.addView(batchPickerPane);
+        v.addView(batchPickerScroll, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
 
         batchCard = new FrameLayout(this);
         ImageView[] img = new ImageView[1];
@@ -709,12 +839,10 @@ public class MainActivity extends Activity {
         stationHint.setTextColor(C_MUTED);
         stationHint.setTextSize(14);
         stationHint.setPadding(dp(4), dp(10), dp(4), 0);
-        stationHint.setText("Scan a product barcode, then pull the TRIGGER "
-                + "on the RFID sticker to link it.\n\nWHAT'S THIS TAG? "
-                + "arms identify mode: the trigger then tells you what a "
-                + "sticker is instead of linking it. Tap it again to go "
-                + "back. With no product loaded the trigger identifies "
-                + "anyway.");
+        // One line — the full identify-mode explanation lives behind the
+        // ? button, where every other tab keeps its long version too.
+        stationHint.setText("Scan a product barcode — the TRIGGER links "
+                + "each RFID sticker to it.");
         v.addView(stationHint, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
 
@@ -753,7 +881,7 @@ public class MainActivity extends Activity {
         if (identifyBtn != null) {
             identifyBtn.setText(on ? "🔍 IDENTIFY: ON" : "🔍 WHAT'S THIS TAG?");
             identifyBtn.setTextColor(on ? C_BLUE : C_TEXT);
-            identifyBtn.setBackground(rr(on ? C_OK_BG : Color.WHITE,
+            identifyBtn.setBackground(rr(on ? C_OK_BG : C_CARD,
                     on ? C_BLUE : C_LINE, 8));
         }
         if (on) {
@@ -902,7 +1030,7 @@ public class MainActivity extends Activity {
 
         ScrollView sc = new ScrollView(this);
         sc.addView(box);
-        AlertDialog.Builder bld = new AlertDialog.Builder(this)
+        AlertDialog.Builder bld = dlg()
                 .setTitle(found ? "This sticker" : "Unknown sticker")
                 .setView(sc)
                 .setNegativeButton("CLOSE", null);
@@ -924,7 +1052,7 @@ public class MainActivity extends Activity {
     private void confirmUnlinkTag(String epc, JSONObject a) {
         String what = a == null ? epc
                 : a.optString("product_title", epc);
-        new AlertDialog.Builder(this)
+        dlg()
                 .setTitle("Unlink this tag?")
                 .setMessage(what + "\n\nThe tag stops counting as that "
                         + "product's box. The sticker stays on the box — "
@@ -1102,7 +1230,7 @@ public class MainActivity extends Activity {
     private TextView locName, locSku, locPct, locInfo, locHint;
     private android.widget.ProgressBar locMeter;
     private Button locFar, locNear, locTouch, locSoundBtn, locTargetBtn,
-            locFoundBtn;
+            locFoundBtn, locListBtn;
     private JSONObject locProduct = null;
     private final java.util.LinkedHashMap<String, Double> locTags =
             new java.util.LinkedHashMap<>();   // EPC -> last rssi heard
@@ -1126,7 +1254,7 @@ public class MainActivity extends Activity {
         v.addView(tabHeader("Locate a product"));
 
         FrameLayout card = new FrameLayout(this);
-        card.setBackground(rr(Color.WHITE, C_LINE, 10));
+        card.setBackground(rr(C_CARD, C_LINE, 10));
         card.setPadding(dp(10), dp(10), dp(10), dp(10));
         LinearLayout row = new LinearLayout(this);
         locImg = new ImageView(this);
@@ -1175,31 +1303,38 @@ public class MainActivity extends Activity {
         locInfo.setGravity(Gravity.CENTER);
         v.addView(locInfo);
 
+        // FAR/NEAR/TOUCH as one segmented control: a single bordered
+        // track, the active range filled in the highlight colour.
         LinearLayout pow = new LinearLayout(this);
         pow.setGravity(Gravity.CENTER);
-        pow.setPadding(0, dp(10), 0, 0);
-        locFar = smallBtn("FAR");
-        locNear = smallBtn("NEAR");
-        locTouch = smallBtn("TOUCH");
+        pow.setBackground(rr(C_CARD, C_LINE, 8));
+        pow.setPadding(dp(3), dp(3), dp(3), dp(3));
+        LinearLayout.LayoutParams powLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        powLp.topMargin = dp(10);
+        locFar = segBtn("FAR");
+        locNear = segBtn("NEAR");
+        locTouch = segBtn("TOUCH");
         locFar.setOnClickListener(x -> setLocPower(30, locFar));
         locNear.setOnClickListener(x -> setLocPower(12, locNear));
         locTouch.setOnClickListener(x -> setLocPower(5, locTouch));
-        LinearLayout.LayoutParams pb = new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-        pow.addView(locFar, pb);
+        pow.addView(locFar, new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         pow.addView(locNear, new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         pow.addView(locTouch, new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        v.addView(pow);
+        v.addView(pow, powLp);
+        setLocPower(locPower, locFar);
 
         LinearLayout act = new LinearLayout(this);
         act.setGravity(Gravity.CENTER);
         act.setPadding(0, dp(6), 0, 0);
-        locSoundBtn = smallBtn("🔊 ON");
+        locSoundBtn = smallBtn("SOUND ON");
         locSoundBtn.setOnClickListener(x -> {
             locSound = !locSound;
-            locSoundBtn.setText(locSound ? "🔊 ON" : "🔇 OFF");
+            locSoundBtn.setText(locSound ? "SOUND ON" : "SOUND OFF");
         });
         locTargetBtn = smallBtn("TARGET…");
         locTargetBtn.setOnClickListener(x -> locateTargetDialog());
@@ -1207,8 +1342,9 @@ public class MainActivity extends Activity {
         locFoundBtn.setOnClickListener(x -> confirmFoundScan());
         // The web terminal queues products to hunt (Review's mismatched
         // bins, mostly) — LIST… pulls that queue so nothing 24-hex is
-        // ever typed on this keyboard.
-        Button locListBtn = smallBtn("LIST…");
+        // ever typed on this keyboard. It wears the queue count when
+        // there is one.
+        locListBtn = smallBtn("LIST…");
         locListBtn.setOnClickListener(x -> showLocateList());
         act.addView(locListBtn, new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
@@ -1233,10 +1369,28 @@ public class MainActivity extends Activity {
         return v;
     }
 
+    /** A flat button living inside a segmented track. */
+    private Button segBtn(String text) {
+        Button b = new Button(this);
+        b.setText(text);
+        b.setTextSize(12);
+        b.setAllCaps(false);
+        b.setMinHeight(0);
+        b.setMinimumHeight(dp(32));
+        b.setPadding(dp(6), 0, dp(6), 0);
+        b.setBackground(rr(0x00000000, 0, 6));
+        b.setTextColor(C_MUTED);
+        b.setStateListAnimator(null);
+        return b;
+    }
+
     private void setLocPower(int power, Button active) {
         locPower = power;
         for (Button b : new Button[]{locFar, locNear, locTouch}) {
-            b.setTextColor(b == active ? C_BLUE : C_TEXT);
+            boolean on = b == active;
+            b.setBackground(on ? rr(C_BLUE, 0, 6) : rr(0x00000000, 0, 6));
+            b.setTextColor(on ? Color.WHITE : C_MUTED);
+            b.setTypeface(null, on ? Typeface.BOLD : Typeface.NORMAL);
         }
         if (locating && reader != null) {
             try {
@@ -1333,7 +1487,10 @@ public class MainActivity extends Activity {
                 final org.json.JSONArray rows =
                         resp.optJSONArray("entries");
                 ui.post(() -> {
-                    if (rows == null || rows.length() == 0) {
+                    int n = rows == null ? 0 : rows.length();
+                    locListBtn.setText(n > 0 ? "LIST… (" + n + ")"
+                            : "LIST…");
+                    if (n == 0) {
                         beep(SOUND_ERR);
                         status.setText("Locate list is empty — on the web "
                                 + "terminal, open any product and press "
@@ -1373,30 +1530,35 @@ public class MainActivity extends Activity {
                 }
             }
 
+            // Same product card as everywhere else (image, bold name,
+            // muted meta) — the accessory slot here is the ✕.
             LinearLayout card = new LinearLayout(this);
             card.setOrientation(LinearLayout.HORIZONTAL);
             card.setGravity(Gravity.CENTER_VERTICAL);
-            card.setBackground(btnBg(Color.WHITE, C_LINE, C_PRESS, 8));
+            card.setBackground(btnBg(C_CARD, C_LINE, C_PRESS, 10));
             card.setPadding(dp(10), dp(9), dp(10), dp(9));
+
+            ImageView iv = new ImageView(this);
+            iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            iv.setBackgroundColor(C_BG);
+            LinearLayout.LayoutParams ivl =
+                    new LinearLayout.LayoutParams(dp(48), dp(48));
+            ivl.rightMargin = dp(9);
+            card.addView(iv, ivl);
+            loadImage(e.isNull("image_url") ? null
+                    : e.optString("image_url"), iv);
 
             LinearLayout mid = new LinearLayout(this);
             mid.setOrientation(LinearLayout.VERTICAL);
-            TextView skuLine = new TextView(this);
-            skuLine.setText(sku);
-            skuLine.setTextSize(15);
-            skuLine.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-            skuLine.setTextColor(C_TEXT);
-            mid.addView(skuLine);
-            if (label != null && !label.isEmpty()) {
-                TextView nm = new TextView(this);
-                nm.setText(label);
-                nm.setTextSize(12);
-                nm.setTextColor(C_TEXT);
-                nm.setMaxLines(2);
-                mid.addView(nm);
-            }
+            TextView nm = new TextView(this);
+            nm.setText(label != null && !label.isEmpty() ? label : sku);
+            nm.setTextSize(14);
+            nm.setTypeface(null, Typeface.BOLD);
+            nm.setTextColor(C_TEXT);
+            nm.setMaxLines(2);
+            mid.addView(nm);
             TextView meta = new TextView(this);
-            meta.setText(tagCount + " tag(s)"
+            meta.setText("SKU: " + sku + " · " + tagCount + " tag(s)"
                     + (binText.length() > 0
                        ? " · tags say " + binText : ""));
             meta.setTextSize(11);
@@ -1417,8 +1579,10 @@ public class MainActivity extends Activity {
                             list.removeView(card);
                             status.setText(sku + " taken off the locate "
                                     + "list.");
-                            if (list.getChildCount() == 0
-                                    && dref[0] != null) {
+                            int left = list.getChildCount();
+                            locListBtn.setText(left > 0
+                                    ? "LIST… (" + left + ")" : "LIST…");
+                            if (left == 0 && dref[0] != null) {
                                 dref[0].dismiss();
                             }
                         });
@@ -1445,7 +1609,7 @@ public class MainActivity extends Activity {
             list.addView(card, cl);
         }
 
-        dref[0] = new AlertDialog.Builder(this)
+        dref[0] = dlg()
                 .setTitle("Locate list — tap to hunt")
                 .setView(scroll)
                 .setNegativeButton("CLOSE", null)
@@ -1603,7 +1767,7 @@ public class MainActivity extends Activity {
         }
         labels.add("RESET all found marks");
         epcs.add("RESET");
-        new AlertDialog.Builder(this)
+        dlg()
                 .setTitle("Target which tag?")
                 .setItems(labels.toArray(new String[0]), (d, which) -> {
                     String pick = epcs.get(which);
@@ -1711,7 +1875,7 @@ public class MainActivity extends Activity {
     // Preview card: [image | name + SKU] with the tracker pinned top-right.
     private void buildCard(FrameLayout card, ImageView[] img, TextView[] name,
                            TextView[] sku, TextView[] tracker) {
-        card.setBackground(rr(Color.WHITE, C_LINE, 10));
+        card.setBackground(rr(C_CARD, C_LINE, 10));
         card.setPadding(dp(10), dp(10), dp(10), dp(10));
 
         LinearLayout row = new LinearLayout(this);
@@ -1788,7 +1952,7 @@ public class MainActivity extends Activity {
         b.setMinHeight(0);
         b.setMinimumHeight(dp(38));
         b.setPadding(dp(10), 0, dp(10), 0);
-        b.setBackground(btnBg(Color.WHITE, C_LINE, C_PRESS, 8));
+        b.setBackground(btnBg(C_CARD, C_LINE, C_PRESS, 8));
         b.setTextColor(C_TEXT);
         b.setStateListAnimator(null);
         return b;
@@ -1848,7 +2012,7 @@ public class MainActivity extends Activity {
 
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setBackground(rr(Color.WHITE, C_LINE, 12));
+        panel.setBackground(rr(C_CARD, C_LINE, 12));
         panel.setPadding(dp(12), dp(12), dp(12), dp(12));
         panel.setClickable(true);
 
@@ -1914,7 +2078,7 @@ public class MainActivity extends Activity {
         mid.addView(editMeta);
         editFlags = new TextView(this);
         editFlags.setTextSize(13);
-        editFlags.setTextColor(Color.parseColor("#8a6116"));
+        editFlags.setTextColor(C_WARN);
         editFlags.setPadding(0, dp(4), 0, 0);
         mid.addView(editFlags);
         editPos = new TextView(this);
@@ -1952,7 +2116,7 @@ public class MainActivity extends Activity {
         editBinRow.setOrientation(LinearLayout.VERTICAL);
         editBinText = new TextView(this);
         editBinText.setTextSize(13);
-        editBinText.setTextColor(Color.parseColor("#8a6116"));
+        editBinText.setTextColor(C_WARN);
         editBinRow.addView(editBinText);
         // The productive answer gets its own full-width line: physically
         // carry the box(es) to the shelf the record names, as a side trip —
@@ -2056,7 +2220,7 @@ public class MainActivity extends Activity {
             if (editEntry == null) return;
             BItem it = editEntry.item;
             int fixed = Math.max(0, it.qty - it.taggedBefore);
-            new AlertDialog.Builder(this)
+            dlg()
                     .setTitle("Remove the double count?")
                     .setMessage(it.qty + " scanned + " + it.taggedBefore
                             + " already tagged — if the " + it.taggedBefore
@@ -2303,7 +2467,7 @@ public class MainActivity extends Activity {
                   + "permanent changes — scanning it again brings it back."
                 : "Drop this product from the batch?\n\nIts boxes stop "
                   + "counting here and no labels print for it.";
-        new AlertDialog.Builder(this)
+        dlg()
                 .setMessage(what)
                 .setPositiveButton("Remove", (d, w) -> new Thread(() -> {
                     try {
@@ -2326,7 +2490,7 @@ public class MainActivity extends Activity {
     private void moveItemBinToBatch() {
         if (editEntry == null) return;
         final BItem it = editEntry.item;
-        new AlertDialog.Builder(this)
+        dlg()
                 .setMessage("Update this product's bin in Shopify from "
                         + it.binLocation + " to " + batchBin + "?")
                 .setPositiveButton("Move it", (d, w) -> new Thread(() -> {
@@ -2429,13 +2593,13 @@ public class MainActivity extends Activity {
         in.setSelectAllOnFocus(true);
         int pad = dp(16);
         in.setPadding(pad, pad, pad, pad);
-        new AlertDialog.Builder(this)
+        dlg()
                 .setTitle("Change bin for " + it.name())
                 .setView(in)
                 .setPositiveButton("Save to Shopify", (d, w) -> {
                     final String bin = in.getText().toString().trim();
                     if (bin.isEmpty()) return;
-                    new AlertDialog.Builder(this)
+                    dlg()
                             .setMessage("Set this product's bin in Shopify "
                                     + "to " + bin + "?\n\nWas: "
                                     + (it.binLocation == null ? "none"
@@ -2501,7 +2665,7 @@ public class MainActivity extends Activity {
         in.setSelectAllOnFocus(true);
         int pad = dp(16);
         in.setPadding(pad, pad, pad, pad);
-        new AlertDialog.Builder(this)
+        dlg()
                 .setTitle("Boxes scanned for " + it.name())
                 .setView(in)
                 .setPositiveButton("Set", (d, w) -> {
@@ -2581,7 +2745,7 @@ public class MainActivity extends Activity {
             tabBtns[i].setVisibility(tabVisible(i) ? View.VISIBLE : View.GONE);
             tabBtns[i].setBackground(i == activeTab
                     ? btnBg(C_BLUE, 0, C_BLUE_DK, 8)
-                    : btnBg(Color.WHITE, C_LINE, C_PRESS, 8));
+                    : btnBg(C_CARD, C_LINE, C_PRESS, 8));
             tabBtns[i].setTextColor(i == activeTab ? Color.WHITE : C_TEXT);
             tabBtns[i].setTypeface(null,
                     i == activeTab ? Typeface.BOLD : Typeface.NORMAL);
@@ -2633,7 +2797,24 @@ public class MainActivity extends Activity {
                       + "web terminal's to-hunt queue."
                     : "LOCATE: trigger to hunt, FOUND IT? to confirm a "
                       + "find.");
+            refreshLocateListCount();
         }
+    }
+
+    /** Quietly fetch the locate queue size so LIST… wears its count. */
+    private void refreshLocateListCount() {
+        if (locListBtn == null) return;
+        new Thread(() -> {
+            try {
+                JSONObject resp = api("GET", "/api/locate-queue", null);
+                org.json.JSONArray rows = resp.optJSONArray("entries");
+                final int n = rows == null ? 0 : rows.length();
+                ui.post(() -> locListBtn.setText(
+                        n > 0 ? "LIST… (" + n + ")" : "LIST…"));
+            } catch (Exception ignored) {
+                // Count is a nicety — never worth an error message.
+            }
+        }).start();
     }
 
     private boolean tabVisible(int tab) {
@@ -3184,7 +3365,7 @@ public class MainActivity extends Activity {
                 Button chip = smallBtn(
                         p + (name.isEmpty() ? "" : " " + name));
                 if (p == now) {
-                    chip.setBackground(btnBg(Color.parseColor("#dbe9ff"),
+                    chip.setBackground(btnBg(C_SOFT,
                             C_BLUE, C_SOFT_DK, 8));
                     chip.setTextColor(C_BLUE);
                     chip.setTypeface(null, Typeface.BOLD);
@@ -3249,7 +3430,7 @@ public class MainActivity extends Activity {
         hint.setPadding(0, dp(8), 0, 0);
         box.addView(hint);
 
-        new AlertDialog.Builder(this)
+        dlg()
                 .setTitle("Scanner power")
                 .setView(box)
                 .setPositiveButton("Done", null)
@@ -3262,7 +3443,7 @@ public class MainActivity extends Activity {
         String shown = power + (name.isEmpty() ? "" : " " + name);
         String[] opts = {"Use power " + power, "Rename…",
                 "Remove from favourites"};
-        new AlertDialog.Builder(this)
+        dlg()
                 .setTitle("★ " + shown)
                 .setItems(opts, (d, which) -> {
                     if (which == 0) {
@@ -3274,7 +3455,7 @@ public class MainActivity extends Activity {
                         final EditText in = new EditText(this);
                         in.setText(name);
                         in.setHint("e.g. pair, bin, rack");
-                        new AlertDialog.Builder(this)
+                        dlg()
                                 .setTitle("Name for power " + power)
                                 .setView(in)
                                 .setPositiveButton("Save", (dd, ww) -> {
@@ -3387,7 +3568,7 @@ public class MainActivity extends Activity {
      *  the bin stops sitting on the to-do board forever. */
     private void askEmptyBin() {
         int expected = bItems.size();
-        new AlertDialog.Builder(this)
+        dlg()
                 .setTitle("Nothing scanned in " + batchBin)
                 .setMessage("No boxes were scanned and none are recorded "
                         + "as already tagged.\n\nIs the shelf actually "
@@ -3465,7 +3646,7 @@ public class MainActivity extends Activity {
             }
             final int left = missing;
             if (left > 0) {
-                new AlertDialog.Builder(this)
+                dlg()
                         .setTitle("Finish side trip?")
                         .setMessage(left + " label(s) here still have no tag "
                                 + "paired.\n\nGo back to " + parentBinName
@@ -3776,7 +3957,7 @@ public class MainActivity extends Activity {
 
         ScrollView sc = new ScrollView(this);
         sc.addView(box);
-        new AlertDialog.Builder(this)
+        dlg()
                 .setTitle("Verify bin " + batchBin)
                 .setView(sc)
                 .setPositiveButton("CONFIRM - finish on the web",
@@ -3836,7 +4017,7 @@ public class MainActivity extends Activity {
 
         ScrollView sc = new ScrollView(this);
         sc.addView(box);
-        new AlertDialog.Builder(this)
+        dlg()
                 .setTitle(r.name())
                 .setView(sc)
                 .setPositiveButton("CLOSE", null)
@@ -3890,7 +4071,7 @@ public class MainActivity extends Activity {
     /** Print, or jump straight to pairing when the labels already exist
      *  (re-pairing a shelf shouldn't reprint 34 stickers). */
     private void askPrintOrSkip() {
-        new AlertDialog.Builder(this)
+        dlg()
                 .setTitle("Labels")
                 .setMessage("Print labels for this bin, or skip "
                         + "printing and go straight to pairing?")
@@ -3928,7 +4109,7 @@ public class MainActivity extends Activity {
             return;
         }
         final int n = paired;
-        new AlertDialog.Builder(this)
+        dlg()
                 .setTitle("Undo ALL pairing?")
                 .setMessage("Release all " + n + " tag(s) tied in this "
                         + "batch?\n\nThe printed labels stay valid — you "
@@ -4212,7 +4393,7 @@ public class MainActivity extends Activity {
      *  the gun (batches used to start on the PC/iPad only). */
     private void askStartBatch(String bin) {
         beep(SOUND_OTHER);
-        new AlertDialog.Builder(this)
+        dlg()
                 .setTitle("Start a batch on " + bin + "?")
                 .setMessage("Batch-tag bin " + bin + ": its expected "
                         + "products load and you collect every box on the "
@@ -4285,7 +4466,7 @@ public class MainActivity extends Activity {
         for (BItem b : bItems) paired += b.paired;
         final int n = paired;
         if (receivingBatch) {
-            new AlertDialog.Builder(this)
+            dlg()
                     .setTitle("Leave receiving?")
                     .setMessage("FINISH closes the shipment and files an "
                             + "inventory-check for every bin that received "
@@ -4302,7 +4483,7 @@ public class MainActivity extends Activity {
                     .show();
             return;
         }
-        new AlertDialog.Builder(this)
+        dlg()
                 .setTitle("Leave bin " + batchBin + "?")
                 .setMessage("LEAVE OPEN parks the batch to resume later — "
                         + "on this gun or the web terminal.\n\nABANDON "
@@ -4318,7 +4499,7 @@ public class MainActivity extends Activity {
     }
 
     private void confirmAbandonBatch(int ties) {
-        new AlertDialog.Builder(this)
+        dlg()
                 .setTitle("Abandon " + batchBin + "?")
                 .setMessage("The batch closes without completing"
                         + (ties > 0 ? ", its " + ties + " tag tie(s) are "
@@ -4359,7 +4540,7 @@ public class MainActivity extends Activity {
     /** PRINT for a receiving pass: only boxes not yet labelled queue, in
      *  scan order, each label carrying the product's home bin. */
     private void confirmReceivingPrint() {
-        new AlertDialog.Builder(this)
+        dlg()
                 .setTitle("Print this pass?")
                 .setMessage("Queues one label for every box scanned but "
                         + "not yet labelled. The stack comes off the "
@@ -4399,7 +4580,7 @@ public class MainActivity extends Activity {
                          .append(String.join("\n• ", held))
                          .append("\n\nAssign bins and PRINT again.");
                     }
-                    new AlertDialog.Builder(this)
+                    dlg()
                             .setTitle("Print pass")
                             .setMessage(m.toString())
                             .setPositiveButton("GO TO PAIR", (d, w) -> {
@@ -4445,7 +4626,7 @@ public class MainActivity extends Activity {
             m.append("\n⚠ ").append(unpaired).append(" label(s) still "
                     + "have no tag paired — they'll be flagged for Review.");
         }
-        new AlertDialog.Builder(this)
+        dlg()
                 .setTitle("Finish receiving?")
                 .setMessage(m.toString())
                 .setPositiveButton("FINISH", (d, w) -> finishReceiving())
@@ -4479,7 +4660,7 @@ public class MainActivity extends Activity {
                 ui.post(() -> {
                     beep(SOUND_OK);
                     exitBatch(true);
-                    new AlertDialog.Builder(this)
+                    dlg()
                             .setTitle("Receiving done ✓")
                             .setMessage(m + "\n\nThey're in the Review tab "
                                     + "— each one is a quick bin-audit "
@@ -4524,7 +4705,52 @@ public class MainActivity extends Activity {
     }
 
     private void openBatchPicker() {
-        status.setText("Loading open batches…");
+        loadBatchPickerInline();
+    }
+
+    /** The dashed placeholder used wherever a pane is legitimately empty —
+     *  same builder everywhere, different words. */
+    private LinearLayout emptyBox(String main, String sub) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setGravity(Gravity.CENTER);
+        GradientDrawable g = new GradientDrawable();
+        g.setCornerRadius(dp(10));
+        g.setStroke(dp(1), C_LINE, dp(5), dp(4));
+        box.setBackground(g);
+        box.setPadding(dp(12), dp(14), dp(12), dp(14));
+        TextView m = new TextView(this);
+        m.setText(main);
+        m.setTextSize(12);
+        m.setTextColor(C_MUTED);
+        m.setGravity(Gravity.CENTER);
+        box.addView(m);
+        if (sub != null) {
+            TextView s = new TextView(this);
+            s.setText(sub);
+            s.setTextSize(11);
+            s.setTextColor(C_MUTED);
+            s.setGravity(Gravity.CENTER);
+            s.setAlpha(0.75f);
+            box.addView(s);
+        }
+        return box;
+    }
+
+    /** Fill the batch tab's lower pane with the open batches. Runs on
+     *  every no-batch applyBatchUi; the loading flag stops a fetch storm
+     *  when several UI paths land here at once. */
+    private void loadBatchPickerInline() {
+        if (batchPickerLoading) return;
+        batchPickerLoading = true;
+        if (batchPickerPane.getChildCount() == 0) {
+            TextView t = new TextView(this);
+            t.setText("Loading open batches…");
+            t.setTextSize(12);
+            t.setTextColor(C_MUTED);
+            t.setPadding(dp(4), dp(8), 0, 0);
+            batchPickerPane.addView(t);
+        }
         new Thread(() -> {
             try {
                 JSONObject resp = api("GET", "/api/batches?status=open", null);
@@ -4534,30 +4760,26 @@ public class MainActivity extends Activity {
                     rows.add(bs.getJSONObject(i));
                 }
                 ui.post(() -> {
-                    if (rows.isEmpty()) {
-                        status.setText("No open batches — scan a BIN "
-                                + "barcode (like D1-3) to start one right "
-                                + "here.");
-                        return;
-                    }
-                    showBatchPickerCards(rows);
+                    batchPickerLoading = false;
+                    if (!inBatch()) fillBatchPickerPane(rows);
                 });
             } catch (Exception e) {
-                ui.post(() -> status.setText("Could not load batches: "
-                        + e.getMessage()));
+                ui.post(() -> {
+                    batchPickerLoading = false;
+                    alertStatus("Could not load batches: " + e.getMessage());
+                });
             }
         }).start();
     }
 
-    /** The open-batch list as cards: a bin chip readable at arm's length,
-     *  age + stage, and a boxes-vs-tagged progress bar. */
-    private void showBatchPickerCards(List<JSONObject> rows) {
-        ScrollView scroll = new ScrollView(this);
-        LinearLayout list = new LinearLayout(this);
-        list.setOrientation(LinearLayout.VERTICAL);
-        list.setPadding(dp(14), dp(8), dp(14), 0);
-        scroll.addView(list);
-        final AlertDialog[] dref = new AlertDialog[1];
+    /** The open-batch list as cards, rendered INLINE in the batch tab's
+     *  lower pane (v3.36 — it used to be a dialog behind a PICK button):
+     *  a bin chip readable at arm's length, age + stage, and a
+     *  boxes-vs-tagged progress bar. */
+    private void fillBatchPickerPane(List<JSONObject> rows) {
+        LinearLayout list = batchPickerPane;
+        list.removeAllViews();
+        list.setPadding(0, dp(4), 0, 0);
 
         for (JSONObject b : rows) {
             final int id = b.optInt("id");
@@ -4569,7 +4791,7 @@ public class MainActivity extends Activity {
             LinearLayout card = new LinearLayout(this);
             card.setOrientation(LinearLayout.HORIZONTAL);
             card.setGravity(Gravity.CENTER_VERTICAL);
-            card.setBackground(btnBg(Color.WHITE, C_LINE, C_PRESS, 8));
+            card.setBackground(btnBg(C_CARD, C_LINE, C_PRESS, 8));
             card.setPadding(dp(10), dp(9), dp(10), dp(9));
 
             TextView chip = new TextView(this);
@@ -4601,8 +4823,8 @@ public class MainActivity extends Activity {
                 TextView badge = new TextView(this);
                 badge.setText(receiving ? "receiving" : "side trip");
                 badge.setTextSize(10);
-                badge.setTextColor(Color.parseColor("#854f0b"));
-                badge.setBackground(rr(Color.parseColor("#faeeda"), 0, 4));
+                badge.setTextColor(C_WARN);
+                badge.setBackground(rr(C_WARN_BG, 0, 4));
                 badge.setPadding(dp(5), dp(1), dp(5), dp(1));
                 LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -4637,42 +4859,33 @@ public class MainActivity extends Activity {
                     LinearLayout.LayoutParams.WRAP_CONTENT);
             cl.bottomMargin = dp(8);
             list.addView(card, cl);
-            card.setOnClickListener(v -> {
-                if (dref[0] != null) dref[0].dismiss();
-                enterBatch(id);
-            });
+            card.setOnClickListener(v -> enterBatch(id));
         }
 
-        TextView foot = new TextView(this);
-        foot.setText("…or scan a bin barcode to start a new batch");
-        foot.setTextSize(11);
-        foot.setTextColor(C_MUTED);
-        foot.setPadding(dp(2), dp(2), 0, dp(8));
-        list.addView(foot);
+        LinearLayout.LayoutParams el = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        el.bottomMargin = dp(8);
+        list.addView(rows.isEmpty()
+                ? emptyBox("No open batches",
+                        "Scan a BIN barcode (like D1-3) to start one "
+                        + "right here")
+                : emptyBox("Scan a BIN barcode to start a new batch",
+                        null), el);
 
-        Button recvBtn = smallBtn("📦 START RECEIVING…");
+        Button recvBtn = smallBtn("START RECEIVING…");
         LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT);
         rl.bottomMargin = dp(10);
         list.addView(recvBtn, rl);
-        recvBtn.setOnClickListener(v -> {
-            if (dref[0] != null) dref[0].dismiss();
-            askStartReceiving();
-        });
-
-        dref[0] = new AlertDialog.Builder(this)
-                .setTitle("Open batch")
-                .setView(scroll)
-                .setNegativeButton("Cancel", null)
-                .create();
-        dref[0].show();
+        recvBtn.setOnClickListener(v -> askStartReceiving());
     }
 
     /** Start a shipment batch: no bin — scan whatever the pallet offers,
      *  PRINT, stick + pair, and loop until the pallet is empty. */
     private void askStartReceiving() {
-        new AlertDialog.Builder(this)
+        dlg()
                 .setTitle("Start receiving?")
                 .setMessage("A receiving batch has no bin: scan every box "
                         + "you can reach, press PRINT (labels come out in "
@@ -4786,7 +4999,9 @@ public class MainActivity extends Activity {
                     : STEP_NAMES[step] + "  " + (step + 1) + "/"
                       + (STEP_LAST + 1))
                 : "PICK");
-        pickBtn.setVisibility(in ? View.GONE : View.VISIBLE);
+        batchPickerScroll.setVisibility(in ? View.GONE : View.VISIBLE);
+        batchListView.setVisibility(in ? View.VISIBLE : View.GONE);
+        if (!in) loadBatchPickerInline();
         batchBtnRow.setVisibility(in ? View.VISIBLE : View.GONE);
         // The two right-hand buttons change job with the step.
         btnUndo.setText(step == STEP_VERIFY ? "CLEAR" : "UNDO");
@@ -4831,7 +5046,8 @@ public class MainActivity extends Activity {
                         + "on the PC/iPad.");
             }
         } else {
-            status.setText("Pick an open batch (started on the PC/iPad).");
+            status.setText("Tap a batch below to resume it, or scan a BIN "
+                    + "barcode (like D1-3) to start a new one.");
             batchCard.setVisibility(View.GONE);
         }
         updateBatchCard();
@@ -5138,7 +5354,7 @@ public class MainActivity extends Activity {
 
         ScrollView sc = new ScrollView(this);
         sc.addView(box);
-        new AlertDialog.Builder(this)
+        dlg()
                 .setTitle(n + " box(es) may already be stickered")
                 .setView(sc)
                 .setCancelable(false)
@@ -5162,7 +5378,7 @@ public class MainActivity extends Activity {
     /** Count 0 is a real answer with a quiet consequence — say it before
      *  saving, with a way back. */
     private void confirmNoneStickered(BItem it, boolean offerUncount) {
-        new AlertDialog.Builder(this)
+        dlg()
                 .setTitle("No stickered boxes here")
                 .setMessage(it.priorTags + " tag(s) stay in the system "
                         + "pointing at stock somewhere else. If you find a "
@@ -5413,7 +5629,7 @@ public class MainActivity extends Activity {
             // (red). The selected product keeps its blue border on top of
             // that, so "which am I pairing into" and "is it finished" are
             // two separate signals instead of one fighting the other.
-            int fill = Color.WHITE, stroke = C_LINE, trk = C_BLUE;
+            int fill = C_CARD, stroke = C_LINE, trk = C_BLUE;
             if (inBatch() && step == STEP_PAIR && b.resolved
                     && b.labelsTotal > 0) {
                 if (b.paired > b.labelsTotal) {
@@ -5453,7 +5669,7 @@ public class MainActivity extends Activity {
                 // Skipped rows read as a decision, in every step - the whole
                 // point is that it stays visible rather than looking unscanned.
                 h.card.setBackground(
-                        rr(Color.parseColor("#f2f2f3"), C_LINE, 10));
+                        rr(C_PRESS, C_LINE, 10));
                 h.bc.setVisibility(View.VISIBLE);
                 h.bc.setText("SKIPPED"
                         + (b.skipReason == null || b.skipReason.isEmpty()
@@ -5803,7 +6019,7 @@ public class MainActivity extends Activity {
             return;
         }
         final int n = total;
-        new AlertDialog.Builder(this)
+        dlg()
                 .setTitle("Print labels for bin " + batchBin + "?")
                 .setMessage(n + " label(s) — one per scanned box — will "
                         + "print at the warehouse printer. Collect them "
@@ -6007,7 +6223,7 @@ public class MainActivity extends Activity {
 
         ScrollView sc = new ScrollView(this);
         sc.addView(box);
-        AlertDialog dlg = new AlertDialog.Builder(this)
+        AlertDialog dlg = dlg()
                 .setTitle("Split " + total + " box(es)")
                 .setView(sc)
                 .setPositiveButton("SPLIT", (d, w) -> postSplit(cands, counts))
@@ -6120,7 +6336,7 @@ public class MainActivity extends Activity {
         for (JSONObject p : found) {
             LinearLayout row = new LinearLayout(this);
             row.setGravity(Gravity.CENTER_VERTICAL);
-            row.setBackground(btnBg(Color.WHITE, C_LINE, C_PRESS, 10));
+            row.setBackground(btnBg(C_CARD, C_LINE, C_PRESS, 10));
             row.setPadding(dp(10), dp(8), dp(10), dp(8));
 
             ImageView iv = new ImageView(this);
@@ -6177,7 +6393,7 @@ public class MainActivity extends Activity {
 
         ScrollView sc = new ScrollView(this);
         sc.addView(box);
-        dlg[0] = new AlertDialog.Builder(this)
+        dlg[0] = dlg()
                 .setTitle("Which product is it?")
                 .setView(sc)
                 .setNegativeButton("Cancel", null)
@@ -6187,7 +6403,7 @@ public class MainActivity extends Activity {
     private void confirmGiveBarcode(JSONObject p, String scanned) {
         String title = p.optString("product_title", "?");
         String old = p.isNull("barcode") ? "(none)" : p.optString("barcode");
-        new AlertDialog.Builder(this)
+        dlg()
                 .setTitle("Give this product the barcode?")
                 .setMessage(title + "\n\nbarcode " + old + "  ->  " + scanned
                         + "\n\nThis changes the barcode in Shopify for real. "
@@ -6252,7 +6468,7 @@ public class MainActivity extends Activity {
 
     private void askSkipReason() {
         if (editEntry == null) return;
-        new AlertDialog.Builder(this)
+        dlg()
                 .setTitle("Why can't it be scanned?")
                 .setItems(SKIP_REASONS, (d, which) ->
                         confirmSkip(SKIP_REASONS[which]))
@@ -6261,7 +6477,7 @@ public class MainActivity extends Activity {
     }
 
     private void confirmSkip(String reason) {
-        new AlertDialog.Builder(this)
+        dlg()
                 .setTitle("Skip this product?")
                 .setMessage(reason + "\n\nIt stays on the list with that "
                         + "reason, gets no label, and won't hold up the "
@@ -6312,7 +6528,7 @@ public class MainActivity extends Activity {
             }).start();
         };
         if (want) {
-            new AlertDialog.Builder(this)
+            dlg()
                     .setTitle("Won't RFID scan?")
                     .setMessage(it.name() + "\n\nTag won't scan when on "
                             + "box. Labels still print and pairing still "
@@ -6415,7 +6631,7 @@ public class MainActivity extends Activity {
                         "Baseline applied.");
                 ui.post(() -> {
                     beep(SOUND_OK);
-                    new AlertDialog.Builder(this)
+                    dlg()
                             .setTitle("Shelf baseline")
                             .setMessage(msg)
                             .setPositiveButton("OK", null)
@@ -6444,7 +6660,7 @@ public class MainActivity extends Activity {
 
     // ------------------------------------------------------- context help ---
     private void helpDialog(String title, String body) {
-        new AlertDialog.Builder(this)
+        dlg()
                 .setTitle(title)
                 .setMessage(body)
                 .setPositiveButton("GOT IT", null)
@@ -6622,7 +6838,7 @@ public class MainActivity extends Activity {
         in.setTextSize(13);
         int pad = dp(14);
         in.setPadding(pad, pad, pad, pad);
-        new AlertDialog.Builder(this)
+        dlg()
                 .setTitle("Flag bin " + batchBin + "?")
                 .setMessage("\"Ask first\": marks this bin on the work list "
                         + "as needing a word with someone who knows the "
@@ -6679,7 +6895,7 @@ public class MainActivity extends Activity {
         final String bin = firstBin(editEntry.item.binLocation);
         if (bin == null) return;
         String name = editEntry.item.name();
-        new AlertDialog.Builder(this)
+        dlg()
                 .setTitle("Take it to " + bin + "?")
                 .setMessage(name + " leaves this batch and becomes a short "
                         + "side trip for " + bin + ": its labels print with "
@@ -6742,7 +6958,7 @@ public class MainActivity extends Activity {
 
             LinearLayout row = new LinearLayout(this);
             row.setGravity(Gravity.CENTER_VERTICAL);
-            row.setBackground(rr(moving ? C_OK_BG : Color.WHITE,
+            row.setBackground(rr(moving ? C_OK_BG : C_CARD,
                     C_LINE, 8));
             row.setPadding(dp(8), dp(6), dp(8), dp(6));
             ImageView iv = new ImageView(this);
@@ -6793,7 +7009,7 @@ public class MainActivity extends Activity {
         for (CheckEntry e : strays) {
             if (!strayMove.contains(e.item.id)) undecided++;
         }
-        AlertDialog.Builder b = new AlertDialog.Builder(this)
+        AlertDialog.Builder b = dlg()
                 .setTitle(strays.size() + " box(es) on the wrong shelf")
                 .setView(sc)
                 .setNegativeButton(fromNext
@@ -6875,7 +7091,7 @@ public class MainActivity extends Activity {
 
         ScrollView sc = new ScrollView(this);
         sc.addView(box);
-        AlertDialog d = new AlertDialog.Builder(this)
+        AlertDialog d = dlg()
                 .setTitle(e.item.name())
                 .setView(sc)
                 .setNegativeButton("LATER", (dg, w) ->
@@ -7038,7 +7254,7 @@ public class MainActivity extends Activity {
         String note = box == null || box.isNull("scan_note") ? ""
                 : box.optString("scan_note");
         status.setText("Box of " + units + " — opened or sealed?");
-        new AlertDialog.Builder(this)
+        dlg()
                 .setTitle("Box of " + units + " x " + sku)
                 .setMessage((title.isEmpty() ? "" : title + "\n\n")
                         + (note.isEmpty() ? "" : "! " + note + "\n\n")
@@ -7115,7 +7331,7 @@ public class MainActivity extends Activity {
         final String was = p.isNull("bin_location") ? "none"
                 : p.optString("bin_location");
         beep(SOUND_OTHER);
-        new AlertDialog.Builder(this)
+        dlg()
                 .setTitle("Move it to bin " + bin + "?")
                 .setMessage(p.optString("product_title", "?")
                         + "\n\nbin " + was + "  ->  " + bin
@@ -7358,7 +7574,7 @@ public class MainActivity extends Activity {
         int n;
         synchronized (tags) { n = tags.size(); }
         if (n == 0) return;
-        new AlertDialog.Builder(this)
+        dlg()
                 .setMessage("Clear " + n + " collected tags?")
                 .setPositiveButton("Clear", (d, w) -> {
                     synchronized (tags) { tags.clear(); }
@@ -7444,7 +7660,7 @@ public class MainActivity extends Activity {
 
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
-        card.setBackground(rr(Color.WHITE, C_LINE, 10));
+        card.setBackground(rr(C_CARD, C_LINE, 10));
         card.setPadding(dp(12), dp(10), dp(12), dp(12));
         TextView hint = new TextView(this);
         hint.setText("Scans on this tab don't act here — every barcode "
@@ -7461,6 +7677,10 @@ public class MainActivity extends Activity {
         root.addView(sectionLabel("RECENT SCANS"));
         linkFeed = new LinearLayout(this);
         linkFeed.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout none = emptyBox("No scans yet",
+                "Barcode or trigger — results land here");
+        none.setTag("empty");
+        linkFeed.addView(none);
         root.addView(linkFeed);
         return scroll;
     }
@@ -7495,14 +7715,47 @@ public class MainActivity extends Activity {
                           final String rssi) {
         final String display =
                 ("epc".equals(kind) ? "TAG " : "") + value;
-        final TextView row = new TextView(this);
-        row.setTextSize(12);
-        row.setTextColor(C_MUTED);
-        row.setPadding(dp(2), dp(4), dp(2), dp(4));
-        row.setText(display + " · sending…");
+        // Feed rows are mini cards: a coloured verdict mark on the left
+        // (… sending, ✓ accepted, ✕ refused), value + outcome beside it.
+        final LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setBackground(rr(C_CARD, C_LINE, 10));
+        row.setPadding(dp(10), dp(7), dp(10), dp(7));
+        final TextView mark = new TextView(this);
+        mark.setText("…");
+        mark.setTextSize(15);
+        mark.setTypeface(null, Typeface.BOLD);
+        mark.setTextColor(C_MUTED);
+        mark.setPadding(0, 0, dp(9), 0);
+        row.addView(mark);
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        final TextView main = new TextView(this);
+        main.setText(display);
+        main.setTextSize(12);
+        main.setTypeface(null, Typeface.BOLD);
+        main.setTextColor(C_TEXT);
+        main.setSingleLine();
+        main.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
+        col.addView(main);
+        final TextView sub = new TextView(this);
+        sub.setText("sending…");
+        sub.setTextSize(11);
+        sub.setTextColor(C_MUTED);
+        col.addView(sub);
+        row.addView(col, weight());
         ui.post(() -> {
             if (linkFeed == null) return;
-            linkFeed.addView(row, 0);
+            if (linkFeed.getChildCount() == 1
+                    && "empty".equals(linkFeed.getChildAt(0).getTag())) {
+                linkFeed.removeAllViews();
+            }
+            LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            rl.bottomMargin = dp(5);
+            linkFeed.addView(row, 0, rl);
             while (linkFeed.getChildCount() > 10) {
                 linkFeed.removeViewAt(linkFeed.getChildCount() - 1);
             }
@@ -7520,23 +7773,25 @@ public class MainActivity extends Activity {
             } catch (Exception e) {
                 ui.post(() -> {
                     beep(SOUND_ERR);
-                    row.setText(display + " · NOT SENT — " + e.getMessage());
-                    row.setTextColor(C_OVER);
-                    status.setText("Couldn't reach the server: "
+                    mark.setText("✕");
+                    mark.setTextColor(C_OVER);
+                    sub.setText("NOT SENT — " + e.getMessage());
+                    sub.setTextColor(C_OVER);
+                    alertStatus("Couldn't reach the server: "
                             + e.getMessage());
                 });
                 return;
             }
-            ui.post(() -> row.setText(display
-                    + " · delivered — waiting for the terminal…"));
-            pollLinkOutcome(id, row, display);
+            ui.post(() -> sub.setText("delivered — waiting for the "
+                    + "terminal…"));
+            pollLinkOutcome(id, mark, sub, display);
         }).start();
     }
 
     /** Watch one relayed scan for the terminal's verdict (~8 s), then
      *  ding/buzz so the operator never has to look at the monitor. */
-    private void pollLinkOutcome(int id, final TextView row,
-                                 final String display) {
+    private void pollLinkOutcome(int id, final TextView mark,
+                                 final TextView sub, final String display) {
         long until = System.currentTimeMillis() + 8000;
         while (System.currentTimeMillis() < until) {
             try {
@@ -7549,10 +7804,15 @@ public class MainActivity extends Activity {
                             ok ? "accepted" : "refused");
                     ui.post(() -> {
                         beep(ok ? SOUND_OK : SOUND_ERR);
-                        row.setText(display + " · " + outcome);
-                        row.setTextColor(ok ? C_OK : C_OVER);
-                        status.setText(ok ? outcome
-                                : "Terminal refused: " + outcome);
+                        mark.setText(ok ? "✓" : "✕");
+                        mark.setTextColor(ok ? C_OK : C_OVER);
+                        sub.setText(outcome);
+                        sub.setTextColor(ok ? C_MUTED : C_OVER);
+                        if (ok) {
+                            status.setText(outcome);
+                        } else {
+                            alertStatus("Terminal refused: " + outcome);
+                        }
                     });
                     return;
                 }
@@ -7564,7 +7824,8 @@ public class MainActivity extends Activity {
         }
         ui.post(() -> {
             beep(SOUND_OTHER);
-            row.setText(display + " · delivered, no answer");
+            mark.setText("?");
+            sub.setText("delivered, no answer");
             status.setText("Delivered, but the terminal isn't answering — "
                     + "is the C72 LINK toggle ON on the Scan station?");
         });
@@ -7578,7 +7839,7 @@ public class MainActivity extends Activity {
         android.content.res.ColorStateList track =
                 new android.content.res.ColorStateList(
                         new int[][]{{android.R.attr.state_checked}, {}},
-                        new int[]{C_BLUE, Color.parseColor("#b9bfc5")});
+                        new int[]{C_BLUE, C_CHIP});
         sw.setTrackTintList(track);
         sw.setThumbTintList(
                 android.content.res.ColorStateList.valueOf(Color.WHITE));
@@ -7637,7 +7898,7 @@ public class MainActivity extends Activity {
         LinearLayout conn = new LinearLayout(this);
         conn.setOrientation(LinearLayout.HORIZONTAL);
         conn.setGravity(Gravity.CENTER_VERTICAL);
-        conn.setBackground(btnBg(Color.WHITE, C_LINE, C_PRESS, 8));
+        conn.setBackground(btnBg(C_CARD, C_LINE, C_PRESS, 8));
         conn.setPadding(dp(12), dp(10), dp(12), dp(10));
         LinearLayout ct = new LinearLayout(this);
         ct.setOrientation(LinearLayout.VERTICAL);
@@ -7682,7 +7943,7 @@ public class MainActivity extends Activity {
         LinearLayout trig = new LinearLayout(this);
         trig.setOrientation(LinearLayout.HORIZONTAL);
         trig.setGravity(Gravity.CENTER_VERTICAL);
-        trig.setBackground(btnBg(Color.WHITE, C_LINE, C_PRESS, 8));
+        trig.setBackground(btnBg(C_CARD, C_LINE, C_PRESS, 8));
         trig.setPadding(dp(12), dp(10), dp(12), dp(10));
         LinearLayout tt = new LinearLayout(this);
         tt.setOrientation(LinearLayout.VERTICAL);
@@ -7725,7 +7986,7 @@ public class MainActivity extends Activity {
         LinearLayout pow = new LinearLayout(this);
         pow.setOrientation(LinearLayout.HORIZONTAL);
         pow.setGravity(Gravity.CENTER_VERTICAL);
-        pow.setBackground(btnBg(Color.WHITE, C_LINE, C_PRESS, 8));
+        pow.setBackground(btnBg(C_CARD, C_LINE, C_PRESS, 8));
         pow.setPadding(dp(12), dp(10), dp(12), dp(10));
         LinearLayout pt = new LinearLayout(this);
         pt.setOrientation(LinearLayout.VERTICAL);
@@ -7771,6 +8032,50 @@ public class MainActivity extends Activity {
         pow.setOnClickListener(v -> showScanPowerSettings(refreshPow));
         box.addView(pow);
 
+        // Theme card — mode + the five colour slots live one tap deeper.
+        LinearLayout thm = new LinearLayout(this);
+        thm.setOrientation(LinearLayout.HORIZONTAL);
+        thm.setGravity(Gravity.CENTER_VERTICAL);
+        thm.setBackground(btnBg(C_CARD, C_LINE, C_PRESS, 8));
+        thm.setPadding(dp(12), dp(10), dp(12), dp(10));
+        LinearLayout tht = new LinearLayout(this);
+        tht.setOrientation(LinearLayout.VERTICAL);
+        TextView thTitle = new TextView(this);
+        thTitle.setText("Theme");
+        thTitle.setTextSize(14);
+        thTitle.setTextColor(C_TEXT);
+        thTitle.setTypeface(null, Typeface.BOLD);
+        tht.addView(thTitle);
+        TextView thSum = new TextView(this);
+        thSum.setTextSize(11);
+        thSum.setTextColor(C_MUTED);
+        String thmMode = prefs.getString("theme_mode", "system");
+        int overrides = 0;
+        for (String k : new String[]{"theme_main", "theme_hi", "theme_ok",
+                "theme_warn", "theme_bad"}) {
+            if (prefs.contains(k)) overrides++;
+        }
+        thSum.setText(("system".equals(thmMode)
+                ? "follows the gun (" + (themeDark ? "dark" : "light") + ")"
+                : thmMode + " mode")
+                + (overrides > 0 ? " · " + overrides + " colour(s) custom"
+                    : " · default colours"));
+        tht.addView(thSum);
+        thm.addView(tht, new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        TextView thArrow = new TextView(this);
+        thArrow.setText("›");
+        thArrow.setTextSize(22);
+        thArrow.setTextColor(C_MUTED);
+        thm.addView(thArrow);
+        LinearLayout.LayoutParams thmLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        thmLp.topMargin = dp(8);
+        thm.setLayoutParams(thmLp);
+        thm.setOnClickListener(v -> showThemeSettings());
+        box.addView(thm);
+
         box.addView(sectionLabel("VISIBLE TABS · BATCH ALWAYS SHOWS"));
         final Switch swStation =
                 mkToggle(prefs.getBoolean("tab_station", true));
@@ -7785,7 +8090,7 @@ public class MainActivity extends Activity {
         final Switch swLink = mkToggle(prefs.getBoolean("tab_link", true));
         box.addView(toggleRow("Link (gun → web terminal)", null, swLink));
 
-        new AlertDialog.Builder(this)
+        dlg()
                 .setTitle("Settings")
                 .setView(scroll)
                 .setPositiveButton("Save", (d, w) -> {
@@ -7936,7 +8241,7 @@ public class MainActivity extends Activity {
         swPow.setOnCheckedChangeListener((b, c) -> grey.run());
         grey.run();
 
-        new AlertDialog.Builder(this)
+        dlg()
                 .setTitle("Trigger pulls")
                 .setView(scroll)
                 .setPositiveButton("Save", (d, w) -> {
@@ -7970,7 +8275,7 @@ public class MainActivity extends Activity {
         msg.setTextColor(C_TEXT);
         msg.setPadding(dp(20), dp(16), dp(20), dp(8));
         final long[] downAt = {0};
-        AlertDialog dlg = new AlertDialog.Builder(this)
+        AlertDialog dlg = dlg()
                 .setTitle("Set threshold with trigger pull")
                 .setView(msg)
                 .setNegativeButton("Cancel", null)
@@ -8078,7 +8383,7 @@ public class MainActivity extends Activity {
         });
         grey.run();
 
-        new AlertDialog.Builder(this)
+        dlg()
                 .setTitle("Scan power")
                 .setView(scroll)
                 .setPositiveButton("Done", (d, w) -> {
@@ -8088,6 +8393,234 @@ public class MainActivity extends Activity {
                     applyContextPower();
                 })
                 .show();
+    }
+
+    // ---- theme settings ----------------------------------------------------
+    private static final String[] THEME_KEYS = {
+            "theme_main", "theme_hi", "theme_ok", "theme_warn", "theme_bad"};
+    private static final String[] THEME_NAMES = {
+            "Main colour", "Highlight", "Good", "Warning", "Alert"};
+    /** Preset swatches per slot (dark-mode variants derive on their own —
+     *  these are the raw values the operator picks from). */
+    private static final int[][] THEME_PRESETS = {
+            {0xFFF1F2F4, 0xFFEDEBE4, 0xFFE9EEF4, 0xFF16181A, 0xFF1A1D24,
+             0xFF201B1B},
+            {0xFF005BD3, 0xFF2F7DE1, 0xFF6F42C1, 0xFF0E7A8A, 0xFFB25309,
+             0xFF444444},
+            {0xFF29845A, 0xFF35A273, 0xFF3B6D11, 0xFF0E7A8A},
+            {0xFF8A6116, 0xFFD9B25C, 0xFFBA7517, 0xFF9A6A00},
+            {0xFFD72C0D, 0xFFE5533D, 0xFFA32D2D, 0xFFD4537E}};
+
+    private int themeSlotValue(int slot) {
+        int[] defLight = {DEF_MAIN_LIGHT, DEF_HI_LIGHT, DEF_OK_LIGHT,
+                DEF_WARN_LIGHT, DEF_BAD_LIGHT};
+        int[] defDark = {DEF_MAIN_DARK, DEF_HI_DARK, DEF_OK_DARK,
+                DEF_WARN_DARK, DEF_BAD_DARK};
+        return prefs.getInt(THEME_KEYS[slot],
+                themeDark ? defDark[slot] : defLight[slot]);
+    }
+
+    /** Settings → Theme: mode (system/light/dark) + the five colour
+     *  slots. Every change saves immediately; APPLY NOW rebuilds the
+     *  screen (an open batch survives on the server — re-pick it). */
+    private void showThemeSettings() {
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(16);
+        box.setPadding(pad, pad, pad, 0);
+        scroll.addView(box);
+
+        box.addView(sectionLabel("MODE"));
+        LinearLayout seg = new LinearLayout(this);
+        seg.setBackground(rr(C_CARD, C_LINE, 8));
+        seg.setPadding(dp(3), dp(3), dp(3), dp(3));
+        final String[] modes = {"system", "light", "dark"};
+        final String[] modeNames = {"System", "Light", "Dark"};
+        final Button[] modeBtns = new Button[3];
+        final Runnable paintModes = () -> {
+            String cur = prefs.getString("theme_mode", "system");
+            for (int i = 0; i < 3; i++) {
+                boolean on = modes[i].equals(cur);
+                modeBtns[i].setBackground(on ? rr(C_BLUE, 0, 6)
+                        : rr(0x00000000, 0, 6));
+                modeBtns[i].setTextColor(on ? Color.WHITE : C_MUTED);
+            }
+        };
+        for (int i = 0; i < 3; i++) {
+            final int idx = i;
+            modeBtns[i] = segBtn(modeNames[i]);
+            modeBtns[i].setOnClickListener(x -> {
+                prefs.edit().putString("theme_mode", modes[idx]).apply();
+                paintModes.run();
+            });
+            seg.addView(modeBtns[i], new LinearLayout.LayoutParams(
+                    0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        }
+        paintModes.run();
+        box.addView(seg);
+
+        box.addView(sectionLabel("COLOURS"));
+        TextView hint = new TextView(this);
+        hint.setText("Grouped, not per-element: Main colour drives the "
+                + "background and every derived surface; Highlight is the "
+                + "accent on chips, buttons and progress. Saved per mode "
+                + "you're in when you pick.");
+        hint.setTextSize(11);
+        hint.setTextColor(C_MUTED);
+        hint.setPadding(0, 0, 0, dp(6));
+        box.addView(hint);
+
+        final View[] swatches = new View[THEME_KEYS.length];
+        final TextView[] hexes = new TextView[THEME_KEYS.length];
+        for (int i = 0; i < THEME_KEYS.length; i++) {
+            final int slot = i;
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setBackground(btnBg(C_CARD, C_LINE, C_PRESS, 8));
+            row.setPadding(dp(10), dp(8), dp(10), dp(8));
+            View sw = new View(this);
+            sw.setBackground(rr(themeSlotValue(slot), C_LINE, 6));
+            row.addView(sw, new LinearLayout.LayoutParams(dp(26), dp(26)));
+            swatches[slot] = sw;
+            TextView nm = new TextView(this);
+            nm.setText(THEME_NAMES[slot]);
+            nm.setTextSize(13);
+            nm.setTextColor(C_TEXT);
+            nm.setPadding(dp(10), 0, 0, 0);
+            row.addView(nm, weight());
+            TextView hex = new TextView(this);
+            hex.setText(String.format("#%06X",
+                    themeSlotValue(slot) & 0xFFFFFF));
+            hex.setTextSize(11);
+            hex.setTypeface(Typeface.MONOSPACE);
+            hex.setTextColor(C_MUTED);
+            row.addView(hex);
+            hexes[slot] = hex;
+            row.setOnClickListener(x -> showThemeColorPicker(slot, c -> {
+                prefs.edit().putInt(THEME_KEYS[slot], c).apply();
+                swatches[slot].setBackground(rr(c, C_LINE, 6));
+                hexes[slot].setText(String.format("#%06X", c & 0xFFFFFF));
+            }));
+            LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            rl.bottomMargin = dp(6);
+            box.addView(row, rl);
+        }
+
+        Button reset = smallBtn("Reset colours to defaults");
+        reset.setOnClickListener(x -> {
+            SharedPreferences.Editor ed = prefs.edit();
+            for (String k : THEME_KEYS) ed.remove(k);
+            ed.apply();
+            for (int i = 0; i < THEME_KEYS.length; i++) {
+                swatches[i].setBackground(rr(themeSlotValue(i), C_LINE, 6));
+                hexes[i].setText(String.format("#%06X",
+                        themeSlotValue(i) & 0xFFFFFF));
+            }
+        });
+        LinearLayout.LayoutParams resetLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        resetLp.bottomMargin = dp(10);
+        box.addView(reset, resetLp);
+
+        dlg()
+                .setTitle("Theme")
+                .setView(scroll)
+                .setPositiveButton("APPLY NOW", (d, w) -> {
+                    if (inBatch()) {
+                        dlg()
+                                .setTitle("Rebuild the screen?")
+                                .setMessage("Applying the theme rebuilds "
+                                        + "the screen. Your open batch is "
+                                        + "safe on the server — re-pick "
+                                        + "it from the list after.")
+                                .setPositiveButton("APPLY",
+                                        (d2, w2) -> recreate())
+                                .setNegativeButton("Not now", null)
+                                .show();
+                    } else {
+                        recreate();
+                    }
+                })
+                .setNegativeButton("Later", (d, w) -> status.setText(
+                        "Theme saved — it applies next time the app "
+                        + "opens."))
+                .show();
+    }
+
+    /** Preset swatch grid + custom hex entry for one theme slot. */
+    private void showThemeColorPicker(int slot,
+            final java.util.function.IntConsumer onPicked) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(16);
+        box.setPadding(pad, pad, pad, 0);
+        final AlertDialog[] dref = new AlertDialog[1];
+
+        LinearLayout grid = null;
+        int[] presets = THEME_PRESETS[slot];
+        for (int i = 0; i < presets.length; i++) {
+            if (i % 4 == 0) {
+                grid = new LinearLayout(this);
+                grid.setOrientation(LinearLayout.HORIZONTAL);
+                LinearLayout.LayoutParams gl = new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT);
+                gl.bottomMargin = dp(8);
+                box.addView(grid, gl);
+            }
+            final int c = presets[i];
+            View sw = new View(this);
+            sw.setBackground(rr(c, C_LINE, 8));
+            sw.setOnClickListener(x -> {
+                onPicked.accept(c);
+                if (dref[0] != null) dref[0].dismiss();
+            });
+            LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(
+                    0, dp(44), 1f);
+            if (i % 4 != 0) sl.leftMargin = dp(8);
+            grid.addView(sw, sl);
+        }
+
+        Button custom = smallBtn("Custom hex…");
+        custom.setOnClickListener(x -> {
+            final EditText in = new EditText(this);
+            in.setHint("#RRGGBB");
+            in.setText(String.format("#%06X",
+                    themeSlotValue(slot) & 0xFFFFFF));
+            dlg()
+                    .setTitle(THEME_NAMES[slot])
+                    .setView(in)
+                    .setPositiveButton("OK", (d, w) -> {
+                        try {
+                            int c = Color.parseColor(
+                                    in.getText().toString().trim());
+                            onPicked.accept(0xFF000000 | (c & 0xFFFFFF));
+                            if (dref[0] != null) dref[0].dismiss();
+                        } catch (Exception e) {
+                            alertStatus("Not a colour — use #RRGGBB, like "
+                                    + "#2F7DE1.");
+                        }
+                    })
+                    .setNegativeButton("Cancel", null)
+                    .show();
+        });
+        LinearLayout.LayoutParams cl = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        cl.bottomMargin = dp(10);
+        box.addView(custom, cl);
+
+        dref[0] = dlg()
+                .setTitle(THEME_NAMES[slot])
+                .setView(box)
+                .setNegativeButton("Cancel", null)
+                .create();
+        dref[0].show();
     }
 
     /** Sweep power picker — the favourites picker aimed at sweep_pow. */
@@ -8126,7 +8659,7 @@ public class MainActivity extends Activity {
                 boolean hit = e.getKey() == sel[0];
                 e.getValue().setBackground(hit
                         ? btnBg(C_BLUE, C_BLUE, C_BLUE_DK, 999)
-                        : btnBg(Color.WHITE, C_LINE, C_PRESS, 999));
+                        : btnBg(C_CARD, C_LINE, C_PRESS, 999));
                 e.getValue().setTextColor(hit ? Color.WHITE : C_TEXT);
             }
         };
@@ -8219,7 +8752,7 @@ public class MainActivity extends Activity {
         });
         paint.run();
 
-        new AlertDialog.Builder(this)
+        dlg()
                 .setTitle(title)
                 .setView(box)
                 .setPositiveButton("Done", (d, w) -> onDone.accept(sel[0]))
@@ -8265,7 +8798,7 @@ public class MainActivity extends Activity {
         state.setPadding(dp(4), dp(8), dp(4), 0);
         box.addView(state);
 
-        new AlertDialog.Builder(this)
+        dlg()
                 .setTitle("Connection")
                 .setView(box)
                 .setPositiveButton("Save", (d, w) -> {

@@ -3,6 +3,38 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-08-17.
 
+## 🎨 C72 v3.36: theme system + visual consolidation — ✅ DEPLOYED 2026-08-17
+
+Nick's demo-prep pass (widget previews approved before build):
+
+- **Palette, not constants**: every C_* colour is now derived in
+  `applyThemePalette()` — mode (Settings → Theme: System/Light/Dark;
+  System follows Android's night mode) plus five grouped slots (Main
+  colour, Highlight, Good, Warning, Alert), each preset-swatch or
+  custom-hex, saved per mode. Surfaces/lines/tints derive from the
+  slots by mixing, so no pick can go unreadable. Changes save
+  immediately; APPLY NOW recreates the screen (open batch survives
+  server-side; confirm guard when in one). All 53 dialogs go through a
+  themed `dlg()` so dark mode has no white frames.
+- **Batch tab picker is inline** (PICK OPEN BATCH button gone): no
+  batch loaded → the list pane IS the open-batch cards + dashed
+  "scan a BIN barcode" placeholder + START RECEIVING. New status
+  wording to match.
+- **Consolidation**: locate LIST cards use the shared product-card
+  look (image + bold name + meta, ✕ accessory) — server's
+  /api/locate-queue GET now carries image_url (+ title fallback) from
+  the live bin map. Link feed rows became verdict cards (✓/✕/… mark).
+  Shared `emptyBox()` dashed placeholder (batch picker, link feed).
+- **Chrome**: status line wears a severity edge (highlight = guidance,
+  `alertStatus()` = Alert red, self-resetting); phase chip is a pill;
+  FAR/NEAR/TOUCH is a segmented control; SOUND ON/OFF text replaces
+  emoji; LIST… wears the queue count; Station hint cut to one line
+  (full story stays behind ?).
+- test_binfix immunized against the startup bin-map-rebuild race (same
+  fix as test_taginfo, 2026-08-08). 19/19 suites; APK v3.36 (code 54)
+  hash-verified on prod.
+- NEXT: Nick wants a Locate-tab rework (his spec pending).
+
 ## 📡 Locate list (web → C72) — ✅ DEPLOYED 2026-08-17 (C72 v3.35)
 
 Nick's mid-review ask (stuck on S20300): hunt a product's tags without

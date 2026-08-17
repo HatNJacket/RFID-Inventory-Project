@@ -16,7 +16,13 @@ if os.path.exists(db): os.remove(db)
 os.environ["DATABASE_URL"] = "sqlite:///" + db.replace("\\","/")
 from unittest.mock import patch
 from fastapi.testclient import TestClient
+import app.main as M
 from app.main import app
+# Same seed-wipe race test_taginfo hit (2026-08-08): startup's BACKGROUND
+# bin-map rebuild, with fetch_all_variant_bins mocked to [], can land
+# AFTER this test seeds BinMapEntry rows under full-suite load — wiping
+# them. The map is seeded by hand here; the rebuild must not run.
+M._maybe_refresh_bin_map = lambda *a, **k: False
 fails=[]
 def check(l,c,x=""):
     print(("PASS  " if c else "FAIL  ")+l+("" if c else f"  <- {x}"))
