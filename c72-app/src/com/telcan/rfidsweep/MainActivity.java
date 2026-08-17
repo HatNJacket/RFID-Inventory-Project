@@ -1205,6 +1205,13 @@ public class MainActivity extends Activity {
         locTargetBtn.setOnClickListener(x -> locateTargetDialog());
         locFoundBtn = smallBtn("FOUND IT?");
         locFoundBtn.setOnClickListener(x -> confirmFoundScan());
+        // The web terminal queues products to hunt (Review's mismatched
+        // bins, mostly) — LIST… pulls that queue so nothing 24-hex is
+        // ever typed on this keyboard.
+        Button locListBtn = smallBtn("LIST…");
+        locListBtn.setOnClickListener(x -> showLocateList());
+        act.addView(locListBtn, new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         act.addView(locSoundBtn, new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         act.addView(locTargetBtn, new LinearLayout.LayoutParams(
@@ -1314,6 +1321,135 @@ public class MainActivity extends Activity {
                 });
             }
         }).start();
+    }
+
+    /** The web terminal's to-hunt queue: pick a product to locate without
+     *  typing anything. ✕ removes an entry (both sides see the change). */
+    private void showLocateList() {
+        status.setText("Loading the locate list…");
+        new Thread(() -> {
+            try {
+                JSONObject resp = api("GET", "/api/locate-queue", null);
+                final org.json.JSONArray rows =
+                        resp.optJSONArray("entries");
+                ui.post(() -> {
+                    if (rows == null || rows.length() == 0) {
+                        beep(SOUND_ERR);
+                        status.setText("Locate list is empty — on the web "
+                                + "terminal, open any product and press "
+                                + "\"Send to C72 locate list\".");
+                        return;
+                    }
+                    showLocateListCards(rows);
+                });
+            } catch (Exception e) {
+                ui.post(() -> status.setText("Could not load the locate "
+                        + "list: " + e.getMessage()));
+            }
+        }).start();
+    }
+
+    private void showLocateListCards(org.json.JSONArray rows) {
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        list.setPadding(dp(14), dp(8), dp(14), 0);
+        scroll.addView(list);
+        final AlertDialog[] dref = new AlertDialog[1];
+
+        for (int i = 0; i < rows.length(); i++) {
+            JSONObject e = rows.optJSONObject(i);
+            if (e == null) continue;
+            final int id = e.optInt("id");
+            final String sku = e.optString("sku");
+            String label = e.isNull("label") ? null : e.optString("label");
+            int tagCount = e.optInt("tag_count");
+            org.json.JSONArray bins = e.optJSONArray("bins");
+            StringBuilder binText = new StringBuilder();
+            if (bins != null) {
+                for (int j = 0; j < bins.length(); j++) {
+                    if (binText.length() > 0) binText.append(", ");
+                    binText.append(bins.optString(j));
+                }
+            }
+
+            LinearLayout card = new LinearLayout(this);
+            card.setOrientation(LinearLayout.HORIZONTAL);
+            card.setGravity(Gravity.CENTER_VERTICAL);
+            card.setBackground(btnBg(Color.WHITE, C_LINE, C_PRESS, 8));
+            card.setPadding(dp(10), dp(9), dp(10), dp(9));
+
+            LinearLayout mid = new LinearLayout(this);
+            mid.setOrientation(LinearLayout.VERTICAL);
+            TextView skuLine = new TextView(this);
+            skuLine.setText(sku);
+            skuLine.setTextSize(15);
+            skuLine.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+            skuLine.setTextColor(C_TEXT);
+            mid.addView(skuLine);
+            if (label != null && !label.isEmpty()) {
+                TextView nm = new TextView(this);
+                nm.setText(label);
+                nm.setTextSize(12);
+                nm.setTextColor(C_TEXT);
+                nm.setMaxLines(2);
+                mid.addView(nm);
+            }
+            TextView meta = new TextView(this);
+            meta.setText(tagCount + " tag(s)"
+                    + (binText.length() > 0
+                       ? " · tags say " + binText : ""));
+            meta.setTextSize(11);
+            meta.setTextColor(C_MUTED);
+            mid.addView(meta);
+            card.addView(mid, weight());
+
+            Button rm = smallBtn("✕");
+            rm.setOnClickListener(x -> {
+                rm.setEnabled(false);
+                new Thread(() -> {
+                    try {
+                        api("DELETE", "/api/locate-queue/" + id
+                                + "?worker=" + URLEncoder.encode(
+                                        prefs.getString("device", "C72"),
+                                        "UTF-8"), null);
+                        ui.post(() -> {
+                            list.removeView(card);
+                            status.setText(sku + " taken off the locate "
+                                    + "list.");
+                            if (list.getChildCount() == 0
+                                    && dref[0] != null) {
+                                dref[0].dismiss();
+                            }
+                        });
+                    } catch (Exception ex) {
+                        ui.post(() -> {
+                            rm.setEnabled(true);
+                            status.setText("Remove failed: "
+                                    + ex.getMessage());
+                        });
+                    }
+                }).start();
+            });
+            card.addView(rm, new LinearLayout.LayoutParams(dp(44),
+                    LinearLayout.LayoutParams.WRAP_CONTENT));
+
+            card.setOnClickListener(x -> {
+                if (dref[0] != null) dref[0].dismiss();
+                locateLookup(sku);
+            });
+            LinearLayout.LayoutParams cl = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            cl.bottomMargin = dp(7);
+            list.addView(card, cl);
+        }
+
+        dref[0] = new AlertDialog.Builder(this)
+                .setTitle("Locate list — tap to hunt")
+                .setView(scroll)
+                .setNegativeButton("CLOSE", null)
+                .show();
     }
 
     /** The EPCs the meter currently listens for. */
@@ -2493,7 +2629,8 @@ public class MainActivity extends Activity {
                     + "the web terminal (turn its C72 LINK toggle on).");
         } else {
             status.setText(locProduct == null
-                    ? "LOCATE: scan or type a product barcode/SKU."
+                    ? "LOCATE: scan a product barcode, or LIST… for the "
+                      + "web terminal's to-hunt queue."
                     : "LOCATE: trigger to hunt, FOUND IT? to confirm a "
                       + "find.");
         }

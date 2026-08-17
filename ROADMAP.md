@@ -3,6 +3,28 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-08-17.
 
+## 📡 Locate list (web → C72) — ✅ DEPLOYED 2026-08-17 (C72 v3.35)
+
+Nick's mid-review ask (stuck on S20300): hunt a product's tags without
+typing a 24-hex EPC. A shared to-hunt queue, removable from either side:
+
+- **Server**: `rfid_locate_queue` (auto-creates) + GET/POST/DELETE
+  `/api/locate-queue`. Adds are idempotent per CI SKU; the GET carries
+  LIVE tag context (tag count + the bins the tags think they're in), not
+  a snapshot. Every add/remove logs a local-only "Locate List" History
+  event with the operator.
+- **Web**: product panel (opened from Review/History/Print queue —
+  everywhere) gains a "📡 Send to C72 locate list" row that flips to
+  "Remove from list" when queued; Review's header gains "📡 Locate list"
+  opening the full queue with per-row ✕ remove and SKU links back into
+  the product panel.
+- **C72 v3.35 (code 53)**: LOCATE tab gains LIST… — the queue as
+  tappable cards (SKU, name, "N tag(s) · tags say G4-4"); tap starts the
+  normal locateLookup hunt, ✕ removes (attributed to the gun's device
+  name). Empty-tab status now points at LIST….
+- test_locate_queue (14 checks), 19/19 suites green; browser-verified
+  add→list→remove on the seed server; prod smoke + APK hash verified.
+
 ## 🔫 C72 v3.34: uniform tab headers + per-context power — ✅ DEPLOYED 2026-08-17
 
 - **One tab scaffold, enforced in code:** the app-level header (drawer ≡,

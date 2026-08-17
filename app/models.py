@@ -723,6 +723,23 @@ class MismatchDismissal(Base):
     )
 
 
+class LocateQueueEntry(Base):
+    """A product queued for a physical tag hunt. Added from any product
+    preview on the web terminal (Review is the usual source — mismatched
+    bins that need a walk); the C72's Locate tab lists these so nobody
+    types a 24-hex EPC by hand. Removable from either side."""
+
+    __tablename__ = "rfid_locate_queue"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sku: Mapped[str] = mapped_column(String(100), index=True, nullable=False)
+    label: Mapped[str | None] = mapped_column(String(255))
+    added_by: Mapped[str | None] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class EpcCapture(Base):
     """One RFID sweep sent from the C72 companion app: the operator scans a
     shelf freely (everything held on the device), then hits Send once —

@@ -791,10 +791,26 @@
         </select>
         <input id="review-search" class="recent__search" type="search"
                placeholder="Search SKU or barcode…" autocomplete="off" />
+        <button class="reset" id="review-locate-btn" type="button"
+                title="Products queued for a physical tag hunt on the C72's Locate tab">📡 Locate list</button>
       </div>
       <!-- What the selected task type means — shown while a filter is on -->
       <p class="review-note" id="review-filter-note" hidden></p>
       <ul class="recent__list" id="review-list"></ul>
+
+      <!-- C72 locate list: the shared to-hunt queue, removable here or
+           on the gun's Locate tab -->
+      <div class="phist-overlay" id="locq-overlay" hidden>
+        <section class="linkbox serialbox phist-modal" style="max-width:560px">
+          <div class="linkbox__title">C72 locate list</div>
+          <p class="linkbox__text">Products queued for a physical tag hunt — the gun's LOCATE tab shows this same list, so nobody types an EPC by hand. Where the tags <em>think</em> they live is shown per product.</p>
+          <ul class="recent__list" id="locq-list"></ul>
+          <div class="linkbox__actions" style="margin-top:10px">
+            <span class="linkbox__text" id="locq-msg"></span>
+            <button class="reset" id="locq-close" type="button">Close</button>
+          </div>
+        </section>
+      </div>
 
       <!-- Resolve window: per-category actions + note, built by JS -->
       <div class="phist-overlay" id="resolve-overlay" hidden>
@@ -921,6 +937,12 @@
         <div class="kindrow" id="phist-norfid" hidden style="margin:10px 0">
           <span class="kindrow__what" id="phist-norfid-what"></span>
           <button class="reset" id="phist-norfid-btn" type="button"></button>
+        </div>
+        <!-- Send to the gun: queue this product on the shared locate list
+             so the C72's LOCATE tab can hunt its tags without typed EPCs -->
+        <div class="kindrow" id="phist-locate" hidden style="margin:10px 0">
+          <span class="kindrow__what" id="phist-locate-what"></span>
+          <button class="reset" id="phist-locate-btn" type="button"></button>
         </div>
         <div class="linkbox__form" style="margin:10px 0">
           <input id="phist-qty" class="linkbox__input" type="number" min="1" max="50" value="1" style="max-width:90px" />

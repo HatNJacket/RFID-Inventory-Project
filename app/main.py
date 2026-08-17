@@ -47,6 +47,7 @@ from app.models import (
     HiddenBin,
     LabelName,
     LinkScan,
+    LocateQueueEntry,
     MismatchDismissal,
     PrintJob,
     ProductKind,
@@ -1763,6 +1764,102 @@ def rebin_tags(payload: RebinTagsIn, session: Session = Depends(get_session)):
     ))
     session.commit()
     return {"sku": sku, "bin": new_bin, "tags_moved": len(tags)}
+
+
+class LocateQueueIn(BaseModel):
+    """Queue a product for a physical tag hunt on the C72."""
+
+    sku: str = Field(min_length=1, max_length=100)
+    label: str | None = Field(default=None, max_length=255)
+    worker: str | None = Field(default=None, max_length=100)
+
+
+@app.get("/api/locate-queue", dependencies=[Depends(require_user)])
+def list_locate_queue(session: Session = Depends(get_session)):
+    """The shared to-hunt list, newest first, with live tag context so the
+    C72 can show where the tags THINK they are before the walk starts."""
+    entries = []
+    for e in session.scalars(
+        select(LocateQueueEntry).order_by(LocateQueueEntry.id.desc())
+    ):
+        tags = session.scalars(
+            select(RfidAssignment).where(
+                func.upper(RfidAssignment.sku) == e.sku.upper()
+            )
+        ).all()
+        bins = sorted({(t.bin_location or "").strip() for t in tags
+                       if (t.bin_location or "").strip()})
+        entries.append({
+            "id": e.id,
+            "sku": e.sku,
+            "label": e.label,
+            "added_by": e.added_by,
+            "created_at": e.created_at.isoformat() if e.created_at else None,
+            "tag_count": len(tags),
+            "bins": bins,
+        })
+    return {"entries": entries}
+
+
+@app.post(
+    "/api/locate-queue",
+    status_code=201,
+    dependencies=[Depends(require_user)],
+)
+def add_locate_queue(
+    payload: LocateQueueIn, session: Session = Depends(get_session)
+):
+    """Add a product to the locate list (idempotent per SKU): re-queuing
+    an already-listed product is a no-op, not a duplicate."""
+    sku = payload.sku.strip()
+    existing = session.scalar(
+        select(LocateQueueEntry).where(
+            func.upper(LocateQueueEntry.sku) == sku.upper()
+        )
+    )
+    if existing is not None:
+        return {"id": existing.id, "sku": existing.sku, "already": True}
+    entry = LocateQueueEntry(
+        sku=sku, label=(payload.label or "").strip()[:255] or None,
+        added_by=payload.worker,
+    )
+    session.add(entry)
+    session.add(BarcodeChange(
+        sku=sku,
+        product_title=entry.label,
+        changed_field="locate-list",
+        old_barcode=None,
+        new_barcode="on the locate list",
+        changed_by=payload.worker,
+    ))
+    session.commit()
+    return {"id": entry.id, "sku": entry.sku, "already": False}
+
+
+@app.delete(
+    "/api/locate-queue/{entry_id}", dependencies=[Depends(require_user)]
+)
+def remove_locate_queue(
+    entry_id: int,
+    worker: str | None = None,
+    session: Session = Depends(get_session),
+):
+    """Take a product off the locate list — from the web terminal or the
+    gun, whichever finishes (or abandons) the hunt."""
+    entry = session.get(LocateQueueEntry, entry_id)
+    if entry is None:
+        raise HTTPException(404, "Not on the locate list (already removed?).")
+    session.add(BarcodeChange(
+        sku=entry.sku,
+        product_title=entry.label,
+        changed_field="locate-list",
+        old_barcode="on the locate list",
+        new_barcode="removed",
+        changed_by=worker,
+    ))
+    session.delete(entry)
+    session.commit()
+    return {"ok": True, "sku": entry.sku}
 
 
 class OnHandUpdateIn(BaseModel):
@@ -6876,6 +6973,7 @@ def product_history(term: str, session: Session = Depends(get_session)):
         "on-hand": "on-hand-updated", "on-hand-undo": "on-hand-undone",
         "tagged-before": "already-tagged-set",
         "tag-unlinked": "tag-unlinked",
+        "locate-list": "locate-list",
     }
     for c in session.scalars(
         select(BarcodeChange).where(or_(
@@ -6890,8 +6988,8 @@ def product_history(term: str, session: Session = Depends(get_session)):
             "worker": c.changed_by,
             "detail": f"{c.old_barcode or '(none)'} → {c.new_barcode}",
             # Barcode/SKU/bin flows write to the store; the RFID-scan flag
-            # is a local marker only.
-            "shopify": c.changed_field != "rfid-scan",
+            # and the locate list are local markers only.
+            "shopify": c.changed_field not in ("rfid-scan", "locate-list"),
         })
 
     job_types = {
@@ -7112,6 +7210,7 @@ def history(
         "on-hand": "on-hand-updated", "on-hand-undo": "on-hand-undone",
         "tagged-before": "already-tagged-set",
         "tag-unlinked": "tag-unlinked",
+        "locate-list": "locate-list",
     }
     # A sweep undo unlinks its tags with one shared timestamp — fold
     # those the same way sweep assigns fold.

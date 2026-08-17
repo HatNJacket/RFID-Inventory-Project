@@ -258,6 +258,7 @@ const EVENT_META = {
   "bin-mismatch": ["Mismatched Bins", "#0e7a8a"],
   "tags-rebinned": ["Tags Re-binned", "#0e7a8a"],
   "bundle-contents-set": ["Bundle Contents", "#6f42c1"],
+  "locate-list": ["Locate List", "#5561c9"],
   sweep: ["Sweep", "#0e7a8a"],
 };
 
@@ -7409,6 +7410,7 @@ async function openProductHistory(term) {
     }
     renderNoScan(!!data.rfid_incompatible);
     renderBundleRow();
+    renderLocateRow();
     // Multi-box/bundle standing. Only shown when an answer was actually
     // saved — an auto-detected product has nothing to undo.
     const kindBox = document.getElementById("phist-kind");
@@ -7701,6 +7703,149 @@ document
       msg.textContent = err.message;
     }
   });
+
+// --- C72 locate list: queue this product for a physical tag hunt. The
+// gun's LOCATE tab pulls the same list, so nobody types a 24-hex EPC.
+// The row shows current standing; the button flips it (add <-> remove).
+async function renderLocateRow() {
+  const row = document.getElementById("phist-locate");
+  if (!phistData || !phistData.sku) {
+    row.hidden = true;
+    return;
+  }
+  row.hidden = false;
+  const what = document.getElementById("phist-locate-what");
+  const btn = document.getElementById("phist-locate-btn");
+  what.textContent = "…";
+  btn.textContent = "";
+  try {
+    const r = await apiJson("/api/locate-queue");
+    const mine = (r.entries || []).find(
+      (e) => e.sku.toUpperCase() === phistData.sku.toUpperCase()
+    );
+    phistData.locate_entry = mine || null;
+    if (mine) {
+      what.innerHTML =
+        `📡 <b>On the C72 locate list</b>` +
+        (mine.added_by ? ` (added by ${escapeHtml(mine.added_by)})` : "") +
+        ` — pick it on the gun's LOCATE tab to hunt its ${mine.tag_count} tag(s).`;
+      btn.textContent = "Remove from list";
+    } else {
+      what.textContent =
+        "Need to physically find this product's tags? Send it to the " +
+        "C72's LOCATE tab — no EPC typing.";
+      btn.textContent = "📡 Send to C72 locate list";
+    }
+  } catch (err) {
+    row.hidden = true;
+  }
+}
+
+document
+  .getElementById("phist-locate-btn")
+  .addEventListener("click", async () => {
+    if (!phistData || !phistData.sku) return;
+    const msg = document.getElementById("phist-msg");
+    const mine = phistData.locate_entry;
+    try {
+      if (mine) {
+        await apiJson(
+          `/api/locate-queue/${mine.id}?worker=${encodeURIComponent(
+            operatorEl.value || ""
+          )}`,
+          { method: "DELETE" }
+        );
+        msg.textContent = "Taken off the locate list ✓";
+      } else {
+        const title = phistData.product
+          ? phistData.product.product_title
+          : null;
+        await postJson("/api/locate-queue", {
+          sku: phistData.sku,
+          label: title,
+          worker: operatorEl.value || null,
+        });
+        msg.textContent =
+          "On the locate list ✓ — open LOCATE on the C72 and tap LIST.";
+      }
+      renderLocateRow();
+    } catch (err) {
+      msg.textContent = err.message;
+    }
+  });
+
+// The Review-tab window over the same list: everything queued, with
+// where the tags think they live, and per-row remove.
+async function renderLocateOverlay() {
+  const list = document.getElementById("locq-list");
+  list.innerHTML = '<li class="inventory__empty">Loading…</li>';
+  try {
+    const r = await apiJson("/api/locate-queue");
+    const entries = r.entries || [];
+    if (!entries.length) {
+      list.innerHTML =
+        '<li class="inventory__empty">Nothing queued — use "Send to C72 ' +
+        "locate list\" on any product's panel.</li>";
+      return;
+    }
+    list.innerHTML = entries
+      .map(
+        (e) => `<li class="recent__item" style="display:flex;align-items:center;gap:10px">
+        <div style="flex:1;min-width:0">
+          <a href="#" class="hist-sku" data-sku="${escapeHtml(e.sku)}"><b>${escapeHtml(e.sku)}</b></a>
+          ${e.label ? ` <span class="binlabel">${escapeHtml(e.label)}</span>` : ""}
+          <div class="binlabel">${e.tag_count} tag(s)${
+            e.bins.length ? ` · tags say: ${e.bins.map(escapeHtml).join(", ")}` : ""
+          }${e.added_by ? ` · added by ${escapeHtml(e.added_by)}` : ""}${
+            e.created_at ? ` · ${fmtWhen(e.created_at)}` : ""
+          }</div>
+        </div>
+        <button class="reset" data-locq-rm="${e.id}" type="button"
+                title="Remove from the locate list">✕</button>
+      </li>`
+      )
+      .join("");
+    list.querySelectorAll("[data-locq-rm]").forEach((b) => {
+      b.addEventListener("click", async () => {
+        b.disabled = true;
+        try {
+          await apiJson(
+            `/api/locate-queue/${b.dataset.locqRm}?worker=${encodeURIComponent(
+              operatorEl.value || ""
+            )}`,
+            { method: "DELETE" }
+          );
+          renderLocateOverlay();
+        } catch (err) {
+          document.getElementById("locq-msg").textContent = err.message;
+          b.disabled = false;
+        }
+      });
+    });
+    list.querySelectorAll(".hist-sku").forEach((a) => {
+      a.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        document.getElementById("locq-overlay").hidden = true;
+        openProductHistory(a.dataset.sku);
+      });
+    });
+  } catch (err) {
+    list.innerHTML = `<li class="inventory__empty">${escapeHtml(err.message)}</li>`;
+  }
+}
+
+document.getElementById("review-locate-btn").addEventListener("click", () => {
+  document.getElementById("locq-msg").textContent = "";
+  document.getElementById("locq-overlay").hidden = false;
+  renderLocateOverlay();
+});
+document.getElementById("locq-close").addEventListener("click", () => {
+  document.getElementById("locq-overlay").hidden = true;
+});
+document.getElementById("locq-overlay").addEventListener("click", (e) => {
+  if (e.target.id === "locq-overlay")
+    document.getElementById("locq-overlay").hidden = true;
+});
 
 // Label save — serialized products write the top line through their
 // serial record (Scan Station auto-prints use it too); everything else
