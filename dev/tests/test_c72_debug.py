@@ -82,5 +82,34 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
         n = s.scalar(select(F.count()).select_from(C72DebugEvent))
     check("table capped near 2000", n <= 2000, str(n))
 
+    # Command channel: create -> pending -> ack -> gone from pending.
+    r = cl.post("/api/c72/commands", json={
+        "command": "get_state", "worker": "Claude"})
+    check("command created", r.status_code == 201 and r.json()["id"] > 0,
+          r.text)
+    cid = r.json()["id"]
+    cl.post("/api/c72/commands", json={
+        "command": "set_pref", "arg": "auto_floor=7"})
+    r = cl.get("/api/c72/commands/pending")
+    cmds = r.json()["commands"]
+    check("both pending, oldest first", len(cmds) == 2
+          and cmds[0]["id"] == cid
+          and cmds[1]["arg"] == "auto_floor=7", str(cmds))
+    r = cl.post(f"/api/c72/commands/{cid}/done", json={
+        "result": "tab=4 power=8", "device": "C72-nick"})
+    check("ack ok", r.status_code == 200, r.text)
+    r = cl.get("/api/c72/commands/pending")
+    check("acked command left the queue",
+          [c["id"] for c in r.json()["commands"]] != [] and
+          all(c["id"] != cid for c in r.json()["commands"]), r.text)
+    r = cl.get("/api/c72/commands?limit=5")
+    hist = r.json()["commands"]
+    done = [c for c in hist if c["id"] == cid][0]
+    check("history keeps the result", done["done"] is True
+          and done["result"] == "tab=4 power=8"
+          and done["done_by"] == "C72-nick", str(done))
+    r = cl.post("/api/c72/commands/99999/done", json={})
+    check("ack of unknown command -> 404", r.status_code == 404, r.text)
+
 print()
 sys.exit(1 if fails else 0)

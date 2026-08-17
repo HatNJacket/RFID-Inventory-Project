@@ -98,6 +98,25 @@ Nick's demo-prep pass (widget previews approved before build):
   auto_high 85→75 (point-blank pct plateaus ~77–83, AUTO never fired),
   auto_step_down 5→8 (fewer setPower blips — telemetry showed reads
   resume in <1 tick after changes; S0+filter delivering ~30 reads/s).
+- **v3.43 (code 61): RADAR retired; power pause fixed; remote command
+  channel.** Field test 3 verdict (Nick): the meter is great, RADAR
+  isn't going to work — no yaw sensor exists on this C72 (no gyro, no
+  magnetometer, Chainway radar refused) and the accel can't separate
+  panning from tilt wobble. UI removed; engines dormant in code for a
+  future gyro-equipped gun. The power-change pause: reader.setPower is
+  a synchronized radio command and was running ON THE UI THREAD —
+  every AUTO/manual change froze the app for its duration. Hunt power
+  now applies on a worker thread, timed to telemetry, with a
+  live-tunable strategy (`pow_strategy`: "live" = mid-inventory,
+  "restart" = stop/set/start) so A/B happens over the wire. NEW:
+  remote command channel — `rfid_c72_commands` + POST/GET-pending/ack
+  endpoints; the gun polls every ~2 s on EVERY tab (tuning poll also
+  global now) and executes: ping, say, beep, get_state, get_pref,
+  set_pref, del_pref, dump_prefs (station key redacted), set_power,
+  recreate — each acked with its result. Get/set INTO the app with no
+  APK. test_c72_debug grew to 16 checks; 20/20 suites; APK hash
+  verified; a ping command is queued to confirm the channel when the
+  gun updates.
 - **v3.42 (code 60): motion gate.** Field test 2: standing still, the
   bearing jumped — the engine amplified hand tremor into fake headings
   (the amplitude normalizer ADAPTS to whatever it sees, so stillness

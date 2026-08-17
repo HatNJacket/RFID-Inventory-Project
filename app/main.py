@@ -42,6 +42,7 @@ from app.models import (
     BatchItem,
     BinMapEntry,
     BundleContent,
+    C72Command,
     C72DebugEvent,
     C72Tuning,
     CaseCode,
@@ -1855,6 +1856,80 @@ def post_c72_debug(
         ))
     session.commit()
     return {"ok": True, "stored": min(len(payload.lines), 100)}
+
+
+class C72CommandIn(BaseModel):
+    command: str = Field(min_length=1, max_length=50)
+    arg: str | None = Field(default=None, max_length=500)
+    worker: str | None = Field(default=None, max_length=100)
+
+
+class C72CommandDoneIn(BaseModel):
+    result: str | None = Field(default=None, max_length=400)
+    device: str | None = Field(default=None, max_length=100)
+
+
+@app.post(
+    "/api/c72/commands",
+    status_code=201,
+    dependencies=[Depends(require_user)],
+)
+def create_c72_command(
+    payload: C72CommandIn, session: Session = Depends(get_session)
+):
+    cmd = C72Command(command=payload.command.strip(), arg=payload.arg,
+                     created_by=payload.worker)
+    session.add(cmd)
+    session.commit()
+    return {"id": cmd.id}
+
+
+@app.get("/api/c72/commands/pending", dependencies=[Depends(require_user)])
+def pending_c72_commands(session: Session = Depends(get_session)):
+    rows = session.scalars(
+        select(C72Command).where(C72Command.done_at.is_(None))
+        .order_by(C72Command.id).limit(20)
+    ).all()
+    return {"commands": [
+        {"id": r.id, "command": r.command, "arg": r.arg} for r in rows
+    ]}
+
+
+@app.post(
+    "/api/c72/commands/{command_id}/done",
+    dependencies=[Depends(require_user)],
+)
+def ack_c72_command(
+    command_id: int,
+    payload: C72CommandDoneIn,
+    session: Session = Depends(get_session),
+):
+    cmd = session.get(C72Command, command_id)
+    if cmd is None:
+        raise HTTPException(404, "No such command.")
+    cmd.done_at = datetime.now(timezone.utc)
+    cmd.done_by = payload.device
+    cmd.result = payload.result
+    session.commit()
+    return {"ok": True}
+
+
+@app.get("/api/c72/commands", dependencies=[Depends(require_user)])
+def list_c72_commands(
+    limit: int = 30, session: Session = Depends(get_session)
+):
+    rows = session.scalars(
+        select(C72Command).order_by(C72Command.id.desc())
+        .limit(max(1, min(limit, 200)))
+    ).all()
+    return {"commands": [
+        {
+            "id": r.id, "command": r.command, "arg": r.arg,
+            "created_by": r.created_by,
+            "done": r.done_at is not None,
+            "done_by": r.done_by, "result": r.result,
+        } for r in rows
+    ]}
 
 
 @app.get("/api/c72/debug-log", dependencies=[Depends(require_user)])

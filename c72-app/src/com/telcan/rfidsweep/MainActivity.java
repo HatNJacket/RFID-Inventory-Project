@@ -1294,6 +1294,10 @@ public class MainActivity extends Activity {
     private volatile boolean sweepActive = false;
     private volatile double tunSweepGateHi = 0.8;
     private volatile double tunSweepGateLo = 0.35;
+    private volatile String tunPowStrategy = "live";
+    private volatile boolean powApplyBusy = false;
+    private volatile boolean cmdPollBusy = false;
+    private int cmdPollCounter = 0;
     private JSONObject locProduct = null;
     private final java.util.LinkedHashMap<String, Double> locTags =
             new java.util.LinkedHashMap<>();   // EPC -> last rssi heard
@@ -1363,72 +1367,30 @@ public class MainActivity extends Activity {
         card.addView(row);
         v.addView(card);
 
-        // METER | RADAR mode switch. RADAR needs exactly one target.
-        LinearLayout modeSeg = new LinearLayout(this);
-        modeSeg.setGravity(Gravity.CENTER);
-        modeSeg.setBackground(rr(C_CARD, C_LINE, 8));
-        modeSeg.setPadding(dp(3), dp(3), dp(3), dp(3));
-        LinearLayout.LayoutParams msLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT);
-        msLp.topMargin = dp(8);
-        locModeMeter = segBtn("METER");
-        locModeRadar = segBtn("RADAR");
-        locModeMeter.setOnClickListener(x -> setLocMode(0));
-        locModeRadar.setOnClickListener(x -> setLocMode(1));
-        modeSeg.addView(locModeMeter, new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        modeSeg.addView(locModeRadar, new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        v.addView(modeSeg, msLp);
-
-        // -- meter pane (the classic %-strength hunt) --
-        locMeterPane = new LinearLayout(this);
-        locMeterPane.setOrientation(LinearLayout.VERTICAL);
+        // RADAR was tried and retired (v3.40–3.42): this C72 has no
+        // gyro, no magnetometer, and its firmware refuses Chainway's
+        // radar mode; the accelerometer can't separate panning from
+        // tilt wobble. The engines stay dormant in code for a future
+        // gyro-equipped gun. The meter IS the locate experience.
         locMeter = new android.widget.ProgressBar(this, null,
                 android.R.attr.progressBarStyleHorizontal);
         locMeter.setMax(100);
         LinearLayout.LayoutParams ml = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(26));
         ml.topMargin = dp(10);
-        locMeterPane.addView(locMeter, ml);
+        v.addView(locMeter, ml);
         locPct = new TextView(this);
         locPct.setTextSize(34);
         locPct.setTypeface(null, Typeface.BOLD);
         locPct.setTextColor(C_BLUE);
         locPct.setGravity(Gravity.CENTER);
         locPct.setText("—");
-        locMeterPane.addView(locPct);
+        v.addView(locPct);
         locInfo = new TextView(this);
         locInfo.setTextSize(12);
         locInfo.setTextColor(C_MUTED);
         locInfo.setGravity(Gravity.CENTER);
-        locMeterPane.addView(locInfo);
-        v.addView(locMeterPane);
-
-        // -- radar pane (bearing dial + plain-language direction) --
-        locRadarPane = new LinearLayout(this);
-        locRadarPane.setOrientation(LinearLayout.VERTICAL);
-        locRadarView = new RadarDialView(this);
-        LinearLayout.LayoutParams rl0 = new LinearLayout.LayoutParams(
-                dp(190), dp(190));
-        rl0.gravity = Gravity.CENTER_HORIZONTAL;
-        rl0.topMargin = dp(8);
-        locRadarPane.addView(locRadarView, rl0);
-        locDirText = new TextView(this);
-        locDirText.setTextSize(24);
-        locDirText.setTypeface(null, Typeface.BOLD);
-        locDirText.setTextColor(C_BLUE);
-        locDirText.setGravity(Gravity.CENTER);
-        locDirText.setText("—");
-        locRadarPane.addView(locDirText);
-        locRadarInfo = new TextView(this);
-        locRadarInfo.setTextSize(11);
-        locRadarInfo.setTextColor(C_MUTED);
-        locRadarInfo.setGravity(Gravity.CENTER);
-        locRadarPane.addView(locRadarInfo);
-        locRadarPane.setVisibility(View.GONE);
-        v.addView(locRadarPane);
+        v.addView(locInfo);
 
         // -- power thermometer (tap/drag 1..30) + AUTO toggle --
         LinearLayout thermoRow = new LinearLayout(this);
@@ -1483,9 +1445,9 @@ public class MainActivity extends Activity {
         locHint.setGravity(Gravity.CENTER);
         locHint.setPadding(0, dp(8), 0, 0);
         locHint.setText("Trigger toggles the hunt. Tap the power bar "
-                + "(1–30) or AUTO to let it step itself as you close in. "
-                + "RADAR needs one target and sweeps add up — no need to "
-                + "be slow or perfect. FOUND IT? confirms at power 1.");
+                + "(1–30) or AUTO to let it step itself as you close "
+                + "in. FOUND IT? confirms at power 1 and drops that tag "
+                + "from the hunt.");
         v.addView(locHint);
         return v;
     }
@@ -1506,29 +1468,56 @@ public class MainActivity extends Activity {
     }
 
     /** Set the hunt power (1..30). announce=false for AUTO's quiet
-     *  adjustments; a power change makes old radar samples incomparable,
-     *  so they flush and refill over the next passes. */
+     *  adjustments. The radio command runs OFF the UI thread — calling
+     *  the synchronized setPower on the UI thread froze the whole app
+     *  for its duration, which was the "pauses every power change"
+     *  Nick felt (v3.42 report). Strategy is live-tunable. */
     private void setLocPower(int power, boolean announce) {
         power = Math.max(1, Math.min(30, power));
         locPower = power;
-        if (locating && reader != null) {
-            try {
-                reader.setPower(power);
-            } catch (Exception ignored) {
-            }
-        }
+        applyHuntPowerAsync(power);
         synchronized (radarSamples) {
             radarSamples.clear();
         }
         radarBearing = null;
         if (locThermo != null) locThermo.invalidate();
-        if (locRadarView != null) locRadarView.invalidate();
         if (announce) {
             status.setText("Locate power " + power
                     + (power <= 5 ? " — only answers within arm's reach."
                        : power <= 12 ? " — a shelf bay or two."
                        : " — the whole aisle answers."));
         }
+    }
+
+    /** Apply hunt power on a worker thread, by the strategy the tuning
+     *  channel picks ("live" = setPower mid-inventory; "restart" = stop,
+     *  set, start). Timing goes to telemetry so the strategies can be
+     *  A/B'd from the desk. */
+    private void applyHuntPowerAsync(final int power) {
+        if (reader == null || !locating) return;
+        if (powApplyBusy) return;
+        powApplyBusy = true;
+        final String how = tunPowStrategy;
+        new Thread(() -> {
+            long t0 = System.currentTimeMillis();
+            try {
+                if ("restart".equals(how)) {
+                    try {
+                        reader.stopInventory();
+                    } catch (Exception ignored) {
+                    }
+                    reader.setPower(power);
+                    reader.startInventoryTag();
+                } else {
+                    reader.setPower(power);
+                }
+            } catch (Exception e) {
+                dbgLine("setPower failed: " + e);
+            }
+            dbgLine("setPower(" + how + ")→" + power + " took "
+                    + (System.currentTimeMillis() - t0) + "ms");
+            powApplyBusy = false;
+        }).start();
     }
 
     private void setAutoPower(boolean on) {
@@ -2576,11 +2565,11 @@ public class MainActivity extends Activity {
     }
 
     // ---- live tuning poll + telemetry stream ------------------------------
-    /** Piggybacks the 400 ms refreshTick: every 5th tick on the Locate
-     *  tab, fetch /api/c72/tuning and apply. Unknown keys are ignored;
-     *  missing keys mean built-in defaults. */
+    /** Piggybacks the 400 ms refreshTick: every 5th tick (any tab —
+     *  remote control shouldn't need the Locate tab open), fetch
+     *  /api/c72/tuning and apply. Unknown keys are ignored; missing
+     *  keys mean built-in defaults. */
     private void tuningTick() {
-        if (activeTab != TAB_LOCATE) return;
         if (++tunPollCounter % 5 != 0 || tunPollBusy) return;
         tunPollBusy = true;
         new Thread(() -> {
@@ -2614,6 +2603,7 @@ public class MainActivity extends Activity {
                     tunAccelSign = v.optDouble("accel_sign", 1);
                     tunSweepGateHi = v.optDouble("sweep_gate_hi", 0.8);
                     tunSweepGateLo = v.optDouble("sweep_gate_lo", 0.35);
+                    tunPowStrategy = v.optString("pow_strategy", "live");
                     dbgLine("applied " + raw);
                     ui.post(() -> status.setText("Live tuning applied: "
                             + raw));
@@ -2637,8 +2627,22 @@ public class MainActivity extends Activity {
                 dbgBuf.clear();
             }
         }
-        if (flush == null) return;
-        final java.util.ArrayList<String> out = flush;
+        if (flush != null) postDbg(flush);
+    }
+
+    /** Like dbgLine but ignores the debug gate and flushes at once —
+     *  for remote-command output that was explicitly asked for. */
+    private void dbgLineForce(String line) {
+        java.util.ArrayList<String> flush;
+        synchronized (dbgBuf) {
+            dbgBuf.add(line);
+            flush = new java.util.ArrayList<>(dbgBuf);
+            dbgBuf.clear();
+        }
+        postDbg(flush);
+    }
+
+    private void postDbg(final java.util.ArrayList<String> out) {
         new Thread(() -> {
             try {
                 JSONObject body = new JSONObject()
@@ -2651,6 +2655,126 @@ public class MainActivity extends Activity {
                 // Telemetry is a window, not a dependency.
             }
         }).start();
+    }
+
+    // ---- remote commands (get/set INTO the app without an APK) ------------
+    /** Every ~2 s (offset from the tuning poll), run any pending
+     *  server-side commands and ack each with its result. */
+    private void commandTick() {
+        if (++cmdPollCounter % 5 != 2 || cmdPollBusy) return;
+        cmdPollBusy = true;
+        new Thread(() -> {
+            try {
+                JSONObject resp = api("GET", "/api/c72/commands/pending",
+                        null);
+                org.json.JSONArray cmds = resp.optJSONArray("commands");
+                if (cmds != null) {
+                    for (int i = 0; i < cmds.length(); i++) {
+                        JSONObject c = cmds.optJSONObject(i);
+                        if (c == null) continue;
+                        int id = c.optInt("id");
+                        String cmd = c.optString("command");
+                        String arg = c.isNull("arg") ? ""
+                                : c.optString("arg");
+                        String result;
+                        try {
+                            result = runRemoteCommand(cmd, arg);
+                        } catch (Throwable t) {
+                            result = "ERROR: " + t;
+                        }
+                        JSONObject done = new JSONObject()
+                                .put("result", result == null ? ""
+                                        : result)
+                                .put("device",
+                                        prefs.getString("device", "C72"));
+                        api("POST", "/api/c72/commands/" + id + "/done",
+                                done);
+                    }
+                }
+            } catch (Exception ignored) {
+                // Command polling is best-effort, like tuning.
+            } finally {
+                cmdPollBusy = false;
+            }
+        }).start();
+    }
+
+    /** The command surface. Runs on the poll thread; anything touching
+     *  views hops to the UI thread and acks optimistically. */
+    private String runRemoteCommand(String cmd, String arg)
+            throws Exception {
+        switch (cmd) {
+            case "ping":
+                return "pong v" + BuildConfig();
+            case "say":
+                final String msg = arg;
+                ui.post(() -> status.setText("📟 " + msg));
+                return "shown";
+            case "beep":
+                ui.post(() -> beep(SOUND_OK));
+                return "beeped";
+            case "get_state":
+                return "tab=" + activeTab
+                        + " batch=" + (inBatch()
+                            ? "step " + STEP_NAMES[step] : "none")
+                        + " power=" + prefs.getInt("power", 5)
+                        + " locPower=" + locPower
+                        + " auto=" + autoPowerOn
+                        + " locating=" + locating
+                        + " product=" + (locProduct == null ? "-"
+                            : locProduct.optString("sku", "?"))
+                        + " readerReady=" + readerReady
+                        + " tuning=" + tunApplied;
+            case "get_pref": {
+                Object val = prefs.getAll().get(arg.trim());
+                return arg.trim() + " = "
+                        + (val == null ? "(unset)"
+                            : "key".equals(arg.trim()) ? "(hidden)"
+                            : String.valueOf(val));
+            }
+            case "set_pref": {
+                int eq = arg.indexOf('=');
+                if (eq <= 0) return "ERROR: want key=value";
+                String k = arg.substring(0, eq).trim();
+                String val = arg.substring(eq + 1).trim();
+                SharedPreferences.Editor ed = prefs.edit();
+                if ("true".equals(val) || "false".equals(val)) {
+                    ed.putBoolean(k, Boolean.parseBoolean(val));
+                } else {
+                    try {
+                        ed.putInt(k, Integer.parseInt(val));
+                    } catch (NumberFormatException nf) {
+                        ed.putString(k, val);
+                    }
+                }
+                ed.apply();
+                return k + " set to " + val;
+            }
+            case "del_pref":
+                prefs.edit().remove(arg.trim()).apply();
+                return arg.trim() + " removed";
+            case "dump_prefs": {
+                for (java.util.Map.Entry<String, ?> e
+                        : prefs.getAll().entrySet()) {
+                    // The station key never enters the debug ring.
+                    dbgLineForce("pref " + e.getKey() + " = "
+                            + ("key".equals(e.getKey()) ? "(hidden)"
+                                : String.valueOf(e.getValue())));
+                }
+                return prefs.getAll().size() + " prefs → debug log";
+            }
+            case "set_power": {
+                final int p = Math.max(1, Math.min(30,
+                        Integer.parseInt(arg.trim())));
+                ui.post(() -> setPowerLevel(p));
+                return "power → " + p;
+            }
+            case "recreate":
+                ui.post(this::recreate);
+                return "recreating";
+            default:
+                return "ERROR: unknown command " + cmd;
+        }
     }
 
     private void updateLocateUi() {
@@ -8590,6 +8714,7 @@ public class MainActivity extends Activity {
         }
         locateTick();
         tuningTick();
+        commandTick();
         ui.postDelayed(this::refreshTick, 400);
     }
 

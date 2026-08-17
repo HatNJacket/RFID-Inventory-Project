@@ -755,6 +755,27 @@ class C72DebugEvent(Base):
     )
 
 
+class C72Command(Base):
+    """One remote command for the gun (get_state, set_pref, set_power,
+    say, beep, recreate…). The C72 polls pending commands every ~2 s,
+    executes, and acks with a result — so field debugging can reach
+    INTO the app without an APK build. Diagnostic plumbing, not
+    inventory data."""
+
+    __tablename__ = "rfid_c72_commands"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    command: Mapped[str] = mapped_column(String(50), nullable=False)
+    arg: Mapped[str | None] = mapped_column(String(500))
+    created_by: Mapped[str | None] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    done_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    done_by: Mapped[str | None] = mapped_column(String(100))
+    result: Mapped[str | None] = mapped_column(String(400))
+
+
 class LocateQueueEntry(Base):
     """A product queued for a physical tag hunt. Added from any product
     preview on the web terminal (Review is the usual source — mismatched
