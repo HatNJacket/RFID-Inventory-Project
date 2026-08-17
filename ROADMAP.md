@@ -85,6 +85,19 @@ Nick's demo-prep pass (widget previews approved before build):
   gyro question). All thresholds live-tunable (auto_*, gyro_axis/sign,
   radar_decay_s/max_age_s). Hash-verified on prod; NEXT = field test
   via the telemetry channel.
+- **v3.41 (code 59): accel sweep engine.** First field test settled it:
+  sensor inventory shows NO gyro (and no magnetometer), and Chainway's
+  radar mode returns start ok=false on this module — both fallbacks
+  dead. New engine: for a back-and-forth arc the lateral (tangential)
+  acceleration is in antiphase with heading, so heading = -k × smoothed
+  lateral accel, normalized by a decaying running peak (sweep-speed
+  independent), assumed arc 120° (`arc_deg`), mirror flip via
+  `accel_sign` — both live-tunable. Bearing is relative to the sweep's
+  CENTRE; hysteresis on centre-crossings counts sweeps. Same
+  histogram/dial/words as v3.40. Field-test tuning same session:
+  auto_high 85→75 (point-blank pct plateaus ~77–83, AUTO never fired),
+  auto_step_down 5→8 (fewer setPower blips — telemetry showed reads
+  resume in <1 tick after changes; S0+filter delivering ~30 reads/s).
 
 ## 📡 Locate list (web → C72) — ✅ DEPLOYED 2026-08-17 (C72 v3.35)
 

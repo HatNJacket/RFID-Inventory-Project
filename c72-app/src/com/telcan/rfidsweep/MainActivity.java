@@ -1275,6 +1275,17 @@ public class MainActivity extends Activity {
     private volatile double tunGyroSign = 1;
     private volatile double tunRadarDecayS = 8;
     private volatile double tunRadarMaxAgeS = 15;
+    private volatile double tunArcDeg = 120;   // assumed sweep arc width
+    private volatile double tunAccelSign = 1;  // flips left/right if mirrored
+    // Accel sweep engine (no gyro on the C72): for a back-and-forth arc
+    // the lateral (tangential) acceleration runs in ANTIPHASE with the
+    // heading — heading ~ -k * lateral accel — so the gun's position in
+    // the sweep falls out of the accelerometer continuously, normalized
+    // by the running amplitude so sweep speed doesn't matter.
+    private android.hardware.SensorEventListener accelListener;
+    private final float[] accelGravity = new float[3];
+    private double accelLateral = 0;
+    private double accelAmp = 0.5;
     private JSONObject locProduct = null;
     private final java.util.LinkedHashMap<String, Double> locTags =
             new java.util.LinkedHashMap<>();   // EPC -> last rssi heard
@@ -1615,7 +1626,10 @@ public class MainActivity extends Activity {
         }
         gyroSensor = sensorMgr == null ? null : sensorMgr.getDefaultSensor(
                 android.hardware.Sensor.TYPE_GYROSCOPE);
-        radarEngine = gyroSensor != null ? 1 : 2;
+        // Engine 1 = gyro histogram; 3 = accel sweep (the C72 has no
+        // gyro, and its firmware refuses Chainway's radar mode — both
+        // verified by telemetry 2026-08-17).
+        radarEngine = gyroSensor != null ? 1 : 3;
         synchronized (radarSamples) {
             radarSamples.clear();
         }
@@ -1624,22 +1638,24 @@ public class MainActivity extends Activity {
         gyroLastTs = 0;
         sweepHalfCount = 0;
         lastRateSign = 0;
+        accelLateral = 0;
+        accelAmp = 0.5;
         dbgLine("radar engine=" + (radarEngine == 1 ? "gyro-histogram"
-                : "chainway-radar"));
+                : "accel-sweep"));
         if (radarEngine == 1) {
             registerGyro();
-            status.setText("RADAR: pull the trigger, then sweep naturally "
-                    + "back and forth — it adds up over a few passes.");
         } else {
-            status.setText("RADAR (no gyro — Chainway mode): pull the "
-                    + "trigger and rotate slowly on the spot.");
+            registerAccelSweep();
         }
+        status.setText("RADAR: pull the trigger, then sweep naturally "
+                + "back and forth — it adds up over a few passes.");
         locRadarView.invalidate();
         updateLocateUi();
     }
 
     private void stopRadarEngine() {
         unregisterGyro();
+        unregisterAccelSweep();
         if (radarChainwayRunning) {
             try {
                 reader.stopRadarLocation();
@@ -1647,6 +1663,63 @@ public class MainActivity extends Activity {
             }
             radarChainwayRunning = false;
         }
+    }
+
+    /** Accel sweep engine: gravity via slow low-pass, the leftover on
+     *  the device's X axis is the sweep's tangential acceleration. Its
+     *  smoothed value, normalized by a decaying running peak, maps to
+     *  the gun's position across the arc. Sign flips at centre-crossings
+     *  count the sweeps. */
+    private void registerAccelSweep() {
+        if (accelListener != null || sensorMgr == null) return;
+        android.hardware.Sensor accel = sensorMgr.getDefaultSensor(
+                android.hardware.Sensor.TYPE_ACCELEROMETER);
+        if (accel == null) {
+            alertStatus("No usable motion sensor — RADAR can't run on "
+                    + "this device.");
+            return;
+        }
+        accelListener = new android.hardware.SensorEventListener() {
+            @Override
+            public void onSensorChanged(android.hardware.SensorEvent e) {
+                for (int i = 0; i < 3; i++) {
+                    accelGravity[i] = (float) (0.95 * accelGravity[i]
+                            + 0.05 * e.values[i]);
+                }
+                double lat = e.values[0] - accelGravity[0];
+                accelLateral = 0.7 * accelLateral + 0.3 * lat;
+                accelAmp = Math.max(accelAmp * 0.997,
+                        Math.abs(accelLateral));
+                double frac = Math.max(-1, Math.min(1,
+                        accelLateral / Math.max(0.3, accelAmp)));
+                gyroHeading = -frac * tunAccelSign * (tunArcDeg / 2);
+                // Sweep counting with hysteresis: a "side" only counts
+                // once the signal is clearly on it, so zero-crossing
+                // jitter can't double-count. Two flips = one full
+                // back-and-forth.
+                int sign = accelLateral > 0.15 * accelAmp ? 1
+                        : accelLateral < -0.15 * accelAmp ? -1 : 0;
+                if (sign != 0 && lastRateSign != 0
+                        && sign != lastRateSign) {
+                    sweepHalfCount++;
+                }
+                if (sign != 0) lastRateSign = sign;
+            }
+
+            @Override
+            public void onAccuracyChanged(android.hardware.Sensor s,
+                                          int a) {
+            }
+        };
+        sensorMgr.registerListener(accelListener, accel,
+                android.hardware.SensorManager.SENSOR_DELAY_GAME);
+    }
+
+    private void unregisterAccelSweep() {
+        if (accelListener != null && sensorMgr != null) {
+            sensorMgr.unregisterListener(accelListener);
+        }
+        accelListener = null;
     }
 
     private void registerGyro() {
@@ -1790,17 +1863,17 @@ public class MainActivity extends Activity {
         } else {
             radarBearing = null;
         }
-        // Relative to where the gun points NOW (gyro engine); Chainway
-        // angles are already gun-relative.
+        // Relative to where the gun points NOW (gyro/accel engines
+        // track heading); Chainway angles were already gun-relative.
         double rel = radarBearing == null ? 0
-                : radarEngine == 1
+                : radarEngine != 2
                     ? norm180(radarBearing - gyroHeading)
                     : norm180(radarBearing);
         locDirText.setText(radarBearing == null ? "—" : dirWords(rel));
         boolean rough = radarSpread > 70;
         locRadarInfo.setText(radarBearing == null
                 ? "gathering… sweep back and forth"
-                : (radarEngine == 1
+                : (radarEngine != 2
                     ? (sweepHalfCount / 2) + " sweep(s) · " : "")
                   + n + " ping(s)" + (rough ? " · rough — keep sweeping"
                     : " · steady — trust it"));
@@ -1874,7 +1947,7 @@ public class MainActivity extends Activity {
             }
             p.setStyle(android.graphics.Paint.Style.FILL);
             for (double[] s : copy) {
-                double sRel = radarEngine == 1
+                double sRel = radarEngine != 2
                         ? norm180(s[0] - gyroHeading) : norm180(s[0]);
                 double age = (now - s[2]) / 1000.0;
                 int alpha = (int) (140 * Math.exp(-age / tunRadarDecayS));
@@ -2402,9 +2475,9 @@ public class MainActivity extends Activity {
         }
         locReadsInWindow++;
         locLastHeard = now;
-        // Radar (gyro engine): tag every read with the gun's heading at
-        // that instant — the histogram does the rest.
-        if (locMode == 1 && radarEngine == 1) {
+        // Radar (gyro or accel-sweep engine): tag every read with the
+        // gun's heading at that instant — the histogram does the rest.
+        if (locMode == 1 && (radarEngine == 1 || radarEngine == 3)) {
             double s = locPctOf(rssi) / 100.0;
             if (s > 0.02) {
                 synchronized (radarSamples) {
@@ -2504,6 +2577,8 @@ public class MainActivity extends Activity {
                     tunGyroSign = v.optDouble("gyro_sign", 1);
                     tunRadarDecayS = v.optDouble("radar_decay_s", 8);
                     tunRadarMaxAgeS = v.optDouble("radar_max_age_s", 15);
+                    tunArcDeg = v.optDouble("arc_deg", 120);
+                    tunAccelSign = v.optDouble("accel_sign", 1);
                     dbgLine("applied " + raw);
                     ui.post(() -> status.setText("Live tuning applied: "
                             + raw));
