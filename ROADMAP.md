@@ -117,6 +117,20 @@ Nick's demo-prep pass (widget previews approved before build):
   APK. test_c72_debug grew to 16 checks; 20/20 suites; APK hash
   verified; a ping command is queued to confirm the channel when the
   gun updates.
+- **v3.44 (code 62): field-test polish round** (Nick's five notes, label
+  list approved before build). Target switch mid-hunt now STOPS the
+  hunt ("trigger to hunt" — mid-flight radio retune was unreliable);
+  rssi_span default 45→42 so contact-on-tag reads 100%, and holding
+  100% prompts "Right on top of it — MARK FOUND and hunt the rest?"
+  (tracks the loudest EPC, 10 s snooze on decline, ends the hunt when
+  none remain); TARGET dialog rebuilt as cards — green FOUND ✓ chip,
+  blue TARGET chip, ALL/RESET as cards; hold SOUND opens a beep-volume
+  slider (0–100, test beep on release, pref beep_vol, ToneGenerator
+  rebuilt); button language unified: all-caps words, no ellipses /
+  question marks / emoji / line-breaks, lit-means-active (SOUND,
+  IDENTIFY, AUTO) — LIST (3), TARGET, MARK FOUND, IDENTIFY, UNLINK,
+  BASELINE/APPLY one-line, START RECEIVING; arrows stay only on
+  BACK ← / NEXT →.
 - **v3.42 (code 60): motion gate.** Field test 2: standing still, the
   bearing jumped — the engine amplified hand tremor into fake headings
   (the amplitude normalizer ADAPTS to whatever it sees, so stillness

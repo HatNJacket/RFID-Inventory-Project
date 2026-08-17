@@ -451,7 +451,9 @@ public class MainActivity extends Activity {
         // Alarm stream: audible regardless of the device's media volume —
         // field testing showed STREAM_MUSIC tones can be silently muted.
         try {
-            tones = new ToneGenerator(AudioManager.STREAM_ALARM, 100);
+            tones = new ToneGenerator(AudioManager.STREAM_ALARM,
+                    Math.max(0, Math.min(100,
+                            prefs.getInt("beep_vol", 100))));
         } catch (Exception ignored) {
         }
 
@@ -780,6 +782,8 @@ public class MainActivity extends Activity {
         back.setOnClickListener(x -> stepBack());
         batchBtnRow.addView(back, weight());
         btnSweep = smallBtn("SWEEP");
+        // Fits BASELINE on one line in a five-button row.
+        btnSweep.setTextSize(11);
         btnSweep.setOnClickListener(x -> {
             if (step == STEP_PAIR) armSweep();
             // COLLECT: baseline a part-tagged shelf. (Unpair-everything
@@ -856,12 +860,12 @@ public class MainActivity extends Activity {
         // the physical TRIGGER does the read. Armed, it also beats the
         // pairing path, so a tag can be identified without clearing the
         // product that's loaded.
-        identifyBtn = smallBtn("🔍 WHAT'S THIS TAG?");
+        identifyBtn = smallBtn("IDENTIFY");
         identifyBtn.setOnClickListener(x ->
                 setIdentifyArmed(!identifyArmed));
         srow.addView(identifyBtn, new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        Button unlink = smallBtn("UNLINK LAST TAG");
+        Button unlink = smallBtn("UNLINK");
         unlink.setOnClickListener(x -> stationUnlink());
         srow.addView(unlink, new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
@@ -882,10 +886,11 @@ public class MainActivity extends Activity {
     private void setIdentifyArmed(boolean on) {
         identifyArmed = on;
         if (identifyBtn != null) {
-            identifyBtn.setText(on ? "🔍 IDENTIFY: ON" : "🔍 WHAT'S THIS TAG?");
-            identifyBtn.setTextColor(on ? C_BLUE : C_TEXT);
-            identifyBtn.setBackground(rr(on ? C_OK_BG : C_CARD,
-                    on ? C_BLUE : C_LINE, 8));
+            // Lit = armed, same language as AUTO and SOUND.
+            identifyBtn.setBackground(on
+                    ? btnBg(C_BLUE, 0, C_BLUE_DK, 8)
+                    : btnBg(C_CARD, C_LINE, C_PRESS, 8));
+            identifyBtn.setTextColor(on ? Color.WHITE : C_TEXT);
         }
         if (on) {
             beep(SOUND_OTHER);
@@ -1310,7 +1315,13 @@ public class MainActivity extends Activity {
     private volatile double tunFade = 0.7;     // per-tick fade when quiet
     private volatile double tunBlend = 0.5;    // EMA weight of a new read
     private volatile double tunRssiLo = -75;   // RSSI that reads as 0%
-    private volatile double tunRssiSpan = 45;  // dB from 0% to 100%
+    // dB from 0% to 100%. 42 puts contact-on-tag (-32 dBm measured on
+    // this gun) AT 100 — the old 45 topped out around 97 with the
+    // antenna pressed to the sticker (Nick, v3.44).
+    private volatile double tunRssiSpan = 42;
+    private volatile String locLoudEpc = null; // loudest EPC, this window
+    private long locFullPromptAt = 0;          // 100%-prompt snooze
+    private boolean locFullPromptUp = false;
     private volatile boolean tunDebug = false; // stream telemetry to server
     private volatile int tunGen2Session = 0;   // S0 during hunts; -1 = leave
     private volatile int tunGen2Q = -1;        // fixed Q in hunts; -1 = leave
@@ -1411,23 +1422,31 @@ public class MainActivity extends Activity {
         v.addView(thermoRow, thLp);
         paintAutoBtn();
 
+        // Button language (Nick, v3.44): all-caps words, no ellipses /
+        // question marks / emoji; ON-OFF state = the button lighting up,
+        // never label text. MARK FOUND names its outcome.
         LinearLayout act = new LinearLayout(this);
         act.setGravity(Gravity.CENTER);
         act.setPadding(0, dp(6), 0, 0);
-        locSoundBtn = smallBtn("SOUND ON");
+        locSoundBtn = smallBtn("SOUND");
         locSoundBtn.setOnClickListener(x -> {
             locSound = !locSound;
-            locSoundBtn.setText(locSound ? "SOUND ON" : "SOUND OFF");
+            paintSoundBtn();
         });
-        locTargetBtn = smallBtn("TARGET…");
+        // Hold for the beep-volume slider.
+        locSoundBtn.setOnLongClickListener(x -> {
+            showBeepVolumeDialog();
+            return true;
+        });
+        locTargetBtn = smallBtn("TARGET");
         locTargetBtn.setOnClickListener(x -> locateTargetDialog());
-        locFoundBtn = smallBtn("FOUND IT?");
+        locFoundBtn = smallBtn("MARK FOUND");
         locFoundBtn.setOnClickListener(x -> confirmFoundScan());
         // The web terminal queues products to hunt (Review's mismatched
-        // bins, mostly) — LIST… pulls that queue so nothing 24-hex is
+        // bins, mostly) — LIST pulls that queue so nothing 24-hex is
         // ever typed on this keyboard. It wears the queue count when
         // there is one.
-        locListBtn = smallBtn("LIST…");
+        locListBtn = smallBtn("LIST");
         locListBtn.setOnClickListener(x -> showLocateList());
         act.addView(locListBtn, new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
@@ -1438,6 +1457,7 @@ public class MainActivity extends Activity {
         act.addView(locFoundBtn, new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         v.addView(act);
+        paintSoundBtn();
 
         locHint = new TextView(this);
         locHint.setTextSize(11);
@@ -1543,6 +1563,82 @@ public class MainActivity extends Activity {
                 ? btnBg(C_BLUE, 0, C_BLUE_DK, 8)
                 : btnBg(C_CARD, C_LINE, C_PRESS, 8));
         locAutoBtn.setTextColor(autoPowerOn ? Color.WHITE : C_TEXT);
+    }
+
+    /** Lit = beeps on; dim = muted. Same lit-means-active language as
+     *  AUTO and IDENTIFY. */
+    private void paintSoundBtn() {
+        if (locSoundBtn == null) return;
+        locSoundBtn.setBackground(locSound
+                ? btnBg(C_BLUE, 0, C_BLUE_DK, 8)
+                : btnBg(C_CARD, C_LINE, C_PRESS, 8));
+        locSoundBtn.setTextColor(locSound ? Color.WHITE : C_TEXT);
+    }
+
+    /** Long-press SOUND: beep volume 0-100, applied by rebuilding the
+     *  ToneGenerator (its volume is fixed at construction). */
+    private void showBeepVolumeDialog() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(16);
+        box.setPadding(pad, pad, pad, 0);
+        final TextView label = new TextView(this);
+        int cur = prefs.getInt("beep_vol", 100);
+        label.setText("Beep volume: " + cur + "%");
+        label.setTextSize(13);
+        label.setTextColor(C_TEXT);
+        box.addView(label);
+        final android.widget.SeekBar bar =
+                new android.widget.SeekBar(this);
+        bar.setMax(100);
+        bar.setProgress(cur);
+        bar.setOnSeekBarChangeListener(
+                new android.widget.SeekBar.OnSeekBarChangeListener() {
+                    @Override
+                    public void onProgressChanged(
+                            android.widget.SeekBar b, int p, boolean u) {
+                        label.setText("Beep volume: " + p + "%");
+                    }
+
+                    @Override
+                    public void onStartTrackingTouch(
+                            android.widget.SeekBar b) {
+                    }
+
+                    @Override
+                    public void onStopTrackingTouch(
+                            android.widget.SeekBar b) {
+                        prefs.edit().putInt("beep_vol",
+                                b.getProgress()).apply();
+                        rebuildTones();
+                        beep(SOUND_OK);   // hear it at the new level
+                    }
+                });
+        LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        bl.topMargin = dp(10);
+        bl.bottomMargin = dp(10);
+        box.addView(bar, bl);
+        dlg()
+                .setTitle("Beep volume")
+                .setView(box)
+                .setPositiveButton("Done", null)
+                .show();
+    }
+
+    private void rebuildTones() {
+        try {
+            if (tones != null) tones.release();
+        } catch (Exception ignored) {
+        }
+        try {
+            tones = new ToneGenerator(AudioManager.STREAM_ALARM,
+                    Math.max(0, Math.min(100,
+                            prefs.getInt("beep_vol", 100))));
+        } catch (Exception e) {
+            tones = null;
+        }
     }
 
     // ---- AUTO power controller (runs from locateTick) ---------------------
@@ -2213,8 +2309,8 @@ public class MainActivity extends Activity {
                         resp.optJSONArray("entries");
                 ui.post(() -> {
                     int n = rows == null ? 0 : rows.length();
-                    locListBtn.setText(n > 0 ? "LIST… (" + n + ")"
-                            : "LIST…");
+                    locListBtn.setText(n > 0 ? "LIST (" + n + ")"
+                            : "LIST");
                     if (n == 0) {
                         beep(SOUND_ERR);
                         status.setText("Locate list is empty — on the web "
@@ -2306,7 +2402,7 @@ public class MainActivity extends Activity {
                                     + "list.");
                             int left = list.getChildCount();
                             locListBtn.setText(left > 0
-                                    ? "LIST… (" + left + ")" : "LIST…");
+                                    ? "LIST (" + left + ")" : "LIST");
                             if (left == 0 && dref[0] != null) {
                                 dref[0].dismiss();
                             }
@@ -2491,7 +2587,8 @@ public class MainActivity extends Activity {
         long now = System.currentTimeMillis();
         if (rssi > locBestRssi || now - locLastHeard > 700) {
             locBestRssi = rssi;
-        }
+            locLoudEpc = key;   // which tag is screaming — the 100%
+        }                       // prompt marks THIS one found
         locReadsInWindow++;
         locLastHeard = now;
         // Radar (gyro or accel-sweep engine): tag every read with the
@@ -2549,6 +2646,33 @@ public class MainActivity extends Activity {
         locHeardCount = heard;
         if (locMode == 1) radarTick(now);
         autoPowerTick(now, fresh, pct);
+        // Pegged AT the top while hunting: offer to mark the loudest
+        // tag found so the hunt moves on to the rest. Declining
+        // snoozes it for 10 s.
+        if (locating && pct >= 100 && heardThisTick
+                && !locFullPromptUp && now - locFullPromptAt > 10000) {
+            final String epc = locLoudEpc;
+            if (epc != null && !locFound.contains(epc)) {
+                locFullPromptUp = true;
+                locFullPromptAt = now;
+                dlg()
+                        .setTitle("Right on top of it")
+                        .setMessage("Signal is pegged — that's tag …"
+                                + epc.substring(Math.max(0,
+                                        epc.length() - 6))
+                                + ". Mark it FOUND and hunt the rest?")
+                        .setPositiveButton("MARK FOUND",
+                                (d, w) -> {
+                                    locFullPromptUp = false;
+                                    markTagFound(epc);
+                                })
+                        .setNegativeButton("Keep hunting",
+                                (d, w) -> locFullPromptUp = false)
+                        .setOnCancelListener(
+                                d -> locFullPromptUp = false)
+                        .show();
+            }
+        }
         if (tunDebug && locating) {
             dbgLine("tick reads=" + reads
                     + " best=" + (heardThisTick
@@ -2584,7 +2708,7 @@ public class MainActivity extends Activity {
                     tunFade = v.optDouble("fade", 0.7);
                     tunBlend = v.optDouble("blend", 0.5);
                     tunRssiLo = v.optDouble("rssi_lo", -75);
-                    tunRssiSpan = v.optDouble("rssi_span", 45);
+                    tunRssiSpan = v.optDouble("rssi_span", 42);
                     tunDebug = v.optBoolean("debug", false);
                     tunGen2Session = v.optInt("gen2_session", 0);
                     tunGen2Q = v.optInt("gen2_q", -1);
@@ -2812,46 +2936,113 @@ public class MainActivity extends Activity {
     }
 
     /** Which tag(s) to chase: all remaining, one specific, or un-find a
-     *  found one to hunt it again. */
+     *  found one to hunt it again. Cards, not bare text — found tags
+     *  wear a green chip, the current target a blue one (Nick, v3.44).
+     *  Switching while scanning STOPS the hunt: retuning the radio
+     *  mid-flight was unreliable, so the trigger restarts clean. */
     private void locateTargetDialog() {
         if (locTags.isEmpty()) return;
-        final List<String> labels = new ArrayList<>();
-        final List<String> epcs = new ArrayList<>();
-        labels.add("ALL remaining tags (" + Math.max(0,
-                locTags.size() - locFound.size()) + ")");
-        epcs.add(null);
-        for (String epc : locTags.keySet()) {
-            String tail = "…" + epc.substring(Math.max(0, epc.length() - 6));
-            labels.add(tail + (locFound.contains(epc)
-                    ? "  — found ✓ (tap to hunt again)"
-                    : locNarrow != null && locNarrow.equals(epc)
-                      ? "  — current target" : ""));
-            epcs.add(epc);
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        list.setPadding(dp(14), dp(8), dp(14), dp(8));
+        scroll.addView(list);
+        final AlertDialog[] dref = new AlertDialog[1];
+
+        // ALL card up top.
+        list.addView(targetCard("ALL remaining tags",
+                Math.max(0, locTags.size() - locFound.size()) + " in the "
+                + "hunt", null, () -> {
+                    retarget(null, "Hunting every remaining tag.");
+                    if (dref[0] != null) dref[0].dismiss();
+                }));
+
+        for (final String epc : locTags.keySet()) {
+            boolean found = locFound.contains(epc);
+            boolean current = epc.equals(locNarrow);
+            String chip = found ? "FOUND ✓" : current ? "TARGET" : null;
+            list.addView(targetCard(
+                    "…" + epc.substring(Math.max(0, epc.length() - 6)),
+                    found ? "tap to hunt this one again"
+                        : current ? "the hunt is on this tag"
+                        : "tap to hunt ONLY this tag",
+                    found ? "ok" : current ? "hi" : null,
+                    () -> {
+                        locFound.remove(epc);
+                        retarget(epc, "Target: …" + epc.substring(
+                                Math.max(0, epc.length() - 6)) + ".");
+                        if (dref[0] != null) dref[0].dismiss();
+                    }, chip));
         }
-        labels.add("RESET all found marks");
-        epcs.add("RESET");
-        dlg()
+
+        list.addView(targetCard("RESET found marks",
+                locFound.size() + " tag(s) marked found", null, () -> {
+                    locFound.clear();
+                    retarget(null, "Found marks cleared — hunting every "
+                            + "tag again.");
+                    if (dref[0] != null) dref[0].dismiss();
+                }));
+
+        dref[0] = dlg()
                 .setTitle("Target which tag?")
-                .setItems(labels.toArray(new String[0]), (d, which) -> {
-                    String pick = epcs.get(which);
-                    if ("RESET".equals(pick)) {
-                        locFound.clear();
-                        locNarrow = null;
-                        status.setText("Found marks cleared — hunting "
-                                + "every tag again.");
-                    } else if (pick == null) {
-                        locNarrow = null;
-                    } else {
-                        locFound.remove(pick);
-                        locNarrow = pick;
-                    }
-                    // Retarget the radio too: one-tag hunts get the EPC
-                    // filter, ALL drops it.
-                    if (locating) applyNarrowFilter();
-                    updateLocateUi();
-                })
+                .setView(scroll)
                 .setNegativeButton("Cancel", null)
-                .show();
+                .create();
+        dref[0].show();
+    }
+
+    /** Apply a new hunt target. A running hunt stops (clean restart on
+     *  the trigger beats a mid-flight radio retune the reader ignores). */
+    private void retarget(String epc, String note) {
+        locNarrow = epc;
+        if (locating) {
+            stopLocate(false);
+            status.setText(note + " Trigger to hunt.");
+        } else {
+            status.setText(note);
+        }
+        updateLocateUi();
+    }
+
+    private LinearLayout targetCard(String title, String sub,
+            String chipKind, Runnable onTap, String... chipText) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.HORIZONTAL);
+        card.setGravity(Gravity.CENTER_VERTICAL);
+        card.setBackground(btnBg(C_CARD, C_LINE, C_PRESS, 10));
+        card.setPadding(dp(12), dp(9), dp(12), dp(9));
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        TextView t = new TextView(this);
+        t.setText(title);
+        t.setTextSize(15);
+        t.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+        t.setTextColor(C_TEXT);
+        col.addView(t);
+        TextView s = new TextView(this);
+        s.setText(sub);
+        s.setTextSize(11);
+        s.setTextColor(C_MUTED);
+        col.addView(s);
+        card.addView(col, weight());
+        if (chipText.length > 0 && chipText[0] != null) {
+            TextView chip = new TextView(this);
+            chip.setText(chipText[0]);
+            chip.setTextSize(11);
+            chip.setTypeface(null, Typeface.BOLD);
+            boolean ok = "ok".equals(chipKind);
+            chip.setTextColor(ok ? C_OK : C_BLUE_DK);
+            chip.setBackground(rr(ok ? C_OK_BG : C_SOFT, 0, 12));
+            chip.setPadding(dp(9), dp(4), dp(9), dp(4));
+            card.addView(chip);
+        }
+        card.setOnClickListener(x -> onTap.run());
+        LinearLayout.LayoutParams cl = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        cl.bottomMargin = dp(7);
+        card.setLayoutParams(cl);
+        return card;
     }
 
     /** Nick's confirm-a-find: pause the hunt, read at power 1 with the
@@ -2936,6 +3127,29 @@ public class MainActivity extends Activity {
                 updateLocateUi();
             });
         }).start();
+    }
+
+    /** Mark one tag found mid-hunt (the 100% prompt's path): drops it
+     *  from the targets, keeps hunting the rest, ends the hunt when
+     *  none remain. */
+    private void markTagFound(String epc) {
+        locFound.add(epc);
+        if (epc.equals(locNarrow)) locNarrow = null;
+        beep(SOUND_OK);
+        status.setText("Found ✓ …"
+                + epc.substring(Math.max(0, epc.length() - 6))
+                + " — " + locFound.size() + " of " + locTags.size()
+                + " found; out of the hunt.");
+        if (locTargets().isEmpty()) {
+            stopLocate(false);
+            status.setText("All " + locTags.size() + " tag(s) found ✓ — "
+                    + "un-find one via TARGET to hunt it again.");
+        } else if (locating) {
+            // The found tag may have been the narrow filter's target —
+            // retune the radio to what's left.
+            applyNarrowFilter();
+        }
+        updateLocateUi();
     }
 
     // Preview card: [image | name + SKU] with the tracker pinned top-right.
@@ -3884,7 +4098,7 @@ public class MainActivity extends Activity {
                 org.json.JSONArray rows = resp.optJSONArray("entries");
                 final int n = rows == null ? 0 : rows.length();
                 ui.post(() -> locListBtn.setText(
-                        n > 0 ? "LIST… (" + n + ")" : "LIST…"));
+                        n > 0 ? "LIST (" + n + ")" : "LIST"));
             } catch (Exception ignored) {
                 // Count is a nicety — never worth an error message.
             }
@@ -5948,7 +6162,7 @@ public class MainActivity extends Activity {
                 : emptyBox("Scan a BIN barcode to start a new batch",
                         null), el);
 
-        Button recvBtn = smallBtn("START RECEIVING…");
+        Button recvBtn = smallBtn("START RECEIVING");
         LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT);
@@ -6084,11 +6298,11 @@ public class MainActivity extends Activity {
         // In VERIFY the advancing button IS the send, so the third slot
         // would only duplicate it — hide it and the row reads as one path.
         btnSweep.setVisibility(step == STEP_VERIFY ? View.GONE : View.VISIBLE);
-        // "BASE-\nLINE": the word alone is one letter too wide for the
-        // button, and the stray E on its own line read as a typo.
+        // One line at a slightly smaller size (set at build) — the
+        // hyphen-newline version read as a typo (Nick, v3.44).
         btnSweep.setText(step == STEP_PAIR ? "SWEEP"
                 : step == STEP_COLLECT
-                  ? (baselineArmed ? "APPLY\nBASELINE" : "BASE-\nLINE")
+                  ? (baselineArmed ? "APPLY" : "BASELINE")
                   : "UNPAIR");
         btnNext.setText(parentBatchId != 0 && step == STEP_PAIR
                 ? "FINISH TRIP"
