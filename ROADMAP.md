@@ -483,6 +483,19 @@ apply-stock-update, stays untouched; our standing never-auto-write
 decision holds on both sides). Same offer from Scan Station sessions is
 possible once wanted. This is the on-ramp to Steve's TODO #2.
 
+## 🧭 Unification (RFID + TC-Planner + 1-left → one service)
+
+Design written 2026-08-08 at Nick's ask —
+[docs/unification-roadmap.md](docs/unification-roadmap.md). Headlines:
+the planner already shares the RFID database (telcansql/TELCAN, verified),
+so conglomeration is a code move, not a migration; the 1-left backend
+source IS recoverable (function-releases container — supersedes the
+"not recoverable" note in docs/inventory-verification-app.md); phased
+plan is A) planner receive filing + read-only 1-left panel + source
+recovery/auth, B) shared identity + 1-left queue into TELCAN, C) mount
+planner into this app, retire the Function App last. Contracts to keep
+alive: shopify-jobs → on-order-skus, the C72 API, Bundles.app metafields.
+
 ## 📥 Steve's TODO list (captured 2026-07-28, not yet designed)
 
 Noted verbatim-in-substance from Steve. **Not designed, not scoped, no
