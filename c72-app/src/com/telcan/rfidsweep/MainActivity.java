@@ -1245,6 +1245,9 @@ public class MainActivity extends Activity {
     private volatile double tunRssiLo = -75;   // RSSI that reads as 0%
     private volatile double tunRssiSpan = 45;  // dB from 0% to 100%
     private volatile boolean tunDebug = false; // stream telemetry to server
+    private volatile int tunGen2Session = 0;   // S0 during hunts; -1 = leave
+    private volatile int tunGen2Q = -1;        // fixed Q in hunts; -1 = leave
+    private volatile boolean tunFilterNarrow = true; // EPC-filter one-tag hunts
     private String tunApplied = "";            // last raw JSON applied
     private int tunPollCounter = 0;
     private volatile boolean tunPollBusy = false;
@@ -1662,6 +1665,8 @@ public class MainActivity extends Activity {
         }
         try {
             reader.setPower(locPower);
+            applyLocateGen2();
+            applyNarrowFilter();
             reader.startInventoryTag();
             locating = true;
             locEma = 0;
@@ -1685,8 +1690,90 @@ public class MainActivity extends Activity {
                 reader.setPower(prefs.getInt("power", 20));
             } catch (Exception ignored) {
             }
+            restoreLocateGen2();
+            clearNarrowFilter();
             if (announce) status.setText("Hunt paused.");
         }
+    }
+
+    // ---- Gen2 tuning for the hunt -----------------------------------------
+    // Sweeps WANT session persistence (each tag answers once); a geiger
+    // counter wants the opposite. While locating, session S0 makes the
+    // target answer every inventory round — the read-every-2s crawl Nick
+    // measured at point-blank was S1/S2 persistence, not app overhead.
+    // Saved and restored around the hunt so batch/sweep behaviour never
+    // changes. Both knobs ride /api/c72/tuning: gen2_session (-1 = leave
+    // the radio alone), gen2_q (-1 = leave).
+    private com.rscja.deviceapi.entity.Gen2Entity savedGen2 = null;
+
+    private void applyLocateGen2() {
+        if (tunGen2Session < 0 && tunGen2Q < 0) return;
+        try {
+            savedGen2 = reader.getGen2();
+            com.rscja.deviceapi.entity.Gen2Entity want = reader.getGen2();
+            if (want == null) return;
+            if (tunGen2Session >= 0) {
+                want.setQuerySession(tunGen2Session);
+                want.setQueryTarget(0);   // Target A
+            }
+            if (tunGen2Q >= 0) {
+                // Q sizes the round for the expected tag population;
+                // hunting a handful of tags wants a small round.
+                want.setQ(tunGen2Q);
+                want.setStartQ(tunGen2Q);
+            }
+            boolean ok = reader.setGen2(want);
+            dbgLine("gen2 apply ok=" + ok + " session=" + tunGen2Session
+                    + " q=" + tunGen2Q);
+        } catch (Throwable t) {
+            savedGen2 = null;
+            dbgLine("gen2 apply failed: " + t);
+        }
+    }
+
+    private void restoreLocateGen2() {
+        if (savedGen2 == null) return;
+        try {
+            boolean ok = reader.setGen2(savedGen2);
+            dbgLine("gen2 restore ok=" + ok);
+        } catch (Throwable t) {
+            dbgLine("gen2 restore failed: " + t);
+        }
+        savedGen2 = null;
+    }
+
+    // ---- EPC filter while narrowed to ONE tag -----------------------------
+    // With a shelf full of tags every inventory round is shared among all
+    // of them; filtering on the target's EPC lets the radio pound just
+    // that one. Only while locating AND narrowed — cleared on stop, so
+    // sweeps and batch never inherit a filter.
+    private boolean narrowFilterSet = false;
+
+    private void applyNarrowFilter() {
+        try {
+            if (tunFilterNarrow && locNarrow != null) {
+                boolean ok = reader.setFilter(1, 32,
+                        locNarrow.length() * 4, locNarrow);
+                narrowFilterSet = true;
+                dbgLine("filter set ok=" + ok + " epc=…" + locNarrow
+                        .substring(Math.max(0, locNarrow.length() - 6)));
+            } else {
+                clearNarrowFilter();
+            }
+        } catch (Throwable t) {
+            dbgLine("filter set failed: " + t);
+        }
+    }
+
+    private void clearNarrowFilter() {
+        if (!narrowFilterSet) return;
+        try {
+            reader.setFilter(1, 32, 0, "");
+            dbgLine("filter cleared");
+        } catch (Throwable t) {
+            dbgLine("filter clear failed: " + t);
+        }
+        narrowFilterSet = false;
     }
 
     /** Called from the SDK callback thread for every read while locating. */
@@ -1778,6 +1865,9 @@ public class MainActivity extends Activity {
                     tunRssiLo = v.optDouble("rssi_lo", -75);
                     tunRssiSpan = v.optDouble("rssi_span", 45);
                     tunDebug = v.optBoolean("debug", false);
+                    tunGen2Session = v.optInt("gen2_session", 0);
+                    tunGen2Q = v.optInt("gen2_q", -1);
+                    tunFilterNarrow = v.optBoolean("filter_narrow", true);
                     dbgLine("applied " + raw);
                     ui.post(() -> status.setText("Live tuning applied: "
                             + raw));
@@ -1885,6 +1975,9 @@ public class MainActivity extends Activity {
                         locFound.remove(pick);
                         locNarrow = pick;
                     }
+                    // Retarget the radio too: one-tag hunts get the EPC
+                    // filter, ALL drops it.
+                    if (locating) applyNarrowFilter();
                     updateLocateUi();
                 })
                 .setNegativeButton("Cancel", null)

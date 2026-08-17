@@ -53,6 +53,18 @@ Nick's demo-prep pass (widget previews approved before build):
   now a conversation. Diagnostic plumbing: deliberately NOT in History.
   Initial prod tuning seeded: fresh_ms=2500, fade=0.85, debug=on.
   test_c72_debug (10 checks), 20/20 suites, APK hash verified.
+- **v3.39 (code 57, same day): hunt read-rate — Gen2 session S0 +
+  narrow-EPC filter.** Telemetry showed ONE read per ~2 s at point-blank
+  full power: Gen2 session persistence (right for sweeps, wrong for a
+  geiger). While locating, the gun now applies session S0/Target A
+  (saved via getGen2, restored on stop — batch/sweep dedupe untouched)
+  and, when narrowed to one tag, an EPC filter so inventory rounds
+  aren't shared with the whole shelf (cleared on stop and on
+  ALL-retarget). Both live-tunable: gen2_session (-1 leaves the radio
+  alone), gen2_q (-1 default), filter_narrow. Live tuning session also
+  set blend=0.9 (sparse-read staircase: EMA closed only half the gap
+  per read). Hash-verified on prod; field verification = Nick's next
+  hunt with debug streaming.
 - NEXT: Nick wants a broader Locate-tab rework (his spec pending).
 
 ## 📡 Locate list (web → C72) — ✅ DEPLOYED 2026-08-17 (C72 v3.35)
