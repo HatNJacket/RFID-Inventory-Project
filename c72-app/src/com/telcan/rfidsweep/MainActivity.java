@@ -142,10 +142,14 @@ public class MainActivity extends Activity {
     private TextView status;
     private final View[] tabViews = new View[TAB_COUNT];
 
+    // Every tab's PWR chip, registered at creation so one power change
+    // repaints all of them (see powerChip() / updatePowerChips).
+    private final java.util.List<Button> powerChips =
+            new java.util.ArrayList<>();
+
     // batch widgets
     private TextView binChip;
     private TextView phaseChip;
-    private Button pwrChipBatch;
     private Button pickBtn;
     private Button btnNext;
     private Button btnUndo;
@@ -161,8 +165,6 @@ public class MainActivity extends Activity {
     private LinearLayout batchBtnRow;
 
     // station widgets
-    private Button pwrChipStation;
-    private Button pwrChipSweep;
     private FrameLayout stationCard;
     private ImageView stationImg;
     private TextView stationName;
@@ -584,9 +586,7 @@ public class MainActivity extends Activity {
         // the stock better.
         binChip.setOnClickListener(view -> flagBinDialog());
         header.addView(binChip, weight());
-        pwrChipBatch = chipBtn("PWR " + prefs.getInt("power", 5));
-        wirePowerChip(pwrChipBatch);
-        header.addView(pwrChipBatch);
+        header.addView(powerChip());
         phaseChip = new TextView(this);
         phaseChip.setTextSize(15);
         phaseChip.setTypeface(null, Typeface.BOLD);
@@ -692,18 +692,7 @@ public class MainActivity extends Activity {
         LinearLayout v = new LinearLayout(this);
         v.setOrientation(LinearLayout.VERTICAL);
 
-        LinearLayout header = new LinearLayout(this);
-        header.setGravity(Gravity.CENTER_VERTICAL);
-        TextView t = new TextView(this);
-        t.setText("Scan station");
-        t.setTextSize(17);
-        t.setTypeface(null, Typeface.BOLD);
-        t.setTextColor(C_TEXT);
-        header.addView(t, weight());
-        pwrChipStation = chipBtn("PWR " + prefs.getInt("power", 5));
-        wirePowerChip(pwrChipStation);
-        header.addView(pwrChipStation);
-        v.addView(header);
+        v.addView(tabHeader("Scan station"));
 
         stationCard = new FrameLayout(this);
         ImageView[] img = new ImageView[1];
@@ -970,18 +959,12 @@ public class MainActivity extends Activity {
         LinearLayout v = new LinearLayout(this);
         v.setOrientation(LinearLayout.VERTICAL);
 
-        LinearLayout header = new LinearLayout(this);
-        header.setGravity(Gravity.CENTER_VERTICAL);
         sweepCount = new TextView(this);
         sweepCount.setText("0 unique tags");
         sweepCount.setTextSize(22);
         sweepCount.setTypeface(null, Typeface.BOLD);
         sweepCount.setTextColor(C_BLUE);
-        header.addView(sweepCount, weight());
-        pwrChipSweep = chipBtn("PWR " + prefs.getInt("power", 5));
-        wirePowerChip(pwrChipSweep);
-        header.addView(pwrChipSweep);
-        v.addView(header);
+        v.addView(tabHeader(null, sweepCount));
 
         LinearLayout row = new LinearLayout(this);
         sweepToggle = smallBtn("START SCAN");
@@ -1011,12 +994,7 @@ public class MainActivity extends Activity {
     private View buildFindView() {
         LinearLayout v = new LinearLayout(this);
         v.setOrientation(LinearLayout.VERTICAL);
-        TextView t = new TextView(this);
-        t.setText("Where does this live?");
-        t.setTextSize(17);
-        t.setTypeface(null, Typeface.BOLD);
-        t.setTextColor(C_TEXT);
-        v.addView(t);
+        v.addView(tabHeader("Where does this live?"));
         TextView hint = new TextView(this);
         hint.setText("Scan a barcode or SKU — the bin comes back.");
         hint.setTextSize(13);
@@ -1143,6 +1121,9 @@ public class MainActivity extends Activity {
         LinearLayout v = new LinearLayout(this);
         v.setOrientation(LinearLayout.VERTICAL);
         v.setPadding(dp(12), dp(10), dp(12), dp(10));
+        // Locate drives its own power live (FAR/NEAR/TOUCH) once a hunt
+        // starts — the chip still belongs here for the idle state.
+        v.addView(tabHeader("Locate a product"));
 
         FrameLayout card = new FrameLayout(this);
         card.setBackground(rr(Color.WHITE, C_LINE, 10));
@@ -2497,6 +2478,7 @@ public class MainActivity extends Activity {
         tabTitle.setVisibility(needsInput ? View.GONE : View.VISIBLE);
         tabTitle.setText(TAB_NAMES[tab]);
         if (needsInput) btInput.requestFocus();
+        applyContextPower();
         if (tab == TAB_BATCH) {
             applyBatchUi();
         } else if (tab == TAB_STATION) {
@@ -2871,12 +2853,79 @@ public class MainActivity extends Activity {
         }).start();
     }
 
+    // ---- per-context scan power (Settings → Scan power) -------------------
+    // A default of 0 means "no default: keep whatever power is set".
+    // Resolution order while a batch is open with per-step defaults on:
+    // step default → tab default → leave the power alone.
+    private static final String[] TAB_POWER_KEYS = {
+            "pow_tab_batch", "pow_tab_station", "pow_tab_sweep",
+            "pow_tab_find", "pow_tab_locate", "pow_tab_link"};
+    private static final String[] TAB_POWER_NAMES = {
+            "Batch", "Station", "Sweep", "Find bin", "Locate", "Link"};
+    private static final String[] STEP_POWER_KEYS = {
+            "pow_step_collect", "pow_step_check", "pow_step_pair",
+            "pow_step_verify"};
+    private static final String[] STEP_POWER_NAMES = {
+            "Collect", "Check", "Pair", "Verify"};
+
+    private void applyContextPower() {
+        int want = 0;
+        if (activeTab == TAB_BATCH && inBatch()
+                && prefs.getBoolean("pow_steps_on", false)
+                && step >= 0 && step < STEP_POWER_KEYS.length) {
+            want = prefs.getInt(STEP_POWER_KEYS[step], 0);
+        }
+        if (want <= 0 && activeTab >= 0
+                && activeTab < TAB_POWER_KEYS.length) {
+            want = prefs.getInt(TAB_POWER_KEYS[activeTab], 0);
+        }
+        if (want >= 1 && want <= 30
+                && want != prefs.getInt("power", 5)) {
+            // Acts exactly like tapping the chip: prefs, chips, radio and
+            // status all move together, so hold-to-sweep's save/restore
+            // and every other power consumer stay consistent.
+            setPowerLevel(want);
+        }
+    }
+
     private void updatePowerChips(int lv) {
         boolean fav = favPowers().contains(lv);
         String text = "PWR " + lv + (fav ? " ★" : "");
-        pwrChipBatch.setText(text);
-        pwrChipStation.setText(text);
-        if (pwrChipSweep != null) pwrChipSweep.setText(text);
+        for (Button chip : powerChips) chip.setText(text);
+    }
+
+    /** One PWR chip, wired and registered — every tab header gets one
+     *  through here so a power change repaints all of them. */
+    private Button powerChip() {
+        Button chip = chipBtn("PWR " + prefs.getInt("power", 5));
+        wirePowerChip(chip);
+        powerChips.add(chip);
+        return chip;
+    }
+
+    /** The uniform tab sub-header: bold title left (or custom middle
+     *  views), PWR chip right. Every tab builds its top row through
+     *  this, so the shape is defined exactly once. The app-level header
+     *  above it (drawer ≡, help ?, scanner input, status line) is
+     *  already shared — built once in buildUi for all tabs. */
+    private LinearLayout tabHeader(String title, View... middle) {
+        LinearLayout header = new LinearLayout(this);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        if (title != null) {
+            TextView t = new TextView(this);
+            t.setText(title);
+            t.setTextSize(17);
+            t.setTypeface(null, Typeface.BOLD);
+            t.setTextColor(C_TEXT);
+            header.addView(t, middle.length == 0
+                    ? weight()
+                    : new LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.WRAP_CONTENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT));
+        }
+        for (View m : middle) header.addView(m, weight());
+        header.addView(powerChip());
+        return header;
     }
 
     // ---- power favourites --------------------------------------------------
@@ -4588,6 +4637,9 @@ public class MainActivity extends Activity {
     private void applyBatchUi() {
         boolean in = inBatch();
         if (in) publishStep();
+        // Step changes land here from every path (NEXT/BACK/resume/C72
+        // sync), so per-step power defaults apply themselves here too.
+        applyContextPower();
         binChip.setText(in
                 ? (receivingBatch ? "RECEIVING" : "Bin " + batchBin)
                 : "No batch");
@@ -7251,16 +7303,12 @@ public class MainActivity extends Activity {
         root.setPadding(dp(10), dp(10), dp(10), dp(10));
         scroll.addView(root);
 
+        root.addView(tabHeader("Gun → web terminal"));
+
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setBackground(rr(Color.WHITE, C_LINE, 10));
         card.setPadding(dp(12), dp(10), dp(12), dp(12));
-        TextView title = new TextView(this);
-        title.setText("GUN → WEB TERMINAL");
-        title.setTextSize(15);
-        title.setTypeface(null, Typeface.BOLD);
-        title.setTextColor(C_TEXT);
-        card.addView(title);
         TextView hint = new TextView(this);
         hint.setText("Scans on this tab don't act here — every barcode "
                 + "scan and trigger read is sent straight to the web "
@@ -7536,6 +7584,56 @@ public class MainActivity extends Activity {
         trig.setOnClickListener(v -> showTriggerPullSettings(refreshTrig));
         box.addView(trig);
 
+        // Scan power card — per-tab (and per-batch-step) default powers.
+        LinearLayout pow = new LinearLayout(this);
+        pow.setOrientation(LinearLayout.HORIZONTAL);
+        pow.setGravity(Gravity.CENTER_VERTICAL);
+        pow.setBackground(btnBg(Color.WHITE, C_LINE, C_PRESS, 8));
+        pow.setPadding(dp(12), dp(10), dp(12), dp(10));
+        LinearLayout pt = new LinearLayout(this);
+        pt.setOrientation(LinearLayout.VERTICAL);
+        TextView pTitle = new TextView(this);
+        pTitle.setText("Scan power");
+        pTitle.setTextSize(14);
+        pTitle.setTextColor(C_TEXT);
+        pTitle.setTypeface(null, Typeface.BOLD);
+        pt.addView(pTitle);
+        final TextView pSum = new TextView(this);
+        pSum.setTextSize(11);
+        pSum.setTextColor(C_MUTED);
+        pt.addView(pSum);
+        final Runnable refreshPow = () -> {
+            int tabs = 0;
+            for (String k : TAB_POWER_KEYS) {
+                if (prefs.getInt(k, 0) > 0) tabs++;
+            }
+            int steps = 0;
+            for (String k : STEP_POWER_KEYS) {
+                if (prefs.getInt(k, 0) > 0) steps++;
+            }
+            pSum.setText((tabs == 0
+                    ? "no tab defaults — power stays where you set it"
+                    : tabs + " tab default(s)")
+                    + (prefs.getBoolean("pow_steps_on", false)
+                        ? " · batch steps: " + steps + " set"
+                        : ""));
+        };
+        refreshPow.run();
+        pow.addView(pt, new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        TextView pArrow = new TextView(this);
+        pArrow.setText("›");
+        pArrow.setTextSize(22);
+        pArrow.setTextColor(C_MUTED);
+        pow.addView(pArrow);
+        LinearLayout.LayoutParams powLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        powLp.topMargin = dp(8);
+        pow.setLayoutParams(powLp);
+        pow.setOnClickListener(v -> showScanPowerSettings(refreshPow));
+        box.addView(pow);
+
         box.addView(sectionLabel("VISIBLE TABS · BATCH ALWAYS SHOWS"));
         final Switch swStation =
                 mkToggle(prefs.getBoolean("tab_station", true));
@@ -7765,10 +7863,111 @@ public class MainActivity extends Activity {
         dlg.show();
     }
 
-    /** Sweep power picker: the operator's starred favourites as pills,
-     *  plus a 1–30 slider for anything else. Tapping a pill snaps the
-     *  slider; releasing the slider on a favourite lights its pill. */
+    private String powDefaultLabel(int v) {
+        if (v <= 0) return "Off";
+        String name = favMap().get(v);
+        if (name == null) return "PWR " + v;
+        return "★ " + v + (name.isEmpty() ? "" : " · " + name);
+    }
+
+    /** One "context → default power" row for the Scan power window. */
+    private LinearLayout powDefaultRow(String label, final String key) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dp(5), 0, dp(5));
+        TextView l = new TextView(this);
+        l.setText(label);
+        l.setTextSize(14);
+        l.setTextColor(C_TEXT);
+        row.addView(l, new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        final Button btn = smallBtn(powDefaultLabel(prefs.getInt(key, 0)));
+        btn.setOnClickListener(v -> showPowerPicker(
+                "Default for " + label, prefs.getInt(key, 0), true,
+                picked -> {
+                    prefs.edit().putInt(key, picked).apply();
+                    btn.setText(powDefaultLabel(picked));
+                }));
+        row.addView(btn);
+        return row;
+    }
+
+    /** Settings → Scan power: a default power per tab, and optionally per
+     *  batch step. Off = the power simply stays wherever it was set —
+     *  exactly today's behaviour, so the whole feature is opt-in. */
+    private void showScanPowerSettings(Runnable onSaved) {
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(16);
+        box.setPadding(pad, pad, pad, 0);
+        scroll.addView(box);
+
+        box.addView(sectionLabel("DEFAULT POWER PER TAB"));
+        TextView hint = new TextView(this);
+        hint.setText("Applied when you open the tab, exactly like tapping "
+                + "its PWR chip. Off = the power stays wherever you set it.");
+        hint.setTextSize(11);
+        hint.setTextColor(C_MUTED);
+        hint.setPadding(0, 0, 0, dp(4));
+        box.addView(hint);
+        for (int i = 0; i < TAB_POWER_KEYS.length; i++) {
+            box.addView(powDefaultRow(TAB_POWER_NAMES[i],
+                    TAB_POWER_KEYS[i]));
+        }
+
+        final Switch swSteps =
+                mkToggle(prefs.getBoolean("pow_steps_on", false));
+        box.addView(toggleRow("Different power per batch step",
+                "Collect, Check, Pair and Verify each get their own "
+                + "default while a batch is open — a set step beats the "
+                + "Batch tab default.", swSteps));
+        final LinearLayout grp = new LinearLayout(this);
+        grp.setOrientation(LinearLayout.VERTICAL);
+        for (int i = 0; i < STEP_POWER_KEYS.length; i++) {
+            grp.addView(powDefaultRow(STEP_POWER_NAMES[i],
+                    STEP_POWER_KEYS[i]));
+        }
+        box.addView(grp);
+        final Runnable grey = () -> {
+            boolean on = swSteps.isChecked();
+            setEnabledDeep(grp, on);
+            grp.setAlpha(on ? 1f : 0.35f);
+        };
+        swSteps.setOnCheckedChangeListener((b, c) -> {
+            prefs.edit().putBoolean("pow_steps_on", c).apply();
+            grey.run();
+        });
+        grey.run();
+
+        new AlertDialog.Builder(this)
+                .setTitle("Scan power")
+                .setView(scroll)
+                .setPositiveButton("Done", (d, w) -> {
+                    if (onSaved != null) onSaved.run();
+                    // The context you're standing in picks its default
+                    // up immediately — no tab-hop needed to see it.
+                    applyContextPower();
+                })
+                .show();
+    }
+
+    /** Sweep power picker — the favourites picker aimed at sweep_pow. */
     private void showSweepPowerPicker(final Button opener) {
+        showPowerPicker("Sweep power", prefs.getInt("sweep_pow", 1), false,
+                picked -> {
+                    prefs.edit().putInt("sweep_pow", picked).apply();
+                    opener.setText(sweepPowLabel());
+                });
+    }
+
+    /** Power picker, generalized: the operator's starred favourites as
+     *  pills, plus a 1–30 slider for anything else. Tapping a pill snaps
+     *  the slider; releasing the slider on a favourite lights its pill.
+     *  With allowOff, a "No default" pill answers 0. */
+    private void showPowerPicker(String title, int current, boolean allowOff,
+                                 final java.util.function.IntConsumer onDone) {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         int pad = dp(16);
@@ -7783,7 +7982,7 @@ public class MainActivity extends Activity {
         final java.util.TreeMap<Integer, String> favs = favMap();
         final java.util.HashMap<Integer, Button> pills =
                 new java.util.HashMap<>();
-        final int[] sel = {prefs.getInt("sweep_pow", 1)};
+        final int[] sel = {current};
 
         final Runnable paint = () -> {
             for (java.util.Map.Entry<Integer, Button> e : pills.entrySet()) {
@@ -7825,6 +8024,27 @@ public class MainActivity extends Activity {
             row.addView(pill);
             i++;
         }
+        if (allowOff) {
+            // 0 = no default for this context; the wider fallback applies.
+            if (i % 2 == 0) {
+                row = new LinearLayout(this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                row.setGravity(Gravity.CENTER_HORIZONTAL);
+                box.addView(row);
+            }
+            Button off = smallBtn("No default");
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            lp.setMargins(dp(3), dp(3), dp(3), dp(3));
+            off.setLayoutParams(lp);
+            off.setOnClickListener(v -> {
+                sel[0] = 0;
+                paint.run();
+            });
+            pills.put(0, off);
+            row.addView(off);
+        }
 
         LinearLayout barRow = new LinearLayout(this);
         barRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -7836,10 +8056,10 @@ public class MainActivity extends Activity {
         barLabel.setTextColor(C_MUTED);
         barRow.addView(barLabel);
         bar.setMax(29);
-        bar.setProgress(sel[0] - 1);
+        bar.setProgress(Math.max(0, sel[0] - 1));
         barRow.addView(bar, new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        num.setText(String.valueOf(sel[0]));
+        num.setText(sel[0] > 0 ? String.valueOf(sel[0]) : "—");
         num.setTextSize(15);
         num.setTextColor(C_TEXT);
         num.setTypeface(null, Typeface.BOLD);
@@ -7863,12 +8083,9 @@ public class MainActivity extends Activity {
         paint.run();
 
         new AlertDialog.Builder(this)
-                .setTitle("Sweep power")
+                .setTitle(title)
                 .setView(box)
-                .setPositiveButton("Done", (d, w) -> {
-                    prefs.edit().putInt("sweep_pow", sel[0]).apply();
-                    opener.setText(sweepPowLabel());
-                })
+                .setPositiveButton("Done", (d, w) -> onDone.accept(sel[0]))
                 .setNegativeButton("Back", null)
                 .show();
     }

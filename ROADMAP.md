@@ -1,7 +1,26 @@
 # RFID Inventory System — Roadmap
 
 Source of truth for project status. Updated by Claude each working session.
-Last updated: 2026-08-08.
+Last updated: 2026-08-17.
+
+## 🔫 C72 v3.34: uniform tab headers + per-context power — ✅ DEPLOYED 2026-08-17
+
+- **One tab scaffold, enforced in code:** the app-level header (drawer ≡,
+  help ?, scanner input, status/alert line) was already built once and
+  shared; the per-tab sub-headers are now too — a single `tabHeader()`
+  builder (bold title left, PWR chip right) used by all six tabs, with
+  every chip in one registry so a power change repaints them all. LINK,
+  Find bin and Locate gained the PWR chip they were missing (Nick's ask);
+  changes to the scaffold now propagate everywhere by construction.
+- **Settings → Scan power:** a default power per tab (Batch, Station,
+  Sweep, Find bin, Locate, Link), each picked from the starred
+  favourites / 1–30 slider with a "No default" option — plus an opt-in
+  "different power per batch step" section (Collect/Check/Pair/Verify;
+  a set step beats the Batch tab default). Applying a default acts
+  exactly like tapping the PWR chip (prefs, chips, radio, status all
+  move together), fires on tab switch and every batch step change, and
+  Off everywhere = today's behaviour untouched. Hold-to-sweep's
+  save/restore stays consistent since defaults live in the same pref.
 
 ## 📦 Bundle contents — ✅ DEPLOYED 2026-08-08 (the W9184B case)
 
