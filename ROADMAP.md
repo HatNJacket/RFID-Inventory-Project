@@ -98,6 +98,16 @@ Nick's demo-prep pass (widget previews approved before build):
   auto_high 85→75 (point-blank pct plateaus ~77–83, AUTO never fired),
   auto_step_down 5→8 (fewer setPower blips — telemetry showed reads
   resume in <1 tick after changes; S0+filter delivering ~30 reads/s).
+- **v3.42 (code 60): motion gate.** Field test 2: standing still, the
+  bearing jumped — the engine amplified hand tremor into fake headings
+  (the amplitude normalizer ADAPTS to whatever it sees, so stillness
+  cranked sensitivity up) while reads kept arriving and dragged the
+  histogram. Real sweeps measure 2–6 m/s² lateral vs ~0.1 tremor, so a
+  fast envelope (halves ~0.5 s) gates the engine with hysteresis
+  (`sweep_gate_hi` 0.8 / `sweep_gate_lo` 0.35, live-tunable): below the
+  gate heading freezes, no samples record, no sweeps count, the slow
+  normalizer stops ratcheting, and the UI says "paused (not sweeping)".
+  Gate transitions log to telemetry for threshold tuning.
 
 ## 📡 Locate list (web → C72) — ✅ DEPLOYED 2026-08-17 (C72 v3.35)
 

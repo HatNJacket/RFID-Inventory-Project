@@ -1286,6 +1286,14 @@ public class MainActivity extends Activity {
     private final float[] accelGravity = new float[3];
     private double accelLateral = 0;
     private double accelAmp = 0.5;
+    // Motion gate: a real sweep swings 2-6 m/s² laterally, hand tremor
+    // ~0.1 — while below the gate the engine is PAUSED (heading frozen,
+    // no samples, no counting) instead of amplifying noise into fake
+    // bearings, which is what Nick saw standing still.
+    private double accelAmpFast = 0;
+    private volatile boolean sweepActive = false;
+    private volatile double tunSweepGateHi = 0.8;
+    private volatile double tunSweepGateLo = 0.35;
     private JSONObject locProduct = null;
     private final java.util.LinkedHashMap<String, Double> locTags =
             new java.util.LinkedHashMap<>();   // EPC -> last rssi heard
@@ -1640,6 +1648,8 @@ public class MainActivity extends Activity {
         lastRateSign = 0;
         accelLateral = 0;
         accelAmp = 0.5;
+        accelAmpFast = 0;
+        sweepActive = false;
         dbgLine("radar engine=" + (radarEngine == 1 ? "gyro-histogram"
                 : "accel-sweep"));
         if (radarEngine == 1) {
@@ -1688,6 +1698,22 @@ public class MainActivity extends Activity {
                 }
                 double lat = e.values[0] - accelGravity[0];
                 accelLateral = 0.7 * accelLateral + 0.3 * lat;
+                // Fast envelope (halves in ~0.5 s) drives the motion
+                // gate with hysteresis; the slow envelope normalizes
+                // heading but only ratchets while actually sweeping —
+                // stillness must not crank the sensitivity up.
+                accelAmpFast = Math.max(accelAmpFast * 0.97,
+                        Math.abs(accelLateral));
+                boolean wasActive = sweepActive;
+                sweepActive = accelAmpFast
+                        > (sweepActive ? tunSweepGateLo : tunSweepGateHi);
+                if (wasActive != sweepActive) {
+                    dbgLine("sweep gate " + (sweepActive ? "ON" : "OFF")
+                            + " env=" + String.format(
+                                    java.util.Locale.ROOT, "%.2f",
+                                    accelAmpFast));
+                }
+                if (!sweepActive) return;   // heading holds, no counting
                 accelAmp = Math.max(accelAmp * 0.997,
                         Math.abs(accelLateral));
                 double frac = Math.max(-1, Math.min(1,
@@ -1871,11 +1897,15 @@ public class MainActivity extends Activity {
                     : norm180(radarBearing);
         locDirText.setText(radarBearing == null ? "—" : dirWords(rel));
         boolean rough = radarSpread > 70;
+        boolean paused = radarEngine == 3 && !sweepActive;
         locRadarInfo.setText(radarBearing == null
-                ? "gathering… sweep back and forth"
+                ? (paused ? "paused — sweep back and forth to measure"
+                    : "gathering… sweep back and forth")
                 : (radarEngine != 2
                     ? (sweepHalfCount / 2) + " sweep(s) · " : "")
-                  + n + " ping(s)" + (rough ? " · rough — keep sweeping"
+                  + n + " ping(s)"
+                  + (paused ? " · paused (not sweeping)"
+                    : rough ? " · rough — keep sweeping"
                     : " · steady — trust it"));
         locRadarView.setState(rel, radarSpread, radarBearing != null);
     }
@@ -2477,7 +2507,10 @@ public class MainActivity extends Activity {
         locLastHeard = now;
         // Radar (gyro or accel-sweep engine): tag every read with the
         // gun's heading at that instant — the histogram does the rest.
-        if (locMode == 1 && (radarEngine == 1 || radarEngine == 3)) {
+        // Accel engine only while actually sweeping: a read taken
+        // standing still carries no direction information.
+        if (locMode == 1 && (radarEngine == 1
+                || (radarEngine == 3 && sweepActive))) {
             double s = locPctOf(rssi) / 100.0;
             if (s > 0.02) {
                 synchronized (radarSamples) {
@@ -2579,6 +2612,8 @@ public class MainActivity extends Activity {
                     tunRadarMaxAgeS = v.optDouble("radar_max_age_s", 15);
                     tunArcDeg = v.optDouble("arc_deg", 120);
                     tunAccelSign = v.optDouble("accel_sign", 1);
+                    tunSweepGateHi = v.optDouble("sweep_gate_hi", 0.8);
+                    tunSweepGateLo = v.optDouble("sweep_gate_lo", 0.35);
                     dbgLine("applied " + raw);
                     ui.post(() -> status.setText("Live tuning applied: "
                             + raw));
