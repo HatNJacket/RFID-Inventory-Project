@@ -33,7 +33,15 @@ Nick's demo-prep pass (widget previews approved before build):
 - test_binfix immunized against the startup bin-map-rebuild race (same
   fix as test_taginfo, 2026-08-08). 19/19 suites; APK v3.36 (code 54)
   hash-verified on prod.
-- NEXT: Nick wants a Locate-tab rework (his spec pending).
+- **v3.37 (code 55, same day): locate meter sawtooth fixed.** The 400 ms
+  tick mixed locPctOf(-999)=0 into the EMA on every window with no read
+  while the last read was still <1.2 s old — reads often arrive slower
+  than the tick, so the % halved per readless tick then leapt back on
+  the next read (Nick's peak-decay-peak report). Readless-but-fresh
+  ticks now HOLD the needle; the ×0.7 fade waits for real silence; the
+  window best is captured-then-reset so mid-tick reads count toward the
+  next window instead of being wiped. Hash-verified on prod.
+- NEXT: Nick wants a broader Locate-tab rework (his spec pending).
 
 ## 📡 Locate list (web → C72) — ✅ DEPLOYED 2026-08-17 (C72 v3.35)
 

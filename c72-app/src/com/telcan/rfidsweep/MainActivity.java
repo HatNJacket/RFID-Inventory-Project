@@ -1696,12 +1696,23 @@ public class MainActivity extends Activity {
     private void locateTick() {
         if (activeTab != TAB_LOCATE || locProduct == null) return;
         long now = System.currentTimeMillis();
+        // Capture-and-reset FIRST: a read landing while this tick computes
+        // rolls into the next window instead of being wiped by the reset.
+        double best = locBestRssi;
+        locBestRssi = -999;
+        boolean heardThisTick = best > -998;
         boolean fresh = locating && now - locLastHeard < 1200;
-        if (fresh) {
-            locEma = 0.5 * locEma + 0.5 * locPctOf(locBestRssi);
-        } else {
-            locEma *= 0.7;   // fade rather than snap when the tag goes quiet
+        if (heardThisTick) {
+            locEma = 0.5 * locEma + 0.5 * locPctOf(best);
+        } else if (!fresh) {
+            locEma *= 0.7;   // truly quiet: fade rather than snap
         }
+        // else: no read in THIS 400 ms window but one within 1200 ms —
+        // HOLD the needle. Mixing locPctOf(-999)=0 in here was Nick's
+        // sawtooth: reads often arrive slower than the tick, so the
+        // percentage halved on every readless tick, then leapt back up
+        // at the next read. Now it only moves on real signal (weaker
+        // reads still pull it down honestly) or real silence.
         int pct = (int) Math.round(locEma);
         locMeter.setProgress(pct);
         locPct.setText(locating
@@ -1711,7 +1722,6 @@ public class MainActivity extends Activity {
             if (e.getValue() > -998) heard++;
         }
         locHeardCount = heard;
-        locBestRssi = -999;   // best-of-window resets each tick
         updateLocateUi();
     }
 
