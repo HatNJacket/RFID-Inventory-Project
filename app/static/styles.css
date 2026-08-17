@@ -838,7 +838,8 @@ body {
 }
 .recent__prod { flex: 1 1 auto; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.recent__meta { color: var(--ink-dim); font-size: 12px; }
+.recent__meta { color: var(--ink-dim); font-size: 12px;}
+.binlabel { color: var(--ink-dim); font-size: 12px; white-space: nowrap;}
 .recent__when { white-space: nowrap; }
 .suspect { color: var(--warn-ink); cursor: help; font-size: 14px; }
 .recent__note { font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--ink-dim); }

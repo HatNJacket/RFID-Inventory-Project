@@ -2046,7 +2046,7 @@ function recentRow(a) {
     <span class="recent__prod">${escapeHtml(a.product_title || "")}${
       a.variant_title ? " (" + escapeHtml(a.variant_title) + ")" : ""
     }</span>
-    <span class="recent__meta">${escapeHtml(a.bin_location || "")}</span>
+    <span class="binlabel">${escapeHtml(a.bin_location || "")}</span>
     <span class="recent__meta recent__when">${escapeHtml(when)}</span>
     <button class="recent__unassign" type="button">unassign</button>
   `;
