@@ -693,6 +693,9 @@ public class MainActivity extends Activity {
         selectTab(TAB_BATCH);
         initReader();
         ui.postDelayed(this::refreshTick, 400);
+        // One batch of sensor lines per launch — tells the desk whether
+        // this gun has a real gyro (drives the radar engine choice).
+        ui.postDelayed(this::postSensorInventory, 4000);
     }
 
     // ------------------------------------------------------- view builders --
@@ -1229,8 +1232,49 @@ public class MainActivity extends Activity {
     private ImageView locImg;
     private TextView locName, locSku, locPct, locInfo, locHint;
     private android.widget.ProgressBar locMeter;
-    private Button locFar, locNear, locTouch, locSoundBtn, locTargetBtn,
-            locFoundBtn, locListBtn;
+    private Button locSoundBtn, locTargetBtn, locFoundBtn, locListBtn;
+    private Button locModeMeter, locModeRadar, locAutoBtn;
+    private LinearLayout locMeterPane, locRadarPane;
+    private RadarDialView locRadarView;
+    private TextView locDirText, locRadarInfo;
+    private PowerThermoView locThermo;
+    // 0 = meter, 1 = radar. Radar needs ONE target EPC.
+    private int locMode = 0;
+    // Radar engine: 0 none, 1 gyro histogram (our fusion), 2 Chainway
+    // startRadarLocation (no gyro on the device). Chosen when radar
+    // mode is entered; telemetry names the winner.
+    private int radarEngine = 0;
+    private boolean radarChainwayRunning = false;
+    private android.hardware.SensorManager sensorMgr;
+    private android.hardware.Sensor gyroSensor;
+    private android.hardware.SensorEventListener gyroListener;
+    private volatile double gyroHeading = 0;      // integrated yaw, deg
+    private long gyroLastTs = 0;
+    private double gyroRateSmooth = 0;
+    private int sweepHalfCount = 0;               // direction reversals
+    private int lastRateSign = 0;
+    /** Radar samples: [relative heading deg, strength 0..1, born ms]. */
+    private final java.util.ArrayList<double[]> radarSamples =
+            new java.util.ArrayList<>();
+    private Double radarBearing = null;           // world-heading deg
+    private double radarSpread = 60;
+    // Auto power: opt-in controller stepping power anywhere in
+    // [floor..30]; penalty memory blocks re-probing a level that just
+    // starved the reads.
+    private boolean autoPowerOn = false;
+    private long autoLastChange = 0;
+    private int autoPenaltyPower = 0;
+    private long autoPenaltyUntil = 0;
+    private volatile int tunAutoHigh = 85;
+    private volatile int tunAutoLow = 25;
+    private volatile int tunAutoDwellMs = 2500;
+    private volatile int tunAutoStepDown = 5;
+    private volatile int tunAutoStepUp = 6;
+    private volatile int tunAutoPenaltyS = 20;
+    private volatile int tunGyroAxis = 2;
+    private volatile double tunGyroSign = 1;
+    private volatile double tunRadarDecayS = 8;
+    private volatile double tunRadarMaxAgeS = 15;
     private JSONObject locProduct = null;
     private final java.util.LinkedHashMap<String, Double> locTags =
             new java.util.LinkedHashMap<>();   // EPC -> last rssi heard
@@ -1300,52 +1344,91 @@ public class MainActivity extends Activity {
         card.addView(row);
         v.addView(card);
 
+        // METER | RADAR mode switch. RADAR needs exactly one target.
+        LinearLayout modeSeg = new LinearLayout(this);
+        modeSeg.setGravity(Gravity.CENTER);
+        modeSeg.setBackground(rr(C_CARD, C_LINE, 8));
+        modeSeg.setPadding(dp(3), dp(3), dp(3), dp(3));
+        LinearLayout.LayoutParams msLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        msLp.topMargin = dp(8);
+        locModeMeter = segBtn("METER");
+        locModeRadar = segBtn("RADAR");
+        locModeMeter.setOnClickListener(x -> setLocMode(0));
+        locModeRadar.setOnClickListener(x -> setLocMode(1));
+        modeSeg.addView(locModeMeter, new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        modeSeg.addView(locModeRadar, new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        v.addView(modeSeg, msLp);
+
+        // -- meter pane (the classic %-strength hunt) --
+        locMeterPane = new LinearLayout(this);
+        locMeterPane.setOrientation(LinearLayout.VERTICAL);
         locMeter = new android.widget.ProgressBar(this, null,
                 android.R.attr.progressBarStyleHorizontal);
         locMeter.setMax(100);
         LinearLayout.LayoutParams ml = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(26));
-        ml.topMargin = dp(12);
-        v.addView(locMeter, ml);
-
+        ml.topMargin = dp(10);
+        locMeterPane.addView(locMeter, ml);
         locPct = new TextView(this);
         locPct.setTextSize(34);
         locPct.setTypeface(null, Typeface.BOLD);
         locPct.setTextColor(C_BLUE);
         locPct.setGravity(Gravity.CENTER);
         locPct.setText("—");
-        v.addView(locPct);
-
+        locMeterPane.addView(locPct);
         locInfo = new TextView(this);
         locInfo.setTextSize(12);
         locInfo.setTextColor(C_MUTED);
         locInfo.setGravity(Gravity.CENTER);
-        v.addView(locInfo);
+        locMeterPane.addView(locInfo);
+        v.addView(locMeterPane);
 
-        // FAR/NEAR/TOUCH as one segmented control: a single bordered
-        // track, the active range filled in the highlight colour.
-        LinearLayout pow = new LinearLayout(this);
-        pow.setGravity(Gravity.CENTER);
-        pow.setBackground(rr(C_CARD, C_LINE, 8));
-        pow.setPadding(dp(3), dp(3), dp(3), dp(3));
-        LinearLayout.LayoutParams powLp = new LinearLayout.LayoutParams(
+        // -- radar pane (bearing dial + plain-language direction) --
+        locRadarPane = new LinearLayout(this);
+        locRadarPane.setOrientation(LinearLayout.VERTICAL);
+        locRadarView = new RadarDialView(this);
+        LinearLayout.LayoutParams rl0 = new LinearLayout.LayoutParams(
+                dp(190), dp(190));
+        rl0.gravity = Gravity.CENTER_HORIZONTAL;
+        rl0.topMargin = dp(8);
+        locRadarPane.addView(locRadarView, rl0);
+        locDirText = new TextView(this);
+        locDirText.setTextSize(24);
+        locDirText.setTypeface(null, Typeface.BOLD);
+        locDirText.setTextColor(C_BLUE);
+        locDirText.setGravity(Gravity.CENTER);
+        locDirText.setText("—");
+        locRadarPane.addView(locDirText);
+        locRadarInfo = new TextView(this);
+        locRadarInfo.setTextSize(11);
+        locRadarInfo.setTextColor(C_MUTED);
+        locRadarInfo.setGravity(Gravity.CENTER);
+        locRadarPane.addView(locRadarInfo);
+        locRadarPane.setVisibility(View.GONE);
+        v.addView(locRadarPane);
+
+        // -- power thermometer (tap/drag 1..30) + AUTO toggle --
+        LinearLayout thermoRow = new LinearLayout(this);
+        thermoRow.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams thLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT);
-        powLp.topMargin = dp(10);
-        locFar = segBtn("FAR");
-        locNear = segBtn("NEAR");
-        locTouch = segBtn("TOUCH");
-        locFar.setOnClickListener(x -> setLocPower(30, locFar));
-        locNear.setOnClickListener(x -> setLocPower(12, locNear));
-        locTouch.setOnClickListener(x -> setLocPower(5, locTouch));
-        pow.addView(locFar, new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        pow.addView(locNear, new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        pow.addView(locTouch, new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        v.addView(pow, powLp);
-        setLocPower(locPower, locFar);
+        thLp.topMargin = dp(8);
+        locThermo = new PowerThermoView(this);
+        thermoRow.addView(locThermo, new LinearLayout.LayoutParams(
+                0, dp(52), 1f));
+        locAutoBtn = smallBtn("AUTO");
+        locAutoBtn.setOnClickListener(x -> setAutoPower(!autoPowerOn));
+        LinearLayout.LayoutParams abLp = new LinearLayout.LayoutParams(
+                dp(64), LinearLayout.LayoutParams.WRAP_CONTENT);
+        abLp.leftMargin = dp(6);
+        thermoRow.addView(locAutoBtn, abLp);
+        v.addView(thermoRow, thLp);
+        paintAutoBtn();
 
         LinearLayout act = new LinearLayout(this);
         act.setGravity(Gravity.CENTER);
@@ -1380,10 +1463,10 @@ public class MainActivity extends Activity {
         locHint.setTextColor(C_MUTED);
         locHint.setGravity(Gravity.CENTER);
         locHint.setPadding(0, dp(8), 0, 0);
-        locHint.setText("Trigger toggles the hunt. Signal pegged? Drop to "
-                + "NEAR, then TOUCH. FOUND IT? reads at power 1 with the "
-                + "antenna touching the sticker, and drops that tag out "
-                + "of the hunt.");
+        locHint.setText("Trigger toggles the hunt. Tap the power bar "
+                + "(1–30) or AUTO to let it step itself as you close in. "
+                + "RADAR needs one target and sweeps add up — no need to "
+                + "be slow or perfect. FOUND IT? confirms at power 1.");
         v.addView(locHint);
         return v;
     }
@@ -1403,24 +1486,552 @@ public class MainActivity extends Activity {
         return b;
     }
 
-    private void setLocPower(int power, Button active) {
+    /** Set the hunt power (1..30). announce=false for AUTO's quiet
+     *  adjustments; a power change makes old radar samples incomparable,
+     *  so they flush and refill over the next passes. */
+    private void setLocPower(int power, boolean announce) {
+        power = Math.max(1, Math.min(30, power));
         locPower = power;
-        for (Button b : new Button[]{locFar, locNear, locTouch}) {
-            boolean on = b == active;
-            b.setBackground(on ? rr(C_BLUE, 0, 6) : rr(0x00000000, 0, 6));
-            b.setTextColor(on ? Color.WHITE : C_MUTED);
-            b.setTypeface(null, on ? Typeface.BOLD : Typeface.NORMAL);
-        }
         if (locating && reader != null) {
             try {
                 reader.setPower(power);
             } catch (Exception ignored) {
             }
         }
-        status.setText("Locate power " + power
-                + (power <= 5 ? " — only answers within arm's reach."
-                   : power <= 12 ? " — a shelf bay or two."
-                   : " — the whole aisle answers."));
+        synchronized (radarSamples) {
+            radarSamples.clear();
+        }
+        radarBearing = null;
+        if (locThermo != null) locThermo.invalidate();
+        if (locRadarView != null) locRadarView.invalidate();
+        if (announce) {
+            status.setText("Locate power " + power
+                    + (power <= 5 ? " — only answers within arm's reach."
+                       : power <= 12 ? " — a shelf bay or two."
+                       : " — the whole aisle answers."));
+        }
+    }
+
+    private void setAutoPower(boolean on) {
+        autoPowerOn = on;
+        autoPenaltyPower = 0;
+        autoPenaltyUntil = 0;
+        autoLastChange = System.currentTimeMillis();
+        paintAutoBtn();
+        status.setText(on
+                ? "AUTO power: steps between " + autoFloor() + " and 30 as "
+                  + "you close in — tap the bar any time to take over."
+                : "Manual power — tap the bar to set 1–30, AUTO to hand "
+                  + "it back.");
+    }
+
+    private int autoFloor() {
+        return Math.max(1, Math.min(30, prefs.getInt("auto_floor", 5)));
+    }
+
+    private void paintAutoBtn() {
+        if (locAutoBtn == null) return;
+        locAutoBtn.setBackground(autoPowerOn
+                ? btnBg(C_BLUE, 0, C_BLUE_DK, 8)
+                : btnBg(C_CARD, C_LINE, C_PRESS, 8));
+        locAutoBtn.setTextColor(autoPowerOn ? Color.WHITE : C_TEXT);
+    }
+
+    // ---- AUTO power controller (runs from locateTick) ---------------------
+    // Steps DOWN only while pegged (still hearing strongly), UP when
+    // starved. A step-down that starves within the penalty window marks
+    // that level burned, so the pathological drop/lose/raise/drop loop
+    // can't cycle — one failed probe per level per approach.
+    private void autoPowerTick(long now, boolean fresh, int pct) {
+        if (!autoPowerOn || !locating) return;
+        if (now - autoLastChange < tunAutoDwellMs) return;
+        int floorEff = autoFloor();
+        if (now < autoPenaltyUntil && autoPenaltyPower > 0) {
+            floorEff = Math.max(floorEff, autoPenaltyPower + 1);
+        }
+        if (fresh && pct >= tunAutoHigh && locPower > floorEff) {
+            int want = Math.max(floorEff, locPower - tunAutoStepDown);
+            dbgLine("auto power " + locPower + "→" + want
+                    + " (pegged " + pct + "%)");
+            setLocPower(want, false);
+            autoLastChange = now;
+            beep(SOUND_OTHER);
+            status.setText("AUTO: closer — power down to " + locPower + ".");
+        } else if (!fresh && locPower < 30) {
+            // Starved. If we recently stepped down, that level is burned.
+            if (now - autoLastChange < (tunAutoPenaltyS * 1000L)
+                    + tunAutoDwellMs) {
+                autoPenaltyPower = locPower;
+                autoPenaltyUntil = now + tunAutoPenaltyS * 1000L;
+            }
+            int want = Math.min(30, locPower + tunAutoStepUp);
+            dbgLine("auto power " + locPower + "→" + want + " (starved)");
+            setLocPower(want, false);
+            autoLastChange = now;
+            status.setText("AUTO: lost it — power up to " + locPower + ".");
+        }
+    }
+
+    // ================= RADAR mode (bearing via sweep) ======================
+    private void setLocMode(int mode) {
+        if (mode == 1) {
+            // Radar hunts ONE tag. A single-tag product narrows itself.
+            if (locProduct == null || locTags.isEmpty()) {
+                alertStatus("Load a product first — scan its barcode or "
+                        + "pick from LIST….");
+                return;
+            }
+            if (locNarrow == null && locTags.size() == 1) {
+                locNarrow = locTags.keySet().iterator().next();
+            }
+            if (locNarrow == null) {
+                alertStatus("RADAR tracks ONE tag — pick it via TARGET… "
+                        + "first.");
+                return;
+            }
+        }
+        if (locMode == 1 && mode != 1) stopRadarEngine();
+        locMode = mode;
+        for (Button b : new Button[]{locModeMeter, locModeRadar}) {
+            boolean on = (b == locModeRadar) == (mode == 1);
+            b.setBackground(on ? rr(C_BLUE, 0, 6) : rr(0x00000000, 0, 6));
+            b.setTextColor(on ? Color.WHITE : C_MUTED);
+            b.setTypeface(null, on ? Typeface.BOLD : Typeface.NORMAL);
+        }
+        locMeterPane.setVisibility(mode == 0 ? View.VISIBLE : View.GONE);
+        locRadarPane.setVisibility(mode == 1 ? View.VISIBLE : View.GONE);
+        if (mode == 1) {
+            startRadarEngine();
+        } else {
+            status.setText("METER: trigger to hunt, FOUND IT? to confirm "
+                    + "a find.");
+        }
+    }
+
+    private void startRadarEngine() {
+        if (sensorMgr == null) {
+            sensorMgr = (android.hardware.SensorManager)
+                    getSystemService(SENSOR_SERVICE);
+        }
+        gyroSensor = sensorMgr == null ? null : sensorMgr.getDefaultSensor(
+                android.hardware.Sensor.TYPE_GYROSCOPE);
+        radarEngine = gyroSensor != null ? 1 : 2;
+        synchronized (radarSamples) {
+            radarSamples.clear();
+        }
+        radarBearing = null;
+        gyroHeading = 0;
+        gyroLastTs = 0;
+        sweepHalfCount = 0;
+        lastRateSign = 0;
+        dbgLine("radar engine=" + (radarEngine == 1 ? "gyro-histogram"
+                : "chainway-radar"));
+        if (radarEngine == 1) {
+            registerGyro();
+            status.setText("RADAR: pull the trigger, then sweep naturally "
+                    + "back and forth — it adds up over a few passes.");
+        } else {
+            status.setText("RADAR (no gyro — Chainway mode): pull the "
+                    + "trigger and rotate slowly on the spot.");
+        }
+        locRadarView.invalidate();
+        updateLocateUi();
+    }
+
+    private void stopRadarEngine() {
+        unregisterGyro();
+        if (radarChainwayRunning) {
+            try {
+                reader.stopRadarLocation();
+            } catch (Throwable ignored) {
+            }
+            radarChainwayRunning = false;
+        }
+    }
+
+    private void registerGyro() {
+        if (gyroListener != null || sensorMgr == null
+                || gyroSensor == null) {
+            return;
+        }
+        gyroListener = new android.hardware.SensorEventListener() {
+            @Override
+            public void onSensorChanged(android.hardware.SensorEvent e) {
+                if (gyroLastTs != 0) {
+                    double dt = (e.timestamp - gyroLastTs) / 1e9;
+                    if (dt > 0 && dt < 0.5) {
+                        int ax = Math.max(0, Math.min(2, tunGyroAxis));
+                        double rate = Math.toDegrees(e.values[ax])
+                                * tunGyroSign;
+                        gyroHeading += rate * dt;
+                        gyroRateSmooth = 0.8 * gyroRateSmooth + 0.2 * rate;
+                        // Count sweep reversals: sign flips at real speed.
+                        int sign = gyroRateSmooth > 25 ? 1
+                                : gyroRateSmooth < -25 ? -1 : 0;
+                        if (sign != 0 && lastRateSign != 0
+                                && sign != lastRateSign) {
+                            sweepHalfCount++;
+                        }
+                        if (sign != 0) lastRateSign = sign;
+                    }
+                }
+                gyroLastTs = e.timestamp;
+            }
+
+            @Override
+            public void onAccuracyChanged(android.hardware.Sensor s,
+                                          int a) {
+            }
+        };
+        sensorMgr.registerListener(gyroListener, gyroSensor,
+                android.hardware.SensorManager.SENSOR_DELAY_GAME);
+    }
+
+    private void unregisterGyro() {
+        if (gyroListener != null && sensorMgr != null) {
+            sensorMgr.unregisterListener(gyroListener);
+        }
+        gyroListener = null;
+    }
+
+    /** Chainway's own radar-location mode — used only when the device
+     *  has no gyro. It expects a slow steady rotation. */
+    private void toggleChainwayRadar() {
+        if (radarChainwayRunning) {
+            try {
+                reader.stopRadarLocation();
+            } catch (Throwable ignored) {
+            }
+            radarChainwayRunning = false;
+            status.setText("Radar paused.");
+            return;
+        }
+        if (locNarrow == null) {
+            alertStatus("Pick ONE tag via TARGET… first.");
+            return;
+        }
+        stopLocate(false);
+        try {
+            reader.setPower(locPower);
+        } catch (Exception ignored) {
+        }
+        try {
+            boolean ok = reader.startRadarLocation(this, locNarrow, 1, 32,
+                    new com.rscja.deviceapi.interfaces
+                            .IUHFRadarLocationCallback() {
+                        @Override
+                        public void getLocationValue(java.util.List<
+                                com.rscja.deviceapi.entity
+                                        .RadarLocationEntity> list) {
+                            if (list == null) return;
+                            long now = System.currentTimeMillis();
+                            synchronized (radarSamples) {
+                                for (com.rscja.deviceapi.entity
+                                        .RadarLocationEntity en : list) {
+                                    radarSamples.add(new double[]{
+                                            en.getAngle(),
+                                            Math.max(0, Math.min(1,
+                                                    en.getValue() / 100.0)),
+                                            now});
+                                }
+                            }
+                        }
+
+                        @Override
+                        public void getAngleValue(int angle) {
+                            long now = System.currentTimeMillis();
+                            synchronized (radarSamples) {
+                                radarSamples.add(new double[]{
+                                        angle, 0.6, now});
+                            }
+                        }
+                    });
+            radarChainwayRunning = ok;
+            dbgLine("chainway radar start ok=" + ok);
+            status.setText(ok
+                    ? "Radar running — rotate slowly on the spot."
+                    : "Radar refused to start — try METER mode.");
+            if (!ok) beep(SOUND_ERR);
+        } catch (Throwable t) {
+            dbgLine("chainway radar failed: " + t);
+            alertStatus("Radar mode failed on this device — use METER. ("
+                    + t.getClass().getSimpleName() + ")");
+        }
+    }
+
+    /** Recompute bearing from the decayed sample set (400 ms tick). */
+    private void radarTick(long now) {
+        double sumSin = 0;
+        double sumCos = 0;
+        double sumW = 0;
+        int n = 0;
+        synchronized (radarSamples) {
+            java.util.Iterator<double[]> it = radarSamples.iterator();
+            while (it.hasNext()) {
+                double[] s = it.next();
+                double age = (now - s[2]) / 1000.0;
+                if (age > tunRadarMaxAgeS || radarSamples.size() > 400) {
+                    it.remove();
+                    continue;
+                }
+                double w = s[1] * Math.exp(-age / tunRadarDecayS);
+                double rad = Math.toRadians(s[0]);
+                sumSin += w * Math.sin(rad);
+                sumCos += w * Math.cos(rad);
+                sumW += w;
+                n++;
+            }
+        }
+        if (sumW > 0.5 && n >= 5) {
+            radarBearing = Math.toDegrees(Math.atan2(sumSin, sumCos));
+            // Mean resultant length -> spread: 1 = laser, 0 = noise.
+            double r = Math.hypot(sumSin, sumCos) / sumW;
+            radarSpread = Math.max(15, Math.min(120, (1 - r) * 180));
+        } else {
+            radarBearing = null;
+        }
+        // Relative to where the gun points NOW (gyro engine); Chainway
+        // angles are already gun-relative.
+        double rel = radarBearing == null ? 0
+                : radarEngine == 1
+                    ? norm180(radarBearing - gyroHeading)
+                    : norm180(radarBearing);
+        locDirText.setText(radarBearing == null ? "—" : dirWords(rel));
+        boolean rough = radarSpread > 70;
+        locRadarInfo.setText(radarBearing == null
+                ? "gathering… sweep back and forth"
+                : (radarEngine == 1
+                    ? (sweepHalfCount / 2) + " sweep(s) · " : "")
+                  + n + " ping(s)" + (rough ? " · rough — keep sweeping"
+                    : " · steady — trust it"));
+        locRadarView.setState(rel, radarSpread, radarBearing != null);
+    }
+
+    private static double norm180(double deg) {
+        double d = deg % 360;
+        if (d > 180) d -= 360;
+        if (d < -180) d += 360;
+        return d;
+    }
+
+    /** Plain language, not degrees (Nick): bands around the nose. */
+    private String dirWords(double rel) {
+        double a = Math.abs(rel);
+        String side = rel < 0 ? "left" : "right";
+        if (a <= 10) return "Straight ahead";
+        if (a <= 30) return "Slight " + side;
+        if (a <= 60) return capitalize(side);
+        if (a <= 110) return "Hard " + side;
+        return "Behind you";
+    }
+
+    private static String capitalize(String s) {
+        return s.substring(0, 1).toUpperCase(java.util.Locale.ROOT)
+                + s.substring(1);
+    }
+
+    /** The bearing dial: rings, sample pings, wedge + average line. */
+    private class RadarDialView extends View {
+        private double rel = 0;
+        private double spread = 60;
+        private boolean has = false;
+        private final android.graphics.Paint p =
+                new android.graphics.Paint(
+                        android.graphics.Paint.ANTI_ALIAS_FLAG);
+
+        RadarDialView(android.content.Context c) {
+            super(c);
+        }
+
+        void setState(double relDeg, double spreadDeg, boolean hasFix) {
+            rel = relDeg;
+            spread = spreadDeg;
+            has = hasFix;
+            invalidate();
+        }
+
+        @Override
+        protected void onDraw(android.graphics.Canvas cv) {
+            float w = getWidth();
+            float h = getHeight();
+            float cx = w / 2;
+            float cy = h / 2;
+            float r = Math.min(cx, cy) - dp(2);
+            p.setStyle(android.graphics.Paint.Style.FILL);
+            p.setColor(C_CARD);
+            cv.drawCircle(cx, cy, r, p);
+            p.setStyle(android.graphics.Paint.Style.STROKE);
+            p.setStrokeWidth(dp(1));
+            p.setColor(C_LINE);
+            cv.drawCircle(cx, cy, r, p);
+            cv.drawCircle(cx, cy, r * 2 / 3, p);
+            cv.drawCircle(cx, cy, r / 3, p);
+            long now = System.currentTimeMillis();
+            // Sample pings (screen angle: 0° = up).
+            java.util.ArrayList<double[]> copy;
+            synchronized (radarSamples) {
+                copy = new java.util.ArrayList<>(radarSamples);
+            }
+            p.setStyle(android.graphics.Paint.Style.FILL);
+            for (double[] s : copy) {
+                double sRel = radarEngine == 1
+                        ? norm180(s[0] - gyroHeading) : norm180(s[0]);
+                double age = (now - s[2]) / 1000.0;
+                int alpha = (int) (140 * Math.exp(-age / tunRadarDecayS));
+                if (alpha < 12) continue;
+                p.setColor(withAlpha(C_BLUE, alpha));
+                double rad = Math.toRadians(sRel - 90);
+                float dist = (float) (r * (0.35 + 0.55 * s[1]));
+                cv.drawCircle(cx + (float) (dist * Math.cos(rad)),
+                        cy + (float) (dist * Math.sin(rad)), dp(3), p);
+            }
+            if (has) {
+                // Confidence wedge + average line + blip.
+                p.setStyle(android.graphics.Paint.Style.FILL);
+                p.setColor(withAlpha(C_BLUE, 40));
+                android.graphics.RectF box = new android.graphics.RectF(
+                        cx - r, cy - r, cx + r, cy + r);
+                cv.drawArc(box, (float) (rel - 90 - spread / 2),
+                        (float) spread, true, p);
+                p.setStyle(android.graphics.Paint.Style.STROKE);
+                p.setStrokeWidth(dp(3));
+                p.setColor(C_BLUE);
+                double rad = Math.toRadians(rel - 90);
+                float ex = cx + (float) (r * 0.86 * Math.cos(rad));
+                float ey = cy + (float) (r * 0.86 * Math.sin(rad));
+                cv.drawLine(cx, cy, ex, ey, p);
+                p.setStyle(android.graphics.Paint.Style.FILL);
+                cv.drawCircle(ex, ey, dp(6), p);
+            }
+            // You + the gun's nose (always straight up).
+            p.setStyle(android.graphics.Paint.Style.FILL);
+            p.setColor(C_TEXT);
+            cv.drawCircle(cx, cy, dp(5), p);
+            android.graphics.Path nose = new android.graphics.Path();
+            nose.moveTo(cx, cy - dp(14));
+            nose.lineTo(cx - dp(5), cy - dp(4));
+            nose.lineTo(cx + dp(5), cy - dp(4));
+            nose.close();
+            cv.drawPath(nose, p);
+        }
+    }
+
+    /** Tap/drag power bar, 1..30, with reference ticks and the AUTO
+     *  floor marked. The exact number rides above the live tick. */
+    private class PowerThermoView extends View {
+        private final android.graphics.Paint p =
+                new android.graphics.Paint(
+                        android.graphics.Paint.ANTI_ALIAS_FLAG);
+
+        PowerThermoView(android.content.Context c) {
+            super(c);
+        }
+
+        private float xFor(int pow, float w) {
+            float pad = dp(10);
+            return pad + (pow - 1) / 29f * (w - 2 * pad);
+        }
+
+        @Override
+        protected void onDraw(android.graphics.Canvas cv) {
+            float w = getWidth();
+            float cy = getHeight() * 0.58f;
+            p.setStyle(android.graphics.Paint.Style.FILL);
+            p.setColor(C_CARD);
+            android.graphics.RectF track = new android.graphics.RectF(
+                    dp(10), cy - dp(5), w - dp(10), cy + dp(5));
+            cv.drawRoundRect(track, dp(5), dp(5), p);
+            p.setStyle(android.graphics.Paint.Style.STROKE);
+            p.setStrokeWidth(dp(1));
+            p.setColor(C_LINE);
+            cv.drawRoundRect(track, dp(5), dp(5), p);
+            // Fill up to the current power.
+            p.setStyle(android.graphics.Paint.Style.FILL);
+            p.setColor(withAlpha(C_BLUE, 70));
+            android.graphics.RectF fill = new android.graphics.RectF(
+                    dp(10), cy - dp(5), xFor(locPower, w), cy + dp(5));
+            cv.drawRoundRect(fill, dp(5), dp(5), p);
+            // Reference ticks.
+            p.setTextAlign(android.graphics.Paint.Align.CENTER);
+            p.setTextSize(dp(9));
+            for (int t : new int[]{1, 5, 12, 30}) {
+                float x = xFor(t, w);
+                p.setColor(C_LINE);
+                p.setStrokeWidth(dp(1));
+                cv.drawLine(x, cy - dp(8), x, cy + dp(8), p);
+                p.setColor(C_MUTED);
+                cv.drawText(String.valueOf(t), x, cy + dp(19), p);
+            }
+            // AUTO floor marker.
+            float fx = xFor(autoFloor(), w);
+            p.setColor(C_MUTED);
+            cv.drawText("floor", fx, cy - dp(14), p);
+            // Live tick + number.
+            float x = xFor(locPower, w);
+            p.setColor(C_BLUE);
+            p.setStrokeWidth(dp(3));
+            cv.drawLine(x, cy - dp(11), x, cy + dp(11), p);
+            p.setTextSize(dp(11));
+            p.setFakeBoldText(true);
+            cv.drawText(String.valueOf(locPower), x, cy - dp(15), p);
+            p.setFakeBoldText(false);
+        }
+
+        @Override
+        public boolean onTouchEvent(android.view.MotionEvent e) {
+            if (e.getAction() == android.view.MotionEvent.ACTION_DOWN
+                    || e.getAction()
+                       == android.view.MotionEvent.ACTION_MOVE) {
+                float pad = dp(10);
+                float frac = (e.getX() - pad)
+                        / Math.max(1, getWidth() - 2 * pad);
+                int pow = Math.round(1 + frac * 29);
+                pow = Math.max(1, Math.min(30, pow));
+                if (autoPowerOn) {
+                    autoPowerOn = false;
+                    paintAutoBtn();
+                }
+                if (pow != locPower) setLocPower(pow, true);
+                return true;
+            }
+            return super.onTouchEvent(e);
+        }
+    }
+
+    /** One-time sensor inventory, straight to the debug channel — this
+     *  is how we learn whether the gun has a real gyro. Posts
+     *  unconditionally (tiny, once per launch). */
+    private void postSensorInventory() {
+        new Thread(() -> {
+            try {
+                android.hardware.SensorManager sm =
+                        (android.hardware.SensorManager)
+                                getSystemService(SENSOR_SERVICE);
+                if (sm == null) return;
+                org.json.JSONArray arr = new org.json.JSONArray();
+                arr.put("sensors on " + prefs.getString("device", "C72")
+                        + " (v" + BuildConfig());
+                for (android.hardware.Sensor s : sm.getSensorList(
+                        android.hardware.Sensor.TYPE_ALL)) {
+                    arr.put("sensor type=" + s.getType() + " \""
+                            + s.getName() + "\" vendor=" + s.getVendor());
+                }
+                JSONObject body = new JSONObject()
+                        .put("device", prefs.getString("device", "C72"))
+                        .put("lines", arr);
+                api("POST", "/api/c72/debug-log", body);
+            } catch (Exception ignored) {
+            }
+        }).start();
+    }
+
+    private String BuildConfig() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0)
+                    .versionName + ")";
+        } catch (Exception e) {
+            return "?)";
+        }
     }
 
     /** Resolve a scan/typed code into the product + its tags on file. */
@@ -1448,6 +2059,9 @@ public class MainActivity extends Activity {
                         tagsResp.optJSONArray("assignments");
                 ui.post(() -> {
                     stopLocate(false);
+                    // A new product invalidates the old radar picture.
+                    if (locMode == 1) setLocMode(0);
+                    stopRadarEngine();
                     locTags.clear();
                     locFound.clear();
                     locNarrow = null;
@@ -1788,6 +2402,16 @@ public class MainActivity extends Activity {
         }
         locReadsInWindow++;
         locLastHeard = now;
+        // Radar (gyro engine): tag every read with the gun's heading at
+        // that instant — the histogram does the rest.
+        if (locMode == 1 && radarEngine == 1) {
+            double s = locPctOf(rssi) / 100.0;
+            if (s > 0.02) {
+                synchronized (radarSamples) {
+                    radarSamples.add(new double[]{gyroHeading, s, now});
+                }
+            }
+        }
     }
 
     private double locPctOf(double rssi) {
@@ -1828,6 +2452,8 @@ public class MainActivity extends Activity {
             if (e.getValue() > -998) heard++;
         }
         locHeardCount = heard;
+        if (locMode == 1) radarTick(now);
+        autoPowerTick(now, fresh, pct);
         if (tunDebug && locating) {
             dbgLine("tick reads=" + reads
                     + " best=" + (heardThisTick
@@ -1868,6 +2494,16 @@ public class MainActivity extends Activity {
                     tunGen2Session = v.optInt("gen2_session", 0);
                     tunGen2Q = v.optInt("gen2_q", -1);
                     tunFilterNarrow = v.optBoolean("filter_narrow", true);
+                    tunAutoHigh = v.optInt("auto_high", 85);
+                    tunAutoLow = v.optInt("auto_low", 25);
+                    tunAutoDwellMs = v.optInt("auto_dwell_ms", 2500);
+                    tunAutoStepDown = v.optInt("auto_step_down", 5);
+                    tunAutoStepUp = v.optInt("auto_step_up", 6);
+                    tunAutoPenaltyS = v.optInt("auto_penalty_s", 20);
+                    tunGyroAxis = v.optInt("gyro_axis", 2);
+                    tunGyroSign = v.optDouble("gyro_sign", 1);
+                    tunRadarDecayS = v.optDouble("radar_decay_s", 8);
+                    tunRadarMaxAgeS = v.optDouble("radar_max_age_s", 15);
                     dbgLine("applied " + raw);
                     ui.post(() -> status.setText("Live tuning applied: "
                             + raw));
@@ -2964,7 +3600,10 @@ public class MainActivity extends Activity {
             tabViews[i].setVisibility(i == tab ? View.VISIBLE : View.GONE);
         }
         // Leaving locate always parks the radio (no-op when idle).
-        if (tab != TAB_LOCATE) stopLocate(false);
+        if (tab != TAB_LOCATE) {
+            stopLocate(false);
+            stopRadarEngine();
+        }
         // Identify is a station mode; don't let it follow you to another
         // tab and surprise the next trigger pull.
         if (tab != TAB_STATION && identifyArmed) setIdentifyArmed(false);
@@ -2994,6 +3633,11 @@ public class MainActivity extends Activity {
                     : "LOCATE: trigger to hunt, FOUND IT? to confirm a "
                       + "find.");
             refreshLocateListCount();
+            // AUTO power starts from the operator's chosen default each
+            // time the tab opens (Settings → Locate).
+            autoPowerOn = prefs.getBoolean("auto_default", false);
+            paintAutoBtn();
+            if (locMode == 1) startRadarEngine();
         }
     }
 
@@ -3252,7 +3896,8 @@ public class MainActivity extends Activity {
         } else if (activeTab == TAB_SWEEP) {
             toggleScan();
         } else if (activeTab == TAB_LOCATE) {
-            toggleLocate();
+            if (locMode == 1 && radarEngine == 2) toggleChainwayRadar();
+            else toggleLocate();
         } else if (activeTab == TAB_LINK) {
             linkReadTag();
         } else {
@@ -8273,6 +8918,28 @@ public class MainActivity extends Activity {
         thm.setOnClickListener(v -> showThemeSettings());
         box.addView(thm);
 
+        box.addView(sectionLabel("LOCATE"));
+        final Switch swAutoDef =
+                mkToggle(prefs.getBoolean("auto_default", false));
+        box.addView(toggleRow("Auto power starts ON",
+                "Opening Locate starts with AUTO stepping the power "
+                + "between the floor and 30. Off: manual until you tap "
+                + "AUTO.", swAutoDef));
+        final Button floorBtn = smallBtn("Auto power floor: "
+                + prefs.getInt("auto_floor", 5));
+        floorBtn.setOnClickListener(x ->
+                showPowerPicker("Auto power floor",
+                        prefs.getInt("auto_floor", 5), false, picked -> {
+                    prefs.edit().putInt("auto_floor", picked).apply();
+                    floorBtn.setText("Auto power floor: " + picked);
+                    if (locThermo != null) locThermo.invalidate();
+                }));
+        LinearLayout.LayoutParams flLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        flLp.topMargin = dp(4);
+        box.addView(floorBtn, flLp);
+
         box.addView(sectionLabel("VISIBLE TABS · BATCH ALWAYS SHOWS"));
         final Switch swStation =
                 mkToggle(prefs.getBoolean("tab_station", true));
@@ -8293,6 +8960,7 @@ public class MainActivity extends Activity {
                 .setPositiveButton("Save", (d, w) -> {
                     prefs.edit()
                             .putBoolean("strongest_read", swStrong.isChecked())
+                            .putBoolean("auto_default", swAutoDef.isChecked())
                             .putBoolean("tab_station", swStation.isChecked())
                             .putBoolean("tab_sweep", swSweep.isChecked())
                             .putBoolean("tab_find", swFind.isChecked())

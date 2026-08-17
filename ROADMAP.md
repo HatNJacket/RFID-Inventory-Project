@@ -65,7 +65,26 @@ Nick's demo-prep pass (widget previews approved before build):
   set blend=0.9 (sparse-read staircase: EMA closed only half the gap
   per read). Hash-verified on prod; field verification = Nick's next
   hunt with debug streaming.
-- NEXT: Nick wants a broader Locate-tab rework (his spec pending).
+- **v3.40 (code 58): RADAR bearing + thermometer auto-power** (the
+  Locate rework, previewed as widgets and spec'd by Nick before build).
+  METER | RADAR modes: radar is single-target (auto-narrows a one-tag
+  product; else asks for TARGET…), draws a dial — ping dots, confidence
+  wedge, average line — and speaks plain language ("Slight left", bands
+  ±10/30/60/110°, "Behind you"), designed around Nick's natural 120°
+  ~1 Hz back-and-forth (samples accumulate ~15 s, sweeps counted).
+  Engine picked at runtime: gyro histogram (reads tagged with
+  integrated heading; axis/sign live-tunable) or Chainway
+  startRadarLocation fallback when no gyro. Height/tilt phase CUT
+  (racking interferes; bays barely above head height). Power UI: the
+  FAR/NEAR/TOUCH segments became a tap/drag 1–30 thermometer with
+  reference ticks + floor marker, AUTO toggle beside it — opt-in
+  (Settings → Locate: default toggle + floor, default 5), steps down
+  only while pegged, up when starved, penalty memory prevents the
+  drop/lose/raise loop, radar samples flush on power change. Sensor
+  inventory posts to the debug channel once per launch (answers the
+  gyro question). All thresholds live-tunable (auto_*, gyro_axis/sign,
+  radar_decay_s/max_age_s). Hash-verified on prod; NEXT = field test
+  via the telemetry channel.
 
 ## 📡 Locate list (web → C72) — ✅ DEPLOYED 2026-08-17 (C72 v3.35)
 
