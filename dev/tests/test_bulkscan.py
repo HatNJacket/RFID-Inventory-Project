@@ -75,11 +75,19 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
           len(singles) == 2
           and any(MINE_OLD in e["detail"] for e in singles), singles)
 
+    # The product panel folds the whole same-worker SESSION: the sweep
+    # pair AND the single tag Nick paired moments earlier land in one
+    # expandable event (2026-08-18 change; the global History keeps its
+    # per-timestamp grouping above).
     ph = cl.get("/api/product-history", params={"term": "BULK-1"}).json()
     ph_sweeps = [e for e in ph.get("events", [])
                  if e["type"] == "tag-assigned" and e.get("epcs")]
-    check("the product panel folds the sweep too",
-          len(ph_sweeps) == 1 and len(ph_sweeps[0]["epcs"]) == 2, ph_sweeps)
+    check("the product panel folds the whole pairing session",
+          len(ph_sweeps) == 1
+          and sorted(ph_sweeps[0]["epcs"]) == sorted([A, B, MINE_OLD]),
+          ph_sweeps)
+    check("the session event counts its tags",
+          "3 × RFID tag" in ph_sweeps[0]["detail"], ph_sweeps[0]["detail"])
 
     # ---- undo: exactly the sweep, nothing else -------------------------
     r = cl.post("/api/rfid-assignments/sweep/undo",

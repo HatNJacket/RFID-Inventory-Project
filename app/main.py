@@ -7741,45 +7741,66 @@ def product_history(term: str, session: Session = Depends(get_session)):
 
     events = []
 
-    # Sweep-assigned tags fold into one expandable event here too.
-    ph_groups: dict = {}
-    ph_order: list = []
-    for a in session.scalars(
-        select(RfidAssignment).where(or_(
-            RfidAssignment.sku == sku, RfidAssignment.barcode == barcode
-        ))
-    ):
-        key = (a.assigned_by or "", iso(a.assigned_at))
-        if key not in ph_groups:
-            ph_groups[key] = []
-            ph_order.append(key)
-        ph_groups[key].append(a)
-    for key in ph_order:
-        group = ph_groups[key]
-        a = group[0]
-        if len(group) > 1:
-            suspects = sum(1 for x in group if x.suspect)
+    # Tag assignments: one event per pairing SESSION, not per tag. The
+    # same worker tying tags to this product within 20 minutes of each
+    # other is one piece of work — a batch pairing run, or a sweep plus
+    # the straggler scanned right after — so it folds into one
+    # expandable event (Nick, 2026-08-18).
+    assigns = sorted(
+        session.scalars(
+            select(RfidAssignment).where(or_(
+                RfidAssignment.sku == sku,
+                RfidAssignment.barcode == barcode,
+            ))
+        ),
+        key=lambda a: (a.assigned_at is None, a.assigned_at or a.id, a.id),
+    )
+    tag_sessions: list[dict] = []
+    for a in assigns:
+        prev = tag_sessions[-1] if tag_sessions else None
+        if (
+            prev is not None
+            and (prev["worker"] or "") == (a.assigned_by or "")
+            and prev["end"] is not None
+            and a.assigned_at is not None
+            and (a.assigned_at - prev["end"]).total_seconds() <= 1200
+        ):
+            prev["tags"].append(a)
+            prev["end"] = a.assigned_at
+        else:
+            tag_sessions.append({
+                "worker": a.assigned_by,
+                "start": a.assigned_at,
+                "end": a.assigned_at,
+                "tags": [a],
+            })
+    for g in tag_sessions:
+        tags = g["tags"]
+        suspects = sum(1 for x in tags if x.suspect)
+        bin_ = next((x.bin_location for x in tags if x.bin_location), None)
+        if len(tags) > 1:
+            events.append({
+                "at": iso(g["start"]),
+                "type": "tag-assigned",
+                "worker": g["worker"],
+                "detail": f"{len(tags)} × RFID tag"
+                          + (f" · {suspects} SUSPECT" if suspects else "")
+                          + (f" · bin {bin_}" if bin_ else ""),
+                "epcs": [x.rfid_id for x in tags],
+                "shopify": False,
+            })
+        else:
+            a = tags[0]
             events.append({
                 "at": iso(a.assigned_at),
                 "type": "tag-assigned",
                 "worker": a.assigned_by,
-                "detail": f"{len(group)} × RFID tag (sweep)"
-                          + (f" · {suspects} SUSPECT" if suspects else "")
+                "detail": f"EPC {a.rfid_id}"
+                          + (" · SUSPECT read" if a.suspect else "")
                           + (f" · bin {a.bin_location}"
                              if a.bin_location else ""),
-                "epcs": [x.rfid_id for x in group],
                 "shopify": False,
             })
-            continue
-        events.append({
-            "at": iso(a.assigned_at),
-            "type": "tag-assigned",
-            "worker": a.assigned_by,
-            "detail": f"EPC {a.rfid_id}"
-                      + (" · SUSPECT read" if a.suspect else "")
-                      + (f" · bin {a.bin_location}" if a.bin_location else ""),
-            "shopify": False,
-        })
 
     change_types = {
         "barcode": "barcode-replaced", "sku": "sku-updated",
@@ -7844,22 +7865,57 @@ def product_history(term: str, session: Session = Depends(get_session)):
             "shopify": True,
         })
 
+    # Labels: one event per print RUN (same outcome, batch and requester,
+    # chained ≤ 20 min apart) — "6 labels · batch #12", never six rows.
+    # No EPC in the detail: the code is pre-generated for RFID-ENCODING
+    # printers; on the barcode-only Zebra it never reaches the sticker,
+    # so showing it read as random hex (Nick, 2026-08-18). The real tag
+    # pairing appears as its own Assigned Tag event.
     job_types = {
         "done": "label-printed", "error": "label-failed",
         "canceled": "label-canceled", "pending": "label-queued",
         "printing": "label-printing",
     }
-    for j in session.scalars(
-        select(PrintJob).where(or_(
-            PrintJob.sku == sku, PrintJob.barcode == barcode
-        ))
-    ):
+    jobs = sorted(
+        session.scalars(
+            select(PrintJob).where(or_(
+                PrintJob.sku == sku, PrintJob.barcode == barcode
+            ))
+        ),
+        key=lambda j: (
+            (j.printed_at or j.created_at) is None,
+            j.printed_at or j.created_at or j.id,
+            j.id,
+        ),
+    )
+    print_runs: list[dict] = []
+    for j in jobs:
+        at = j.printed_at or j.created_at
+        prev = print_runs[-1] if print_runs else None
+        if (
+            prev is not None
+            and prev["status"] == j.status
+            and prev["batch_id"] == j.batch_id
+            and (prev["worker"] or "") == (j.requested_by or "")
+            and prev["end"] is not None
+            and at is not None
+            and (at - prev["end"]).total_seconds() <= 1200
+        ):
+            prev["n"] += 1
+            prev["end"] = at
+        else:
+            print_runs.append({
+                "status": j.status, "batch_id": j.batch_id,
+                "worker": j.requested_by, "start": at, "end": at, "n": 1,
+            })
+    for r in print_runs:
         events.append({
-            "at": iso(j.printed_at or j.created_at),
-            "type": job_types.get(j.status, j.status),
-            "worker": j.requested_by,
-            "detail": f"EPC {j.epc}"
-                      + (f" · batch #{j.batch_id}" if j.batch_id else ""),
+            "at": iso(r["start"]),
+            "type": job_types.get(r["status"], r["status"]),
+            "worker": r["worker"],
+            "detail": f"{r['n']} label{'s' if r['n'] != 1 else ''}"
+                      + (f" · batch #{r['batch_id']}"
+                         if r["batch_id"] else ""),
             "shopify": False,
         })
 
@@ -8144,8 +8200,10 @@ def history(
             "worker": j.requested_by,
             "sku": j.sku,
             "title": j.label_name or j.product_title,
-            "detail": f"EPC {j.epc}"
-                      + (f" · batch #{j.batch_id}" if j.batch_id else "")
+            # No EPC here: it's pre-generated for RFID-encoding printers
+            # and never reaches the sticker on the barcode-only Zebra —
+            # it read as random hex (Nick, 2026-08-18).
+            "detail": (f"batch #{j.batch_id}" if j.batch_id else "1 label")
                       + (f" · {j.error}" if j.error else ""),
         })
 

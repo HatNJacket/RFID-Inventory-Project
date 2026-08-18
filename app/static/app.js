@@ -8888,8 +8888,8 @@ async function openProductHistory(term) {
         <td class="recent__meta">${epcsDetailCell(e)}</td>
         <td>${
           e.shopify
-            ? '<span class="chip-status chip-status--done">Shopify ✓</span>'
-            : '<span class="chip-status chip-status--pending">local</span>'
+            ? '<span class="chip-status chip-status--done" title="This event wrote to (or read from) the live Shopify store">Shopify ✓</span>'
+            : '<span class="chip-status chip-status--pending" title="This event only touched the RFID system\'s own records — nothing in Shopify changed">RFID only</span>'
         }</td>
       </tr>`
       )
