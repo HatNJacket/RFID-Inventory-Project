@@ -1903,6 +1903,108 @@ el.printBtn.addEventListener("click", () =>
   queueLabels(Math.max(1, Math.min(100, Number(el.printQty.value) || 1)))
 );
 
+// --- "How do I use Scan Station?" walkthrough -------------------------------
+// A slideshow of illustrated steps: image up top, arrows on the sides
+// (greyed at the ends), explanation at the bottom. The SVGs are stand-ins
+// drawn from real boxes (the ZWO double-barcode, the Svbony SKU label) —
+// warehouse photos can replace any file in /static/help/ later without
+// touching code.
+const HELP_SLIDES = [
+  {
+    img: "/static/help/slide-link.svg",
+    text:
+      "Open the TC RFID app on the C72 gun and make sure it's on the LINK " +
+      "tab (new versions start there). Then turn ON the C72 LINK toggle at " +
+      "the top of this page — the gun's scans now land here.",
+  },
+  {
+    img: "/static/help/slide-scanner.svg",
+    text:
+      "Check the barcode scanner is connected to the C72. We have several " +
+      "— the right one is the scanner with NO label on its handle. Squeeze " +
+      "its trigger at any barcode: if the C72 beeps, you're connected.",
+  },
+  {
+    img: "/static/help/slide-barcode.svg",
+    text:
+      "Scan the barcode on the box. Some boxes carry two codes — wholesale " +
+      "labels often add a serial that our system doesn't know. If the " +
+      "first scan comes back unknown, try the other barcode; you'll " +
+      "quickly learn which one each brand wants.",
+  },
+  {
+    img: "/static/help/slide-sku.svg",
+    text:
+      "No barcode at all (Svbony boxes, damaged labels)? Type the SKU " +
+      "printed on the box into the scan field and press Enter. The ↑ and " +
+      "↓ arrows bring back recently typed SKUs for a shelf of identical " +
+      "boxes.",
+  },
+  {
+    img: "/static/help/slide-print.svg",
+    text:
+      "Type how many labels you need and press Print — or turn on " +
+      "auto-print (⚙ Settings) to get one label per scan with no button " +
+      "press. If the label's text would print badly, a red warning asks " +
+      "you to shorten it first.",
+  },
+  {
+    img: "/static/help/slide-tag.svg",
+    text:
+      "Stick the label on the box, then read it with the RFID gun (a " +
+      "trigger pull on LINK). The tag pairs to the product and the box " +
+      "is in the system — repeat for the next box.",
+  },
+];
+let helpIdx = 0;
+
+function renderHelp() {
+  const n = HELP_SLIDES.length;
+  helpIdx = Math.max(0, Math.min(n - 1, helpIdx));
+  const s = HELP_SLIDES[helpIdx];
+  document.getElementById("help-img").src = s.img;
+  document.getElementById("help-step").textContent =
+    `Step ${helpIdx + 1} of ${n}`;
+  document.getElementById("help-text").textContent = s.text;
+  const prev = document.getElementById("help-prev");
+  const next = document.getElementById("help-next");
+  prev.disabled = helpIdx === 0;
+  next.disabled = helpIdx === n - 1;
+  document.getElementById("help-dots").innerHTML = HELP_SLIDES.map(
+    (_, i) =>
+      `<span class="help-dot${i === helpIdx ? " help-dot--on" : ""}"></span>`
+  ).join("");
+}
+
+document.getElementById("help-open").addEventListener("click", () => {
+  helpIdx = 0;
+  renderHelp();
+  document.getElementById("help-overlay").hidden = false;
+});
+document.getElementById("help-close").addEventListener("click", () => {
+  document.getElementById("help-overlay").hidden = true;
+});
+document.getElementById("help-overlay").addEventListener("click", (e) => {
+  if (e.target === e.currentTarget) e.currentTarget.hidden = true;
+});
+document.getElementById("help-prev").addEventListener("click", () => {
+  helpIdx -= 1;
+  renderHelp();
+});
+document.getElementById("help-next").addEventListener("click", () => {
+  helpIdx += 1;
+  renderHelp();
+});
+document.addEventListener("keydown", (e) => {
+  if (document.getElementById("help-overlay").hidden) return;
+  if (e.key === "ArrowLeft") { helpIdx -= 1; renderHelp(); }
+  else if (e.key === "ArrowRight") { helpIdx += 1; renderHelp(); }
+  else if (e.key === "Escape") {
+    document.getElementById("help-overlay").hidden = true;
+    e.stopPropagation();
+  }
+}, true);
+
 // --- Printer picker ----------------------------------------------------------
 // One card per detected printer (rows come from agent check-ins — nothing
 // is hand-typed). The choice is per device; queued jobs carry it so a

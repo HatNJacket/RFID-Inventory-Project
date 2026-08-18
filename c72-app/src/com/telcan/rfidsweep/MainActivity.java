@@ -692,7 +692,9 @@ public class MainActivity extends Activity {
         setContentView(outer);
 
         restoreMap("saved_tags", tags);
-        selectTab(TAB_BATCH);
+        // Land on LINK: with batch tagging winding down, the gun's main
+        // job is feeding the web terminal (Nick, 2026-08-18).
+        selectTab(TAB_LINK);
         initReader();
         ui.postDelayed(this::refreshTick, 400);
         // One batch of sensor lines per launch — tells the desk whether

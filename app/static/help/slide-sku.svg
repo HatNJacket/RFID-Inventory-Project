@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 420" font-family="Segoe UI, Arial, sans-serif">
+  <rect width="700" height="420" fill="#ffffff"/>
+  <!-- brown box corner -->
+  <rect x="60" y="40" width="380" height="330" rx="6" fill="#c9a878"/>
+  <rect x="60" y="40" width="380" height="330" rx="6" fill="none" stroke="#b08f60"/>
+  <!-- white label -->
+  <g transform="rotate(-4 250 200)">
+    <rect x="100" y="90" width="300" height="210" rx="14" fill="#ffffff" stroke="#b9b4aa"/>
+    <text x="118" y="126" font-size="24" font-weight="800" fill="#1c1e21">SVBONY</text>
+    <text x="230" y="120" font-size="11" fill="#4a4f55">Dielectric Mirror Diagonal</text>
+    <g font-size="11" fill="#4a4f55">
+      <text x="118" y="150">Model: SV223</text>
+      <text x="118" y="166">Reflectivity: 99%</text>
+      <text x="118" y="182">Specification: 1.25-Inch 90</text>
+      <text x="118" y="198">S/N: 2502S2231100103</text>
+      <text x="118" y="214">Hong Kong Svbony Technology Co.,Ltd</text>
+    </g>
+    <text x="118" y="262" font-size="26" font-weight="800" fill="#1c1e21">SKU:W9180A</text>
+    <text x="118" y="286" font-size="10" fill="#6d7175">MADE IN CHINA</text>
+    <!-- red ring around the SKU -->
+    <rect x="106" y="234" width="220" height="42" rx="21" fill="none" stroke="#d72c0d" stroke-width="5"/>
+  </g>
+  <!-- arrow + instruction -->
+  <g stroke="#d72c0d" stroke-width="5" fill="none" stroke-linecap="round">
+    <path d="M 470 210 Q 400 230 340 244"/>
+    <path d="M 340 244 l 17 -3 M 340 244 l 8 -14"/>
+  </g>
+  <text x="478" y="188" font-size="19" font-weight="700" fill="#d72c0d">No barcode —</text>
+  <text x="478" y="212" font-size="19" font-weight="700" fill="#d72c0d">type the SKU</text>
+  <!-- the scan box -->
+  <rect x="440" y="250" width="230" height="46" rx="10" fill="#f6f7f8" stroke="#29845a" stroke-width="2.5"/>
+  <text x="454" y="279" font-size="18" fill="#2b2f33" font-family="Consolas, monospace">W9180A<tspan fill="#29845a">|</tspan></text>
+  <text x="440" y="322" font-size="13" fill="#4a4f55">…then press Enter. ↑ / ↓ arrows bring back</text>
+  <text x="440" y="340" font-size="13" fill="#4a4f55">recently typed SKUs for repeat boxes.</text>
+</svg>

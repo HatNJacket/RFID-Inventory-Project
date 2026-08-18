@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 420" font-family="Segoe UI, Arial, sans-serif">
+  <rect width="700" height="420" fill="#ffffff"/>
+  <!-- barcode scanner -->
+  <g>
+    <!-- head -->
+    <path d="M 120 90 Q 120 60 155 60 L 265 60 Q 300 60 300 90 L 300 130 Q 300 160 265 160 L 200 160 L 190 150 L 155 150 Q 120 150 120 120 Z" fill="#3a3f45"/>
+    <rect x="132" y="86" width="52" height="40" rx="6" fill="#8fd0ff"/>
+    <!-- grip -->
+    <path d="M 190 150 L 250 150 L 232 300 Q 228 322 206 322 L 196 322 Q 176 322 176 300 Z" fill="#2b2f33"/>
+    <!-- trigger -->
+    <path d="M 186 180 q -18 8 -12 30 l 10 0 q -4 -16 8 -22 Z" fill="#c9503c"/>
+    <!-- beam -->
+    <g stroke="#d72c0d" stroke-width="3" opacity="0.7">
+      <line x1="118" y1="106" x2="60" y2="106"/>
+      <line x1="118" y1="96" x2="70" y2="86"/>
+      <line x1="118" y1="116" x2="70" y2="126"/>
+    </g>
+  </g>
+  <!-- handle callout: NO label -->
+  <g>
+    <ellipse cx="205" cy="250" rx="52" ry="64" fill="none" stroke="#29845a" stroke-width="5"/>
+    <text x="278" y="238" font-size="18" font-weight="700" fill="#29845a">plain handle —</text>
+    <text x="278" y="262" font-size="18" font-weight="700" fill="#29845a">NO label sticker</text>
+    <text x="278" y="286" font-size="14" fill="#4a4f55">(the labelled scanners pair to other PCs)</text>
+  </g>
+  <!-- bluetooth link to C72 -->
+  <g>
+    <path d="M 330 110 Q 420 60 500 110" stroke="#1f5f8b" stroke-width="4" fill="none" stroke-dasharray="10 8"/>
+    <text x="398" y="70" font-size="26" fill="#1f5f8b" font-weight="700">ᛒ</text>
+    <text x="352" y="46" font-size="14" fill="#1f5f8b">Bluetooth, already paired</text>
+  </g>
+  <!-- mini C72 -->
+  <g>
+    <rect x="500" y="90" width="120" height="200" rx="16" fill="#2b2f33"/>
+    <rect x="510" y="104" width="100" height="130" rx="6" fill="#f6f7f8"/>
+    <rect x="536" y="112" width="46" height="22" rx="4" fill="#29845a"/>
+    <text x="559" y="127" font-size="11" fill="#fff" font-weight="700" text-anchor="middle">LINK</text>
+    <text x="560" y="170" font-size="12" fill="#4a4f55" text-anchor="middle">C72</text>
+    <rect x="536" y="246" width="48" height="28" rx="8" fill="#c9503c"/>
+  </g>
+  <text x="60" y="384" font-size="15" fill="#2f3b34">Squeeze the scanner's trigger — if the C72 beeps, you're connected.</text>
+</svg>

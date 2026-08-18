@@ -199,6 +199,49 @@ body {
   cursor: progress;
 }
 
+/* Scan Station walkthrough (help slideshow) */
+.linkbar__help { margin-left: auto; white-space: nowrap; }
+.help-modal { max-width: 760px; width: min(760px, 94vw); }
+.help-modal__head { display: flex; align-items: center; }
+.help-modal__head span:first-child { flex: 1; }
+.help-stage {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+.help-img {
+  flex: 1;
+  min-width: 0;
+  aspect-ratio: 5 / 3;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  object-fit: contain;
+}
+.help-arrow {
+  font: inherit;
+  font-size: 30px;
+  line-height: 1;
+  padding: 18px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.help-arrow:hover:not(:disabled) { border-color: var(--accent, #29845a); }
+.help-arrow:disabled { opacity: 0.25; cursor: default; }
+.help-dots { display: flex; justify-content: center; gap: 7px; margin: 10px 0 2px; }
+.help-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--line); display: inline-block;
+}
+.help-dot--on { background: var(--accent, #29845a); }
+.help-cap { min-height: 76px; }
+.help-cap b { font-size: 12px; color: var(--ink-dim, #6d7175); }
+.help-cap p { margin: 4px 0 0; font-size: 14px; line-height: 1.45; }
+
 /* Printer picker */
 .print__printer { white-space: nowrap; }
 .printerpick__head { display: flex; align-items: center; gap: 8px; }

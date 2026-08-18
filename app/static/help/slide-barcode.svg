@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 420" font-family="Segoe UI, Arial, sans-serif">
+  <rect width="700" height="420" fill="#ffffff"/>
+  <!-- box -->
+  <rect x="90" y="30" width="420" height="360" rx="6" fill="#f2ede4" stroke="#d8d2c6"/>
+  <!-- label -->
+  <rect x="130" y="70" width="340" height="280" rx="8" fill="#ffffff" stroke="#b9b4aa"/>
+  <rect x="146" y="86" width="308" height="40" fill="none" stroke="#6d7175"/>
+  <text x="300" y="112" font-size="19" font-weight="700" text-anchor="middle" fill="#2b2f33" letter-spacing="1">ZWO Nikon-T2-II</text>
+  <!-- top (product) barcode -->
+  <g fill="#1c1e21">
+    <rect x="168" y="146" width="4" height="52"/><rect x="176" y="146" width="2" height="52"/><rect x="182" y="146" width="6" height="52"/><rect x="192" y="146" width="2" height="52"/><rect x="198" y="146" width="4" height="52"/><rect x="208" y="146" width="8" height="52"/><rect x="220" y="146" width="2" height="52"/><rect x="226" y="146" width="4" height="52"/><rect x="236" y="146" width="6" height="52"/><rect x="246" y="146" width="2" height="52"/><rect x="252" y="146" width="4" height="52"/><rect x="262" y="146" width="2" height="52"/><rect x="268" y="146" width="8" height="52"/><rect x="280" y="146" width="2" height="52"/><rect x="286" y="146" width="4" height="52"/><rect x="296" y="146" width="6" height="52"/><rect x="306" y="146" width="2" height="52"/><rect x="312" y="146" width="4" height="52"/><rect x="322" y="146" width="8" height="52"/><rect x="334" y="146" width="2" height="52"/><rect x="340" y="146" width="4" height="52"/><rect x="350" y="146" width="6" height="52"/><rect x="360" y="146" width="2" height="52"/><rect x="366" y="146" width="4" height="52"/><rect x="376" y="146" width="2" height="52"/><rect x="382" y="146" width="6" height="52"/><rect x="392" y="146" width="2" height="52"/><rect x="398" y="146" width="4" height="52"/><rect x="408" y="146" width="8" height="52"/><rect x="420" y="146" width="2" height="52"/><rect x="426" y="146" width="4" height="52"/>
+  </g>
+  <text x="300" y="216" font-size="14" text-anchor="middle" fill="#2b2f33" letter-spacing="4">6977641321501</text>
+  <text x="300" y="234" font-size="10" text-anchor="middle" fill="#4a4f55">New Nikon-T2 Adapter suitable for all ASI cameras</text>
+  <!-- bottom (serial) barcode -->
+  <g fill="#1c1e21" opacity="0.75">
+    <rect x="180" y="252" width="3" height="40"/><rect x="187" y="252" width="6" height="40"/><rect x="197" y="252" width="2" height="40"/><rect x="203" y="252" width="4" height="40"/><rect x="211" y="252" width="7" height="40"/><rect x="222" y="252" width="2" height="40"/><rect x="228" y="252" width="5" height="40"/><rect x="237" y="252" width="2" height="40"/><rect x="243" y="252" width="6" height="40"/><rect x="253" y="252" width="3" height="40"/><rect x="260" y="252" width="5" height="40"/><rect x="269" y="252" width="2" height="40"/><rect x="275" y="252" width="7" height="40"/><rect x="286" y="252" width="2" height="40"/><rect x="292" y="252" width="4" height="40"/><rect x="300" y="252" width="6" height="40"/><rect x="310" y="252" width="2" height="40"/><rect x="316" y="252" width="5" height="40"/><rect x="325" y="252" width="3" height="40"/><rect x="332" y="252" width="6" height="40"/>
+  </g>
+  <text x="258" y="310" font-size="13" fill="#2b2f33" letter-spacing="2">CP260626000524</text>
+  <text x="420" y="310" font-size="12" font-weight="700" fill="#2b2f33">Made in China</text>
+  <!-- red ring around the TOP barcode -->
+  <ellipse cx="300" cy="180" rx="165" ry="52" fill="none" stroke="#d72c0d" stroke-width="5"/>
+  <g stroke="#d72c0d" stroke-width="5" fill="none" stroke-linecap="round">
+    <path d="M 528 120 Q 500 140 470 160"/>
+    <path d="M 470 160 l 16 -6 M 470 160 l 4 -16"/>
+  </g>
+  <text x="520" y="96" font-size="19" font-weight="700" fill="#d72c0d">Scan THIS</text>
+  <text x="520" y="118" font-size="19" font-weight="700" fill="#d72c0d">barcode</text>
+  <!-- grey note on the serial -->
+  <text x="520" y="268" font-size="14" fill="#6d7175">the lower code is a</text>
+  <text x="520" y="286" font-size="14" fill="#6d7175">serial — it won't</text>
+  <text x="520" y="304" font-size="14" fill="#6d7175">find the product</text>
+</svg>

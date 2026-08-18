@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 420" font-family="Segoe UI, Arial, sans-serif">
+  <rect width="700" height="420" fill="#ffffff"/>
+  <!-- product card sketch -->
+  <rect x="50" y="36" width="600" height="150" rx="12" fill="#f6f7f8" stroke="#d9dbde"/>
+  <text x="70" y="68" font-size="17" font-weight="700" fill="#2b2f33">ZWO Nikon-T2-II Adapter</text>
+  <text x="70" y="92" font-size="13" fill="#4a4f55">SKU 6977641321501 · Bin B12A-3 · Tags on file: 2</text>
+  <!-- print panel -->
+  <text x="70" y="132" font-size="14" font-weight="650" fill="#2b2f33">Labels</text>
+  <rect x="130" y="112" width="58" height="32" rx="8" fill="#ffffff" stroke="#8a8f95"/>
+  <text x="159" y="134" font-size="16" text-anchor="middle" fill="#2b2f33">3</text>
+  <rect x="200" y="110" width="240" height="36" rx="9" fill="#29845a"/>
+  <text x="320" y="134" font-size="14" font-weight="700" fill="#ffffff" text-anchor="middle">Print &amp; encode RFID labels</text>
+  <rect x="452" y="110" width="128" height="36" rx="9" fill="#eef0f2" stroke="#c6c9cd"/>
+  <text x="516" y="134" font-size="13" text-anchor="middle" fill="#2b2f33">🖨 warehouse-zebra</text>
+  <!-- settings sketch -->
+  <rect x="50" y="212" width="330" height="128" rx="12" fill="#f6f7f8" stroke="#d9dbde"/>
+  <text x="66" y="240" font-size="14" font-weight="700" fill="#2b2f33">⚙ Settings</text>
+  <rect x="66" y="254" width="16" height="16" rx="3" fill="#29845a"/>
+  <text x="76" y="267" font-size="11" fill="#fff" text-anchor="middle" font-weight="700">✓</text>
+  <text x="90" y="267" font-size="13" fill="#2b2f33">Auto-print label on scan</text>
+  <rect x="86" y="280" width="16" height="16" rx="3" fill="#29845a"/>
+  <text x="96" y="293" font-size="11" fill="#fff" text-anchor="middle" font-weight="700">✓</text>
+  <text x="110" y="293" font-size="13" fill="#2b2f33">…including Astronomik serials</text>
+  <text x="66" y="324" font-size="12" fill="#4a4f55">On = every scan prints one label by itself.</text>
+  <!-- red alert example -->
+  <rect x="404" y="212" width="262" height="128" rx="12" fill="#fff5f4" stroke="#e6b0a8"/>
+  <text x="420" y="240" font-size="13" font-weight="700" fill="#d72c0d">If the text won't fit:</text>
+  <text x="420" y="266" font-size="12" fill="#d72c0d">⚠ Label will print badly: the label</text>
+  <text x="420" y="283" font-size="12" fill="#d72c0d">name is 84 characters — update the</text>
+  <text x="420" y="300" font-size="12" fill="#d72c0d">text before printing.</text>
+  <text x="420" y="326" font-size="12" fill="#4a4f55">Shorten the name, then print.</text>
+  <text x="50" y="384" font-size="15" fill="#2f3b34">Type how many labels you need — or let auto-print do one per scan.</text>
+</svg>

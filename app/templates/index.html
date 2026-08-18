@@ -84,6 +84,28 @@
       <div class="linkbar">
         <button id="link-toggle" type="button" class="linkbar__btn">C72 LINK: OFF</button>
         <span class="linkbar__status" id="link-status">Gun scans stay on the gun. Turn this on (and open LINK on the C72) to scan for this screen.</span>
+        <button id="help-open" type="button" class="reset linkbar__help"
+                title="A picture walkthrough of the whole tagging loop">❓ How do I use Scan Station?</button>
+      </div>
+
+      <!-- Scan Station walkthrough: slideshow of illustrated steps -->
+      <div class="phist-overlay" id="help-overlay" hidden>
+        <section class="linkbox serialbox phist-modal help-modal">
+          <div class="linkbox__title help-modal__head">
+            <span>How to use Scan Station</span>
+            <span class="rvw-close" id="help-close" title="Close">✕</span>
+          </div>
+          <div class="help-stage">
+            <button class="help-arrow" id="help-prev" type="button" aria-label="Previous step">‹</button>
+            <img class="help-img" id="help-img" src="" alt="" />
+            <button class="help-arrow" id="help-next" type="button" aria-label="Next step">›</button>
+          </div>
+          <div class="help-dots" id="help-dots"></div>
+          <div class="help-cap">
+            <b id="help-step">Step 1</b>
+            <p id="help-text"></p>
+          </div>
+        </section>
       </div>
 
       <!-- STEP 1: barcode -->
