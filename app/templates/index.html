@@ -33,7 +33,13 @@
             <label class="settings__item" id="auto-print-item">
               <input type="checkbox" id="auto-print" />
               <span>Auto-print label on scan
-                <span class="settings__hint">Prints one label instantly when scanning an Astronomik serial with a confirmed name.</span>
+                <span class="settings__hint">Prints one label the moment a scanned barcode or typed SKU loads a product — no button press. Held with a red note if the label text would print badly.</span>
+              </span>
+            </label>
+            <label class="settings__item settings__item--sub" id="auto-print-serial-item">
+              <input type="checkbox" id="auto-print-serial" />
+              <span>…including Astronomik serials
+                <span class="settings__hint">Astronomik labels print a saved name at the top — a serial only auto-prints once its name has been confirmed.</span>
               </span>
             </label>
             <label class="settings__item" id="require-bin-item">
@@ -52,7 +58,9 @@
           </div>
         </details>
         <select class="operator" id="operator" title="Who's using the station">
-          <option value="">Who's scanning?</option>
+          <!-- Placeholder face of the closed select — hidden from the open
+               list, so picking is a one-way door to a real name. -->
+          <option value="" disabled hidden>Who's scanning?</option>
           {% for name in operators %}
           <option value="{{ name }}">{{ name }}</option>
           {% endfor %}
@@ -284,9 +292,26 @@
           </button>
           <span class="print__nobin" id="print-nobin" hidden
                 title="This product has no bin assigned — its labels print without a shelf. Click the bin chip above to set one.">⚠ No bin set</span>
+          <span class="print__nobin" id="print-fitwarn" hidden></span>
           <span class="print__status" id="print-status"></span>
         </div>
       </section>
+
+      <!-- Big print run: >10 labels of one product takes a deliberate yes -->
+      <div class="phist-overlay" id="bigprint-overlay" hidden>
+        <section class="linkbox serialbox phist-modal" style="max-width:420px">
+          <div class="linkbox__title">That's a lot of labels</div>
+          <p class="linkbox__text" id="bigprint-text"></p>
+          <label class="overwrite__ack">
+            <input type="checkbox" id="bigprint-ack" />
+            <span id="bigprint-ack-text">Yes — print them all</span>
+          </label>
+          <div class="linkbox__actions">
+            <button class="print__btn" id="bigprint-go" type="button" disabled>Print labels</button>
+            <button class="reset" id="bigprint-cancel" type="button">Cancel</button>
+          </div>
+        </section>
+      </div>
 
       <!-- Serialized-brand label name (Astronomik) -->
       <section class="linkbox serialbox" id="serial-panel" hidden>

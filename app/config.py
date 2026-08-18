@@ -116,6 +116,10 @@ OPERATORS = [
     for name in os.getenv("OPERATORS", "Steve,Matt,Clay,Nick").split(",")
     if name.strip()
 ]
+# Guest is always offered — visitors get an honest name instead of
+# borrowing a worker's (Nick, 2026-08-18).
+if "Guest" not in OPERATORS:
+    OPERATORS.append("Guest")
 
 API_VERSION = "2026-07"
 GRAPHQL_URL = f"https://{SHOPIFY_STORE}/admin/api/{API_VERSION}/graphql.json"

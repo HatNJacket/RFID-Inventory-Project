@@ -63,6 +63,7 @@ const el = {
   prefixRecoText: document.getElementById("prefix-reco-text"),
   prefixRecoApply: document.getElementById("prefix-reco-apply"),
   autoPrint: document.getElementById("auto-print"),
+  autoPrintSerial: document.getElementById("auto-print-serial"),
   autoReset: document.getElementById("auto-reset"),
   requireBin: document.getElementById("require-bin"),
   warnNobin: document.getElementById("warn-nobin"),
@@ -153,6 +154,17 @@ function bindSetting(input, key, defaultOn = false) {
   });
 }
 bindSetting(el.autoPrint, "autoPrint");
+// Sub-setting of auto-print: the Astronomik serial flow. Defaults ON so
+// stations that had the old Astronomik-only auto-print keep it.
+bindSetting(el.autoPrintSerial, "autoPrintSerial", true);
+function syncAutoPrintSub() {
+  el.autoPrintSerial.disabled = !el.autoPrint.checked;
+  document
+    .getElementById("auto-print-serial-item")
+    .classList.toggle("settings__item--off", !el.autoPrint.checked);
+}
+el.autoPrint.addEventListener("change", syncAutoPrintSub);
+syncAutoPrintSub();
 bindSetting(el.autoReset, "autoReset");
 bindSetting(el.requireBin, "requireBinForAutoPrint");
 // The no-bin print warning starts ON — a silent bin-less label is the
@@ -176,6 +188,7 @@ const printingEnabled =
   document.body.dataset.remotePrint === "on" ||
   localStorage.getItem("printerStation") === "1";
 document.getElementById("auto-print-item").hidden = !printingEnabled;
+document.getElementById("auto-print-serial-item").hidden = !printingEnabled;
 document.getElementById("require-bin-item").hidden = !printingEnabled;
 document.getElementById("warn-nobin-item").hidden = !printingEnabled;
 
@@ -602,13 +615,79 @@ function acceptProduct(product, message) {
   maybeAutoPrint();
 }
 
-// One label per unit scanned: when auto-print is on and the scanned serial's
-// name has been operator-confirmed, the label prints with no button press.
+// One label per unit scanned: when auto-print is on, any product that loads
+// from a scan prints one label with no button press. Astronomik serials ride
+// the sub-setting and additionally need their label name confirmed.
 let autoPrintedThisScan = false;
 
+// --- Label fit estimator ----------------------------------------------------
+// Mirror of print_agent.build_zpl's layout math (203 dpi, 2.125 in → 431
+// dots). ZPL's ^FB never clips: text past the line limit overprints the
+// last line — the "wrapped around itself" failure — so estimate the printed
+// width of every line and flag anything that can't fit BEFORE it prints.
+const LABEL_PW_DOTS = Math.floor(2.125 * 203);
+
+function zplLineChars(fontH, lines = 1) {
+  // CF0 glyphs run ~0.56× their height in width.
+  return Math.floor(LABEL_PW_DOTS / (fontH * 0.56)) * lines;
+}
+
+function labelFitProblems(p, serialName) {
+  const problems = [];
+  const label = (serialName || "").trim();
+  if (label) {
+    // The agent steps the font down with length (28/20/16) and hard-cuts
+    // at 76 — past that the name prints truncated and crowded.
+    const size = label.length <= 26 ? 28 : label.length <= 56 ? 20 : 16;
+    if (label.length > 76)
+      problems.push(
+        `the label name is ${label.length} characters — it gets cut off ` +
+          `at 76 and prints crowded`
+      );
+    else if (label.length > zplLineChars(size, 2))
+      problems.push(
+        "the label name is too long for two printed lines — they would " +
+          "overlap"
+      );
+  }
+  const sku = String(p.sku || "").trim();
+  if (sku.length > zplLineChars(30, 1))
+    problems.push(
+      `the SKU (${sku}) is longer than one printed line — it overlaps itself`
+    );
+  const bin =
+    p.bin_location && p.bin_location !== "No bin assigned"
+      ? p.bin_location
+      : "";
+  if (bin && `BIN: ${bin}`.length > zplLineChars(30, 1))
+    problems.push(
+      `the bin line (BIN: ${bin}) is longer than one printed line — it ` +
+        `overlaps itself`
+    );
+  return problems;
+}
+
+// Red text beside the Print button whenever the loaded product's label
+// would print badly — visible before ANY print, manual or auto.
+function updateFitWarn(p) {
+  const warnEl = document.getElementById("print-fitwarn");
+  if (!warnEl) return;
+  const problems = p
+    ? labelFitProblems(
+        p,
+        p.serial_prefix ? el.serialLabelInput.value.trim() : null
+      )
+    : [];
+  warnEl.hidden = !problems.length;
+  if (problems.length)
+    warnEl.textContent = `⚠ Label will print badly: ${problems[0]} — update the text before printing.`;
+}
+
 function maybeAutoPrint() {
-  if (!pendingProduct || !pendingProduct.serial_prefix) return;
+  if (!pendingProduct) return;
   if (!el.autoPrint.checked) return;
+  const isSerial = !!pendingProduct.serial_prefix;
+  if (isSerial && !el.autoPrintSerial.checked) return;
   // From here on the operator expects a print — never refuse silently.
   if (!printingEnabled) {
     setResult(
@@ -618,7 +697,7 @@ function maybeAutoPrint() {
     );
     return;
   }
-  if (!pendingProduct.serial_label_saved) {
+  if (isSerial && !pendingProduct.serial_label_saved) {
     setResult(
       "Auto-print skipped: the label name isn't confirmed yet — check the " +
         "name below and press Enter to confirm it.",
@@ -634,6 +713,17 @@ function maybeAutoPrint() {
     setResult(
       "Auto-print held: no bin assigned — click the bin chip to set one " +
         "and the label will print.",
+      "err"
+    );
+    return;
+  }
+  const fit = labelFitProblems(
+    pendingProduct,
+    isSerial ? el.serialLabelInput.value.trim() : null
+  );
+  if (fit.length) {
+    setResult(
+      `Auto-print held: ${fit[0]}. Fix the text, then print manually.`,
       "err"
     );
     return;
@@ -718,6 +808,11 @@ el.serialLabelInput.addEventListener("keydown", (event) => {
     el.rfid.focus();
   }
 });
+// The fit warning tracks the name as it's typed — the operator sees the
+// red note die the moment the text is short enough.
+el.serialLabelInput.addEventListener("input", () =>
+  updateFitWarn(lastShownProduct)
+);
 
 // --- Case codes -------------------------------------------------------------
 // A barcode that isn't a listing at all but the manufacturer's case code:
@@ -1505,6 +1600,7 @@ function showProduct(p) {
   el.productCard.hidden = false;
   el.printPanel.hidden = !printingEnabled;
   updateNoBinWarn(p);
+  updateFitWarn(p);
   loadTags(p);
   loadPlannerHint(p);
 }
@@ -1620,10 +1716,16 @@ el.printQty.addEventListener("input", () => {
   if (el.printQty.value !== digits) el.printQty.value = digits;
 });
 
-async function queueLabels(quantity) {
+async function queueLabels(quantity, confirmedBig = false) {
   if (!pendingProduct) return;
   const operator = requireOperator();
   if (!operator) return;
+  // A mistyped quantity prints a pile of live RFID stickers — big runs
+  // take a checkbox + confirm first.
+  if (quantity > 10 && !confirmedBig) {
+    openBigPrint(quantity);
+    return;
+  }
   autoPrintedThisScan = true; // any print covers the unit in hand
   el.printBtn.disabled = true;
   el.printStatus.textContent = "Queueing…";
@@ -1652,6 +1754,14 @@ async function queueLabels(quantity) {
     }
     const data = await res.json();
     bulkPrinted += (data.jobs || []).length;
+    // A multi-label run IS a bulk visit: turn the printed-vs-tagged ledger
+    // on so it decides when this product is done. Auto-reset is a bulk
+    // prerequisite — enabled for this visit only, the saved ⚙ setting is
+    // untouched (programmatic .checked fires no change event).
+    if (quantity > 1 && !bulkOn) {
+      if (!el.autoReset.checked) el.autoReset.checked = true;
+      bulkOn = true;
+    }
     renderBulk();
     watchPrintJobs(data.jobs.map((j) => j.id));
   } catch (err) {
@@ -1667,6 +1777,40 @@ async function queueLabels(quantity) {
 el.printBtn.addEventListener("click", () =>
   queueLabels(Math.max(1, Math.min(100, Number(el.printQty.value) || 1)))
 );
+
+// --- Big print run confirm (>10 labels of one product) ----------------------
+const bigprintOverlay = document.getElementById("bigprint-overlay");
+const bigprintAck = document.getElementById("bigprint-ack");
+const bigprintGo = document.getElementById("bigprint-go");
+let bigprintQty = 0;
+
+function openBigPrint(qty) {
+  bigprintQty = qty;
+  document.getElementById("bigprint-text").textContent =
+    `Print ${qty} labels for ${
+      pendingProduct?.sku || pendingProduct?.product_title || "this product"
+    }? Each one is a live RFID sticker.`;
+  document.getElementById("bigprint-ack-text").textContent =
+    `Yes — print all ${qty}`;
+  bigprintAck.checked = false;
+  bigprintGo.disabled = true;
+  bigprintOverlay.hidden = false;
+}
+
+bigprintAck.addEventListener(
+  "change",
+  () => (bigprintGo.disabled = !bigprintAck.checked)
+);
+document
+  .getElementById("bigprint-cancel")
+  .addEventListener("click", () => (bigprintOverlay.hidden = true));
+bigprintOverlay.addEventListener("click", (e) => {
+  if (e.target === e.currentTarget) bigprintOverlay.hidden = true;
+});
+bigprintGo.addEventListener("click", () => {
+  bigprintOverlay.hidden = true;
+  queueLabels(bigprintQty, true);
+});
 
 // Poll the queued jobs until they all finish (or we give up watching —
 // the agent keeps printing regardless).

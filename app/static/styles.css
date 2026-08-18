@@ -182,6 +182,9 @@ body {
   color: var(--ink-dim);
   margin-top: 2px;
 }
+/* Sub-setting: indented under its parent, greyed while the parent is off */
+.settings__item--sub { margin-left: 24px; }
+.settings__item--off { opacity: 0.45; pointer-events: none; }
 
 /* operator dropdown */
 .operator {
