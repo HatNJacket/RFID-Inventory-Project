@@ -297,6 +297,22 @@ body {
 }
 .phist-editdock[hidden] { display: none; }
 .phist-editdock .linkbox { margin: 0; }
+/* Duplicate-merge picker (resolve window) */
+.dupe-side {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin: 5px 0;
+  cursor: pointer;
+}
+.dupe-side:has(input:checked) { border-color: var(--accent, #29845a); }
+.dupe-side input { margin-top: 3px; }
+.dupe-side__body { display: block; min-width: 0; }
+.dupe-side__body b { display: block; }
+
 /* Scan note: the product's standing warning, loud on every scan */
 .scan-note {
   margin: 8px 0 0;
@@ -315,25 +331,13 @@ body {
   gap: 10px;
   margin: 8px 0;
 }
-.editrow__label {
-  width: 84px;
-  flex-shrink: 0;
-  font-size: 13px;
-  font-weight: 600;
-}
 .editrow .phist-inputwrap { flex: 1; min-width: 0; }
-.editrow__help {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  border: 1px solid var(--line);
-  border-radius: 50%;
-  font-size: 11px;
-  color: var(--ink-dim, #6d7175);
+/* Full-sized [?] button between the note box and Save note */
+.editrow__helpbtn {
+  flex-shrink: 0;
+  min-width: 34px;
+  font-weight: 700;
   cursor: help;
-  margin-left: 4px;
 }
 .editrow--btns { margin-top: 12px; }
 #edit-casehost { margin-top: 10px; }

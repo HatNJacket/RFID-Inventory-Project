@@ -398,6 +398,8 @@ const EVENT_META = {
   "tag-onhand-mismatch": ["Tags ≠ On-hand", "#8e44ad"],
   "shopify-bin-read": ["Read From Shopify", "#1f5f8b"],
   "scan-note": ["Scan Note", "#8a6116"],
+  "duplicate-product": ["Possible Duplicate", "#c9367c"],
+  "product-merged": ["Products Merged", "#6f42c1"],
 };
 
 // Multi-tag events render their EPC list behind an expander — the cell
@@ -1539,6 +1541,12 @@ document.getElementById("edit-note-reset").addEventListener("click", () => {
 
 const editMsg = (text) =>
   (document.getElementById("edit-msg").textContent = text);
+
+// The [?] beside the scan note: hover text carries the explanation, and
+// a tap shows the same words for touch screens.
+document.getElementById("edit-note-help").addEventListener("click", (ev) => {
+  alert(ev.currentTarget.title);
+});
 
 // SKU + barcode go through the SAME audited Shopify-write endpoints as
 // the unknown-barcode flows (History-logged there); the checkbox ritual
@@ -6859,6 +6867,13 @@ const REVIEW_NOTES = {
     "shelf) — this one files AND clears itself as the daily order sync " +
     "re-checks. The fix is a bin audit: a sweep that hears the " +
     "remaining tags can mark the sold ones.",
+  "duplicate-product":
+    "Two tagged SKUs look like the same product (a misspelling or " +
+    "punctuation drift — checked once per sync run over tagged SKUs " +
+    "only, never per scan). Resolve to MERGE the tags into one product " +
+    "— you pick the surviving SKU and which name it keeps — which also " +
+    "files an inventory check for the merged product. Dismiss if they " +
+    "really are two products; a dismissed pair is never re-flagged.",
 };
 
 function renderReview() {
@@ -7388,6 +7403,8 @@ function openResolveWindow(t) {
         Shopify is right → boxes moved to ${escapeHtml(t.shopify_bin || "?")}
         <span class="rvw-choice__sub">Updates the tag records only — Shopify already says ${escapeHtml(t.shopify_bin || "?")}.</span>
       </button>`;
+  } else if (t.category === "duplicate-product") {
+    middle = `<div id="rvw-dupe" class="recent__meta">Loading both sides…</div>`;
   } else {
     // could-not-scan, legacy unresolved-barcode, anything else: the Scan
     // Station is where identifying/tagging/linking happens. Bundles get
@@ -7625,10 +7642,105 @@ async function loadResolveContext(t, counted) {
       line.textContent = ctx.latest_sweep_at
         ? `Newest C72 sweep: ${fmtAgo(ctx.latest_sweep_at)} from ${ctx.latest_sweep_device || "the gun"}.`
         : "No C72 sweeps on file yet.";
+    } else if (t.category === "duplicate-product") {
+      renderDupeMerge(t, ctx);
     }
   } catch (err) {
     if (line) line.textContent = "";
   }
+}
+
+// The duplicate-merge picker: choose the surviving SKU, choose which of
+// the recorded names the merged product keeps, then MERGE — tags move,
+// the task closes, and an inventory check is filed (all local records;
+// nothing in Shopify changes).
+function renderDupeMerge(t, ctx) {
+  const host = document.getElementById("rvw-dupe");
+  if (!host || !ctx.sides || ctx.sides.length !== 2) {
+    if (host) host.textContent = "Couldn't load the two sides.";
+    return;
+  }
+  const [A, B] = ctx.sides;
+  const titles = [...new Set([...(A.titles || []), ...(B.titles || [])])];
+  const side = (s, i) => `
+    <label class="dupe-side">
+      <input type="radio" name="dupe-keep" value="${i}" ${
+        s.in_catalog && !ctx.sides[1 - i].in_catalog ? "checked" : ""
+      } />
+      <span class="dupe-side__body">
+        <b class="mono">${escapeHtml(s.sku)}</b>
+        <span class="recent__meta">${s.units} tag unit(s) · ${
+          s.in_catalog
+            ? "in the live catalog ✓"
+            : "NOT in the catalog (likely the misspelling)"
+        }</span>
+      </span>
+    </label>`;
+  host.innerHTML =
+    `<div class="rv-tl__title">Which SKU survives?</div>` +
+    side(A, 0) +
+    side(B, 1) +
+    `<div class="rv-tl__title" style="margin-top:10px">Which name does it keep?</div>` +
+    titles
+      .map(
+        (name, i) => `
+      <label class="dupe-side">
+        <input type="radio" name="dupe-title" value="${i}" ${i === 0 ? "checked" : ""} />
+        <span class="dupe-side__body">${escapeHtml(name)}</span>
+      </label>`
+      )
+      .join("") +
+    `<button class="reset rvw-wide rvw-ok" id="rvw-merge" type="button" style="margin-top:10px">Merge the tags into one product</button>`;
+  document.getElementById("rvw-merge").addEventListener("click", async () => {
+    const operator = operatorEl.value;
+    if (!operator) {
+      alert("Pick who's scanning (top right) first.");
+      return;
+    }
+    const keepIdx = Number(
+      document.querySelector('input[name="dupe-keep"]:checked')?.value ?? -1
+    );
+    if (keepIdx !== 0 && keepIdx !== 1) {
+      alert("Pick which SKU survives first.");
+      return;
+    }
+    const survivor = ctx.sides[keepIdx];
+    const loser = ctx.sides[1 - keepIdx];
+    const titleIdx = Number(
+      document.querySelector('input[name="dupe-title"]:checked')?.value ?? 0
+    );
+    const title = titles[titleIdx] || null;
+    if (
+      !confirm(
+        `Merge ${loser.sku} into ${survivor.sku}?\n\n` +
+          `${loser.units} tag unit(s) move over, the merged product is ` +
+          `named "${title || survivor.sku}", and an inventory check is ` +
+          `filed. RFID records only — Shopify is not touched.`
+      )
+    )
+      return;
+    const btn = document.getElementById("rvw-merge");
+    btn.disabled = true;
+    try {
+      const r = await postJson("/api/products/merge", {
+        from_sku: loser.sku,
+        into_sku: survivor.sku,
+        title,
+        changed_by: operator,
+      });
+      reviewTasks = reviewTasks.filter((x) => x.id !== t.id);
+      closeResolveWindow();
+      renderReview();
+      loadReview();
+      alert(
+        `Merged ✓ — ${r.moved_tags} tag(s) now under ${r.into_sku}. ` +
+          `An inventory check was filed for it.`
+      );
+    } catch (err) {
+      btn.disabled = false;
+      alert(err.message);
+    }
+  });
 }
 
 // Bundles in the could-not-scan window: bundles are never tagged — their
@@ -9801,6 +9913,37 @@ async function undoHistoryEvent(e, btn) {
         `/api/review/mismatch-dismissals/${e.undo.dismissal_id}`,
         { method: "DELETE" }
       );
+      await loadHistory();
+    } catch (err) {
+      btn.disabled = false;
+      alert(err.message);
+    }
+    return;
+  }
+  // Bin writes: undo puts the OLD bin back through the normal audited
+  // endpoint — a new History entry, nothing erased.
+  if (e.undo.kind === "bin") {
+    const operator = operatorEl.value;
+    if (!operator) {
+      alert("Pick who's scanning (top right) first.");
+      return;
+    }
+    if (
+      !confirm(
+        `Put ${e.undo.sku} back to bin ${e.undo.old_bin}?\n\n` +
+          `This write set it to ${e.undo.new_bin}. Undo is the normal ` +
+          `audited bin update — Shopify, the bin map and the product's ` +
+          `tags all follow, with a new History entry.`
+      )
+    )
+      return;
+    btn.disabled = true;
+    try {
+      await postJson("/api/bin-updates", {
+        target: e.undo.sku,
+        bin: e.undo.old_bin,
+        changed_by: operator,
+      });
       await loadHistory();
     } catch (err) {
       btn.disabled = false;

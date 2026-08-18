@@ -244,30 +244,28 @@
              note rows with reset-to-saved ✕ and save buttons that grey
              out at the saved value, then the occasional cells. -->
         <div id="editbox" hidden>
+          <!-- No left labels — the save buttons name each row (Nick). -->
           <div class="editrow">
-            <label class="editrow__label" for="edit-sku">SKU</label>
             <div class="phist-inputwrap">
-              <input id="edit-sku" class="linkbox__input" type="text" maxlength="100" autocomplete="off" spellcheck="false" />
+              <input id="edit-sku" class="linkbox__input" type="text" maxlength="100" autocomplete="off" spellcheck="false" placeholder="Enter SKU" />
               <button class="phist-clear" id="edit-sku-reset" type="button" title="Back to the saved SKU">✕</button>
             </div>
             <button class="reset" id="edit-sku-save" type="button" disabled>Save SKU</button>
           </div>
           <div class="editrow">
-            <label class="editrow__label" for="edit-barcode">Barcode</label>
             <div class="phist-inputwrap">
-              <input id="edit-barcode" class="linkbox__input" type="text" maxlength="64" autocomplete="off" spellcheck="false" />
+              <input id="edit-barcode" class="linkbox__input" type="text" maxlength="64" autocomplete="off" spellcheck="false" placeholder="Enter Barcode" />
               <button class="phist-clear" id="edit-barcode-reset" type="button" title="Back to the saved barcode">✕</button>
             </div>
             <button class="reset" id="edit-barcode-save" type="button" disabled>Save barcode</button>
           </div>
           <div class="editrow">
-            <label class="editrow__label" for="edit-note">Scan note
-              <span class="editrow__help" title="Optional. Shown loudly every time this product is scanned — in the Scan Station's product card, and on the C72 with its own sound and warning-coloured text. Leave empty for no note.">?</span>
-            </label>
             <div class="phist-inputwrap">
-              <input id="edit-note" class="linkbox__input" type="text" maxlength="255" autocomplete="off" spellcheck="false" placeholder="optional — e.g. open the case before tagging" />
+              <input id="edit-note" class="linkbox__input" type="text" maxlength="255" autocomplete="off" spellcheck="false" placeholder="Scan Note - Optional" />
               <button class="phist-clear" id="edit-note-reset" type="button" title="Back to the saved note">✕</button>
             </div>
+            <button class="reset editrow__helpbtn" id="edit-note-help" type="button"
+                    title="Shown loudly every time this product is scanned — in the Scan Station's product card, and on the C72 with its own sound and warning-coloured text. Leave empty for no note.">?</button>
             <button class="reset" id="edit-note-save" type="button" disabled>Save note</button>
           </div>
           <p class="linkbox__text" id="edit-msg"></p>

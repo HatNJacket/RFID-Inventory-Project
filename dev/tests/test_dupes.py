@@ -1,0 +1,136 @@
+"""Duplicate products: detected once per sync run (tagged SKUs only,
+never per scan), merged with a chosen SKU + name, inventory check filed.
+Plus: bin-updated History rows now carry an undo payload."""
+import os, sys, tempfile
+sys.path.insert(0, os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__)))))
+os.environ["SHOPIFY_STORE"]="t.myshopify.com"; os.environ["SHOPIFY_CLIENT_ID"]="x"
+os.environ["SHOPIFY_CLIENT_SECRET"]="x"
+os.environ["ORDERS_SYNC_DISABLE"]="1"
+os.environ.pop("STATION_KEY", None); os.environ.pop("PRINT_AGENT_KEY", None)
+db = os.path.join(tempfile.gettempdir(), "rfid_dupes_test.db")
+if os.path.exists(db): os.remove(db)
+os.environ["DATABASE_URL"] = "sqlite:///" + db.replace("\\","/")
+from unittest.mock import patch
+from fastapi.testclient import TestClient
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+from app.main import app
+from app.database import get_engine
+from app.models import (BarcodeChange, BinMapEntry, ReviewTask,
+                        RfidAssignment)
+fails=[]
+def check(l,c,x=""):
+    print(("PASS  " if c else "FAIL  ")+l+("" if c else f"  <- {x}"))
+    if not c: fails.append(l)
+
+GOOD = "ZWO ASIAIR MountingBrackets"
+TYPO = "ZWO AISAIR MountingBrackets"
+
+def tag(s, epc, sku, title):
+    s.add(RfidAssignment(rfid_id=epc, shopify_variant_id="t:1",
+                         product_title=title, sku=sku, bin_location="B1-1"))
+
+with patch("app.shopify.get_fulfilled_orders",
+           side_effect=RuntimeError("ACCESS_DENIED")), \
+     patch("app.shopify.get_on_hand_by_skus", return_value={}):
+  with TestClient(app) as cl:
+    with Session(get_engine()) as s:
+        for e in ("A1","A2","A3"): tag(s, e, GOOD, "ZWO ASIAIR Mounting Bracket")
+        for e in ("B1","B2"): tag(s, e, TYPO, "AISAIR bracket")
+        tag(s, "C1", "CAM-100", "Unrelated Camera")
+        s.add(BinMapEntry(sku=GOOD, barcode="697", product_title="ZWO ASIAIR Mounting Bracket",
+                          bin="B1-1", qty=5, shopify_product_id="gid://shopify/Product/9",
+                          shopify_variant_id="gid://shopify/PV/9"))
+        s.commit()
+
+    # The dup check rides the sync run and must work WITHOUT read_orders.
+    r = cl.post("/api/orders-sync/run").json()
+    check("dup check runs even while the scope is missing",
+          r.get("dupes_opened")==1 and r.get("waiting_scope") is True, r)
+    tasks = cl.get("/api/review-tasks?status=open").json()["tasks"]
+    dup = [t for t in tasks if t["category"]=="duplicate-product"]
+    check("one duplicate task filed for the pair", len(dup)==1, dup)
+    check("unrelated SKU not flagged",
+          "CAM-100" not in dup[0]["detail"], dup[0]["detail"])
+
+    # Idempotent: a second run files nothing new.
+    r = cl.post("/api/orders-sync/run").json()
+    check("re-run files no second task", r.get("dupes_opened")==0, r)
+
+    # Context: both sides with units, names, catalog standing.
+    ctx = cl.get(f"/api/review-tasks/{dup[0]['id']}/context").json()
+    sides = {x["sku"]: x for x in ctx.get("sides", [])}
+    check("context carries both sides",
+          set(sides)=={GOOD, TYPO}, ctx)
+    check("units + catalog standing per side",
+          sides[GOOD]["units"]==3 and sides[GOOD]["in_catalog"] is True
+          and sides[TYPO]["units"]==2 and sides[TYPO]["in_catalog"] is False,
+          sides)
+
+    # Merge: typo -> good, keeping the catalog name.
+    r = cl.post("/api/products/merge",
+                json={"from_sku": TYPO, "into_sku": GOOD,
+                      "title": "ZWO ASIAIR Mounting Bracket",
+                      "changed_by": "Nick"})
+    d = r.json()
+    check("merge moves the tags", r.status_code==200 and d["moved_tags"]==2, d)
+    with Session(get_engine()) as s:
+        good_tags = s.scalars(select(RfidAssignment).where(
+            RfidAssignment.sku==GOOD)).all()
+        typo_tags = s.scalars(select(RfidAssignment).where(
+            RfidAssignment.sku==TYPO)).all()
+        check("all five tags under the survivor",
+              len(good_tags)==5 and not typo_tags,
+              (len(good_tags), len(typo_tags)))
+        check("every tag wears the chosen name + catalog identity",
+              all(t.product_title=="ZWO ASIAIR Mounting Bracket"
+                  and t.shopify_product_id=="gid://shopify/Product/9"
+                  for t in good_tags), [t.product_title for t in good_tags])
+        merged_ev = s.scalars(select(BarcodeChange).where(
+            BarcodeChange.changed_field=="product-merged")).all()
+        check("History records the merge", len(merged_ev)==1
+              and merged_ev[0].changed_by=="Nick", merged_ev)
+        dup_task = s.get(ReviewTask, dup[0]["id"])
+        check("duplicate task closed by the merge",
+              dup_task.status=="resolved", dup_task.status)
+        inv = s.scalars(select(ReviewTask).where(
+            ReviewTask.category=="inventory-check",
+            ReviewTask.status=="open")).all()
+        check("inventory check filed for the merged product",
+              len(inv)==1 and inv[0].sku==GOOD and "Merged duplicate"
+              in inv[0].detail, [(t.sku, t.detail[:40]) for t in inv])
+
+    # The pair never comes back (task exists, resolved).
+    r = cl.post("/api/orders-sync/run").json()
+    check("merged pair is not re-flagged", r.get("dupes_opened")==0, r)
+
+    # Dismissed pairs stay dismissed.
+    with Session(get_engine()) as s:
+        tag(s, "D1", "FILTER-X1", "Filter A"); tag(s, "D2", "FILTERX1", "Filter B")
+        s.commit()
+    r = cl.post("/api/orders-sync/run").json()
+    check("normalized-equal SKUs flagged", r.get("dupes_opened")==1, r)
+    t2 = [t for t in cl.get("/api/review-tasks?status=open").json()["tasks"]
+          if t["category"]=="duplicate-product"][0]
+    cl.post(f"/api/review-tasks/{t2['id']}/resolve",
+            json={"resolved_by":"Nick","dismissed":True})
+    r = cl.post("/api/orders-sync/run").json()
+    check("dismissed pair never re-flagged", r.get("dupes_opened")==0, r)
+
+    # Bin-updated History rows carry the undo payload.
+    with Session(get_engine()) as s:
+        s.add(BarcodeChange(sku=GOOD, changed_field="bin",
+                            old_barcode="B1-1", new_barcode="C2-2",
+                            changed_by="Steve"))
+        s.commit()
+    ev = [e for e in cl.get("/api/history").json()["events"]
+          if e["type"]=="bin-updated"]
+    check("bin update offers undo",
+          ev and ev[0].get("undo", {}).get("kind")=="bin"
+          and ev[0]["undo"]["old_bin"]=="B1-1"
+          and ev[0]["undo"]["new_bin"]=="C2-2", ev[:1])
+
+print()
+print("FAILED: "+", ".join(fails) if fails else "ALL CHECKS PASSED")
+sys.exit(1 if fails else 0)

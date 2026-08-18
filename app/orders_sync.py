@@ -22,6 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
 from datetime import datetime, timedelta
@@ -216,6 +217,111 @@ def refresh_mismatch_tasks(session: Session) -> dict:
     return {"tasks_opened": opened, "tasks_closed": closed}
 
 
+# ------------------------------------------------- duplicate products -------
+DUP_CATEGORY = "duplicate-product"
+
+
+def _norm_sku(s: str) -> str:
+    return re.sub(r"[^A-Z0-9]", "", (s or "").upper())
+
+
+def _edit_close(a: str, b: str) -> bool:
+    """Edit distance ≤ 2 with early exit — catches transposed letters
+    (AISAIR vs ASIAIR) and single typos without a fuzzy dependency."""
+    if abs(len(a) - len(b)) > 2:
+        return False
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(
+                prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)
+            ))
+        if min(cur) > 2:
+            return False
+        prev = cur
+    return prev[-1] <= 2
+
+
+def refresh_duplicate_tasks(session: Session) -> dict:
+    """One open duplicate-product review task per suspicious SKU pair.
+
+    Runs ONLY inside sync runs (the daily 8 AM pass and the Review tab's
+    manual button) over the SKUs that actually hold tags — a few hundred
+    strings compared once a day, never work done per scan (Nick's
+    overhead worry). A pair is suspicious when the normalized SKUs are
+    identical (case/punctuation noise) or within edit distance 2 with
+    the same first character (the ZWO AISAIR/ASIAIR misspelling).
+    A DISMISSED pair stays dismissed — the check files each pair once,
+    ever. Open tasks close themselves when a side loses its tags
+    (merged or cleaned up)."""
+    info: dict[str, dict] = {}
+    for a in session.scalars(select(RfidAssignment)).all():
+        sku = (a.sku or "").strip()
+        if not sku:
+            continue
+        side = info.setdefault(sku.upper(), {
+            "sku": sku, "titles": set(), "units": 0,
+        })
+        side["units"] += a.case_units or 1
+        if a.product_title:
+            side["titles"].add(a.product_title)
+
+    keys = sorted(info)
+    pairs: list[tuple[str, str]] = []
+    for i, a in enumerate(keys):
+        na = _norm_sku(a)
+        if len(na) < 6:
+            continue
+        for b in keys[i + 1:]:
+            nb = _norm_sku(b)
+            if len(nb) < 6 or na[0] != nb[0]:
+                continue
+            if na == nb or _edit_close(na, nb):
+                pairs.append((a, b))
+
+    existing = session.scalars(
+        select(ReviewTask).where(ReviewTask.category == DUP_CATEGORY)
+    ).all()
+    opened = closed = 0
+    for a, b in pairs:
+        key = (f"Possible duplicate products: "
+               f"{info[a]['sku']} ⇄ {info[b]['sku']}")
+        if any((t.detail or "").startswith(key) for t in existing):
+            continue
+        title = next(iter(info[a]["titles"]), None)
+        session.add(ReviewTask(
+            category=DUP_CATEGORY,
+            sku=info[a]["sku"],
+            product_title=title,
+            detail=(f"{key} — {info[a]['units']} and {info[b]['units']} "
+                    f"tag unit(s) on file. Resolve to merge the tags into "
+                    f"one product (you pick the SKU and name), or dismiss "
+                    f"if they really are two products."),
+            created_by="dupe-check",
+        ))
+        opened += 1
+
+    # A side lost its tags -> the pair was merged/cleaned; close the task.
+    for t in existing:
+        if t.status != "open":
+            continue
+        m = re.match(r"Possible duplicate products: (.+) ⇄ (.+?) —",
+                     t.detail or "")
+        if not m:
+            continue
+        if (m.group(1).strip().upper() not in info
+                or m.group(2).strip().upper() not in info):
+            t.status = "resolved"
+            t.resolved_by = "dupe-check"
+            t.resolved_at = datetime.utcnow()
+            t.resolution_note = (
+                "One side no longer holds tags — merged or cleaned up."
+            )
+            closed += 1
+    return {"dupes_opened": opened, "dupes_closed": closed}
+
+
 # ------------------------------------------------------------------ sync ----
 def _parse_iso(value: str | None) -> datetime | None:
     if not value:
@@ -238,6 +344,12 @@ def run(session: Session, source: str = "manual") -> dict:
         "at": datetime.utcnow().isoformat(timespec="seconds"),
         "source": source,
     }
+    # Duplicate-SKU detection rides every sync run and doesn't depend on
+    # the orders scope — it must work while read_orders is still pending.
+    try:
+        status.update(refresh_duplicate_tasks(session))
+    except Exception:  # noqa: BLE001 — never let the dup check kill a sync
+        logger.exception("duplicate check failed")
     try:
         cursor = _get(session, CURSOR_KEY) or (
             datetime.utcnow() - timedelta(days=FIRST_LOOKBACK_DAYS)

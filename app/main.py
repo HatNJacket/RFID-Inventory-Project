@@ -1371,6 +1371,109 @@ def mark_assignments_sold(
     }
 
 
+class MergeProductsIn(BaseModel):
+    from_sku: str = Field(min_length=1, max_length=100)
+    into_sku: str = Field(min_length=1, max_length=100)
+    # The name the merged product keeps (Nick: the duplicates carried
+    # different recorded names). Empty = the survivor's catalog title.
+    title: str | None = Field(default=None, max_length=255)
+    changed_by: str | None = Field(default=None, max_length=100)
+
+
+@app.post("/api/products/merge", dependencies=[Depends(require_user)])
+def merge_products(
+    payload: MergeProductsIn, session: Session = Depends(get_session)
+):
+    """Merge a duplicate's RFID records into the surviving product: every
+    tag under from_sku moves to into_sku (identity refreshed from the
+    live catalog when it knows the survivor), both sides take the chosen
+    name, the duplicate review task closes, and an inventory check is
+    filed for the merged product. LOCAL records only — Shopify never
+    changes here."""
+    frm = payload.from_sku.strip()
+    into = payload.into_sku.strip()
+    if not frm or not into or frm.upper() == into.upper():
+        raise HTTPException(422, "Pick two different SKUs to merge.")
+    from_tags = session.scalars(
+        select(RfidAssignment).where(
+            func.upper(RfidAssignment.sku) == frm.upper()
+        )
+    ).all()
+    into_tags = session.scalars(
+        select(RfidAssignment).where(
+            func.upper(RfidAssignment.sku) == into.upper()
+        )
+    ).all()
+    if not from_tags:
+        raise HTTPException(404, f"No tags on file under {frm}.")
+    bm = session.scalar(
+        select(BinMapEntry).where(
+            func.upper(BinMapEntry.sku) == into.upper()
+        )
+    )
+    canonical = bm.sku if bm is not None else (
+        into_tags[0].sku if into_tags else into
+    )
+    title = (payload.title or "").strip() or (
+        bm.product_title if bm is not None else None
+    )
+    # BOTH sides come out wearing the survivor's identity: the moved tags
+    # need it, and the survivor's own rows may carry stale ids too.
+    for t in from_tags + into_tags:
+        t.sku = canonical
+        if title:
+            t.product_title = title
+        if bm is not None:
+            t.barcode = bm.barcode or t.barcode
+            t.shopify_variant_id = (
+                bm.shopify_variant_id or t.shopify_variant_id
+            )
+            t.shopify_product_id = (
+                bm.shopify_product_id or t.shopify_product_id
+            )
+    by = (payload.changed_by or "").strip()[:100] or None
+    session.add(BarcodeChange(
+        sku=canonical,
+        product_title=title,
+        changed_field="product-merged",
+        old_barcode=frm[:64],
+        new_barcode=canonical[:64],
+        changed_by=by,
+    ))
+    # Close every open duplicate task naming this pair.
+    closed = 0
+    for t in session.scalars(
+        select(ReviewTask).where(
+            ReviewTask.category == orders_sync.DUP_CATEGORY,
+            ReviewTask.status == "open",
+        )
+    ).all():
+        d = (t.detail or "").upper()
+        if frm.upper() in d and into.upper() in d:
+            t.status = "resolved"
+            t.resolved_by = by or "merge"
+            t.resolved_at = datetime.utcnow()
+            t.resolution_note = f"Merged {frm} into {canonical}."
+            closed += 1
+    # The merged product's count just changed shape — ask for a walk.
+    session.add(ReviewTask(
+        category="inventory-check",
+        sku=canonical,
+        product_title=title,
+        detail=(f"Merged duplicate {frm} into {canonical} — "
+                f"{len(from_tags)} tag(s) moved over. Recommend counting "
+                f"the shelf to confirm the combined total."),
+        created_by=by or "merge",
+    ))
+    session.commit()
+    return {
+        "moved_tags": len(from_tags),
+        "into_sku": canonical,
+        "title": title,
+        "tasks_closed": closed,
+    }
+
+
 @app.post(
     "/api/print-jobs/{job_id}/complete",
     dependencies=[Depends(require_agent_key)],
@@ -7099,6 +7202,38 @@ def review_task_context(
                 cap.created_at.isoformat() if cap.created_at else None
             )
             ctx["latest_sweep_device"] = cap.device
+    elif task.category == "duplicate-product":
+        # Both sides of the suspected pair, for the merge picker: tag
+        # units, every distinct recorded name, and whether the live
+        # catalog actually knows the SKU (the misspelled one won't be).
+        m = re.match(
+            r"Possible duplicate products: (.+) ⇄ (.+?) —", task.detail or ""
+        )
+        if m:
+            sides = []
+            for raw in (m.group(1).strip(), m.group(2).strip()):
+                tags = session.scalars(
+                    select(RfidAssignment).where(
+                        func.upper(RfidAssignment.sku) == raw.upper()
+                    )
+                ).all()
+                bm = session.scalar(
+                    select(BinMapEntry).where(
+                        func.upper(BinMapEntry.sku) == raw.upper()
+                    )
+                )
+                titles = sorted({
+                    t.product_title for t in tags if t.product_title
+                })
+                if bm is not None and bm.product_title:
+                    titles = sorted(set(titles) | {bm.product_title})
+                sides.append({
+                    "sku": raw,
+                    "units": sum((t.case_units or 1) for t in tags),
+                    "titles": titles,
+                    "in_catalog": bm is not None,
+                })
+            ctx["sides"] = sides
     return ctx
 
 
@@ -8227,6 +8362,16 @@ def history(
         # back to what it was before the update (confirmed first).
         if c.changed_field == "on-hand":
             event["undo"] = {"kind": "on-hand", "change_id": c.id}
+        # Bin writes too (Nick, 2026-08-18): undo writes the OLD bin back
+        # through the normal audited endpoint — a new History row, never
+        # an erasure. Only offered when there was an old bin to go back to.
+        elif c.changed_field == "bin" and c.sku and c.old_barcode:
+            event["undo"] = {
+                "kind": "bin",
+                "sku": c.sku,
+                "old_bin": c.old_barcode,
+                "new_bin": c.new_barcode,
+            }
         events.append(event)
     for key in unlink_order:
         group = unlink_groups[key]
