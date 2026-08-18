@@ -131,16 +131,32 @@ with patch("app.shopify.get_fulfilled_orders",
     r = cl.post("/api/orders-sync/run").json()
     check("dismissed pair never re-flagged", r.get("dupes_opened")==0, r)
 
-    # An OPEN task from the old fuzzy rules (its pair no longer
-    # qualifies) closes itself on the next run.
+    # OPEN tasks from the fuzzy era close themselves on the next run —
+    # in BOTH stored formats: the original "⇄" and the "?" SQL Server's
+    # VARCHAR mangled it into (the prod 8k-ghost-task bug).
     with Session(get_engine()) as s:
         s.add(ReviewTask(category="duplicate-product", sku="SV-105",
               detail="Possible duplicate products: SV-105 ⇄ SV-106 — "
                      "old fuzzy flag.", created_by="dupe-check"))
+        s.add(ReviewTask(category="duplicate-product", sku="SV-205",
+              detail="Possible duplicate products: SV-205 ? SV-206 — "
+                     "old mangled flag.", created_by="dupe-check"))
         s.commit()
     r = cl.post("/api/orders-sync/run").json()
-    check("stale fuzzy-era task auto-closes under the new rules",
-          r.get("dupes_closed")==1, r)
+    check("stale fuzzy-era tasks auto-close (both stored formats)",
+          r.get("dupes_closed")==2, r)
+
+    # A dismissed pair in the OLD mangled format still blocks re-filing.
+    with Session(get_engine()) as s:
+        tag(s, "P1", "PAIR-A", "Pair A", "909"); tag(s, "P2", "PAIR-B", "Pair B", "909")
+        s.add(ReviewTask(category="duplicate-product", sku="PAIR-A",
+              status="resolved",
+              detail="Possible duplicate products: PAIR-A ? PAIR-B — "
+                     "old mangled, dismissed.", created_by="dupe-check"))
+        s.commit()
+    r = cl.post("/api/orders-sync/run").json()
+    check("old-format dismissal still blocks re-filing",
+          r.get("dupes_opened")==0, r)
 
     # Bin-updated History rows carry the undo payload.
     with Session(get_engine()) as s:

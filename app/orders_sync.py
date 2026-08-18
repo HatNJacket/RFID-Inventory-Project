@@ -225,6 +225,22 @@ def _norm_sku(s: str) -> str:
     return re.sub(r"[^A-Z0-9]", "", (s or "").upper())
 
 
+def dup_pair_of(detail: str | None):
+    """The (upper, upper) SKU pair a duplicate task names, as a
+    frozenset — tolerant of every separator this feature has written:
+    the ASCII "<->", the original "⇄", and the "?" SQL Server's VARCHAR
+    turned that arrow into."""
+    m = re.match(
+        r"Possible duplicate products: (.+?) (?:<->|⇄|\?) (.+?) —",
+        detail or "",
+    )
+    if not m:
+        return None
+    return frozenset((
+        m.group(1).strip().upper(), m.group(2).strip().upper()
+    ))
+
+
 def _is_open_box(sku: str, titles: set[str]) -> bool:
     """Open-box listings legitimately share the new product's barcode —
     they must never be flagged as duplicates of it."""
@@ -300,15 +316,26 @@ def refresh_duplicate_tasks(session: Session) -> dict:
     existing = session.scalars(
         select(ReviewTask).where(ReviewTask.category == DUP_CATEGORY)
     ).all()
+    # Match by the PAIR, not the exact string: SQL Server's VARCHAR
+    # mangled the original "⇄" separator into a literal "?", so string
+    # comparison silently never matched (8k ghost tasks in prod). The
+    # key is pure ASCII now ("<->") and the parser accepts every format
+    # this feature has ever written.
+    existing_pairs: set = set()
+    for t in existing:
+        p = dup_pair_of(t.detail)
+        if p:
+            existing_pairs.add(p)
     opened = closed = 0
-    current_keys = set()
+    current_pairs = set()
     for (a, b), reason in sorted(pair_reasons.items()):
-        key = (f"Possible duplicate products: "
-               f"{info[a]['sku']} ⇄ {info[b]['sku']}")
-        current_keys.add(key)
-        if any((t.detail or "").startswith(key) for t in existing):
-            continue
+        fs = frozenset((a, b))
+        current_pairs.add(fs)
+        if fs in existing_pairs:
+            continue  # filed once, ever — dismissed pairs stay dismissed
         title = next(iter(info[a]["titles"]), None)
+        key = (f"Possible duplicate products: "
+               f"{info[a]['sku']} <-> {info[b]['sku']}")
         session.add(ReviewTask(
             category=DUP_CATEGORY,
             sku=info[a]["sku"],
@@ -327,9 +354,8 @@ def refresh_duplicate_tasks(session: Session) -> dict:
     for t in existing:
         if t.status != "open":
             continue
-        m = re.match(r"(Possible duplicate products: .+ ⇄ .+?) —",
-                     t.detail or "")
-        if m is None or m.group(1) in current_keys:
+        p = dup_pair_of(t.detail)
+        if p is None or p in current_pairs:
             continue
         t.status = "resolved"
         t.resolved_by = "dupe-check"

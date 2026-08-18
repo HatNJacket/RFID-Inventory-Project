@@ -7206,8 +7206,11 @@ def review_task_context(
         # Both sides of the suspected pair, for the merge picker: tag
         # units, every distinct recorded name, and whether the live
         # catalog actually knows the SKU (the misspelled one won't be).
+        # Separator-tolerant: "<->" (current, ASCII-safe), "⇄" (original),
+        # or the "?" SQL Server's VARCHAR turned that arrow into.
         m = re.match(
-            r"Possible duplicate products: (.+) ⇄ (.+?) —", task.detail or ""
+            r"Possible duplicate products: (.+?) (?:<->|⇄|\?) (.+?) —",
+            task.detail or "",
         )
         if m:
             sides = []
