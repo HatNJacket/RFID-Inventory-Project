@@ -35,11 +35,15 @@ dashboard + stocktakes shapes, viewed in the store admin):
   no old versions, but the checker's full source was recovered from
   the func app's own deploy package
   (scm-releases/scm-latest-inventory-verification-func.zip, squashfs →
-  saved in session scratch + re-extractable any time). Fix needs
-  Nick/Steve's go (it's their system): re-upload the checker at a new
-  path (e.g. /check/) and/or link it from the dashboard's Stock Checks
-  card. Meanwhile the RFID Audits tab's 1-left panel can serve as the
-  checker (per-row Confirm ✓ + re-queue).
+  re-extractable any time). **FIXED same day (Nick's go, option a):**
+  the checker now lives at
+  https://shopifyautomationsa.z13.web.core.windows.net/check/
+  (verified live: 431 cards, operator + vendor pickers working), and
+  the dashboard's Stock Checks card's 🔍 icon became an outlined
+  button linking to it (only that icon restyled; the other cards'
+  watermark icons untouched). The pre-edit dashboard was backed up to
+  the $web blob `backups/index-root-2026-08-18.html` before the write.
+  Steve's dashboard was NOT otherwise touched.
 
 ## 🔍 Audits ↔ 1-left dashboard bridge — ✅ DEPLOYED 2026-08-18
 
