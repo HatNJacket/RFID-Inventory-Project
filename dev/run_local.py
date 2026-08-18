@@ -312,5 +312,22 @@ def _ol_post(path, body):
 _ol._get = _ol_get
 _ol._post = _ol_post
 
+# Fake fulfilled orders: NORMAL-1 sold once (its 2 tags vs on-hand 1 + 1
+# sold = consistent, no task), MIS-1 sold once (2 tags vs on-hand 0 + 1
+# sold -> the sync files a tag-onhand-mismatch task; a bin audit whose
+# sweep misses a MIS-1 tag then offers MARK SOLD).
+_sh.get_fulfilled_orders = lambda since: [
+    {"order_id": "gid://shopify/Order/9001", "name": "#9001",
+     "fulfilled_at": datetime.now(timezone.utc).isoformat(),
+     "lines": [{"sku": "NORMAL-1", "qty": 1}]},
+    {"order_id": "gid://shopify/Order/9002", "name": "#9002",
+     "fulfilled_at": datetime.now(timezone.utc).isoformat(),
+     "lines": [{"sku": "MIS-1", "qty": 1}]},
+]
+_sh.get_on_hand_by_skus = lambda skus: {
+    s: {"NORMAL-1": 1, "MIS-1": 0}.get((s or "").upper(), 0)
+    for s in skus
+}
+
 import uvicorn  # noqa: E402
 uvicorn.run(app, host="127.0.0.1", port=8123)

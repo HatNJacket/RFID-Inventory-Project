@@ -49,6 +49,15 @@ FILES += sorted(
     if name.endswith(".py")
 )
 
+# The help-slideshow images (app/static/help/) ship the same way — a new
+# slide dropped in later must never be hand-listed.
+_help_dir = os.path.join(ROOT, "app", "static", "help")
+if os.path.isdir(_help_dir):
+    FILES += sorted(
+        f"app/static/help/{name}" for name in os.listdir(_help_dir)
+        if name.endswith(".svg")
+    )
+
 missing = [f for f in FILES if not os.path.isfile(os.path.join(ROOT, f))]
 if missing:
     raise SystemExit(f"missing source files: {missing}")

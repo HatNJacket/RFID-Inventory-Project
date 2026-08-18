@@ -11,7 +11,9 @@ authoritative and you can re-sync them later if a product is renamed.
 """
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Integer, String, Text, func  # noqa: F401
+from sqlalchemy import (  # noqa: F401
+    Boolean, DateTime, Integer, String, Text, UniqueConstraint, func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -357,6 +359,51 @@ class RefreshLog(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class SoldRecord(Base):
+    """One fulfilled-order line for a SKU the RFID system tracks: the
+    order shipped, Shopify's on-hand dropped, but the box left with its
+    tag still on file — so the EXPECTED tag count for the SKU drops while
+    the tags themselves stay listed. `retired` counts how many of these
+    units have since had a tag marked sold during an audit; the ledger's
+    unretired remainder is what audits use to explain missing tags.
+
+    Filled by the read-only orders sync (app/orders_sync.py). Rows are
+    facts about Shopify, never writes to it."""
+
+    __tablename__ = "rfid_sold_ledger"
+    __table_args__ = (
+        UniqueConstraint("order_id", "sku", name="uq_sold_order_sku"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    order_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    order_name: Mapped[str | None] = mapped_column(String(32))
+    sku: Mapped[str] = mapped_column(String(100), index=True, nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Units of this line whose physical tag has been marked sold (audit).
+    retired: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    fulfilled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    def as_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "order_id": self.order_id,
+            "order_name": self.order_name,
+            "sku": self.sku,
+            "quantity": self.quantity,
+            "retired": self.retired,
+            "fulfilled_at": (
+                self.fulfilled_at.isoformat() if self.fulfilled_at else None
+            ),
+            "created_at": (
+                self.created_at.isoformat() if self.created_at else None
+            ),
+        }
 
 
 class Batch(Base):

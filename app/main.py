@@ -27,7 +27,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
-from app import config, oneleft, planner, shopify
+from app import config, oneleft, orders_sync, planner, shopify
 from app.auth import require_user
 from app.database import (
     DatabaseNotConfigured,
@@ -66,6 +66,7 @@ from app.models import (
     RfidAssignment,
     RfidIncompatible,
     SerialPrefix,
+    SoldRecord,
 )
 
 logger = logging.getLogger("rfid")
@@ -88,6 +89,8 @@ async def lifespan(app: FastAPI):
         # persisted table keeps answering while a refresh runs.
         if not config.check_shopify_env():
             _maybe_refresh_bin_map()
+        # Daily fulfilled-order sync (8 AM Toronto) — read-only, fail-soft.
+        orders_sync.start_daily_thread()
     yield
 
 
@@ -1272,6 +1275,77 @@ def refresh_stats(session: Session = Depends(get_session)):
         if started and (datetime.utcnow() - started).total_seconds() < 1800:
             running[row.key.split(":", 1)[1]] = row.value
     return {"stats": stats, "running": running}
+
+
+# --- Orders sync (sold detection) -------------------------------------------
+# Read-only against Shopify; the daily 8 AM run lives in app/orders_sync.
+# The manual button on the Review tab calls run; both paths share the
+# refresh-stats kind "orders-sync" so the button animates either way.
+
+@app.post("/api/orders-sync/run", dependencies=[Depends(require_user)])
+def orders_sync_run(session: Session = Depends(get_session)):
+    return orders_sync.run(session, source="manual")
+
+
+@app.get("/api/orders-sync/status", dependencies=[Depends(require_user)])
+def orders_sync_status(session: Session = Depends(get_session)):
+    return orders_sync.current_status(session)
+
+
+class MarkSoldIn(BaseModel):
+    sku: str = Field(max_length=100)
+    epcs: list[str] = Field(min_length=1, max_length=200)
+    changed_by: str | None = Field(default=None, max_length=100)
+
+
+@app.post(
+    "/api/assignments/mark-sold", dependencies=[Depends(require_user)]
+)
+def mark_assignments_sold(
+    payload: MarkSoldIn, session: Session = Depends(get_session)
+):
+    """An audit's verdict: these tags' boxes SHIPPED. Removes the
+    assignments (History-logged as tag-sold, one row per tag) and retires
+    the matching units from the sold ledger, oldest sales first. Local
+    records only — Shopify is never touched; its on-hand already dropped
+    when the orders fulfilled."""
+    sku = payload.sku.strip()
+    uppers = {(e or "").strip().upper() for e in payload.epcs if e}
+    rows = session.scalars(
+        select(RfidAssignment).where(
+            func.upper(RfidAssignment.rfid_id).in_(sorted(uppers))
+        )
+    ).all()
+    if not rows:
+        raise HTTPException(404, "None of those tags are on file.")
+    wrong = [r.rfid_id for r in rows
+             if (r.sku or "").strip().upper() != sku.upper()]
+    if wrong:
+        raise HTTPException(
+            409,
+            f"{len(wrong)} of those tags belong to a different product "
+            f"({wrong[0]} …) — refusing to mark them sold as {sku}.",
+        )
+    units = 0
+    for r in rows:
+        units += r.case_units or 1
+        session.add(BarcodeChange(
+            sku=r.sku,
+            product_title=r.product_title,
+            shopify_variant_id=r.shopify_variant_id,
+            changed_field="tag-sold",
+            old_barcode=(r.rfid_id or "")[:64] or None,
+            new_barcode=(r.bin_location or "")[:64] or None,
+            changed_by=(payload.changed_by or "").strip()[:100] or None,
+        ))
+        session.delete(r)
+    retired = orders_sync.retire_units(session, sku, units)
+    session.commit()
+    return {
+        "removed_tags": len(rows),
+        "units": units,
+        "retired_against_orders": retired,
+    }
 
 
 @app.post(
@@ -3134,6 +3208,11 @@ def bin_check(
         ):
             tags_by_sku.setdefault((t.sku or "").upper(), []).append(t)
     noscan = _noscan_skus(session)
+    # Sold-but-unretired units per SKU: the audit's licence to explain a
+    # silent tag as "that box shipped" and offer MARK SOLD.
+    sold_map = orders_sync.sold_unretired_map(
+        session, sorted(wanted | extra)
+    )
     bin_key = bin_name.strip().lower()
     report = []
 
@@ -3156,6 +3235,12 @@ def bin_check(
             "detected": len(det),
             "units_here": _units(here),
             "detected_units": _units(det),
+            # The tags a sweep of this shelf did NOT hear — the mark-sold
+            # candidates when sales explain the silence.
+            "silent_epcs": [
+                t.rfid_id for t in here if t.rfid_id.upper() not in swept
+            ],
+            "sold_unretired": sold_map.get(sku_upper, 0),
         }
 
     for e in rows:
@@ -3389,6 +3474,10 @@ def audit_bins(session: Session = Depends(get_session)):
             continue
         units[key] = units.get(key, 0) + (t.case_units or 1)
 
+    # Sold-but-unretired units RAISE the expected tag count: a fulfilled
+    # order's box left with its tag on file, so those tags aren't drift.
+    sold = orders_sync.sold_unretired_map(session)
+
     noscan = _noscan_skus(session)
     seen_skus: set[str] = set()
     bins: dict[str, dict] = {}
@@ -3401,14 +3490,16 @@ def audit_bins(session: Session = Depends(get_session)):
     ):
         key = e.sku.strip().upper()
         on_hand = e.qty or 0
+        sold_n = sold.get(key, 0)
         have = units.get(key, 0)
         seen_skus.add(key)
         _bucket((e.bin or "").strip() or "(no bin)")["products"].append({
             "sku": e.sku,
             "product_title": e.product_title,
             "on_hand": on_hand,
+            "sold_unretired": sold_n,
             "rfid_units": have,
-            "diff": have - on_hand,
+            "diff": have - (on_hand + sold_n),
             "rfid_incompatible": key in noscan,
         })
 
@@ -7700,6 +7791,7 @@ def product_history(term: str, session: Session = Depends(get_session)):
         "tag-unlinked": "tag-unlinked",
         "locate-list": "locate-list",
         "oneleft": "oneleft",
+        "tag-sold": "tag-sold",
     }
     for c in session.scalars(
         select(BarcodeChange).where(or_(
@@ -7715,7 +7807,24 @@ def product_history(term: str, session: Session = Depends(get_session)):
             "detail": f"{c.old_barcode or '(none)'} → {c.new_barcode}",
             # Barcode/SKU/bin flows write to the store; the RFID-scan flag
             # and the locate list are local markers only.
-            "shopify": c.changed_field not in ("rfid-scan", "locate-list"),
+            "shopify": c.changed_field
+            not in ("rfid-scan", "locate-list", "tag-sold"),
+        })
+
+    # Fulfilled-order sales from the sold ledger: the events that lower
+    # the EXPECTED tag count while the tags themselves stay on file.
+    for sr in session.scalars(
+        select(SoldRecord).where(func.upper(SoldRecord.sku) == sku.upper())
+    ):
+        events.append({
+            "at": iso(sr.fulfilled_at or sr.created_at),
+            "type": "order-sold",
+            "worker": None,
+            "detail": f"{sr.quantity} × sold on order "
+                      f"{sr.order_name or sr.order_id}"
+                      + (f" · {sr.retired} tag(s) since marked sold"
+                         if sr.retired else ""),
+            "shopify": True,
         })
 
     job_types = {
@@ -7952,6 +8061,7 @@ def history(
         "tag-unlinked": "tag-unlinked",
         "locate-list": "locate-list",
         "oneleft": "oneleft",
+        "tag-sold": "tag-sold",
     }
     # A sweep undo unlinks its tags with one shared timestamp — fold
     # those the same way sweep assigns fold.

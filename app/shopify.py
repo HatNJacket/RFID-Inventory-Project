@@ -726,3 +726,64 @@ def lookup_barcode(term: str) -> dict | None:
         "barcode": variant["barcode"],
         "bin_location": bin_location,
     }
+
+
+_ORDERS_QUERY = """
+query($search: String!, $cursor: String) {
+  orders(first: 50, query: $search, after: $cursor,
+         sortKey: UPDATED_AT) {
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      id
+      name
+      displayFulfillmentStatus
+      fulfillments(first: 5) { createdAt }
+      lineItems(first: 60) {
+        nodes { sku quantity unfulfilledQuantity }
+      }
+    }
+  }
+}
+"""
+
+
+def get_fulfilled_orders(updated_since: str) -> list[dict]:
+    """Fulfilled orders whose record changed since `updated_since` (ISO
+    date/time): [{order_id, name, fulfilled_at, lines: [{sku, qty}]}].
+
+    READ-ONLY, and requires the read_orders access scope — callers must
+    treat an ACCESS_DENIED RuntimeError as "scope not granted yet", not
+    as an outage. Line quantities are the ORDERED units of each SKU on a
+    FULFILLED order: the sync counts a sale once the whole order shows
+    fulfilled, which is when committed stock actually left on-hand."""
+    search = f"updated_at:>={updated_since} fulfillment_status:shipped"
+    out: list[dict] = []
+    cursor = None
+    for _ in range(10):  # 500 orders per sync is plenty at this store size
+        data = query_shopify(_ORDERS_QUERY, {"search": search,
+                                             "cursor": cursor})
+        block = data["orders"]
+        for node in block["nodes"]:
+            if node.get("displayFulfillmentStatus") != "FULFILLED":
+                continue
+            fulfilled_at = None
+            for f in node.get("fulfillments") or []:
+                if f.get("createdAt"):
+                    fulfilled_at = max(fulfilled_at or "", f["createdAt"])
+            lines = [
+                {"sku": li["sku"], "qty": li["quantity"]}
+                for li in node["lineItems"]["nodes"]
+                if li.get("sku") and (li.get("quantity") or 0) > 0
+            ]
+            if lines:
+                out.append({
+                    "order_id": node["id"],
+                    "name": node["name"],
+                    "fulfilled_at": fulfilled_at,
+                    "lines": lines,
+                })
+        if not block["pageInfo"]["hasNextPage"]:
+            break
+        cursor = block["pageInfo"]["endCursor"]
+    return out
+

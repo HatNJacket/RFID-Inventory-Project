@@ -392,6 +392,11 @@ const EVENT_META = {
   oneleft: ["1-left Check", "#b07d00"],
   "audit-session": ["Audit Session", "#0e7a8a"],
   sweep: ["Sweep", "#0e7a8a"],
+  // The sold system wears indigo/purple on purpose: product/on-hand
+  // arithmetic, visually distinct from the amber human-count families.
+  "order-sold": ["Order Sold", "#5c6ac4"],
+  "tag-sold": ["Tag Sold", "#4053b8"],
+  "tag-onhand-mismatch": ["Tags ≠ On-hand", "#8e44ad"],
 };
 
 function evLabel(type) {
@@ -6451,6 +6456,7 @@ let dismissConfirmIds = new Set();
 
 async function loadReview() {
   const list = document.getElementById("review-list");
+  renderOrderSyncNote();
   try {
     const { tasks } = await apiJson("/api/review-tasks?status=open&limit=100");
     reviewTasks = tasks;
@@ -6504,6 +6510,13 @@ const REVIEW_NOTES = {
     "are LIVE — they clear themselves when either side is fixed: write " +
     "the tags' shelf to Shopify (the boxes are where the tags say), or " +
     "move the boxes and update the tags. Nothing to dismiss.",
+  "tag-onhand-mismatch":
+    "System arithmetic, not a human count: the units this product's " +
+    "tags stand for don't equal Shopify on-hand + boxes sold since the " +
+    "last audit. Different from Inventory Check (someone counted a " +
+    "shelf) — this one files AND clears itself as the daily order sync " +
+    "re-checks. The fix is a bin audit: a sweep that hears the " +
+    "remaining tags can mark the sold ones.",
 };
 
 function renderReview() {
@@ -6757,6 +6770,12 @@ const RV_TIMELINE_TYPES = {
     "inventory-check", "oneleft", "order-sold",
   ]),
 };
+// The sold-arithmetic category reads the same stock story (with the
+// running tags column) — synthetic-style scoping comes from created_at.
+RV_TIMELINE_TYPES["tag-onhand-mismatch"] = new Set([
+  ...RV_TIMELINE_TYPES["inventory-check"],
+  "tag-sold",
+]);
 const rvHistCache = {}; // sku -> {at, events}
 
 async function rvProductEvents(sku) {
@@ -6814,7 +6833,7 @@ async function loadReviewTimeline(t, host) {
       // Live (synthetic) entries have no filed date: recent movement only.
       rows = wanted.slice(-12);
     }
-    if (cat === "inventory-check") {
+    if (cat === "inventory-check" || cat === "tag-onhand-mismatch") {
       // Running tag count per event, derived backwards from the live
       // count so each row can say "tags: N".
       let tags = null;
@@ -6828,7 +6847,7 @@ async function loadReviewTimeline(t, host) {
         const deltas = rows.map((e) =>
           e.type === "tag-assigned"
             ? (e.epcs || [null]).length
-            : e.type === "tag-unlinked"
+            : e.type === "tag-unlinked" || e.type === "tag-sold"
               ? -1
               : 0
         );
@@ -7320,6 +7339,58 @@ document.getElementById("review-notesonly").addEventListener("click", () => {
   reviewNotesOnly = !reviewNotesOnly;
   renderReview();
 });
+
+// Orders sync: manual trigger for the daily 8 AM pull. Shares the
+// "orders-sync" refresh kind with the server-side auto run, so this
+// button animates mid-fill when the daily sync happens to be running.
+refreshify("review-ordersync", "orders-sync", async () => {
+  let outcome = null;
+  try {
+    const res = await postJson("/api/orders-sync/run", {});
+    outcome = res.waiting_scope
+      ? "Needs read_orders scope"
+      : res.ok
+        ? `Synced ✓ ${res.recorded || 0} new sale(s)`
+        : "Sync failed";
+  } catch (err) {
+    outcome = "Sync failed";
+  }
+  loadReview();
+  renderOrderSyncNote();
+  return outcome;
+});
+
+async function renderOrderSyncNote() {
+  const note = document.getElementById("review-sync-note");
+  try {
+    const st = await apiJson("/api/orders-sync/status");
+    const last = st.last_run;
+    if (!last) {
+      note.textContent =
+        "Order sync hasn't run yet — it runs daily at 8 AM, or press " +
+        "↻ Sync orders.";
+      note.hidden = false;
+      return;
+    }
+    if (last.waiting_scope) {
+      note.textContent =
+        "⚠ Order sync is waiting for the read_orders scope on the " +
+        "Shopify app (Settings → Apps → Develop apps → Configuration). " +
+        "Until then, sold boxes can't lower expected tag counts.";
+      note.hidden = false;
+      return;
+    }
+    note.textContent = last.ok
+      ? `Order sync: last ran ${fmtAgo(last.at)} · ${last.orders ?? 0} ` +
+        `fulfilled order(s) seen · ${last.recorded ?? 0} new sale(s) ` +
+        `recorded · mismatch tasks +${last.tasks_opened ?? 0} / ` +
+        `−${last.tasks_closed ?? 0}`
+      : `⚠ Order sync failed ${fmtAgo(last.at)}: ${last.error || "unknown"}`;
+    note.hidden = false;
+  } catch {
+    note.hidden = true;
+  }
+}
 document.getElementById("review-filter").addEventListener("change", (e) => {
   reviewFilter = e.target.value;
   renderReview();
@@ -7437,7 +7508,11 @@ function renderAuditBins() {
                        : ""
                    }</td>
                    <td class="mono"><span class="skulink" data-sku="${escapeHtml(p.sku || "")}">${escapeHtml(p.sku || "—")}</span></td>
-                   <td class="num">${p.on_hand == null ? "—" : p.on_hand}</td>
+                   <td class="num">${p.on_hand == null ? "—" : p.on_hand}${
+                     p.sold_unretired
+                       ? ` <span class="bexp--note" title="Boxes sold on fulfilled orders whose tag is still on file — they raise the expected tag count until an audit marks them sold">(+${p.sold_unretired} sold)</span>`
+                       : ""
+                   }</td>
                    <td class="num">${p.rfid_units}</td>
                    <td class="num${p.diff ? " bexp--off" : ""}">${
                      p.diff > 0 ? "+" + p.diff : p.diff
@@ -7534,13 +7609,26 @@ function renderBinAudit() {
     .filter((r) => (r.expected_qty || 0) > 0 || r.tags_here > 0 || r.detected > 0)
     .map((r) => {
       const flags = [];
+      const silent = r.tags_here - r.detected;
       if (r.rfid_incompatible) {
         flags.push(["⊘ won't scan on box", "chip--na"]);
-      } else if (r.detected < r.tags_here) {
-        flags.push([
-          `${r.tags_here - r.detected} tagged box(es) silent`,
-          "chip--warn",
-        ]);
+      } else if (silent > 0 && (r.sold_unretired || 0) > 0) {
+        // Sales explain some or all of the silence: offer MARK SOLD for
+        // the covered tags; anything beyond the sold count is still a
+        // real silence (and the daily sync files the mismatch task).
+        if (silent <= r.sold_unretired) {
+          flags.push([
+            `${silent} silent — ${r.sold_unretired} sold since last audit`,
+            "chip--ok",
+          ]);
+        } else {
+          flags.push([
+            `${silent} silent vs ${r.sold_unretired} sold — count off`,
+            "chip--warn",
+          ]);
+        }
+      } else if (silent > 0) {
+        flags.push([`${silent} tagged box(es) silent`, "chip--warn"]);
       }
       // Untagged: Shopify expects stock here but the RFID system holds
       // nothing for it. On a part-tagged shelf that's most of the list,
@@ -7608,7 +7696,20 @@ function renderBinAudit() {
                 )
                 .join(" ")
             : "✓"
-        }</td>
+        }${(() => {
+          // Silence fully covered by fulfilled orders: one click retires
+          // the shipped boxes' tags against the sold ledger.
+          const silent = r.tags_here - r.detected;
+          return silent > 0 &&
+            (r.sold_unretired || 0) >= silent &&
+            (r.silent_epcs || []).length &&
+            r.sku
+            ? `<div><button class="reset binaudit-marksold" type="button"
+                 data-sku="${escapeHtml(r.sku)}"
+                 data-epcs="${escapeHtml((r.silent_epcs || []).join(","))}"
+                 title="These boxes shipped on fulfilled orders — remove their tag record(s) and retire the sale(s) in the ledger. History-logged; Shopify untouched.">MARK ${silent} SOLD</button></div>`
+            : "";
+        })()}</td>
       </tr>`;
     })
     .join("");
@@ -7731,6 +7832,46 @@ document
       } catch (err) {
         alert(err.message);
         fix.disabled = false;
+      }
+      return;
+    }
+    // Sold-tag retirement: the sweep missed exactly the boxes the sold
+    // ledger says shipped. Local records only — Shopify's on-hand
+    // already dropped when those orders fulfilled.
+    const soldBtn = e.target.closest(".binaudit-marksold");
+    if (soldBtn) {
+      const sku = soldBtn.dataset.sku;
+      const epcs = (soldBtn.dataset.epcs || "").split(",").filter(Boolean);
+      const operator = operatorEl.value;
+      if (!operator) {
+        alert("Pick who's scanning (top right) first.");
+        return;
+      }
+      if (
+        !confirm(
+          `Mark ${epcs.length} tag(s) of ${sku} as SOLD?\n\n` +
+            `The sweep didn't hear them, and fulfilled orders account ` +
+            `for the missing boxes. Their tag records are removed ` +
+            `(History-logged as Tag Sold) and the sales are retired in ` +
+            `the ledger. Shopify is not touched.`
+        )
+      )
+        return;
+      soldBtn.disabled = true;
+      try {
+        const res = await postJson("/api/assignments/mark-sold", {
+          sku,
+          epcs,
+          changed_by: operator,
+        });
+        alert(
+          `${res.removed_tags} tag(s) marked sold — ` +
+            `${res.retired_against_orders} unit(s) retired against orders.`
+        );
+        document.getElementById("binaudit-run").click();
+      } catch (err) {
+        alert(err.message);
+        soldBtn.disabled = false;
       }
       return;
     }

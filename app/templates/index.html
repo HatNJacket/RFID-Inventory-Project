@@ -863,7 +863,10 @@
                 title="Show only tasks someone has left a note on">📝 With notes</button>
         <button class="reset" id="review-locate-btn" type="button"
                 title="Products queued for a physical tag hunt on the C72's Locate tab">📡 Locate list</button>
+        <button class="reset" id="review-ordersync" type="button"
+                title="Pull fulfilled orders from Shopify (read-only) and re-check tags vs on-hand + sold. Runs by itself daily at 8 AM.">↻ Sync orders</button>
       </div>
+      <p class="review-note" id="review-sync-note" hidden></p>
       <!-- What the selected task type means — shown while a filter is on -->
       <p class="review-note" id="review-filter-note" hidden></p>
       <ul class="recent__list" id="review-list"></ul>

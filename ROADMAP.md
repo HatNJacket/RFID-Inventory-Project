@@ -3,6 +3,67 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-08-18.
 
+## 📦 Sold detection + Nick's big batch (2026-08-18, second session)
+
+Nick's task list while he runs stock checks, all built the same day.
+**BLOCKED piece: the Shopify custom app still lacks the `read_orders`
+scope** (probed live) — Settings → Apps and sales channels → Develop
+apps → the RFID app → Configuration → check `read_orders` → Save. The
+sync is deployed fail-soft and reports "waiting for scope" until then.
+
+- **Sold ledger** (`rfid_sold_ledger`, auto-create; `app/orders_sync.py`):
+  fulfilled orders (read-only) recorded per tracked SKU. Expected tags =
+  live on-hand + sold-unretired. Daily sync 8 AM Toronto + manual ↻ on
+  Review; files/auto-closes ONE `tag-onhand-mismatch` review task per
+  SKU (indigo/purple chips — deliberately distinct from the amber
+  human-count families). Audits: silent tags fully covered by sales get
+  a **MARK N SOLD** button (removes tag records, History `tag-sold`,
+  retires ledger oldest-first, never touches Shopify); partially covered
+  silence flags "count off". Bins-out-of-sync math now adds sold to
+  expected. Product history gains `order-sold` events. Receiving/batch
+  on-hand raises flow through live on-hand automatically. Audits remain
+  the only CONFIRMATION of counts (Nick's rule).
+- **Refresh parent component**: every refresh-ish button (bins pull,
+  audit on-hand, batch re-pull, checks, 1-left board/scan, orders sync)
+  shares refreshify() — server-logged durations (`rfid_refresh_log`),
+  "Estimated Ns" + countdown, dim-green left-to-right fill; server-side
+  autos mark `refresh_running:<kind>` so a page loading mid-run resumes
+  the fill at the right level.
+- **Printer picker**: `rfid_printers` (agent-claim upserts = detection +
+  liveness) + `rfid_print_jobs.printer` (**ALTER script
+  dev/alter_printjob_printer.py — run against prod before deploy**).
+  Agents: `--printer-id/--printer-kind`; a named agent claims only its
+  own + untargeted jobs; the CURRENT warehouse agent (no restart yet)
+  claims everything, exactly as before. Scan Station: picker cards w/
+  online dots; printing with no live selection opens the picker first.
+- **Scan Station batch**: auto-print now fires for ANY product on scan
+  (Astronomik serial flow demoted to an indented sub-setting, default
+  ON); poor-print detection (mirrors print_agent ZPL geometry — ^FB
+  overprints, never clips) holds auto-print + shows a red warning
+  beside Print, live as an Astronomik name is typed; >10 labels needs a
+  checkbox confirm; >1 label auto-enables BULK for the visit; operator
+  list = hidden "Who's scanning?" placeholder + Guest always appended.
+- **Help slideshow**: ❓ "How do I use Scan Station?" (top right, beside
+  C72 LINK) — 6 SVG-illustrated steps (ZWO double-barcode + Svbony
+  SKU:W9180A drawn from Nick's photos; /static/help/*.svg swappable for
+  real photos later). **C72 v3.45** (code 63): opens on LINK, not BATCH.
+- **Review tab**: yellow inline bin chip removed (resolve window covers
+  it); 📝 with-notes filter (appears only when notes exist); expanded
+  tasks show scoped TIMELINES (filter over product history — bin moves
+  since filing for bin-mismatch; baseline + stock events with a running
+  "tags: N" column for inventory-check; filed-when/by-whom for the
+  rest). Resolving hides the view; product history keeps everything.
+- Tests: test_printers (12), test_refresh (7), test_orders_sync (23) +
+  full run_all before deploy.
+
+Decisions (Nick, this session): sync cadence = daily 8 AM + manual
+(15 min was too hot); workers = Steve, Matt, Clay, Nick + Guest; the
+1-left dashboard's stale VALID_EMPLOYEES stays untouched (their system
+is being worked on, logs must stay intact); print-agent restart any
+time (RFID hardware idle) — only the Azure app + DB must stay up;
+mark-sold prompts always require the user (auto-clear only when found
+count exactly matches expected).
+
 ## 🧭 Audits hub + audit sessions — ✅ DEPLOYED 2026-08-18
 
 Nick picked ideas 1 + 4 from the consolidation previews (EasyScan's
