@@ -41,7 +41,6 @@ const el = {
   aliasPreview: document.getElementById("alias-preview"),
   aliasImg: document.getElementById("alias-img"),
   aliasPtitle: document.getElementById("alias-ptitle"),
-  aliasPid: document.getElementById("alias-pid"),
   aliasPsku: document.getElementById("alias-psku"),
   aliasPbarcode: document.getElementById("alias-pbarcode"),
   aliasPbin: document.getElementById("alias-pbin"),
@@ -398,6 +397,7 @@ const EVENT_META = {
   "tag-sold": ["Tag Sold", "#4053b8"],
   "tag-onhand-mismatch": ["Tags ≠ On-hand", "#8e44ad"],
   "shopify-bin-read": ["Read From Shopify", "#1f5f8b"],
+  "scan-note": ["Scan Note", "#8a6116"],
 };
 
 // Multi-tag events render their EPC list behind an expander — the cell
@@ -967,9 +967,20 @@ let caseCode = null;      // the code being viewed/defined
 let caseProduct = null;   // the product chosen as contents
 
 function closeCasebox() {
-  document.getElementById("casebox").hidden = true;
+  const box = document.getElementById("casebox");
+  box.hidden = true;
   caseCode = null;
   caseProduct = null;
+  // Docked inside the edit window? Send the element home and report it,
+  // so the cancel/done handlers know not to reset the scan flow.
+  const host = document.getElementById("edit-casehost");
+  if (host && box.parentElement === host) {
+    host.hidden = true;
+    if (caseboxHome)
+      caseboxHome.parent.insertBefore(box, caseboxHome.next);
+    return true;
+  }
+  return false;
 }
 
 function showCaseScan(data) {
@@ -1009,9 +1020,13 @@ function showCaseScan(data) {
   batchSound("other");
 }
 
-function openCaseForm(code, existing) {
-  closeLinkbox();
-  closeSetbox();
+function openCaseForm(code, existing, docked = false) {
+  // Docked = opened INSIDE the edit window (edit-casehost): the edit
+  // window stays up, so nothing gets closed on the way in.
+  if (!docked) {
+    closeLinkbox();
+    closeSetbox();
+  }
   caseCode = code;
   caseProduct = null;
   const box = document.getElementById("casebox");
@@ -1125,12 +1140,10 @@ document.getElementById("alias-case").addEventListener("click", () => {
 });
 
 document.getElementById("casebox-cancel").addEventListener("click", () => {
-  closeCasebox();
-  resetFlow();
+  if (!closeCasebox()) resetFlow();
 });
 document.getElementById("casebox-done").addEventListener("click", () => {
-  closeCasebox();
-  resetFlow();
+  if (!closeCasebox()) resetFlow();
 });
 
 // --- Foreign-barcode linking ------------------------------------------------
@@ -1147,6 +1160,16 @@ function hideLinkboxExtras() {
   el.skuSave.disabled = true;
   el.prefixNote.value = "";
   el.prefixReco.hidden = true;
+  // Edit-mode body: hidden for the unknown-barcode flows, and the old
+  // actions-row case button comes back for them.
+  const editbox = document.getElementById("editbox");
+  if (editbox) editbox.hidden = true;
+  const aliasCase = document.getElementById("alias-case");
+  if (aliasCase) aliasCase.hidden = false;
+  // A case cell still docked in the edit window goes home.
+  const box = document.getElementById("casebox");
+  const host = document.getElementById("edit-casehost");
+  if (host && box && box.parentElement === host) closeCasebox();
 }
 
 // Recommended SKU: whenever a 4-digit prefix is entered, consult the loaded
@@ -1199,9 +1222,16 @@ function retryLookup(code) {
 
 function renderAliasPreview(p) {
   aliasPreviewProduct = p;
-  el.aliasPtitle.textContent =
-    (p.product_title || "—") + (p.variant_title ? ` (${p.variant_title})` : "");
-  el.aliasPid.textContent = p.shopify_variant_id || "—";
+  // Title links to the product in Shopify admin whenever a URL can be
+  // built (real GID, or the SKU-filtered fallback).
+  el.aliasPtitle.innerHTML = productLink(
+    (p.product_title || "—") +
+      (p.variant_title && p.variant_title !== "Default Title"
+        ? ` (${p.variant_title})`
+        : ""),
+    p.shopify_product_id,
+    p.sku
+  );
   el.aliasPsku.textContent = p.sku || "—";
   el.aliasPbarcode.textContent = p.barcode || "—";
   el.aliasPbin.textContent = p.bin_location || "—";
@@ -1431,6 +1461,25 @@ el.setCancel.addEventListener("click", () => {
 // to the current product.
 let linkboxEditMode = false;
 
+// The edit window's three saved values — the ✕ buttons restore these,
+// and each Save greys out while its input still equals them.
+let editDefaults = { sku: "", barcode: "", note: "" };
+
+function editRowSync() {
+  const rows = [
+    ["edit-sku", "edit-sku-save", editDefaults.sku, false],
+    ["edit-barcode", "edit-barcode-save", editDefaults.barcode, false],
+    // An empty note is a VALID save (it clears the note) — only equality
+    // with the saved value greys the button.
+    ["edit-note", "edit-note-save", editDefaults.note, true],
+  ];
+  rows.forEach(([inputId, saveId, def, emptyOk]) => {
+    const value = document.getElementById(inputId).value.trim();
+    document.getElementById(saveId).disabled =
+      value === def || (!emptyOk && !value);
+  });
+}
+
 function openEditbox() {
   if (!pendingProduct) return;
   linkboxEditMode = true;
@@ -1438,9 +1487,7 @@ function openEditbox() {
   linkboxInfo = null;
   el.flow.classList.add("flow--side");
   el.linkboxTitle.textContent = "Edit product";
-  el.linkboxText.textContent =
-    "Register the Astronomik serial prefix (the first 4 digits of the " +
-    "unit's serial number) and/or update the SKU in Shopify.";
+  el.linkboxText.textContent = "";
   el.linkboxForm.hidden = true;
   // The hidden target field feeds the save handlers.
   el.aliasTarget.value = pendingProduct.barcode || pendingProduct.sku || "";
@@ -1448,19 +1495,216 @@ function openEditbox() {
   el.aliasAccept.hidden = true;
   el.aliasOverwrite.hidden = true;
   el.aliasUnlink.hidden = true;
+  // The old actions-row case button is replaced by the edit body's own.
+  document.getElementById("alias-case").hidden = true;
   hideOverwrite();
+  // Edit rows, prefilled from the saved values.
+  editDefaults = {
+    sku: (pendingProduct.sku || "").trim(),
+    barcode: (pendingProduct.barcode || "").trim(),
+    note: (pendingProduct.scan_note || "").trim(),
+  };
+  document.getElementById("edit-sku").value = editDefaults.sku;
+  document.getElementById("edit-barcode").value = editDefaults.barcode;
+  document.getElementById("edit-note").value = editDefaults.note;
+  document.getElementById("edit-msg").textContent = "";
+  editRowSync();
+  document.getElementById("editbox").hidden = false;
+  // Astronomik + case live behind their buttons now.
   el.prefixInput.value = pendingProduct.serial_prefix || "";
   el.prefixNote.value = pendingProduct.serial_note || "";
-  el.prefixSection.hidden = false;
-  el.newSkuInput.value = pendingProduct.sku || "";
-  el.skuSection.hidden = false;
-  el.skuAck.checked = false;
-  el.skuSave.disabled = true;
+  el.prefixSection.hidden = true;
+  el.skuSection.hidden = true;
   el.linkbox.hidden = false;
-  el.prefixInput.focus();
 }
 
 el.productEdit.addEventListener("click", openEditbox);
+
+// --- Edit-window rows: inputs, ✕ resets, dynamic-grey saves ------------------
+["edit-sku", "edit-barcode", "edit-note"].forEach((id) =>
+  document.getElementById(id).addEventListener("input", editRowSync)
+);
+document.getElementById("edit-sku-reset").addEventListener("click", () => {
+  document.getElementById("edit-sku").value = editDefaults.sku;
+  editRowSync();
+});
+document.getElementById("edit-barcode-reset").addEventListener("click", () => {
+  document.getElementById("edit-barcode").value = editDefaults.barcode;
+  editRowSync();
+});
+document.getElementById("edit-note-reset").addEventListener("click", () => {
+  document.getElementById("edit-note").value = editDefaults.note;
+  editRowSync();
+});
+
+const editMsg = (text) =>
+  (document.getElementById("edit-msg").textContent = text);
+
+// SKU + barcode go through the SAME audited Shopify-write endpoints as
+// the unknown-barcode flows (History-logged there); the checkbox ritual
+// is replaced by a confirm() since the greyed-at-saved-value buttons
+// already stop accidental no-op writes.
+document.getElementById("edit-sku-save").addEventListener("click", async () => {
+  const operator = requireOperator();
+  if (!operator || !pendingProduct) return;
+  const newSku = document.getElementById("edit-sku").value.trim();
+  if (
+    !confirm(
+      `Replace this product's SKU in Shopify?\n\n${editDefaults.sku || "(none)"} → ${newSku}\n\nPermanent (History keeps the record).`
+    )
+  )
+    return;
+  const btn = document.getElementById("edit-sku-save");
+  btn.disabled = true;
+  try {
+    const res = await postJson("/api/sku-overwrites", {
+      new_sku: newSku,
+      target: editDefaults.sku || editDefaults.barcode,
+      changed_by: operator,
+      confirmed: true,
+    });
+    editDefaults.sku = newSku;
+    pendingProduct.sku = newSku;
+    if (res.product) renderAliasPreview({ ...pendingProduct, ...res.product });
+    editMsg(`SKU updated to ${newSku} ✓ (History-logged)`);
+  } catch (err) {
+    editMsg(err.message);
+  }
+  editRowSync();
+});
+
+document
+  .getElementById("edit-barcode-save")
+  .addEventListener("click", async () => {
+    const operator = requireOperator();
+    if (!operator || !pendingProduct) return;
+    const newBarcode = document.getElementById("edit-barcode").value.trim();
+    if (
+      !confirm(
+        `Replace this product's barcode in Shopify?\n\n${editDefaults.barcode || "(none)"} → ${newBarcode}\n\nPermanent (History keeps the record).`
+      )
+    )
+      return;
+    const btn = document.getElementById("edit-barcode-save");
+    btn.disabled = true;
+    try {
+      const res = await postJson("/api/barcode-overwrites", {
+        new_barcode: newBarcode,
+        target: editDefaults.sku || editDefaults.barcode,
+        changed_by: operator,
+        confirmed: true,
+      });
+      editDefaults.barcode = newBarcode;
+      pendingProduct.barcode = newBarcode;
+      if (res.product)
+        renderAliasPreview({ ...pendingProduct, ...res.product });
+      editMsg(`Barcode updated to ${newBarcode} ✓ (History-logged)`);
+    } catch (err) {
+      editMsg(err.message);
+    }
+    editRowSync();
+  });
+
+document.getElementById("edit-note-save").addEventListener("click", async () => {
+  const operator = requireOperator();
+  if (!operator || !pendingProduct || !pendingProduct.sku) return;
+  const note = document.getElementById("edit-note").value.trim();
+  const btn = document.getElementById("edit-note-save");
+  btn.disabled = true;
+  try {
+    await apiJson(
+      `/api/products/${encodeURIComponent(pendingProduct.sku)}/scan-note`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ note, changed_by: operator }),
+      }
+    );
+    editDefaults.note = note;
+    pendingProduct.scan_note = note || null;
+    if (phistData && phistData.product) phistData.product.scan_note = note || null;
+    updateScanNote(pendingProduct);
+    editMsg(note ? "Scan note saved ✓ — it shows on every scan." : "Scan note cleared ✓");
+  } catch (err) {
+    editMsg(err.message);
+  }
+  editRowSync();
+});
+
+// Astronomik: the serial-prefix cell folds out under the rows.
+document.getElementById("edit-astro").addEventListener("click", () => {
+  el.prefixSection.hidden = !el.prefixSection.hidden;
+  if (!el.prefixSection.hidden) el.prefixInput.focus();
+});
+
+// Box of multiple products: the case cell docks INSIDE the edit window
+// instead of replacing it (Nick, 2026-08-18).
+let caseboxHome = null;
+document.getElementById("edit-case").addEventListener("click", () => {
+  const box = document.getElementById("casebox");
+  const host = document.getElementById("edit-casehost");
+  if (!caseboxHome)
+    caseboxHome = { parent: box.parentElement, next: box.nextElementSibling };
+  host.appendChild(box);
+  host.hidden = false;
+  openCaseForm(
+    (pendingProduct && (pendingProduct.barcode || pendingProduct.sku)) ||
+      el.aliasTarget.value.trim(),
+    null,
+    true
+  );
+});
+
+// Bin chip on the preview card: same click-to-edit as the product card.
+document.getElementById("alias-pbin").addEventListener("click", () => {
+  if (!aliasPreviewProduct) return;
+  el.aliasPbin.hidden = true;
+  const input = document.getElementById("alias-bininput");
+  input.value = "";
+  input.hidden = false;
+  input.focus();
+});
+document.getElementById("alias-bininput").addEventListener("blur", () => {
+  const input = document.getElementById("alias-bininput");
+  if (!input.disabled) {
+    input.hidden = true;
+    el.aliasPbin.hidden = false;
+  }
+});
+document
+  .getElementById("alias-bininput")
+  .addEventListener("keydown", async (event) => {
+    const input = document.getElementById("alias-bininput");
+    if (event.key === "Escape") {
+      event.stopPropagation();
+      input.hidden = true;
+      el.aliasPbin.hidden = false;
+      return;
+    }
+    if (event.key !== "Enter") return;
+    const bin = input.value.trim();
+    if (!bin || !aliasPreviewProduct) return;
+    const operator = requireOperator();
+    if (!operator) return;
+    input.disabled = true;
+    try {
+      await postJson("/api/bin-updates", {
+        target: aliasPreviewProduct.sku || aliasPreviewProduct.barcode,
+        bin,
+        changed_by: operator,
+      });
+      aliasPreviewProduct.bin_location = bin;
+      if (pendingProduct) pendingProduct.bin_location = bin;
+      el.aliasPbin.textContent = bin;
+      editMsg(`Bin set to ${bin} (saved to Shopify).`);
+    } catch (err) {
+      editMsg(err.message);
+    } finally {
+      input.disabled = false;
+      input.hidden = true;
+      el.aliasPbin.hidden = false;
+    }
+  });
 
 // --- Edit product from the PRODUCT WINDOW -----------------------------------
 // Reuses the Scan Station's edit window wholesale: the #linkbox element
@@ -1793,8 +2037,20 @@ function showProduct(p) {
   el.printPanel.hidden = !printingEnabled;
   updateNoBinWarn(p);
   updateFitWarn(p);
+  updateScanNote(p);
   loadTags(p);
   loadPlannerHint(p);
+}
+
+// The product's standing scan note (set in Edit product): loud, on every
+// scan, right where the on-order hint lives. The C72 shows the same note
+// with its own sound.
+function updateScanNote(p) {
+  const elNote = document.getElementById("p-scannote");
+  if (!elNote) return;
+  const note = (p && p.scan_note) || "";
+  elNote.hidden = !note;
+  elNote.textContent = note ? `⚠ ${note}` : "";
 }
 
 // Red "No bin set" beside the Print button: this product's labels would

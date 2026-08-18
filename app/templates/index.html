@@ -222,17 +222,62 @@
                  placeholder="Known barcode or SKU…" />
           <button class="reset" id="alias-check" type="button">Check product</button>
         </div>
+        <!-- Preview card: title links to Shopify admin when a URL can be
+             built; SKU + Bin share a row (the bin is the same click-to-
+             edit chip as the product card); no raw ID (Nick, 2026-08-18). -->
         <div class="linkbox__card" id="alias-preview" hidden>
           <img class="linkbox__img" id="alias-img" alt="" hidden />
           <div class="linkbox__info">
             <div class="linkbox__ptitle" id="alias-ptitle">—</div>
             <dl class="product__grid">
-              <div><dt>ID</dt><dd id="alias-pid">—</dd></div>
-              <div><dt>SKU</dt><dd id="alias-psku">—</dd></div>
-              <div><dt>Barcode</dt><dd id="alias-pbarcode">—</dd></div>
-              <div><dt>Bin</dt><dd id="alias-pbin">—</dd></div>
+              <div><dt>SKU</dt><dd><span class="mono" id="alias-psku">—</span>
+                &nbsp;·&nbsp; Bin
+                <span id="alias-pbin" class="product__bin product__bin--edit" title="Click to set the bin (saves to Shopify)">—</span>
+                <input id="alias-bininput" class="product__bin-input" type="text" maxlength="100" autocomplete="off" spellcheck="false" placeholder="Bin…" hidden />
+              </dd></div>
+              <div><dt>Barcode</dt><dd class="mono" id="alias-pbarcode">—</dd></div>
             </dl>
           </div>
+        </div>
+
+        <!-- Edit-product body (openEditbox only): SKU / barcode / scan-
+             note rows with reset-to-saved ✕ and save buttons that grey
+             out at the saved value, then the occasional cells. -->
+        <div id="editbox" hidden>
+          <div class="editrow">
+            <label class="editrow__label" for="edit-sku">SKU</label>
+            <div class="phist-inputwrap">
+              <input id="edit-sku" class="linkbox__input" type="text" maxlength="100" autocomplete="off" spellcheck="false" />
+              <button class="phist-clear" id="edit-sku-reset" type="button" title="Back to the saved SKU">✕</button>
+            </div>
+            <button class="reset" id="edit-sku-save" type="button" disabled>Save SKU</button>
+          </div>
+          <div class="editrow">
+            <label class="editrow__label" for="edit-barcode">Barcode</label>
+            <div class="phist-inputwrap">
+              <input id="edit-barcode" class="linkbox__input" type="text" maxlength="64" autocomplete="off" spellcheck="false" />
+              <button class="phist-clear" id="edit-barcode-reset" type="button" title="Back to the saved barcode">✕</button>
+            </div>
+            <button class="reset" id="edit-barcode-save" type="button" disabled>Save barcode</button>
+          </div>
+          <div class="editrow">
+            <label class="editrow__label" for="edit-note">Scan note
+              <span class="editrow__help" title="Optional. Shown loudly every time this product is scanned — in the Scan Station's product card, and on the C72 with its own sound and warning-coloured text. Leave empty for no note.">?</span>
+            </label>
+            <div class="phist-inputwrap">
+              <input id="edit-note" class="linkbox__input" type="text" maxlength="255" autocomplete="off" spellcheck="false" placeholder="optional — e.g. open the case before tagging" />
+              <button class="phist-clear" id="edit-note-reset" type="button" title="Back to the saved note">✕</button>
+            </div>
+            <button class="reset" id="edit-note-save" type="button" disabled>Save note</button>
+          </div>
+          <p class="linkbox__text" id="edit-msg"></p>
+          <div class="editrow editrow--btns">
+            <button class="reset" id="edit-astro" type="button"
+                    title="Register the 4-digit serial prefix that identifies this product on Astronomik boxes">Astronomik…</button>
+            <button class="reset" id="edit-case" type="button"
+                    title="This product's barcode is a case holding several units of one product — record what's inside">Box of multiple products…</button>
+          </div>
+          <div id="edit-casehost" hidden></div>
         </div>
         <!-- Register a new Astronomik serial prefix (sheet gaps) -->
         <div class="linkbox__extra" id="prefix-section" hidden>
@@ -296,6 +341,10 @@
             </p>
           </div>
         </div>
+
+        <!-- Scan note: the product's standing warning, shown on every
+             scan (set in Edit product). The C72 shows the same note. -->
+        <p class="scan-note" id="p-scannote" hidden></p>
 
         <!-- TC-Planner hint: this product sits on an open purchase order.
              Read-only decoration — appears only when the planner bridge is

@@ -1190,15 +1190,36 @@ public class MainActivity extends Activity {
                 final String sku = p.isNull("sku") ? "—" : p.optString("sku");
                 final String img = p.isNull("image_url") ? null
                         : p.optString("image_url");
+                // The product's standing scan note (set in Edit product):
+                // warning-coloured line + its own double beep, so a box
+                // that needs special handling announces itself.
+                final String note = p.isNull("scan_note") ? ""
+                        : p.optString("scan_note", "");
                 ui.post(() -> {
                     boolean has = !bin.isEmpty()
                             && !bin.equalsIgnoreCase("No bin assigned");
-                    beep(has ? SOUND_OK : SOUND_OTHER);
-                    findResult.setText(
-                            (has ? "BIN  " + bin : "NO BIN ASSIGNED")
+                    String base = (has ? "BIN  " + bin : "NO BIN ASSIGNED")
                             + "\n\n" + title
                             + (variant.isEmpty() ? "" : " (" + variant + ")")
-                            + "\nSKU: " + sku);
+                            + "\nSKU: " + sku;
+                    if (note.isEmpty()) {
+                        beep(has ? SOUND_OK : SOUND_OTHER);
+                        findResult.setText(base);
+                    } else {
+                        beepScanNote();
+                        android.text.SpannableStringBuilder sb =
+                                new android.text.SpannableStringBuilder(
+                                        base + "\n\n⚠ " + note);
+                        // C_WARN themes itself: amber-on-light,
+                        // gold-on-dark.
+                        sb.setSpan(new android.text.style
+                                        .ForegroundColorSpan(C_WARN),
+                                base.length(), sb.length(), 0);
+                        sb.setSpan(new android.text.style.StyleSpan(
+                                        Typeface.BOLD),
+                                base.length(), sb.length(), 0);
+                        findResult.setText(sb);
+                    }
                     findResult.setTextSize(has ? 20 : 16);
                     loadImage(img, findImg);
                     status.setText(has ? "Found ✓" : "This product has no "
@@ -4038,6 +4059,22 @@ public class MainActivity extends Activity {
 
     private int dp(int v) {
         return Math.round(getResources().getDisplayMetrics().density * v);
+    }
+
+    /** The scan-note sound: its own rhythm (three quick rising beeps),
+     *  distinct from OK/other/error, so a product with a standing note
+     *  is heard before it's read. */
+    private void beepScanNote() {
+        if (tones == null) return;
+        try {
+            tones.startTone(ToneGenerator.TONE_PROP_BEEP, 80);
+            ui.postDelayed(() -> tones.startTone(
+                    ToneGenerator.TONE_PROP_BEEP, 80), 140);
+            ui.postDelayed(() -> tones.startTone(
+                    ToneGenerator.TONE_PROP_BEEP2, 160), 280);
+        } catch (Exception ignored) {
+            // sound is a nicety
+        }
     }
 
     private void beep(int kind) {

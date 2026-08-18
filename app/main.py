@@ -32,6 +32,7 @@ from app.auth import require_user
 from app.database import (
     DatabaseNotConfigured,
     database_configured,
+    get_engine,
     get_session,
     init_db,
 )
@@ -65,6 +66,7 @@ from app.models import (
     ReviewTask,
     RfidAssignment,
     RfidIncompatible,
+    ScanNote,
     SerialPrefix,
     SoldRecord,
 )
@@ -437,6 +439,27 @@ def _live_barcode_map(session: Session) -> dict[str, str]:
     dependencies=[Depends(require_user)],
 )
 def product_by_barcode(barcode: str):
+    """Barcode-or-SKU -> product. The per-product scan note rides every
+    successful lookup, so BOTH scanning surfaces (Scan Station card, C72)
+    can show it without a second call."""
+    product = _product_lookup(barcode)
+    sku = (product.get("sku") or "").strip() if product else ""
+    if sku and database_configured():
+        try:
+            with Session(get_engine()) as session:
+                sn = session.scalar(
+                    select(ScanNote).where(
+                        func.upper(ScanNote.sku) == sku.upper()
+                    )
+                )
+            if sn is not None:
+                product["scan_note"] = sn.note
+        except Exception:  # noqa: BLE001 — the note is decoration
+            pass
+    return product
+
+
+def _product_lookup(barcode: str):
     """Barcode-or-SKU -> product (bad/missing barcodes happen, so the same
     field accepts a typed SKU). Source order is config.BARCODE_LOOKUP:
     auto = live bin map, then the Shopify API; or force 'db' (bin map
@@ -7716,6 +7739,46 @@ def get_rfid_incompatible(sku: str, session: Session = Depends(get_session)):
     }
 
 
+class ScanNoteIn(BaseModel):
+    note: str = Field(default="", max_length=255)
+    changed_by: str | None = Field(default=None, max_length=100)
+
+
+@app.put(
+    "/api/products/{sku}/scan-note", dependencies=[Depends(require_user)]
+)
+def put_scan_note(
+    sku: str, payload: ScanNoteIn, session: Session = Depends(get_session)
+):
+    """Set (or clear, with an empty note) the product's scan note — the
+    line that shows loudly on every scan, web and C72. History-logged."""
+    sku = sku.strip()
+    if not sku:
+        raise HTTPException(422, "Provide a SKU.")
+    note = payload.note.strip()
+    row = session.get(ScanNote, sku)
+    old = row.note if row else None
+    if note:
+        if row is None:
+            row = ScanNote(sku=sku)
+            session.add(row)
+        row.note = note
+        row.updated_by = (payload.changed_by or "").strip()[:100] or None
+    elif row is not None:
+        session.delete(row)
+    if (old or "") != note:
+        session.add(BarcodeChange(
+            sku=sku,
+            changed_field="scan-note",
+            old_barcode=(old or "")[:64] or None,
+            # new_barcode is NOT NULL — a cleared note records "(none)".
+            new_barcode=note[:64] or "(none)",
+            changed_by=(payload.changed_by or "").strip()[:100] or None,
+        ))
+    session.commit()
+    return {"sku": sku, "scan_note": note or None}
+
+
 # -------------------------------------------------------- product history ---
 @app.get("/api/product-history", dependencies=[Depends(require_user)])
 def product_history(term: str, session: Session = Depends(get_session)):
@@ -7813,6 +7876,7 @@ def product_history(term: str, session: Session = Depends(get_session)):
         "locate-list": "locate-list",
         "oneleft": "oneleft",
         "tag-sold": "tag-sold",
+        "scan-note": "scan-note",
     }
     for c in session.scalars(
         select(BarcodeChange).where(or_(
@@ -7826,10 +7890,10 @@ def product_history(term: str, session: Session = Depends(get_session)):
             "type": change_types.get(c.changed_field, c.changed_field),
             "worker": c.changed_by,
             "detail": f"{c.old_barcode or '(none)'} → {c.new_barcode}",
-            # Barcode/SKU/bin flows write to the store; the RFID-scan flag
-            # and the locate list are local markers only.
+            # Barcode/SKU/bin flows write to the store; the RFID-scan flag,
+            # locate list, tag-sold and scan notes are local markers only.
             "shopify": c.changed_field
-            not in ("rfid-scan", "locate-list", "tag-sold"),
+            not in ("rfid-scan", "locate-list", "tag-sold", "scan-note"),
         })
 
     # What Shopify currently says the product's bin IS, and when we last
@@ -8135,6 +8199,7 @@ def history(
         "locate-list": "locate-list",
         "oneleft": "oneleft",
         "tag-sold": "tag-sold",
+        "scan-note": "scan-note",
     }
     # A sweep undo unlinks its tags with one shared timestamp — fold
     # those the same way sweep assigns fold.

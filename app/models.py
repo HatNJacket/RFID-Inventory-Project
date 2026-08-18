@@ -361,6 +361,23 @@ class RefreshLog(Base):
     )
 
 
+class ScanNote(Base):
+    """A per-product scan note, shown LOUDLY every time the product is
+    scanned — at the Scan Station (in the product card) and on the C72
+    (own sound, warning-coloured text). "Open the case before tagging",
+    "one tag per set of three". One row per SKU; empty = no note."""
+
+    __tablename__ = "rfid_scan_notes"
+
+    sku: Mapped[str] = mapped_column(String(100), primary_key=True)
+    note: Mapped[str] = mapped_column(String(255), nullable=False)
+    updated_by: Mapped[str | None] = mapped_column(String(100))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(),
+        onupdate=func.now(), nullable=False
+    )
+
+
 class SoldRecord(Base):
     """One fulfilled-order line for a SKU the RFID system tracks: the
     order shipped, Shopify's on-hand dropped, but the box left with its

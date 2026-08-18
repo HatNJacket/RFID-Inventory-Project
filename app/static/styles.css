@@ -297,6 +297,48 @@ body {
 }
 .phist-editdock[hidden] { display: none; }
 .phist-editdock .linkbox { margin: 0; }
+/* Scan note: the product's standing warning, loud on every scan */
+.scan-note {
+  margin: 8px 0 0;
+  padding: 7px 10px;
+  border: 1px solid #d9b25c;
+  border-radius: 8px;
+  background: rgba(217, 178, 92, 0.14);
+  color: #8a6116;
+  font-size: 13px;
+  font-weight: 600;
+}
+/* Edit-product rows: label / input+✕ / save on one line each */
+.editrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0;
+}
+.editrow__label {
+  width: 84px;
+  flex-shrink: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.editrow .phist-inputwrap { flex: 1; min-width: 0; }
+.editrow__help {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  font-size: 11px;
+  color: var(--ink-dim, #6d7175);
+  cursor: help;
+  margin-left: 4px;
+}
+.editrow--btns { margin-top: 12px; }
+#edit-casehost { margin-top: 10px; }
+#edit-casehost .casebox { margin: 0; }
+
 /* Scan-station product card: meta line + one-line options row */
 .product__metaline { margin: 4px 0 0; line-height: 1.7; }
 .product__optrow {
