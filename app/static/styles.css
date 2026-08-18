@@ -286,6 +286,27 @@ body {
 }
 /* Save label was flush against the SKU input */
 .labeledit__save { margin-top: 12px; }
+/* Edit-product dock: the scan station's #linkbox, parked to the right
+   of the product window while editing from there */
+.phist-editdock {
+  width: min(420px, 38vw);
+  max-height: 88vh;
+  overflow: auto;
+  margin-left: 12px;
+  flex-shrink: 0;
+}
+.phist-editdock[hidden] { display: none; }
+.phist-editdock .linkbox { margin: 0; }
+/* Scan-station product card: meta line + one-line options row */
+.product__metaline { margin: 4px 0 0; line-height: 1.7; }
+.product__optrow {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+.product__optrow .tags { margin: 0; }
 .phist-options { margin: 10px 0; }
 /* One-line option row: outlined bundle group with a legend that breaks
    the border (native fieldset/legend), flag + locate beside it */

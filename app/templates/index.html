@@ -277,36 +277,30 @@
         </div>
       </section>
 
-      <!-- Product confirmation -->
+      <!-- Product confirmation — same shape as the product window (Nick,
+           2026-08-18): image + info side by side, print right below, the
+           occasional actions on one compact line. Ids unchanged. -->
       <section class="product" id="product-card" hidden>
-        <div class="product__title" id="p-title">—</div>
-        <dl class="product__grid">
-          <div><dt>Variant</dt><dd id="p-variant">—</dd></div>
-          <div><dt>SKU</dt><dd id="p-sku">—</dd></div>
-          <div><dt>Barcode</dt><dd id="p-barcode">—</dd></div>
-          <div><dt>Bin</dt><dd>
-            <span id="p-bin" class="product__bin product__bin--edit" title="Click to set the bin (saves to Shopify)">—</span>
-            <input id="bin-input" class="product__bin-input" type="text" maxlength="100" autocomplete="off" spellcheck="false" placeholder="Bin…" hidden />
-          </dd></div>
-          <div><dt>Data source</dt><dd id="p-source">—</dd></div>
-          <div><dt>Tags on file</dt><dd id="p-tagcount">—</dd></div>
-        </dl>
+        <div class="phist-head" style="margin-bottom:8px">
+          <img class="phist-img" id="p-img" alt="" hidden />
+          <div>
+            <div class="product__title" id="p-title">—</div>
+            <p class="linkbox__text product__metaline">
+              <span id="p-variant-wrap" hidden><span id="p-variant">—</span> · </span>
+              SKU <span class="mono" id="p-sku">—</span> ·
+              Barcode <span class="mono" id="p-barcode">—</span> ·
+              Bin <span id="p-bin" class="product__bin product__bin--edit" title="Click to set the bin (saves to Shopify)">—</span>
+              <input id="bin-input" class="product__bin-input" type="text" maxlength="100" autocomplete="off" spellcheck="false" placeholder="Bin…" hidden />
+              · <span id="p-source">—</span>
+              · Tags on file: <span id="p-tagcount">—</span>
+            </p>
+          </div>
+        </div>
 
         <!-- TC-Planner hint: this product sits on an open purchase order.
              Read-only decoration — appears only when the planner bridge is
              configured AND the SKU has units still expected. -->
         <p class="planner-hint" id="planner-hint" hidden></p>
-
-        <!-- Existing tags for this product -->
-        <details class="tags" id="tags-panel" hidden>
-          <summary class="tags__summary">Show tags</summary>
-          <ul class="tags__list" id="tags-list"></ul>
-        </details>
-
-        <!-- Product maintenance: opens the link window in edit mode -->
-        <div class="product__actions">
-          <button class="reset" id="product-edit" type="button" title="Register an Astronomik serial prefix or update the SKU in Shopify">Edit product…</button>
-        </div>
 
         <!-- Print & encode (visible on the printer station, or everywhere
              when ALLOW_REMOTE_PRINT is on) -->
@@ -320,6 +314,15 @@
                 title="This product has no bin assigned — its labels print without a shelf. Click the bin chip above to set one.">⚠ No bin set</span>
           <span class="print__nobin" id="print-fitwarn" hidden></span>
           <span class="print__status" id="print-status"></span>
+        </div>
+
+        <!-- One line: existing tags + product maintenance -->
+        <div class="product__optrow">
+          <details class="tags" id="tags-panel" hidden>
+            <summary class="tags__summary">Show tags</summary>
+            <ul class="tags__list" id="tags-list"></ul>
+          </details>
+          <button class="reset" id="product-edit" type="button" title="Register an Astronomik serial prefix or update the SKU in Shopify">Edit product…</button>
         </div>
       </section>
 
@@ -1117,6 +1120,8 @@
               <p class="breprint__fitwarn" id="phist-fitwarn" hidden></p>
               <div class="linkbox__actions labeledit__save">
                 <button class="reset" id="phist-label-save" type="button">Save label</button>
+                <button class="reset" id="phist-edit" type="button"
+                        title="Register an Astronomik serial prefix or update the SKU in Shopify — opens the same edit window as the Scan Station">Edit product…</button>
               </div>
             </div>
             <div class="labeledit__preview">
@@ -1171,6 +1176,10 @@
           <button class="reset" id="phist-close" type="button">Close</button>
         </div>
       </section>
+      <!-- Edit-product dock: the Scan Station's #linkbox element moves in
+           here (listeners and all) while editing from this window, and
+           moves back home when closed. -->
+      <div class="phist-editdock" id="phist-editdock" hidden></div>
     </div>
 
     <!-- History tab -->

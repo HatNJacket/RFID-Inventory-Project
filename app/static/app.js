@@ -1269,6 +1269,14 @@ function closeLinkbox() {
   aliasCandidate = null;
   aliasPreviewProduct = null;
   linkboxEditMode = false;
+  // Docked beside the product window? Send the element back home so the
+  // Scan Station flows keep working (see phistOpenEdit).
+  const dock = document.getElementById("phist-editdock");
+  if (dock && el.linkbox.parentElement === dock) {
+    dock.hidden = true;
+    if (linkboxHome)
+      linkboxHome.parent.insertBefore(el.linkbox, linkboxHome.next);
+  }
 }
 
 // --- Multi-box filter sets --------------------------------------------------
@@ -1453,6 +1461,34 @@ function openEditbox() {
 }
 
 el.productEdit.addEventListener("click", openEditbox);
+
+// --- Edit product from the PRODUCT WINDOW -----------------------------------
+// Reuses the Scan Station's edit window wholesale: the #linkbox element
+// (listeners and all) docks beside the product panel, and moves back to
+// its home in the scan flow when closed — one edit window, two doors.
+let linkboxHome = null; // where #linkbox normally lives
+
+function phistOpenEdit() {
+  if (!phistData || !phistData.product) return;
+  pendingProduct = {
+    ...phistData.product,
+    serial_prefix:
+      phistData.serial_prefix || phistData.product.serial_prefix || null,
+    serial_note:
+      phistData.serial_note || phistData.product.serial_note || null,
+  };
+  if (!linkboxHome)
+    linkboxHome = {
+      parent: el.linkbox.parentElement,
+      next: el.linkbox.nextElementSibling,
+    };
+  const dock = document.getElementById("phist-editdock");
+  dock.appendChild(el.linkbox);
+  dock.hidden = false;
+  openEditbox();
+  // openEditbox styles the scan flow for a side panel — not this door.
+  el.flow.classList.remove("flow--side");
+}
 
 function hideOverwrite() {
   el.overwriteConfirm.hidden = true;
@@ -1719,7 +1755,20 @@ el.overwriteGo.addEventListener("click", async () => {
 
 function showProduct(p) {
   el.pTitle.textContent = p.product_title || "—";
-  el.pVariant.textContent = p.variant_title || "—";
+  // Variant only earns a spot in the meta line when it says something.
+  const hasVariant = !!(
+    p.variant_title && p.variant_title !== "Default Title"
+  );
+  document.getElementById("p-variant-wrap").hidden = !hasVariant;
+  el.pVariant.textContent = hasVariant ? p.variant_title : "";
+  const pImg = document.getElementById("p-img");
+  if (p.image_url) {
+    pImg.src = p.image_url;
+    pImg.hidden = false;
+  } else {
+    pImg.hidden = true;
+    pImg.removeAttribute("src");
+  }
   el.pSku.textContent = p.sku || "—";
   el.pBarcode.textContent = p.barcode || "—";
   closeBinEditor();
@@ -2825,18 +2874,28 @@ async function loadInventory() {
   }
 }
 
-// Link to a product's page in Shopify admin. Only products with a real
-// Shopify GID can be linked — TELCAN-resolved rows carry "handle:…" ids
-// no admin URL can be built from; those names stay plain text.
-function adminProductUrl(pid) {
+// Link to a product's page in Shopify admin. Real GIDs go straight to
+// the product page; legacy "handle:…" ids (old TELCAN-sourced rows —
+// the ZWO ASIAIR bracket case) and missing ids fall back to admin's
+// product list FILTERED to the SKU/handle, so every product links
+// somewhere useful instead of staying plain text (Nick, 2026-08-18).
+function adminProductUrl(pid, sku) {
   const shop = document.body.dataset.shop;
-  if (!shop || !pid) return null;
-  const m = String(pid).match(/(?:gid:\/\/shopify\/Product\/)?(\d+)$/);
-  return m ? `https://admin.shopify.com/store/${shop}/products/${m[1]}` : null;
+  if (!shop) return null;
+  const m = String(pid || "").match(/(?:gid:\/\/shopify\/Product\/)?(\d+)$/);
+  if (m) return `https://admin.shopify.com/store/${shop}/products/${m[1]}`;
+  const q =
+    (sku || "").trim() ||
+    (String(pid || "").startsWith("handle:")
+      ? String(pid).slice(7).trim()
+      : "");
+  return q
+    ? `https://admin.shopify.com/store/${shop}/products?query=${encodeURIComponent(q)}`
+    : null;
 }
 
-function productLink(title, pid) {
-  const url = adminProductUrl(pid);
+function productLink(title, pid, sku) {
+  const url = adminProductUrl(pid, sku);
   const name = escapeHtml(title || "");
   return url
     ? `<a class="prodlink" href="${url}" target="_blank" rel="noopener" title="Open in Shopify admin">${name}</a>`
@@ -2899,7 +2958,7 @@ function renderInventory() {
   body.innerHTML = rows
     .map((p) => {
       const title =
-        productLink(p.product_title, p.shopify_product_id) +
+        productLink(p.product_title, p.shopify_product_id, p.sku) +
         (p.variant_title
           ? ` <span class="inventory__variant">(${escapeHtml(p.variant_title)})</span>`
           : "") +
@@ -6124,7 +6183,7 @@ async function runVerifyCheck() {
           ? ` class="bvx-flag" data-item="${r.item_id}" title="Click to review — what the sweep heard vs this batch's counts"`
           : ""
       }>
-        <td>${productLink(r.product_title, r.shopify_product_id)}${
+        <td>${productLink(r.product_title, r.shopify_product_id, r.sku)}${
           na
             ? ' <span class="noscan-chip" title="tag won\'t scan when on box — sweeps don\'t expect it to answer">⊘</span>'
             : ""
@@ -8938,13 +8997,17 @@ document.getElementById("phist-term").addEventListener("keydown", (e) => {
     if (term) openProductHistory(term);
   }
 });
-document.getElementById("phist-close").addEventListener("click", () => {
+function closePhist() {
+  // A docked edit window goes home first (closeLinkbox handles the move).
+  const dock = document.getElementById("phist-editdock");
+  if (dock && !dock.hidden) closeLinkbox();
   document.getElementById("phist-overlay").hidden = true;
-});
+}
+document.getElementById("phist-close").addEventListener("click", closePhist);
 document.getElementById("phist-overlay").addEventListener("click", (e) => {
-  if (e.target.id === "phist-overlay")
-    document.getElementById("phist-overlay").hidden = true;
+  if (e.target.id === "phist-overlay") closePhist();
 });
+document.getElementById("phist-edit").addEventListener("click", phistOpenEdit);
 
 // Defaults for the panel's two label boxes, captured per product on open.
 let phistDefaults = { top: "Telescopes Canada", sku: "" };
