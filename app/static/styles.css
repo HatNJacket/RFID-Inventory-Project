@@ -1739,6 +1739,69 @@ tr.bvx-detail td { background: var(--card-2); padding: 12px 14px; }
   background: var(--ok-bg, #d5efe1);
 }
 
+/* Audit hub: stat cards ARE the navigation — one tool pane at a time. */
+.audhub-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+.audcard {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  text-align: left;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card);
+  color: var(--ink);
+  cursor: pointer;
+  font: inherit;
+}
+.audcard:hover { border-color: var(--accent); }
+.audcard__label {
+  font-size: 11.5px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-dim);
+}
+.audcard__num { font-size: 24px; font-weight: 700; line-height: 1.15; }
+.audcard__sub { font-size: 12px; color: var(--ink-dim); }
+.audcard__sub--ok { color: var(--ok-ink, #1d6f47); }
+.audcard__sub--warn { color: var(--warn-ink, #8a6116); }
+.audcard__sub--bad { color: var(--bad-ink, #d72c0d); }
+
+/* Audit sessions: named, resumable audits with a progress bar. */
+.audsess {
+  display: block;
+  padding: 8px 0;
+}
+.audsess__row { display: flex; align-items: center; gap: 10px; }
+.audsess__name { font-weight: 650; cursor: pointer; }
+.audsess__name:hover { color: var(--accent); }
+.audsess__meta { font-size: 12px; color: var(--ink-dim); flex: 1; }
+.audsess__bar {
+  background: var(--card-2);
+  border-radius: 4px;
+  height: 6px;
+  overflow: hidden;
+  margin-top: 6px;
+}
+.audsess__fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.4s ease;
+}
+.audsess__nums {
+  display: flex;
+  font-size: 12px;
+  color: var(--ink-dim);
+  margin-top: 4px;
+  justify-content: space-between;
+}
+
 /* 1-left stock-check rows (Audits tab): product line + evidence line,
    verdict chip on the left so the answered ones read at a glance. */
 .olrow { display: flex; align-items: center; gap: 10px; }

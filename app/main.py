@@ -37,6 +37,8 @@ from app.database import (
 )
 from app.models import (
     AppSetting,
+    AuditSession,
+    AuditSessionItem,
     BarcodeAlias,
     BarcodeChange,
     Batch,
@@ -7121,6 +7123,226 @@ def oneleft_auto(
     return {"ok": True, "auto": payload.on}
 
 
+# ---------------------------------------------------------- audit sessions ---
+# A named, resumable audit: bundle a scope (bins, or a slice of the
+# 1-left queue), walk it across days and people, finish when everything
+# is accounted for. Local records only — sessions never write anywhere.
+
+class AuditSessionIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    kind: Literal["bins", "oneleft"]
+    # bins kind: explicit bins and/or every bin-map bin starting `rack`.
+    bins: list[str] = Field(default_factory=list)
+    rack: str | None = Field(default=None, max_length=100)
+    # oneleft kind: explicit SKUs, or (default) every currently-pending
+    # check, optionally narrowed to one vendor.
+    skus: list[str] = Field(default_factory=list)
+    vendor: str | None = Field(default=None, max_length=150)
+    worker: str | None = Field(default=None, max_length=100)
+
+
+class AuditItemDoneIn(BaseModel):
+    done: bool = True
+    note: str | None = Field(default=None, max_length=255)
+    worker: str | None = Field(default=None, max_length=100)
+
+
+class AuditFinishIn(BaseModel):
+    worker: str | None = Field(default=None, max_length=100)
+
+
+def _session_progress(session: Session, s: AuditSession) -> dict:
+    items = session.scalars(
+        select(AuditSessionItem)
+        .where(AuditSessionItem.session_id == s.id)
+        .order_by(AuditSessionItem.id)
+    ).all()
+    # 1-left items settle themselves: a dashboard confirm for the SKU
+    # that landed after the session opened counts as done.
+    if s.kind == "oneleft":
+        open_keys = {i.key.upper() for i in items if not i.done}
+        if open_keys:
+            confirmed_since = {
+                oc.sku.strip().upper(): oc
+                for oc in session.scalars(
+                    select(OneLeftCheck).where(
+                        func.upper(OneLeftCheck.sku).in_(sorted(open_keys)),
+                        OneLeftCheck.action.in_(["auto", "manual"]),
+                        OneLeftCheck.ok == True,  # noqa: E712
+                        # 1s slack: sqlite compares datetimes as TEXT,
+                        # and the bound param's ".000000" microseconds
+                        # would sort a same-second confirm before it.
+                        OneLeftCheck.created_at
+                        >= s.created_at - timedelta(seconds=1),
+                    )
+                )
+            }
+            changed = False
+            for i in items:
+                oc = confirmed_since.get(i.key.upper())
+                if oc is not None and not i.done:
+                    i.done = True
+                    i.done_at = oc.created_at
+                    i.done_by = oc.operator or oc.employee
+                    i.note = (i.note or "confirmed on the dashboard")[:255]
+                    changed = True
+            if changed:
+                session.commit()
+    done = sum(1 for i in items if i.done)
+    return {
+        **s.as_dict(),
+        "total": len(items),
+        "done": done,
+        "items": [i.as_dict() for i in items],
+    }
+
+
+@app.get("/api/audit-sessions", dependencies=[Depends(require_user)])
+def list_audit_sessions(
+    status: str = "open", session: Session = Depends(get_session)
+):
+    """The session index (newest first). status=open|done|all; item
+    lists ride along so one fetch draws the whole board."""
+    q = select(AuditSession).order_by(AuditSession.id.desc())
+    if status != "all":
+        wanted = ["open"] if status == "open" else ["done", "abandoned"]
+        q = q.where(AuditSession.status.in_(wanted))
+    return {
+        "sessions": [
+            _session_progress(session, s)
+            for s in session.scalars(q.limit(50))
+        ]
+    }
+
+
+@app.post(
+    "/api/audit-sessions", status_code=201,
+    dependencies=[Depends(require_user)],
+)
+def create_audit_session(
+    payload: AuditSessionIn, session: Session = Depends(get_session)
+):
+    """Open a session and seed its scope. Bins can come typed or as a
+    rack prefix; 1-left scope snapshots the dashboard's CURRENT pending
+    queue (optionally one vendor) so the goalposts can't move mid-walk."""
+    keys: list[tuple[str, str | None]] = []
+    if payload.kind == "bins":
+        wanted = {b.strip() for b in payload.bins if b.strip()}
+        if payload.rack and payload.rack.strip():
+            prefix = payload.rack.strip().lower()
+            for (bin_name,) in session.execute(
+                select(BinMapEntry.bin).distinct()
+            ):
+                if (bin_name or "").strip().lower().startswith(prefix):
+                    wanted.add(bin_name.strip())
+        keys = [(b, None) for b in sorted(wanted)]
+        if not keys:
+            raise HTTPException(
+                422, "No bins matched. Name bins or give a rack prefix."
+            )
+    else:
+        if payload.skus:
+            keys = [(s.strip(), None) for s in payload.skus if s.strip()]
+        else:
+            pending = oneleft.get_pending()
+            if not pending["ok"]:
+                raise HTTPException(
+                    502,
+                    "The 1-left dashboard didn't answer, so its queue "
+                    "can't seed a session right now.",
+                )
+            vendor = (payload.vendor or "").strip().lower()
+            for item in pending["items"]:
+                if vendor and (item.get("vendor") or "").strip().lower() != vendor:
+                    continue
+                sku = (item.get("sku") or "").strip()
+                if sku:
+                    keys.append((sku, (item.get("product_title") or "")[:255]
+                                 or None))
+        if not keys:
+            raise HTTPException(422, "Nothing matched that 1-left scope.")
+        seen: set[str] = set()
+        deduped = []
+        for k, label in keys:
+            if k.upper() not in seen:
+                seen.add(k.upper())
+                deduped.append((k, label))
+        keys = deduped
+
+    s = AuditSession(
+        name=payload.name.strip(),
+        kind=payload.kind,
+        created_by=payload.worker,
+    )
+    session.add(s)
+    session.flush()
+    for key, label in keys:
+        session.add(AuditSessionItem(session_id=s.id, key=key, label=label))
+    session.commit()
+    return _session_progress(session, s)
+
+
+@app.post(
+    "/api/audit-sessions/{sid}/items/{item_id}/done",
+    dependencies=[Depends(require_user)],
+)
+def audit_item_done(
+    sid: int, item_id: int, payload: AuditItemDoneIn,
+    session: Session = Depends(get_session),
+):
+    item = session.get(AuditSessionItem, item_id)
+    if item is None or item.session_id != sid:
+        raise HTTPException(404, "No such item in that session.")
+    item.done = payload.done
+    item.done_at = datetime.now(timezone.utc) if payload.done else None
+    item.done_by = (payload.worker or "").strip()[:100] or None
+    if payload.note is not None:
+        item.note = payload.note.strip()[:255] or None
+    session.commit()
+    parent = session.get(AuditSession, sid)
+    return _session_progress(session, parent)
+
+
+@app.post(
+    "/api/audit-sessions/{sid}/finish",
+    dependencies=[Depends(require_user)],
+)
+def finish_audit_session(
+    sid: int, payload: AuditFinishIn, session: Session = Depends(get_session)
+):
+    """Close the session (done). Finishing with open items is allowed —
+    the confirm dialog on the web side names how many are left."""
+    s = session.get(AuditSession, sid)
+    if s is None:
+        raise HTTPException(404, "No such audit session.")
+    if s.status != "open":
+        raise HTTPException(409, f"Session is already {s.status}.")
+    s.status = "done"
+    s.completed_at = datetime.now(timezone.utc)
+    s.completed_by = (payload.worker or "").strip()[:100] or None
+    session.commit()
+    return _session_progress(session, s)
+
+
+@app.post(
+    "/api/audit-sessions/{sid}/abandon",
+    dependencies=[Depends(require_user)],
+)
+def abandon_audit_session(
+    sid: int, payload: AuditFinishIn, session: Session = Depends(get_session)
+):
+    s = session.get(AuditSession, sid)
+    if s is None:
+        raise HTTPException(404, "No such audit session.")
+    if s.status != "open":
+        raise HTTPException(409, f"Session is already {s.status}.")
+    s.status = "abandoned"
+    s.completed_at = datetime.now(timezone.utc)
+    s.completed_by = (payload.worker or "").strip()[:100] or None
+    session.commit()
+    return _session_progress(session, s)
+
+
 # ------------------------------------------------------------ label names ---
 class LabelNameIn(BaseModel):
     label_name: str = Field(default="", max_length=76)
@@ -7899,6 +8121,28 @@ def history(
             "title": oc.product_title,
             "detail": _oneleft_detail(oc),
         })
+
+    for aud in session.scalars(
+        select(AuditSession).order_by(AuditSession.id.desc()).limit(limit)
+    ):
+        what = ("bin walk" if aud.kind == "bins" else "1-left checks")
+        events.append({
+            "at": iso(aud.created_at),
+            "type": "audit-session",
+            "worker": aud.created_by,
+            "sku": None,
+            "title": aud.name,
+            "detail": f"audit session #{aud.id} started ({what})",
+        })
+        if aud.completed_at:
+            events.append({
+                "at": iso(aud.completed_at),
+                "type": "audit-session",
+                "worker": aud.completed_by or aud.created_by,
+                "sku": None,
+                "title": aud.name,
+                "detail": f"audit session #{aud.id} {aud.status}",
+            })
 
     # ISO strings sort chronologically; string sort also avoids the
     # naive-vs-aware datetime comparison trap across DB backends.

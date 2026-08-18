@@ -260,6 +260,7 @@ const EVENT_META = {
   "bundle-contents-set": ["Bundle Contents", "#6f42c1"],
   "locate-list": ["Locate List", "#5561c9"],
   oneleft: ["1-left Check", "#b07d00"],
+  "audit-session": ["Audit Session", "#0e7a8a"],
   sweep: ["Sweep", "#0e7a8a"],
 };
 
@@ -6756,6 +6757,17 @@ function renderAuditBins() {
     ? "Show only batch-tagged bins"
     : `Show not-yet-tagged bins (${auditData.bin_count - auditData.done_bin_count})`;
 
+  const drift = auditData.bins.filter((b) => b.batch_done && b.score > 0);
+  if (drift.length) {
+    const worst = drift[0];
+    audSetCard(
+      "ahc-drift", String(drift.length),
+      `worst: ${worst.bin} (score ${worst.score})`, "warn"
+    );
+  } else {
+    audSetCard("ahc-drift", "0", "all tagged bins agree ✓", "ok");
+  }
+
   const rows = auditData.bins.filter((b) => {
     if (!auditShowUntagged && !b.batch_done) return false;
     if (!q) return true;
@@ -6850,6 +6862,7 @@ let binAuditShowUntagged = false;
 // panel says what to go do.
 async function jumpToBinAudit(bin) {
   document.querySelector('.tabs__tab[data-tab="audits"]').click();
+  audShowPane("binaudit");
   const binEl = document.getElementById("binaudit-bin");
   const out = document.getElementById("binaudit-report");
   binEl.value = bin;
@@ -7204,6 +7217,7 @@ document.getElementById("audit-refresh").addEventListener("click", async (ev) =>
 async function loadAudits() {
   loadOneleft();
   loadAuditBins();
+  loadAuditSessions();
   const list = document.getElementById("audit-list");
   try {
     const { tasks } = await apiJson("/api/review-tasks?status=open&limit=100");
@@ -7221,6 +7235,11 @@ async function loadAudits() {
           b.mismatch - a.mismatch ||
           String(b.created_at || "").localeCompare(String(a.created_at || ""))
       );
+    audSetCard(
+      "ahc-more", String(checks.length),
+      checks.length ? "from finished batches" : "nothing recommended ✓",
+      checks.length ? "warn" : "ok"
+    );
     list.innerHTML = checks.length
       ? ""
       : '<li class="recent__empty">No product checks recommended right now.</li>';
@@ -7243,10 +7262,21 @@ async function loadAudits() {
     const { captures } = await apiJson("/api/epc-captures?limit=10");
     sweeps.innerHTML = "";
     if (!captures.length) {
+      audSetCard("ahc-sweep", "—", "no sweeps from the C72 yet", null);
       sweeps.innerHTML =
         '<li class="recent__empty">No sweeps from the C72 app yet.</li>';
       return;
     }
+    const newest = captures[0];
+    const ageMin = Math.max(
+      0, Math.round((Date.now() - tsDate(newest.created_at).getTime()) / 60000)
+    );
+    audSetCard(
+      "ahc-sweep",
+      ageMin < 60 ? `${ageMin}m` : `${Math.round(ageMin / 60)}h`,
+      `newest sweep: ${newest.epc_count} tags from ${newest.device || "C72"}`,
+      ageMin < 5 ? "ok" : null
+    );
     captures.forEach((c) => {
       const li = document.createElement("li");
       li.innerHTML = `
@@ -7334,6 +7364,7 @@ function renderOneleft() {
       "The dashboard bridge is off (ONELEFT_MODE app setting). The " +
       "1-left queue can't be read from here until it's enabled.";
     list.innerHTML = "";
+    audSetCard("ahc-checks", "–", "bridge off", null);
     renderOneleftReceipts();
     return;
   }
@@ -7341,6 +7372,7 @@ function renderOneleft() {
     meta.textContent = "";
     status.textContent = `The dashboard didn't answer: ${olData.error || "unknown error"}. Nothing is broken here — reload to retry.`;
     list.innerHTML = "";
+    audSetCard("ahc-checks", "!", "dashboard didn't answer", "bad");
     renderOneleftReceipts();
     return;
   }
@@ -7350,6 +7382,12 @@ function renderOneleft() {
     `(${olData.count} pending · ${v.confirmable || 0} answered by RFID` +
     (canWrite ? "" : " · read-only mode") + ")";
   status.textContent = "";
+  audSetCard(
+    "ahc-checks",
+    String(olData.count),
+    `${v.confirmable || 0} answered by RFID`,
+    v.confirmable ? "ok" : null
+  );
 
   const needle = document.getElementById("ol-filter").value.trim().toLowerCase();
   const rank = {
@@ -7558,6 +7596,265 @@ let olFilterTimer;
 document.getElementById("ol-filter").addEventListener("input", () => {
   clearTimeout(olFilterTimer);
   olFilterTimer = setTimeout(renderOneleft, 150);
+});
+
+// === Audit hub ==============================================================
+// The stat cards are the navigation: one tool pane on screen at a time,
+// with the sessions index on the landing. Tool internals keep their ids.
+
+function audShowPane(name) {
+  document.getElementById("audit-hub").hidden = name !== null;
+  document.querySelectorAll("#tab-audits .apane").forEach((p) => {
+    p.hidden = p.id !== `apane-${name}`;
+  });
+}
+
+document.querySelectorAll("#tab-audits .audcard").forEach((card) => {
+  card.addEventListener("click", () => audShowPane(card.dataset.pane));
+});
+document.querySelectorAll("#tab-audits .apane-back").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    audShowPane(null);
+    loadAuditSessions();
+  });
+});
+
+function audSetCard(prefix, num, sub, tone) {
+  const numEl = document.getElementById(`${prefix}-num`);
+  const subEl = document.getElementById(`${prefix}-sub`);
+  if (!numEl) return;
+  numEl.textContent = num;
+  subEl.textContent = sub;
+  subEl.className = "audcard__sub" + (tone ? ` audcard__sub--${tone}` : "");
+}
+
+// === Audit sessions =========================================================
+let audSessions = [];
+let audSessShowDone = false;
+let audSessOpenId = null;
+
+async function loadAuditSessions() {
+  const list = document.getElementById("audsess-list");
+  try {
+    const data = await apiJson(
+      `/api/audit-sessions?status=${audSessShowDone ? "done" : "open"}`
+    );
+    audSessions = data.sessions;
+  } catch (err) {
+    list.innerHTML = `<li class="recent__empty">Could not load sessions: ${escapeHtml(err.message)}</li>`;
+    return;
+  }
+  document.getElementById("audsess-meta").textContent = audSessShowDone
+    ? `(${audSessions.length} finished)`
+    : audSessions.length
+      ? `(${audSessions.length} open)`
+      : "";
+  document.getElementById("audsess-toggle").textContent = audSessShowDone
+    ? "Show open"
+    : "Show finished";
+  list.innerHTML = audSessions.length
+    ? ""
+    : `<li class="recent__empty">${audSessShowDone ? "No finished audits yet." : "No open audits — start one to bundle a rack walk or a 1-left blitz."}</li>`;
+  audSessions.forEach((s) => {
+    const pct = s.total ? Math.round((s.done / s.total) * 100) : 0;
+    const li = document.createElement("li");
+    li.className = "audsess";
+    li.innerHTML = `
+      <div class="audsess__row">
+        <span class="audsess__name" data-sid="${s.id}">${escapeHtml(s.name)}</span>
+        <span class="audsess__meta">${s.kind === "bins" ? `${s.total} bin(s)` : `${s.total} check(s)`} · started ${escapeHtml(fmtAgo(s.created_at))}${s.created_by ? " by " + escapeHtml(s.created_by) : ""}${s.status !== "open" ? " · " + s.status : ""}</span>
+        <button class="binlist__go audsess-open" type="button" data-sid="${s.id}">${s.status === "open" ? "Resume" : "View"}</button>
+      </div>
+      <div class="audsess__bar"><div class="audsess__fill" style="width:${pct}%"></div></div>
+      <div class="audsess__nums"><span>${s.done} of ${s.total} done</span><span>${pct}%</span></div>`;
+    list.append(li);
+  });
+  // The open session detail refreshes from the same fetch.
+  if (audSessOpenId !== null) {
+    const open = audSessions.find((s) => s.id === audSessOpenId);
+    if (open) renderAuditSessionDetail(open);
+  }
+}
+
+function renderAuditSessionDetail(s) {
+  audSessOpenId = s.id;
+  const el = document.getElementById("audsess-detail");
+  const pct = s.total ? Math.round((s.done / s.total) * 100) : 0;
+  const openCount = s.total - s.done;
+  const rows = s.items
+    .map((i) => {
+      const doneBtn = s.status === "open"
+        ? `<button class="binlist__go audsess-done" type="button"
+             data-item="${i.id}" data-done="${i.done ? 1 : 0}"
+             title="${i.done ? "Un-tick this item" : "Mark this item accounted for"}">${i.done ? "✓ done" : "mark done"}</button>`
+        : i.done ? `<span class="binlist__check">✓</span>` : "";
+      const jump = s.kind === "bins"
+        ? `<button class="binlist__go audsess-jump" type="button" data-bin="${escapeHtml(i.key)}"
+             title="Open the bin audit with ${escapeHtml(i.key)} loaded">audit</button>`
+        : "";
+      const sub = [
+        i.done && i.done_by ? `by ${i.done_by}` : "",
+        i.done && i.done_at ? fmtAgo(i.done_at) : "",
+        i.note || "",
+      ].filter(Boolean).join(" · ");
+      return `
+        <li class="olrow${i.done ? " olrow--done" : ""}">
+          <div class="olrow__main">
+            <span class="binlist__name ${s.kind === "oneleft" ? "ol-sku" : ""}"
+                  ${s.kind === "oneleft" ? `data-sku="${escapeHtml(i.key)}"` : ""}>${escapeHtml(i.key)}</span>
+            <span class="olrow__title">${escapeHtml(i.label || "")}</span>
+            ${sub ? `<div class="olrow__sub">${escapeHtml(sub)}</div>` : ""}
+          </div>
+          ${jump}${doneBtn}
+        </li>`;
+    })
+    .join("");
+  el.innerHTML = `
+    <div class="recent__head">
+      <h2>${escapeHtml(s.name)} <span class="recent__note">${s.kind === "bins" ? "bin walk" : "1-left checks"} · ${s.status}</span></h2>
+    </div>
+    <div class="audsess__bar" style="max-width:420px"><div class="audsess__fill" style="width:${pct}%"></div></div>
+    <div class="audsess__nums" style="max-width:420px"><span>${s.done} of ${s.total} done</span><span>${pct}%</span></div>
+    ${s.kind === "oneleft" ? `<p class="linkbox__text" style="max-width:70ch">Items tick themselves when their 1-left check clears (auto or manual confirm); anything left needs a walk.</p>` : `<p class="linkbox__text" style="max-width:70ch">Sweep each bin on the C72, check it with the bin audit, then mark it done here.</p>`}
+    ${s.status === "open" ? `
+      <div class="linkbox__actions" style="margin:8px 0 12px">
+        <button class="reset" id="audsess-finish" type="button">Finish audit</button>
+        <button class="reset" id="audsess-abandon" type="button">Abandon</button>
+      </div>` : ""}
+    <ul class="recent__list binlist" style="max-height:480px">${rows}</ul>`;
+
+  const finish = document.getElementById("audsess-finish");
+  if (finish)
+    finish.addEventListener("click", async () => {
+      if (
+        openCount > 0 &&
+        !window.confirm(
+          `${openCount} item(s) are still open — finish anyway?`
+        )
+      )
+        return;
+      try {
+        await postJson(`/api/audit-sessions/${s.id}/finish`, {
+          worker: operatorEl.value || null,
+        });
+        audSessOpenId = null;
+        audShowPane(null);
+        loadAuditSessions();
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+  const abandon = document.getElementById("audsess-abandon");
+  if (abandon)
+    abandon.addEventListener("click", async () => {
+      if (!window.confirm("Abandon this audit? Its ticks are kept for the record."))
+        return;
+      try {
+        await postJson(`/api/audit-sessions/${s.id}/abandon`, {
+          worker: operatorEl.value || null,
+        });
+        audSessOpenId = null;
+        audShowPane(null);
+        loadAuditSessions();
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+}
+
+document.getElementById("audsess-list").addEventListener("click", (e) => {
+  const open = e.target.closest(".audsess-open, .audsess__name");
+  if (!open) return;
+  const s = audSessions.find((x) => x.id === Number(open.dataset.sid));
+  if (!s) return;
+  renderAuditSessionDetail(s);
+  audShowPane("session");
+});
+
+document.getElementById("audsess-detail").addEventListener("click", async (e) => {
+  const sku = e.target.closest(".ol-sku");
+  if (sku) {
+    openProductHistory(sku.dataset.sku);
+    return;
+  }
+  const jump = e.target.closest(".audsess-jump");
+  if (jump) {
+    jumpToBinAudit(jump.dataset.bin);
+    return;
+  }
+  const done = e.target.closest(".audsess-done");
+  if (done && audSessOpenId !== null) {
+    done.disabled = true;
+    try {
+      const s = await postJson(
+        `/api/audit-sessions/${audSessOpenId}/items/${done.dataset.item}/done`,
+        { done: done.dataset.done !== "1", worker: operatorEl.value || null }
+      );
+      renderAuditSessionDetail(s);
+    } catch (err) {
+      alert(err.message);
+      done.disabled = false;
+    }
+  }
+});
+
+document.getElementById("audsess-toggle").addEventListener("click", () => {
+  audSessShowDone = !audSessShowDone;
+  loadAuditSessions();
+});
+
+const audsessKindEl = document.getElementById("audsess-kind");
+const audsessScopeEl = document.getElementById("audsess-scope");
+audsessKindEl.addEventListener("change", () => {
+  audsessScopeEl.placeholder = audsessKindEl.value === "bins"
+    ? "Bins or rack prefix, e.g. I1"
+    : "Vendor (blank = the whole queue)";
+});
+document.getElementById("audsess-newbtn").addEventListener("click", () => {
+  const form = document.getElementById("audsess-new");
+  form.hidden = !form.hidden;
+  if (!form.hidden) document.getElementById("audsess-name").focus();
+});
+document.getElementById("audsess-cancel").addEventListener("click", () => {
+  document.getElementById("audsess-new").hidden = true;
+});
+document.getElementById("audsess-create").addEventListener("click", async (ev) => {
+  const name = document.getElementById("audsess-name").value.trim();
+  if (!name) {
+    alert("Give the audit a name first.");
+    return;
+  }
+  const kind = audsessKindEl.value;
+  const scope = audsessScopeEl.value.trim();
+  const payload = { name, kind, worker: operatorEl.value || null };
+  if (kind === "bins") {
+    // Tokens with a dash are bins ("I1-3"); a bare token is a rack prefix.
+    const tokens = scope.split(",").map((t) => t.trim()).filter(Boolean);
+    payload.bins = tokens.filter((t) => t.includes("-"));
+    const rack = tokens.find((t) => !t.includes("-"));
+    if (rack) payload.rack = rack;
+    if (!payload.bins.length && !payload.rack) {
+      alert("Name at least one bin, or a rack prefix like I1.");
+      return;
+    }
+  } else if (scope) {
+    payload.vendor = scope;
+  }
+  ev.currentTarget.disabled = true;
+  try {
+    const s = await postJson("/api/audit-sessions", payload);
+    document.getElementById("audsess-new").hidden = true;
+    document.getElementById("audsess-name").value = "";
+    audsessScopeEl.value = "";
+    audSessShowDone = false;
+    await loadAuditSessions();
+    renderAuditSessionDetail(s);
+    audShowPane("session");
+  } catch (err) {
+    alert(err.message);
+  }
+  ev.currentTarget && (ev.currentTarget.disabled = false);
+  document.getElementById("audsess-create").disabled = false;
 });
 
 // === History tab ============================================================

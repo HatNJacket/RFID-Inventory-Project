@@ -822,6 +822,74 @@
 
     <!-- Audits tab -->
     <section class="inventory" id="tab-audits" hidden>
+      <!-- Audit hub: the stat cards ARE the navigation — one tool pane
+           on screen at a time (EasyScan's dashboard shape, Nick's pick)
+           — and audits can run as named, resumable sessions. The tool
+           internals below keep their original ids untouched. -->
+      <div id="audit-hub">
+        <div class="audhub-cards">
+          <button class="audcard" type="button" data-pane="checks">
+            <span class="audcard__label">1-left checks</span>
+            <span class="audcard__num" id="ahc-checks-num">–</span>
+            <span class="audcard__sub" id="ahc-checks-sub">loading…</span>
+          </button>
+          <button class="audcard" type="button" data-pane="drift">
+            <span class="audcard__label">Bins out of sync</span>
+            <span class="audcard__num" id="ahc-drift-num">–</span>
+            <span class="audcard__sub" id="ahc-drift-sub">loading…</span>
+          </button>
+          <button class="audcard" type="button" data-pane="binaudit">
+            <span class="audcard__label">Run a bin audit</span>
+            <span class="audcard__num" id="ahc-sweep-num">–</span>
+            <span class="audcard__sub" id="ahc-sweep-sub">loading…</span>
+          </button>
+          <button class="audcard" type="button" data-pane="more">
+            <span class="audcard__label">Product checks</span>
+            <span class="audcard__num" id="ahc-more-num">–</span>
+            <span class="audcard__sub" id="ahc-more-sub">from finished batches</span>
+          </button>
+        </div>
+        <div class="recent__head" style="margin-top:18px">
+          <h2>Audit sessions <span class="recent__note" id="audsess-meta"></span></h2>
+        </div>
+        <p class="linkbox__text" style="max-width:78ch">
+          A session bundles a scope — a rack of bins to walk-scan, or a
+          slice of the 1-left queue — and tracks it across days and
+          people until everything is accounted for. 1-left items tick
+          themselves when their check clears; bins are ticked by whoever
+          walks them.
+        </p>
+        <div class="linkbox__actions" style="margin-bottom:10px">
+          <button class="reset" id="audsess-newbtn" type="button">+ New audit</button>
+          <button class="reset" id="audsess-toggle" type="button">Show finished</button>
+        </div>
+        <div id="audsess-new" class="linkbox__actions" hidden
+             style="margin-bottom:10px; flex-wrap:wrap; gap:8px">
+          <input id="audsess-name" class="recent__search" type="text"
+                 maxlength="120" placeholder="Name, e.g. Rack I1 walk" style="max-width:200px" />
+          <select id="audsess-kind" class="reset">
+            <option value="bins">Walk-scan bins</option>
+            <option value="oneleft">1-left checks</option>
+          </select>
+          <input id="audsess-scope" class="recent__search" type="text"
+                 placeholder="Bins or rack prefix, e.g. I1" style="max-width:220px" />
+          <button class="reset" id="audsess-create" type="button">Start</button>
+          <button class="reset" id="audsess-cancel" type="button">Cancel</button>
+        </div>
+        <ul class="recent__list" id="audsess-list"></ul>
+      </div>
+
+      <div class="apane" id="apane-session" hidden>
+        <div class="linkbox__actions" style="margin-bottom:10px">
+          <button class="reset apane-back" type="button">← Audits</button>
+        </div>
+        <div id="audsess-detail"></div>
+      </div>
+
+      <div class="apane" id="apane-checks" hidden>
+      <div class="linkbox__actions" style="margin-bottom:10px">
+        <button class="reset apane-back" type="button">← Audits</button>
+      </div>
       <!-- 1-left stock checks: the verification queue behind the Ops
            Dashboard's "Stock Checks" number, joined against RFID
            evidence. Confirming/re-queuing moves THEIR record; stock
@@ -857,10 +925,15 @@
         <h2>Recent 1-left actions</h2>
       </div>
       <ul class="recent__list binlist" id="ol-receipts"></ul>
+      </div>
 
+      <div class="apane" id="apane-binaudit" hidden>
+      <div class="linkbox__actions" style="margin-bottom:10px">
+        <button class="reset apane-back" type="button">← Audits</button>
+      </div>
       <!-- Bin audit: sweep a shelf with the C72's SWEEP tab, SEND, then
            check it here — the Check-step story for any bin, no batch. -->
-      <div class="recent__head" style="margin-top:24px">
+      <div class="recent__head">
         <h2>Audit a bin with a C72 sweep</h2>
       </div>
       <p class="linkbox__text" style="max-width:78ch">
@@ -879,7 +952,13 @@
                 title="Reads the newest sweep sent from the C72 and checks it against this bin">Pull latest C72 sweep &amp; check</button>
       </div>
       <div id="binaudit-report"></div>
-      <div class="recent__head" style="margin-top:24px">
+      </div>
+
+      <div class="apane" id="apane-drift" hidden>
+      <div class="linkbox__actions" style="margin-bottom:10px">
+        <button class="reset apane-back" type="button">← Audits</button>
+      </div>
+      <div class="recent__head">
         <h2>Shopify vs RFID, by bin <span class="recent__note" id="audit-meta"></span></h2>
         <input id="audit-filter" class="recent__search" type="search" placeholder="Filter by bin or SKU…" autocomplete="off" />
       </div>
@@ -895,10 +974,17 @@
         <button class="reset" id="audit-reload" type="button" title="Reload this list from what the server already has">↻ Reload list</button>
       </div>
       <ul class="recent__list binlist" id="audit-bins"></ul>
-      <div class="recent__head" style="margin-top:24px"><h2>Recommended product checks</h2></div>
+      </div>
+
+      <div class="apane" id="apane-more" hidden>
+      <div class="linkbox__actions" style="margin-bottom:10px">
+        <button class="reset apane-back" type="button">← Audits</button>
+      </div>
+      <div class="recent__head"><h2>Recommended product checks</h2></div>
       <ul class="recent__list" id="audit-list"></ul>
       <div class="recent__head" style="margin-top:24px"><h2>Recent C72 sweeps</h2></div>
       <ul class="recent__list" id="sweep-list"></ul>
+      </div>
     </section>
 
     <!-- Event colour editor: per-event chip colour, saved in this browser;

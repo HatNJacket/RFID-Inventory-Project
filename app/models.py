@@ -862,6 +862,83 @@ class OneLeftCheck(Base):
         }
 
 
+class AuditSession(Base):
+    """A named, resumable audit (the EasyScan-stocktake shape Nick
+    picked): bundle a scope — a set of bins, or a slice of the 1-left
+    queue — walk it across as many gun sessions and days as it takes,
+    and finish with everything accounted for. Progress is derived from
+    the item rows, never stored."""
+
+    __tablename__ = "rfid_audit_sessions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    # "bins" (walk-scan each bin) or "oneleft" (confirm 1-left checks).
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), index=True, nullable=False, default="open"
+    )
+    created_by: Mapped[str | None] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    completed_by: Mapped[str | None] = mapped_column(String(100))
+
+    def as_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "kind": self.kind,
+            "status": self.status,
+            "created_by": self.created_by,
+            "created_at": (
+                self.created_at.isoformat() if self.created_at else None
+            ),
+            "completed_at": (
+                self.completed_at.isoformat() if self.completed_at else None
+            ),
+            "completed_by": self.completed_by,
+        }
+
+
+class AuditSessionItem(Base):
+    """One unit of an audit session's scope: a bin to walk-scan, or a
+    1-left check (keyed by SKU) to settle. Ticked by an operator; 1-left
+    items also tick themselves when a dashboard confirm for their SKU
+    lands after the session started."""
+
+    __tablename__ = "rfid_audit_session_items"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    session_id: Mapped[int] = mapped_column(
+        Integer, index=True, nullable=False
+    )
+    # Bin name for "bins" sessions, SKU for "oneleft" sessions.
+    key: Mapped[str] = mapped_column(String(100), nullable=False)
+    label: Mapped[str | None] = mapped_column(String(255))
+    done: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
+    done_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    done_by: Mapped[str | None] = mapped_column(String(100))
+    note: Mapped[str | None] = mapped_column(String(255))
+
+    def as_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "session_id": self.session_id,
+            "key": self.key,
+            "label": self.label,
+            "done": self.done,
+            "done_at": self.done_at.isoformat() if self.done_at else None,
+            "done_by": self.done_by,
+            "note": self.note,
+        }
+
+
 class EpcCapture(Base):
     """One RFID sweep sent from the C72 companion app: the operator scans a
     shelf freely (everything held on the device), then hits Send once —

@@ -3,6 +3,44 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-08-18.
 
+## 🧭 Audits hub + audit sessions — ✅ DEPLOYED 2026-08-18
+
+Nick picked ideas 1 + 4 from the consolidation previews (EasyScan's
+dashboard + stocktakes shapes, viewed in the store admin):
+
+- **Hub landing**: the Audits tab opens on four stat cards that ARE the
+  navigation — 1-left checks (pending/answered), Bins out of sync
+  (count + worst drift), Run a bin audit (newest sweep age), Product
+  checks — one tool pane on screen at a time with a ← back. All
+  existing tool internals kept their ids; jumpToBinAudit now lands on
+  the right pane.
+- **Audit sessions** (`rfid_audit_sessions` + `_items`, auto-create):
+  a named, resumable audit bundling a scope — bins (typed list and/or
+  rack prefix, expanded from the bin map) or a slice of the 1-left
+  queue (whole queue or one vendor, snapshotted at creation). Items
+  tick per operator; **1-left items tick themselves** when a dashboard
+  confirm for their SKU lands after the session opened. Progress is
+  derived, never stored. Finish (open items allowed, confirm names how
+  many remain) / abandon; History carries start/end ("Audit Session"
+  chip). Endpoints: GET/POST /api/audit-sessions, POST .../items/{id}/
+  done, .../finish, .../abandon. test_audit_sessions (16 checks);
+  22/22 suites.
+- **Ops Dashboard investigation (same session, Nick's ask):** Steve's
+  dashboard work is healthy (planner-sourced vendor counts via the
+  proxy's new /api/stock-checks — both endpoints verified live, page
+  renders clean). The REAL problem: the $web root URL used to serve
+  the 1-left verification checker (the page staff confirm stock checks
+  on) and the Ops Dashboard was published OVER it on 2026-08-17; no
+  path serves the checker now and nothing links to it. Storage keeps
+  no old versions, but the checker's full source was recovered from
+  the func app's own deploy package
+  (scm-releases/scm-latest-inventory-verification-func.zip, squashfs →
+  saved in session scratch + re-extractable any time). Fix needs
+  Nick/Steve's go (it's their system): re-upload the checker at a new
+  path (e.g. /check/) and/or link it from the dashboard's Stock Checks
+  card. Meanwhile the RFID Audits tab's 1-left panel can serve as the
+  checker (per-row Confirm ✓ + re-queue).
+
 ## 🔍 Audits ↔ 1-left dashboard bridge — ✅ DEPLOYED 2026-08-18
 
 Nick's ask (label shortage pause: "build the audit tab out as much as
