@@ -185,6 +185,18 @@ public class MainActivity extends Activity {
         C_WARN_BG = withAlpha(C_WARN, themeDark ? 0x30 : 0x26);
     }
 
+    /** EditText with the theme's colours applied. A bare
+     *  themedEdit() keeps the SYSTEM default text colour (black on
+     *  this unit) and vanished against dark backgrounds — the BT scanner
+     *  field was the visible case (Nick, v3.46). Every EditText in the
+     *  app goes through here. */
+    private EditText themedEdit() {
+        EditText e = new EditText(this);
+        e.setTextColor(C_TEXT);
+        e.setHintTextColor(C_MUTED);
+        return e;
+    }
+
     /** Dialog builder matching the theme — every dialog goes through
      *  here so dark mode doesn't produce white frames around dark
      *  content. */
@@ -481,7 +493,7 @@ public class MainActivity extends Activity {
         header.addView(helpBtn, hl);
 
         // ---- shared scanner input + status --------------------------------
-        btInput = new EditText(this);
+        btInput = themedEdit();
         btInput.setHint("BT scanner…");
         btInput.setTextSize(13);
         btInput.setPadding(dp(10), dp(7), dp(10), dp(7));
@@ -1117,8 +1129,20 @@ public class MainActivity extends Activity {
         v.addView(row);
 
         ListView list = new ListView(this);
-        sweepAdapter = new ArrayAdapter<>(this,
-                android.R.layout.simple_list_item_1);
+        // simple_list_item_1 takes the SYSTEM theme's text colour (black
+        // on this unit), which vanished in dark mode — the EPC rows paint
+        // the app palette instead (Nick, v3.46).
+        sweepAdapter = new ArrayAdapter<String>(this,
+                android.R.layout.simple_list_item_1) {
+            @Override
+            public View getView(int pos, View convertView,
+                                android.view.ViewGroup parent) {
+                TextView t = (TextView) super.getView(
+                        pos, convertView, parent);
+                t.setTextColor(C_TEXT);
+                return t;
+            }
+        };
         list.setAdapter(sweepAdapter);
         v.addView(list, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
@@ -1272,10 +1296,12 @@ public class MainActivity extends Activity {
     private long autoLastChange = 0;
     private int autoPenaltyPower = 0;
     private long autoPenaltyUntil = 0;
-    private volatile int tunAutoHigh = 85;
+    // auto_high 75 / step_down 8: the 2026-08-17 field session's tuned
+    // values, baked as defaults in v3.46 (server tuning row cleared).
+    private volatile int tunAutoHigh = 75;
     private volatile int tunAutoLow = 25;
     private volatile int tunAutoDwellMs = 2500;
-    private volatile int tunAutoStepDown = 5;
+    private volatile int tunAutoStepDown = 8;
     private volatile int tunAutoStepUp = 6;
     private volatile int tunAutoPenaltyS = 20;
     private volatile int tunGyroAxis = 2;
@@ -1313,9 +1339,10 @@ public class MainActivity extends Activity {
     // ---- live-tunable locate parameters (server: /api/c72/tuning) ----
     // Polled every ~2 s while the Locate tab is up; changes apply on the
     // next tick, no APK build. Defaults = shipped behaviour.
-    private volatile int tunFreshMs = 1200;    // silence before fading
-    private volatile double tunFade = 0.7;     // per-tick fade when quiet
-    private volatile double tunBlend = 0.5;    // EMA weight of a new read
+    // fresh/fade/blend: 2026-08-17 field-tuned values, baked in v3.46.
+    private volatile int tunFreshMs = 2500;    // silence before fading
+    private volatile double tunFade = 0.85;    // per-tick fade when quiet
+    private volatile double tunBlend = 0.9;    // EMA weight of a new read
     private volatile double tunRssiLo = -75;   // RSSI that reads as 0%
     // dB from 0% to 100%. 42 puts contact-on-tag (-32 dBm measured on
     // this gun) AT 100 — the old 45 topped out around 97 with the
@@ -1329,6 +1356,10 @@ public class MainActivity extends Activity {
     private volatile int tunGen2Q = -1;        // fixed Q in hunts; -1 = leave
     private volatile boolean tunFilterNarrow = true; // EPC-filter one-tag hunts
     private String tunApplied = "";            // last raw JSON applied
+    // First successful tuning fetch syncs SILENTLY — the "Live tuning
+    // applied" banner on every app open was noise (Nick, v3.46). Only a
+    // change that lands mid-session gets announced.
+    private boolean tunFirstSync = true;
     private int tunPollCounter = 0;
     private volatile boolean tunPollBusy = false;
     private volatile int locReadsInWindow = 0;
@@ -2706,19 +2737,19 @@ public class MainActivity extends Activity {
                 String raw = v.toString();
                 if (!raw.equals(tunApplied)) {
                     tunApplied = raw;
-                    tunFreshMs = v.optInt("fresh_ms", 1200);
-                    tunFade = v.optDouble("fade", 0.7);
-                    tunBlend = v.optDouble("blend", 0.5);
+                    tunFreshMs = v.optInt("fresh_ms", 2500);
+                    tunFade = v.optDouble("fade", 0.85);
+                    tunBlend = v.optDouble("blend", 0.9);
                     tunRssiLo = v.optDouble("rssi_lo", -75);
                     tunRssiSpan = v.optDouble("rssi_span", 42);
                     tunDebug = v.optBoolean("debug", false);
                     tunGen2Session = v.optInt("gen2_session", 0);
                     tunGen2Q = v.optInt("gen2_q", -1);
                     tunFilterNarrow = v.optBoolean("filter_narrow", true);
-                    tunAutoHigh = v.optInt("auto_high", 85);
+                    tunAutoHigh = v.optInt("auto_high", 75);
                     tunAutoLow = v.optInt("auto_low", 25);
                     tunAutoDwellMs = v.optInt("auto_dwell_ms", 2500);
-                    tunAutoStepDown = v.optInt("auto_step_down", 5);
+                    tunAutoStepDown = v.optInt("auto_step_down", 8);
                     tunAutoStepUp = v.optInt("auto_step_up", 6);
                     tunAutoPenaltyS = v.optInt("auto_penalty_s", 20);
                     tunGyroAxis = v.optInt("gyro_axis", 2);
@@ -2731,9 +2762,15 @@ public class MainActivity extends Activity {
                     tunSweepGateLo = v.optDouble("sweep_gate_lo", 0.35);
                     tunPowStrategy = v.optString("pow_strategy", "live");
                     dbgLine("applied " + raw);
-                    ui.post(() -> status.setText("Live tuning applied: "
-                            + raw));
+                    // Announce only a change that lands MID-SESSION — the
+                    // startup sync is silent (it used to banner every
+                    // open; Nick, v3.46).
+                    if (!tunFirstSync) {
+                        ui.post(() -> status.setText(
+                                "Live tuning applied: " + raw));
+                    }
                 }
+                tunFirstSync = false;
             } catch (Exception ignored) {
                 // Tuning is best-effort; the hunt never depends on it.
             } finally {
@@ -3378,7 +3415,7 @@ public class MainActivity extends Activity {
         editSplitBtn.setOnClickListener(v -> openSplitDialog());
         mid.addView(editSplitBtn);
         editNameRow = new LinearLayout(this);
-        editNameIn = new EditText(this);
+        editNameIn = themedEdit();
         editNameIn.setHint("Label name (confirm)");
         editNameIn.setTextSize(13);
         editNameRow.addView(editNameIn, weight());
@@ -3444,7 +3481,7 @@ public class MainActivity extends Activity {
         editLabelMode.setOnClickListener(v -> cycleLabelMode());
         lblRow.addView(editLabelMode, new LinearLayout.LayoutParams(
                 dp(104), LinearLayout.LayoutParams.WRAP_CONTENT));
-        editLabelText = new EditText(this);
+        editLabelText = themedEdit();
         editLabelText.setHint("blank = standard label");
         editLabelText.setTextSize(13);
         lblRow.addView(editLabelText, weight());
@@ -3868,7 +3905,7 @@ public class MainActivity extends Activity {
     private void changeBinDialog() {
         if (editEntry == null || !editEntry.item.resolved) return;
         final BItem it = editEntry.item;
-        final EditText in = new EditText(this);
+        final EditText in = themedEdit();
         in.setHint("Bin, e.g. D2-2");
         in.setText(it.binLocation == null || "No bin assigned"
                 .equalsIgnoreCase(it.binLocation) ? batchBin : it.binLocation);
@@ -3941,7 +3978,7 @@ public class MainActivity extends Activity {
     private void exactCountDialog() {
         if (editEntry == null) return;
         final BItem it = editEntry.item;
-        final EditText in = new EditText(this);
+        final EditText in = themedEdit();
         in.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
         in.setText(String.valueOf(it.qty));
         in.setSelectAllOnFocus(true);
@@ -4743,7 +4780,7 @@ public class MainActivity extends Activity {
                         label.setText("RFID power: " + power);
                         rebuild.run();
                     } else if (which == 1) {
-                        final EditText in = new EditText(this);
+                        final EditText in = themedEdit();
                         in.setText(name);
                         in.setHint("e.g. pair, bin, rack");
                         dlg()
@@ -8124,7 +8161,7 @@ public class MainActivity extends Activity {
      *  the web work list. A note says WHY it needs a second opinion. */
     private void flagBinDialog() {
         if (batchBin == null || batchBin.isEmpty()) return;
-        final EditText in = new EditText(this);
+        final EditText in = themedEdit();
         in.setHint("Why? e.g. mixed consignment stock (optional)");
         in.setTextSize(13);
         int pad = dp(14);
@@ -9482,7 +9519,7 @@ public class MainActivity extends Activity {
         thLabel.setTextColor(C_TEXT);
         thRow.addView(thLabel, new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        final EditText msIn = new EditText(this);
+        final EditText msIn = themedEdit();
         msIn.setInputType(InputType.TYPE_CLASS_NUMBER);
         msIn.setText(String.valueOf(prefs.getInt("sweep_hold_ms", 450)));
         msIn.setEms(3);
@@ -9904,7 +9941,7 @@ public class MainActivity extends Activity {
 
         Button custom = smallBtn("Custom hex…");
         custom.setOnClickListener(x -> {
-            final EditText in = new EditText(this);
+            final EditText in = themedEdit();
             in.setHint("#RRGGBB");
             in.setText(String.format("#%06X",
                     themeSlotValue(slot) & 0xFFFFFF));
@@ -10084,7 +10121,7 @@ public class MainActivity extends Activity {
         int pad = dp(16);
         box.setPadding(pad, pad, pad, 0);
 
-        final EditText serverIn = new EditText(this);
+        final EditText serverIn = themedEdit();
         serverIn.setHint("Server or station link");
         serverIn.setInputType(InputType.TYPE_TEXT_VARIATION_URI);
         serverIn.setText(prefs.getString("server", DEFAULT_SERVER));
@@ -10097,12 +10134,12 @@ public class MainActivity extends Activity {
         hint.setPadding(dp(4), 0, dp(4), dp(6));
         box.addView(hint);
 
-        final EditText keyIn = new EditText(this);
+        final EditText keyIn = themedEdit();
         keyIn.setHint("Station key");
         keyIn.setText(prefs.getString("key", ""));
         box.addView(keyIn);
 
-        final EditText deviceIn = new EditText(this);
+        final EditText deviceIn = themedEdit();
         deviceIn.setHint("Device name");
         deviceIn.setText(prefs.getString("device", "C72"));
         box.addView(deviceIn);
