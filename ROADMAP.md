@@ -63,6 +63,14 @@ for a human walk; the queue was at 431 items.
   offline. NOTE for future sessions: `dev/run_local.py` sets
   ONELEFT_MODE=confirm with the bridge faked — never point run_local at
   the real dashboard.
+- **Evidence freshness window (same session, Nick's call):** the first
+  live board showed 60 of 430 checks "answered" by evidence that was
+  often weeks old — "too old for me to confidently say stock hasn't
+  changed or been sold since." Evidence outside `ONELEFT_FRESH_HOURS`
+  (code default 24; prod app setting = 4, i.e. same-shift) now demotes
+  to a "evidence too old" verdict and never auto-clears. Costs nothing
+  in practice: auto passes fire within ~a minute of the interaction
+  itself. The backlog stays for humans; only fresh discoveries clear.
 - **Deploy incident (third packaging outage):** mkdeploy's hand-kept
   FILES list didn't have the new app/oneleft.py, so the first deploy
   crash-looped prod on the ImportError (~15 min down, fixed same

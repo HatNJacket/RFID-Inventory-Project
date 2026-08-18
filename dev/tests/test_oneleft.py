@@ -56,6 +56,11 @@ PENDING = [
     item("GONE", on_hand=0),  # claim dropped to 0 -> never auto
     item("GHOST", on_hand=0), # claim 0 but evidence -> discrepancy
     item("MYSTERY", on_hand=None),  # their stock fetch failed -> claim 1
+    # Evidence AFTER detection but OUTSIDE the freshness window: the box
+    # was seen once, five days ago — it could have sold since (Nick,
+    # 2026-08-18). Never auto-cleared.
+    item("STALE", detected=(NOW - timedelta(days=10))
+         .replace(tzinfo=timezone.utc).isoformat()),
 ]
 
 # Every remote call is captured here; nothing leaves the process.
@@ -106,6 +111,7 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
         tag("SWEPT",     "C"*24, BEFORE)
         tag("GHOST",     "D"*24, NOW)
         tag("MYSTERY",   "E"*24, NOW)
+        tag("STALE",     "F0"*12, NOW - timedelta(days=5))
 
         r = cl.post("/api/epc-captures", json={
             "epcs": ["C"*24, "F"*24], "device": "C72-test"})
@@ -143,6 +149,8 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
           verdicts.get("GHOST") == "discrepancy", str(verdicts))
     check("unknown claim treated as 1",
           verdicts.get("MYSTERY") == "confirmable", str(verdicts))
+    check("evidence outside the freshness window never clears",
+          verdicts.get("STALE") == "stale-evidence", str(verdicts))
     fresh = next(i for i in b["items"] if i["sku"] == "FRESH-TAG")
     check("evidence text names the source",
           any("paired" in d for d in fresh["evidence"]),

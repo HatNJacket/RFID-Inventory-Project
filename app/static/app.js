@@ -7287,6 +7287,11 @@ const OL_VERDICTS = {
     "re-queued — walk it",
     "An operator put this back on the queue after it was cleared, so it stays for a human until NEW evidence shows up",
   ],
+  "stale-evidence": [
+    "chip--na",
+    "evidence too old",
+    "RFID saw this product's stock, but not recently enough to trust it hasn't sold since — only fresh discoveries clear a check",
+  ],
   "needs-walk": [
     "chip--na",
     "needs a walk",
@@ -7356,8 +7361,9 @@ function renderOneleft() {
     confirmable: 0,
     discrepancy: 1,
     requeued: 2,
-    "zero-claim": 3,
-    "needs-walk": 4,
+    "stale-evidence": 3,
+    "zero-claim": 4,
+    "needs-walk": 5,
   };
   let rows = olData.items
     .filter((r) => !olAnsweredOnly || r.verdict === "confirmable")

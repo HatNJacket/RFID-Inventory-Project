@@ -45,7 +45,7 @@ absence here — and evidence AGAINST a zero is flagged for a human).
 import logging
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import requests
 from sqlalchemy import func, select
@@ -370,6 +370,14 @@ def build_board(session: Session, pending: list[dict]) -> list[dict]:
         if (verdict == "confirmable" and pin is not None
                 and (evidence_last is None or evidence_last <= pin)):
             verdict = "requeued"
+        # Old evidence can't clear a check: a tag paired weeks ago says
+        # nothing about whether the box has sold since. Only a discovery
+        # inside the freshness window counts as "answered".
+        if verdict == "confirmable":
+            cutoff = (datetime.now(timezone.utc).replace(tzinfo=None)
+                      - timedelta(hours=config.ONELEFT_FRESH_HOURS))
+            if evidence_last is None or evidence_last < cutoff:
+                verdict = "stale-evidence"
 
         rows.append({
             "sku": sku,

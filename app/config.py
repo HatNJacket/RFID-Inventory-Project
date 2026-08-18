@@ -102,6 +102,11 @@ ONELEFT_URL = os.getenv(
 # list; automated confirms are attributed to this name when the RFID
 # operator isn't on it (the full evidence trail lives in OUR History).
 ONELEFT_EMPLOYEE = os.getenv("ONELEFT_EMPLOYEE", "Steve").strip()
+# Evidence older than this many hours can't clear a check (Nick,
+# 2026-08-18: weeks-old tag work says nothing about whether the box
+# sold since). Fresh discoveries — a sweep or pair right now — still
+# clear checks in real time; the backlog stays for humans.
+ONELEFT_FRESH_HOURS = float(os.getenv("ONELEFT_FRESH_HOURS", "24"))
 
 # Who can be picked in the UI's operator dropdown, comma-separated.
 OPERATORS = [
