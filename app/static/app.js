@@ -9018,14 +9018,17 @@ function renderNoScan(flagged) {
   }
   row.hidden = false;
   phistData.rfid_incompatible = flagged;
-  document.getElementById("phist-norfid-what").innerHTML = flagged
-    ? '<span class="noscan-chip">⊘ won\'t RFID scan</span> tag won\'t ' +
-      "scan when on box — sweeps and Verify don't expect it to answer."
-    : "RFID OK — sweeps expect this product's tags to answer. If a tag " +
-      "reads in hand but never on the box, flag it:";
-  document.getElementById("phist-norfid-btn").textContent = flagged
-    ? "Remove flag"
-    : "Flag: won't RFID scan";
+  // State + explanation live in the button's hover text now — the row
+  // itself stays one compact line (Nick, 2026-08-18).
+  const btn = document.getElementById("phist-norfid-btn");
+  btn.textContent = flagged ? "⊘ Remove won't-scan flag" : "Flag: won't RFID scan";
+  btn.title = flagged
+    ? "Flagged: this product's tag won't scan while on the box, so " +
+      "sweeps and Verify don't expect it to answer. Click to remove " +
+      "the flag."
+    : "Sweeps currently expect this product's tags to answer. If a tag " +
+      "reads fine in hand but never on the box, flag it so sweeps stop " +
+      "counting it as missing.";
 }
 
 // Bundle contents on the product panel — the standing record behind
@@ -9039,10 +9042,8 @@ async function renderBundleRow() {
     return;
   }
   row.hidden = false;
-  const what = document.getElementById("phist-bundle-what");
   const btn = document.getElementById("phist-bundle-btn");
-  what.textContent = "…";
-  btn.textContent = "";
+  btn.textContent = "…";
   try {
     const r = await apiJson(
       `/api/bundle-contents?sku=${encodeURIComponent(phistData.sku)}`
@@ -9051,17 +9052,20 @@ async function renderBundleRow() {
     phistData.bundle_contents = contents;
     const importBtn = document.getElementById("phist-bundle-import");
     if (contents.length) {
-      what.innerHTML =
-        `📦 <b>Bundle:</b> one unit = ${contents
-          .map((c) => `${c.qty}× ${escapeHtml(c.component_sku)}`)
-          .join(" + ")} — batch collect counts the components instead.`;
-      btn.textContent = "Edit contents…";
+      const parts = contents
+        .map((c) => `${c.qty}× ${c.component_sku}`)
+        .join(" + ");
+      btn.textContent = "📦 Edit contents…";
+      btn.title =
+        `Defined bundle: one unit = ${parts}. Batch collect counts the ` +
+        `components instead of this SKU. Click to edit or clear.`;
       importBtn.hidden = true;
     } else {
-      what.textContent =
-        "Sold as a bundle of other products? Define its contents once " +
-        "and batch collect stops counting it separately.";
       btn.textContent = "📦 Define by hand…";
+      btn.title =
+        "Sold as a bundle of other products? Define what one unit " +
+        "contains and batch collect stops counting it separately — the " +
+        "components carry the tags.";
       importBtn.hidden = false;
     }
   } catch (err) {
@@ -9170,10 +9174,8 @@ async function renderLocateRow() {
     return;
   }
   row.hidden = false;
-  const what = document.getElementById("phist-locate-what");
   const btn = document.getElementById("phist-locate-btn");
-  what.textContent = "…";
-  btn.textContent = "";
+  btn.textContent = "…";
   try {
     const r = await apiJson("/api/locate-queue");
     const mine = (r.entries || []).find(
@@ -9181,16 +9183,17 @@ async function renderLocateRow() {
     );
     phistData.locate_entry = mine || null;
     if (mine) {
-      what.innerHTML =
-        `📡 <b>On the C72 locate list</b>` +
-        (mine.added_by ? ` (added by ${escapeHtml(mine.added_by)})` : "") +
-        ` — pick it on the gun's LOCATE tab to hunt its ${mine.tag_count} tag(s).`;
-      btn.textContent = "Remove from list";
+      btn.textContent = "📡 Remove from locate list";
+      btn.title =
+        `On the C72 locate list` +
+        (mine.added_by ? ` (added by ${mine.added_by})` : "") +
+        ` — pick it on the gun's LOCATE tab to hunt its ` +
+        `${mine.tag_count} tag(s). Click to take it off the list.`;
     } else {
-      what.textContent =
-        "Need to physically find this product's tags? Send it to the " +
-        "C72's LOCATE tab — no EPC typing.";
       btn.textContent = "📡 Send to C72 locate list";
+      btn.title =
+        "Need to physically find this product's tags on the shelf? This " +
+        "queues it on the gun's LOCATE tab — no EPC typing on the C72.";
     }
   } catch (err) {
     row.hidden = true;
