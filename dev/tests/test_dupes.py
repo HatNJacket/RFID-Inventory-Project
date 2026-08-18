@@ -27,18 +27,28 @@ def check(l,c,x=""):
 GOOD = "ZWO ASIAIR MountingBrackets"
 TYPO = "ZWO AISAIR MountingBrackets"
 
-def tag(s, epc, sku, title):
+def tag(s, epc, sku, title, barcode=None):
     s.add(RfidAssignment(rfid_id=epc, shopify_variant_id="t:1",
-                         product_title=title, sku=sku, bin_location="B1-1"))
+                         product_title=title, sku=sku, barcode=barcode,
+                         bin_location="B1-1"))
 
 with patch("app.shopify.get_fulfilled_orders",
            side_effect=RuntimeError("ACCESS_DENIED")), \
      patch("app.shopify.get_on_hand_by_skus", return_value={}):
   with TestClient(app) as cl:
     with Session(get_engine()) as s:
-        for e in ("A1","A2","A3"): tag(s, e, GOOD, "ZWO ASIAIR Mounting Bracket")
-        for e in ("B1","B2"): tag(s, e, TYPO, "AISAIR bracket")
-        tag(s, "C1", "CAM-100", "Unrelated Camera")
+        # The real ZWO case: same saved barcode under two SKUs.
+        for e in ("A1","A2","A3"):
+            tag(s, e, GOOD, "ZWO ASIAIR Mounting Bracket", "697")
+        for e in ("B1","B2"): tag(s, e, TYPO, "AISAIR bracket", "697")
+        tag(s, "C1", "CAM-100", "Unrelated Camera", "555")
+        # One character apart WITHOUT shared evidence: legitimate
+        # neighbours, must NOT be flagged (the old fuzzy rule drowned
+        # Review in these).
+        tag(s, "N1", "SV-105", "Svbony camera", "701")
+        tag(s, "N2", "SV-106", "Svbony guide scope", "702")
+        # Open-box twin shares the barcode on purpose: ignored.
+        tag(s, "O1", "CAM-100-OB", "Unrelated Camera OPEN BOX", "555")
         s.add(BinMapEntry(sku=GOOD, barcode="697", product_title="ZWO ASIAIR Mounting Bracket",
                           bin="B1-1", qty=5, shopify_product_id="gid://shopify/Product/9",
                           shopify_variant_id="gid://shopify/PV/9"))
@@ -50,9 +60,12 @@ with patch("app.shopify.get_fulfilled_orders",
           r.get("dupes_opened")==1 and r.get("waiting_scope") is True, r)
     tasks = cl.get("/api/review-tasks?status=open").json()["tasks"]
     dup = [t for t in tasks if t["category"]=="duplicate-product"]
-    check("one duplicate task filed for the pair", len(dup)==1, dup)
-    check("unrelated SKU not flagged",
-          "CAM-100" not in dup[0]["detail"], dup[0]["detail"])
+    check("one duplicate task filed for the shared-barcode pair",
+          len(dup)==1 and "barcode 697" in dup[0]["detail"], dup)
+    check("one-character-apart SKUs NOT flagged",
+          "SV-105" not in dup[0]["detail"], dup[0]["detail"])
+    check("open-box twin ignored despite the shared barcode",
+          all("CAM-100" not in t["detail"] for t in dup), dup)
 
     # Idempotent: a second run files nothing new.
     r = cl.post("/api/orders-sync/run").json()
@@ -117,6 +130,17 @@ with patch("app.shopify.get_fulfilled_orders",
             json={"resolved_by":"Nick","dismissed":True})
     r = cl.post("/api/orders-sync/run").json()
     check("dismissed pair never re-flagged", r.get("dupes_opened")==0, r)
+
+    # An OPEN task from the old fuzzy rules (its pair no longer
+    # qualifies) closes itself on the next run.
+    with Session(get_engine()) as s:
+        s.add(ReviewTask(category="duplicate-product", sku="SV-105",
+              detail="Possible duplicate products: SV-105 ⇄ SV-106 — "
+                     "old fuzzy flag.", created_by="dupe-check"))
+        s.commit()
+    r = cl.post("/api/orders-sync/run").json()
+    check("stale fuzzy-era task auto-closes under the new rules",
+          r.get("dupes_closed")==1, r)
 
     # Bin-updated History rows carry the undo payload.
     with Session(get_engine()) as s:

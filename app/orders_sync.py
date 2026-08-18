@@ -225,68 +225,87 @@ def _norm_sku(s: str) -> str:
     return re.sub(r"[^A-Z0-9]", "", (s or "").upper())
 
 
-def _edit_close(a: str, b: str) -> bool:
-    """Edit distance ≤ 2 with early exit — catches transposed letters
-    (AISAIR vs ASIAIR) and single typos without a fuzzy dependency."""
-    if abs(len(a) - len(b)) > 2:
-        return False
-    prev = list(range(len(b) + 1))
-    for i, ca in enumerate(a, 1):
-        cur = [i]
-        for j, cb in enumerate(b, 1):
-            cur.append(min(
-                prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)
-            ))
-        if min(cur) > 2:
-            return False
-        prev = cur
-    return prev[-1] <= 2
+def _is_open_box(sku: str, titles: set[str]) -> bool:
+    """Open-box listings legitimately share the new product's barcode —
+    they must never be flagged as duplicates of it."""
+    hay = " ".join([sku, *titles]).upper()
+    if re.search(r"OPEN[\s\-–]?BOX", hay):
+        return True
+    return bool(re.search(r"[-_ ]OB\d*$", sku.upper()))
 
 
 def refresh_duplicate_tasks(session: Session) -> dict:
     """One open duplicate-product review task per suspicious SKU pair.
 
     Runs ONLY inside sync runs (the daily 8 AM pass and the Review tab's
-    manual button) over the SKUs that actually hold tags — a few hundred
-    strings compared once a day, never work done per scan (Nick's
-    overhead worry). A pair is suspicious when the normalized SKUs are
-    identical (case/punctuation noise) or within edit distance 2 with
-    the same first character (the ZWO AISAIR/ASIAIR misspelling).
-    A DISMISSED pair stays dismissed — the check files each pair once,
-    ever. Open tasks close themselves when a side loses its tags
-    (merged or cleaned up)."""
+    manual button) over the SKUs that actually hold tags — never work
+    done per scan. EXACT evidence only (the fuzzy edit-distance match
+    drowned Review — the catalog is full of SKUs one character apart;
+    Nick, 2026-08-18): a pair is flagged when two different SKUs share
+    the SAME saved barcode, or the SKUs are the same string up to
+    case/punctuation. Open-box products are ignored entirely. A
+    DISMISSED pair stays dismissed — each pair is filed once, ever.
+    Open tasks close themselves when a side loses its tags or the pair
+    no longer qualifies under the current rules."""
     info: dict[str, dict] = {}
     for a in session.scalars(select(RfidAssignment)).all():
         sku = (a.sku or "").strip()
         if not sku:
             continue
         side = info.setdefault(sku.upper(), {
-            "sku": sku, "titles": set(), "units": 0,
+            "sku": sku, "titles": set(), "units": 0, "barcodes": set(),
         })
         side["units"] += a.case_units or 1
         if a.product_title:
             side["titles"].add(a.product_title)
+        if a.barcode and a.barcode.strip():
+            side["barcodes"].add(a.barcode.strip().upper())
 
-    keys = sorted(info)
-    pairs: list[tuple[str, str]] = []
-    for i, a in enumerate(keys):
-        na = _norm_sku(a)
-        if len(na) < 6:
+    eligible = {
+        k for k, v in info.items()
+        if not _is_open_box(v["sku"], v["titles"])
+    }
+
+    pair_reasons: dict[tuple[str, str], str] = {}
+    # Same saved barcode, different SKU.
+    by_barcode: dict[str, set[str]] = {}
+    for k in eligible:
+        for bc in info[k]["barcodes"]:
+            by_barcode.setdefault(bc, set()).add(k)
+    for bc, skus in by_barcode.items():
+        if len(skus) < 2:
             continue
-        for b in keys[i + 1:]:
-            nb = _norm_sku(b)
-            if len(nb) < 6 or na[0] != nb[0]:
-                continue
-            if na == nb or _edit_close(na, nb):
-                pairs.append((a, b))
+        ordered = sorted(skus)
+        for i, a in enumerate(ordered):
+            for b in ordered[i + 1:]:
+                pair_reasons.setdefault(
+                    (a, b), f"both carry barcode {bc}"
+                )
+    # Same SKU up to case/punctuation.
+    by_norm: dict[str, set[str]] = {}
+    for k in eligible:
+        nk = _norm_sku(k)
+        if len(nk) >= 4:
+            by_norm.setdefault(nk, set()).add(k)
+    for nk, skus in by_norm.items():
+        if len(skus) < 2:
+            continue
+        ordered = sorted(skus)
+        for i, a in enumerate(ordered):
+            for b in ordered[i + 1:]:
+                pair_reasons.setdefault(
+                    (a, b), "the same SKU written differently"
+                )
 
     existing = session.scalars(
         select(ReviewTask).where(ReviewTask.category == DUP_CATEGORY)
     ).all()
     opened = closed = 0
-    for a, b in pairs:
+    current_keys = set()
+    for (a, b), reason in sorted(pair_reasons.items()):
         key = (f"Possible duplicate products: "
                f"{info[a]['sku']} ⇄ {info[b]['sku']}")
+        current_keys.add(key)
         if any((t.detail or "").startswith(key) for t in existing):
             continue
         title = next(iter(info[a]["titles"]), None)
@@ -294,31 +313,32 @@ def refresh_duplicate_tasks(session: Session) -> dict:
             category=DUP_CATEGORY,
             sku=info[a]["sku"],
             product_title=title,
-            detail=(f"{key} — {info[a]['units']} and {info[b]['units']} "
-                    f"tag unit(s) on file. Resolve to merge the tags into "
-                    f"one product (you pick the SKU and name), or dismiss "
-                    f"if they really are two products."),
+            detail=(f"{key} — {reason}; {info[a]['units']} and "
+                    f"{info[b]['units']} tag unit(s) on file. Resolve to "
+                    f"merge the tags into one product (you pick the SKU "
+                    f"and name), or dismiss if they really are two "
+                    f"products."),
             created_by="dupe-check",
         ))
         opened += 1
 
-    # A side lost its tags -> the pair was merged/cleaned; close the task.
+    # Close open tasks whose pair no longer qualifies: a side was merged
+    # or cleaned up, or the detection rules tightened out from under it.
     for t in existing:
         if t.status != "open":
             continue
-        m = re.match(r"Possible duplicate products: (.+) ⇄ (.+?) —",
+        m = re.match(r"(Possible duplicate products: .+ ⇄ .+?) —",
                      t.detail or "")
-        if not m:
+        if m is None or m.group(1) in current_keys:
             continue
-        if (m.group(1).strip().upper() not in info
-                or m.group(2).strip().upper() not in info):
-            t.status = "resolved"
-            t.resolved_by = "dupe-check"
-            t.resolved_at = datetime.utcnow()
-            t.resolution_note = (
-                "One side no longer holds tags — merged or cleaned up."
-            )
-            closed += 1
+        t.status = "resolved"
+        t.resolved_by = "dupe-check"
+        t.resolved_at = datetime.utcnow()
+        t.resolution_note = (
+            "No longer flagged: a side was merged/cleaned up, or the "
+            "detection rules tightened (exact barcode/SKU evidence only)."
+        )
+        closed += 1
     return {"dupes_opened": opened, "dupes_closed": closed}
 
 

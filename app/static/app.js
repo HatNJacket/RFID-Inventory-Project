@@ -6868,12 +6868,13 @@ const REVIEW_NOTES = {
     "re-checks. The fix is a bin audit: a sweep that hears the " +
     "remaining tags can mark the sold ones.",
   "duplicate-product":
-    "Two tagged SKUs look like the same product (a misspelling or " +
-    "punctuation drift — checked once per sync run over tagged SKUs " +
-    "only, never per scan). Resolve to MERGE the tags into one product " +
-    "— you pick the surviving SKU and which name it keeps — which also " +
-    "files an inventory check for the merged product. Dismiss if they " +
-    "really are two products; a dismissed pair is never re-flagged.",
+    "Two tagged SKUs share the SAME saved barcode, or are the same SKU " +
+    "written differently (exact evidence only — open-box products are " +
+    "ignored; checked once per sync run, never per scan). Resolve to " +
+    "MERGE the tags into one product — you pick the surviving SKU and " +
+    "which name it keeps — which also files an inventory check for the " +
+    "merged product. Dismiss if they really are two products; a " +
+    "dismissed pair is never re-flagged.",
 };
 
 function renderReview() {
