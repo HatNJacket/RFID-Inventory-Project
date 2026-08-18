@@ -822,9 +822,43 @@
 
     <!-- Audits tab -->
     <section class="inventory" id="tab-audits" hidden>
+      <!-- 1-left stock checks: the verification queue behind the Ops
+           Dashboard's "Stock Checks" number, joined against RFID
+           evidence. Confirming/re-queuing moves THEIR record; stock
+           numbers, bins and barcodes are never written from here. -->
+      <div class="recent__head">
+        <h2>1-left stock checks <span class="recent__note" id="ol-meta"></span></h2>
+        <input id="ol-filter" class="recent__search" type="search"
+               placeholder="Filter by SKU, title, vendor or bin…" autocomplete="off" />
+      </div>
+      <p class="linkbox__text" style="max-width:78ch">
+        The warehouse dashboard queues every product Shopify drops to 1
+        on-hand for a physical stock check. When RFID work already proves
+        the stock exists — a tag paired, a sweep that heard the product's
+        tag, a batch that counted it, all <em>after</em> the check was
+        raised — the check clears itself from the dashboard (logged in
+        History with the evidence, undoable with re-queue). Everything
+        else stays for a real walk. Nothing here ever changes a stock
+        number, a bin or a barcode anywhere.
+      </p>
+      <div class="linkbox__actions" style="margin-bottom:10px">
+        <button class="reset" id="ol-auto" type="button"
+                title="When on, stock-discovering actions (pairs, sweeps, batch completions) clear fully-answered checks by themselves">Auto-clear: …</button>
+        <button class="reset" id="ol-scan" type="button"
+                title="Run one auto pass right now — only checks the evidence fully answers are cleared">Clear answered checks now</button>
+        <button class="reset" id="ol-answered" type="button">Show RFID-answered only</button>
+        <button class="reset" id="ol-reload" type="button">↻ Reload</button>
+      </div>
+      <div id="ol-status" class="linkbox__text"></div>
+      <ul class="recent__list binlist" id="ol-list" style="max-height:440px"></ul>
+      <div class="recent__head" style="margin-top:14px">
+        <h2>Recent 1-left actions</h2>
+      </div>
+      <ul class="recent__list binlist" id="ol-receipts"></ul>
+
       <!-- Bin audit: sweep a shelf with the C72's SWEEP tab, SEND, then
            check it here — the Check-step story for any bin, no batch. -->
-      <div class="recent__head">
+      <div class="recent__head" style="margin-top:24px">
         <h2>Audit a bin with a C72 sweep</h2>
       </div>
       <p class="linkbox__text" style="max-width:78ch">

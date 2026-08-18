@@ -1,7 +1,75 @@
 # RFID Inventory System — Roadmap
 
 Source of truth for project status. Updated by Claude each working session.
-Last updated: 2026-08-17.
+Last updated: 2026-08-18.
+
+## 🔍 Audits ↔ 1-left dashboard bridge — ✅ DEPLOYED 2026-08-18
+
+Nick's ask (label shortage pause: "build the audit tab out as much as
+you can" + connect the warehouse dashboard's 1-left stock checks so RFID
+activity clears them). The Inventory Verification Function App
+(`inventory-verification-func` — the queue behind the Ops Dashboard's
+"Stock Checks" number) queues every product Shopify drops to 1 on-hand
+for a human walk; the queue was at 431 items.
+
+- **Source recovered** (unification Phase A item 3, partially): their
+  backend + UI live in `scm-releases/scm-latest-inventory-verification-func.zip`
+  (squashfs, NOT the function-releases container the unification doc
+  guessed — that held tc-dashboard-proxy and shopify-jobs). Their data
+  is CSVs in the `inventory-verification` blob container. Their app also
+  runs live TelescopesCA↔TechGearCA inventory sync — their code is
+  NEVER touched or redeployed from here.
+- **`app/oneleft.py`**: bridge + evidence engine. Calls ONLY their
+  `/pending` (read), `/confirm` + `/bulk-confirm` (what their Verify
+  button calls), `/import-skus` (re-queue = the undo). update-stock /
+  update-bin / update-barcode / issues endpoints are never called — the
+  bridge cannot move a stock number anywhere, by construction. All
+  calls fail SOFT (their outage can never break a scan). Gated by
+  `ONELEFT_MODE` app setting: off (default in code) / read / confirm;
+  prod = confirm.
+- **Evidence rules** (all time-gated to AFTER the check's
+  detected_date): tag paired (box in hand) · sweep heard one of the
+  SKU's tags, however old the tag (box on shelf now) · batch counted
+  units, incl. sealed cases + already-tagged/baseline boxes
+  (audit-recorded bins excluded — copies, not fresh eyes).
+  evidence_units = MAX across sources (they overlap on the same boxes).
+  Auto-clear requires evidence ≥ claimed and claimed ≥ 1; claim of 0
+  never auto-clears (evidence AGAINST a zero flags as a discrepancy
+  instead); their stock fetch failing ("?") is treated as claiming 1.
+  A re-queue PINS the check for a human until evidence NEWER than the
+  re-queue arrives (else the same evidence would re-clear it next pass).
+- **Auto passes** run on stock-discovering actions — tag pair, bulk
+  sweep assign, C72 sweep upload, batch/receiving completion — via
+  `oneleft.kick()` (throttled ≥45 s, background thread), plus a manual
+  "Clear answered checks now" button. Server-stored pause switch
+  (`rfid_app_settings.oneleft_auto`, Audits-tab toggle, History-logged).
+  Confirms are attributed to the operator when they're on the
+  dashboard's fixed employee list (Danielle/Evie/Matt/Noor/Steve),
+  else `ONELEFT_EMPLOYEE` (default Steve — Nick isn't on their list;
+  adding "RFID" to their VALID_EMPLOYEES needs a one-line change +
+  redeploy of THEIR app, Nick/Steve's call). The full evidence trail
+  lives in OUR receipts (`rfid_oneleft_checks`) — History renders every
+  action ("1-left Check" chip) in both the main feed and per-product
+  panels.
+- **Audits tab panel** (top of tab): pending queue joined live with
+  verdict chips — "RFID answers this" / "Shopify 0, RFID sees stock" /
+  "now 0 — walk it" / "re-queued — walk it" / "needs a walk" — search,
+  answered-only filter, per-row Confirm ✓ (operator judgment; same as
+  their Verify button), receipts list with Re-queue undo. Read-only
+  mode renders everything but the write buttons.
+- test_oneleft (33 checks incl. the requeue-pin loop guard and a
+  never-touches-their-write-endpoints assertion); 21/21 suites;
+  run_local seeds a fake dashboard so the panel browser-verifies
+  offline. NOTE for future sessions: `dev/run_local.py` sets
+  ONELEFT_MODE=confirm with the bridge faked — never point run_local at
+  the real dashboard.
+- **Deploy incident (third packaging outage):** mkdeploy's hand-kept
+  FILES list didn't have the new app/oneleft.py, so the first deploy
+  crash-looped prod on the ImportError (~15 min down, fixed same
+  session). `dev/mkdeploy.py` now GLOBS `app/*.py` and refuses to build
+  a package missing anything `app/main.py` imports from app — new
+  modules can't be forgotten again. Non-app files still need a FILES
+  entry.
 
 ## 🎨 C72 v3.36: theme system + visual consolidation — ✅ DEPLOYED 2026-08-17
 

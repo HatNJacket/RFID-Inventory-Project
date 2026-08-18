@@ -27,7 +27,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
-from app import config, planner, shopify
+from app import config, oneleft, planner, shopify
 from app.auth import require_user
 from app.database import (
     DatabaseNotConfigured,
@@ -36,6 +36,7 @@ from app.database import (
     init_db,
 )
 from app.models import (
+    AppSetting,
     BarcodeAlias,
     BarcodeChange,
     Batch,
@@ -53,6 +54,7 @@ from app.models import (
     LinkScan,
     LocateQueueEntry,
     MismatchDismissal,
+    OneLeftCheck,
     PrintJob,
     ProductKind,
     ReviewNote,
@@ -695,6 +697,9 @@ def create_assignment(
             f"first to reassign.",
         )
     session.refresh(assignment)
+    # A pair is a physical box in someone's hand — it may answer a 1-left
+    # stock check that's waiting on exactly that discovery.
+    oneleft.kick("tag paired", payload.assigned_by)
     return assignment.as_dict()
 
 
@@ -786,6 +791,7 @@ def sweep_assign(
         )
     for a in assigned:
         session.refresh(a)
+    oneleft.kick("bulk sweep assign", payload.assigned_by)
     return {
         "count": len(assigned),
         "assigned": [a.as_dict() for a in assigned],
@@ -6176,6 +6182,7 @@ def batch_complete(
     batch.status = "done"
     batch.completed_at = datetime.now(timezone.utc)
     session.commit()
+    oneleft.kick("batch completed", payload.created_by)
     return {
         "batch": batch.as_dict(),
         "review_tasks": [t.as_dict() for t in tasks],
@@ -6253,6 +6260,7 @@ def _complete_receiving(session: Session, batch: Batch, payload) -> dict:
     batch.status = "done"
     batch.completed_at = datetime.now(timezone.utc)
     session.commit()
+    oneleft.kick("receiving completed", payload.created_by)
     return {
         "batch": batch.as_dict(),
         "review_tasks": [t.as_dict() for t in tasks],
@@ -6895,6 +6903,9 @@ def create_capture(payload: CaptureIn, session: Session = Depends(get_session)):
     session.add(row)
     session.commit()
     session.refresh(row)
+    # A sweep is a shelf physically read — old tags heard now are stock
+    # discovered now, which may clear 1-left checks.
+    oneleft.kick("C72 sweep", payload.device)
     return row.as_dict()
 
 
@@ -6945,6 +6956,173 @@ def planner_on_order(sku: str, operator: str | None = None):
     # Always 200: planner hints are decoration on the scan flow, so an
     # outage answers ok=False instead of failing the caller.
     return planner.on_order_for_sku(sku, operator=operator)
+
+
+# --------------------------------------------------- 1-left stock checks ---
+# Bridge to the Inventory Verification dashboard (see app/oneleft.py for
+# the full contract: read pending, confirm, re-queue — nothing else).
+# Every action, auto or manual, leaves an OneLeftCheck receipt that
+# History renders with the evidence.
+
+class OneLeftActIn(BaseModel):
+    sku: str = Field(min_length=1, max_length=100)
+    worker: str | None = Field(default=None, max_length=100)
+
+
+class OneLeftAutoIn(BaseModel):
+    on: bool
+    worker: str | None = Field(default=None, max_length=100)
+
+
+class OneLeftScanIn(BaseModel):
+    worker: str | None = Field(default=None, max_length=100)
+
+
+@app.get("/api/oneleft/board", dependencies=[Depends(require_user)])
+def oneleft_board(session: Session = Depends(get_session)):
+    """Their pending queue joined against RFID evidence, plus recent
+    receipts. Pure read — building the board never confirms anything."""
+    base = {
+        "configured": oneleft.configured(),
+        "mode": config.ONELEFT_MODE,
+        "auto": oneleft.auto_enabled(session),
+        "ok": False,
+        "count": 0,
+        "items": [],
+        "receipts": [
+            r.as_dict() for r in session.scalars(
+                select(OneLeftCheck).order_by(OneLeftCheck.id.desc())
+                .limit(30)
+            )
+        ],
+    }
+    if not oneleft.configured():
+        return base
+    pending = oneleft.get_pending()
+    if not pending["ok"]:
+        return {**base, "error": pending.get("error", "no answer")}
+    items = oneleft.build_board(session, pending["items"])
+    counts: dict[str, int] = {}
+    for row in items:
+        counts[row["verdict"]] = counts.get(row["verdict"], 0) + 1
+    return {
+        **base,
+        "ok": True,
+        "count": len(items),
+        "items": items,
+        "verdicts": counts,
+    }
+
+
+@app.post("/api/oneleft/confirm", dependencies=[Depends(require_user)])
+def oneleft_confirm(
+    payload: OneLeftActIn, session: Session = Depends(get_session)
+):
+    """Operator-driven confirm of ONE check — the same call their UI's
+    Verify button makes. The operator's judgment, not the evidence rule,
+    is the authority here; the receipt records both."""
+    if not oneleft.can_confirm():
+        raise HTTPException(
+            409, "Confirming is disabled (ONELEFT_MODE is not 'confirm')."
+        )
+    sku = payload.sku.strip()
+    employee = oneleft.employee_for(payload.worker)
+    # Whatever evidence exists rides along on the receipt.
+    pending = oneleft.get_pending()
+    row = next(
+        (r for r in oneleft.build_board(session, pending["items"])
+         if r["sku"].upper() == sku.upper()),
+        None,
+    ) if pending["ok"] else None
+    try:
+        oneleft.confirm(sku, employee)
+        ok, error = True, None
+    except Exception as exc:  # noqa: BLE001 — recorded, surfaced, not raised
+        ok, error = False, str(exc)[:300]
+    oneleft.invalidate_pending_cache()
+    session.add(OneLeftCheck(
+        sku=sku,
+        product_title=(row or {}).get("product_title"),
+        vendor=(row or {}).get("vendor"),
+        claimed=(row or {}).get("claimed"),
+        evidence_units=(row or {}).get("evidence_units") or 0,
+        evidence="; ".join((row or {}).get("evidence") or [])[:500] or None,
+        action="manual",
+        employee=employee,
+        operator=(payload.worker or "").strip()[:100] or None,
+        ok=ok,
+        error=error,
+    ))
+    session.commit()
+    if not ok:
+        raise HTTPException(502, f"The dashboard refused the confirm: {error}")
+    return {"ok": True, "sku": sku, "employee": employee}
+
+
+@app.post("/api/oneleft/requeue", dependencies=[Depends(require_user)])
+def oneleft_requeue(
+    payload: OneLeftActIn, session: Session = Depends(get_session)
+):
+    """Put a SKU back on their pending queue — the undo for a confirm
+    that shouldn't have happened. Their import endpoint re-fetches the
+    product's details from Shopify itself."""
+    if not oneleft.can_confirm():
+        raise HTTPException(
+            409, "The bridge is read-only (ONELEFT_MODE is not 'confirm')."
+        )
+    sku = payload.sku.strip()
+    try:
+        oneleft.requeue(sku)
+        ok, error = True, None
+    except Exception as exc:  # noqa: BLE001
+        ok, error = False, str(exc)[:300]
+    oneleft.invalidate_pending_cache()
+    session.add(OneLeftCheck(
+        sku=sku,
+        action="requeue",
+        operator=(payload.worker or "").strip()[:100] or None,
+        ok=ok,
+        error=error,
+    ))
+    session.commit()
+    if not ok:
+        raise HTTPException(502, f"The dashboard refused the re-queue: {error}")
+    return {"ok": True, "sku": sku}
+
+
+@app.post("/api/oneleft/scan", dependencies=[Depends(require_user)])
+def oneleft_scan(payload: OneLeftScanIn):
+    """Run the auto pass right now (the panel's button). Same rules as
+    the background kicks — only evidence-complete checks confirm."""
+    if not oneleft.can_confirm():
+        raise HTTPException(
+            409, "Confirming is disabled (ONELEFT_MODE is not 'confirm')."
+        )
+    return oneleft.scan_and_confirm("manual scan", payload.worker)
+
+
+@app.post("/api/oneleft/auto", dependencies=[Depends(require_user)])
+def oneleft_auto(
+    payload: OneLeftAutoIn, session: Session = Depends(get_session)
+):
+    """Pause/resume auto-confirms — server-stored so every terminal and
+    every background kick honours it immediately."""
+    row = session.get(AppSetting, oneleft.AUTO_SETTING_KEY)
+    value = "on" if payload.on else "off"
+    if row is None:
+        row = AppSetting(key=oneleft.AUTO_SETTING_KEY, value=value)
+        session.add(row)
+    else:
+        row.value = value
+    row.updated_by = (payload.worker or "").strip()[:100] or None
+    session.add(BarcodeChange(
+        changed_field="oneleft",
+        old_barcode=f"auto-confirm {'off' if payload.on else 'on'}",
+        new_barcode=f"auto-confirm {value}",
+        changed_by=payload.worker,
+    ))
+    session.commit()
+    return {"ok": True, "auto": payload.on}
 
 
 # ------------------------------------------------------------ label names ---
@@ -7165,6 +7343,7 @@ def product_history(term: str, session: Session = Depends(get_session)):
         "tagged-before": "already-tagged-set",
         "tag-unlinked": "tag-unlinked",
         "locate-list": "locate-list",
+        "oneleft": "oneleft",
     }
     for c in session.scalars(
         select(BarcodeChange).where(or_(
@@ -7277,6 +7456,20 @@ def product_history(term: str, session: Session = Depends(get_session)):
                              if t.resolution_note else ""),
                 "shopify": False,
             })
+
+    for oc in session.scalars(
+        select(OneLeftCheck).where(
+            func.upper(OneLeftCheck.sku) == sku.upper()
+        )
+    ):
+        events.append({
+            "at": iso(oc.created_at),
+            "type": "oneleft",
+            "worker": oc.operator or oc.employee,
+            "detail": _oneleft_detail(oc),
+            # It moves a record on the dashboard system, never in Shopify.
+            "shopify": False,
+        })
 
     events.sort(key=lambda e: e["at"] or "", reverse=True)
 
@@ -7402,6 +7595,7 @@ def history(
         "tagged-before": "already-tagged-set",
         "tag-unlinked": "tag-unlinked",
         "locate-list": "locate-list",
+        "oneleft": "oneleft",
     }
     # A sweep undo unlinks its tags with one shared timestamp — fold
     # those the same way sweep assigns fold.
@@ -7698,7 +7892,38 @@ def history(
             "undo": {"kind": "mismatch-undismiss", "dismissal_id": md.id},
         })
 
+    for oc in session.scalars(
+        select(OneLeftCheck).order_by(OneLeftCheck.id.desc()).limit(limit)
+    ):
+        events.append({
+            "at": iso(oc.created_at),
+            "type": "oneleft",
+            "worker": oc.operator or oc.employee,
+            "sku": oc.sku,
+            "title": oc.product_title,
+            "detail": _oneleft_detail(oc),
+        })
+
     # ISO strings sort chronologically; string sort also avoids the
     # naive-vs-aware datetime comparison trap across DB backends.
     events.sort(key=lambda e: e["at"] or "", reverse=True)
     return {"count": len(events[:limit]), "events": events[:limit]}
+
+
+def _oneleft_detail(oc: OneLeftCheck) -> str:
+    """One line telling the whole story of a 1-left dashboard action."""
+    if oc.action == "requeue":
+        body = "re-queued on the 1-left dashboard"
+    elif oc.action == "manual":
+        body = f"1-left check confirmed on the dashboard (as {oc.employee})"
+    else:
+        body = (
+            f"1-left check auto-cleared (as {oc.employee}) — evidence "
+            f"{oc.evidence_units} unit(s) vs claimed "
+            f"{oc.claimed if oc.claimed is not None else '?'}"
+        )
+    if oc.evidence:
+        body += f" · {oc.evidence}"
+    if not oc.ok:
+        body += f" · FAILED: {oc.error or 'unknown error'}"
+    return body[:500]

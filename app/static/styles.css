@@ -1734,6 +1734,29 @@ tr.bvx-detail td { background: var(--card-2); padding: 12px 14px; }
   background: var(--warn-bg, #fff8e1);
 }
 .binaudit-chip.chip--na { color: var(--ink-dim); background: var(--card-2); }
+.binaudit-chip.chip--ok {
+  color: var(--ok-ink, #1d6f47);
+  background: var(--ok-bg, #d5efe1);
+}
+
+/* 1-left stock-check rows (Audits tab): product line + evidence line,
+   verdict chip on the left so the answered ones read at a glance. */
+.olrow { display: flex; align-items: center; gap: 10px; }
+.olrow__main { flex: 1; min-width: 0; }
+.olrow__sub {
+  font-size: 11.5px;
+  color: var(--ink-dim);
+  margin-top: 1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.olrow__title {
+  font-weight: 400;
+  font-family: inherit;
+  color: var(--ink);
+}
+li.olrow--done { opacity: 0.75; }
 /* Products Shopify expects here but nothing is tagged for — shown only
    behind the toggle, and dimmed so the tagged rows stay the subject. */
 tr.binaudit-untagged td { opacity: 0.72; }

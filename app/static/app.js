@@ -259,6 +259,7 @@ const EVENT_META = {
   "tags-rebinned": ["Tags Re-binned", "#0e7a8a"],
   "bundle-contents-set": ["Bundle Contents", "#6f42c1"],
   "locate-list": ["Locate List", "#5561c9"],
+  oneleft: ["1-left Check", "#b07d00"],
   sweep: ["Sweep", "#0e7a8a"],
 };
 
@@ -7201,6 +7202,7 @@ document.getElementById("audit-refresh").addEventListener("click", async (ev) =>
 });
 
 async function loadAudits() {
+  loadOneleft();
   loadAuditBins();
   const list = document.getElementById("audit-list");
   try {
@@ -7257,6 +7259,306 @@ async function loadAudits() {
     sweeps.innerHTML = '<li class="recent__empty">Could not load sweeps.</li>';
   }
 }
+
+// === 1-left stock checks (Audits tab) =======================================
+// The dashboard's verification queue joined against RFID evidence. The
+// server does all the judging; this block only renders and relays clicks.
+let olData = null;
+let olAnsweredOnly = false;
+
+const OL_VERDICTS = {
+  confirmable: [
+    "chip--ok",
+    "RFID answers this",
+    "Evidence since the check was raised covers the claimed stock — auto-clear will take it, or confirm it yourself",
+  ],
+  discrepancy: [
+    "chip--bad",
+    "Shopify 0, RFID sees stock",
+    "Shopify now says none on hand but RFID evidence found stock after the check was raised — walk this one, something disagrees",
+  ],
+  "zero-claim": [
+    "chip--warn",
+    "now 0 — walk it",
+    "Shopify has dropped to 0 since the check was raised; RFID can't prove an absence, so a human walk settles it",
+  ],
+  requeued: [
+    "chip--warn",
+    "re-queued — walk it",
+    "An operator put this back on the queue after it was cleared, so it stays for a human until NEW evidence shows up",
+  ],
+  "needs-walk": [
+    "chip--na",
+    "needs a walk",
+    "No (or not enough) RFID evidence since the check was raised",
+  ],
+};
+
+function olVerdictChip(v) {
+  const [cls, label, tip] = OL_VERDICTS[v] || OL_VERDICTS["needs-walk"];
+  return `<span class="binaudit-chip ${cls}" title="${escapeHtml(tip)}">${escapeHtml(label)}</span>`;
+}
+
+async function loadOneleft() {
+  const list = document.getElementById("ol-list");
+  list.innerHTML = '<li class="recent__empty">Loading…</li>';
+  try {
+    olData = await apiJson("/api/oneleft/board");
+  } catch (err) {
+    olData = null;
+    list.innerHTML = `<li class="recent__empty">Could not load: ${escapeHtml(err.message)}</li>`;
+    return;
+  }
+  renderOneleft();
+}
+
+function renderOneleft() {
+  if (!olData) return;
+  const list = document.getElementById("ol-list");
+  const status = document.getElementById("ol-status");
+  const meta = document.getElementById("ol-meta");
+  const autoBtn = document.getElementById("ol-auto");
+  const scanBtn = document.getElementById("ol-scan");
+  const canWrite = olData.mode === "confirm";
+
+  autoBtn.textContent = `Auto-clear: ${olData.auto ? "ON" : "OFF"}`;
+  autoBtn.disabled = !canWrite;
+  scanBtn.disabled = !canWrite;
+  document.getElementById("ol-answered").textContent = olAnsweredOnly
+    ? "Show all checks"
+    : "Show RFID-answered only";
+
+  if (!olData.configured) {
+    meta.textContent = "";
+    status.textContent =
+      "The dashboard bridge is off (ONELEFT_MODE app setting). The " +
+      "1-left queue can't be read from here until it's enabled.";
+    list.innerHTML = "";
+    renderOneleftReceipts();
+    return;
+  }
+  if (!olData.ok) {
+    meta.textContent = "";
+    status.textContent = `The dashboard didn't answer: ${olData.error || "unknown error"}. Nothing is broken here — reload to retry.`;
+    list.innerHTML = "";
+    renderOneleftReceipts();
+    return;
+  }
+
+  const v = olData.verdicts || {};
+  meta.textContent =
+    `(${olData.count} pending · ${v.confirmable || 0} answered by RFID` +
+    (canWrite ? "" : " · read-only mode") + ")";
+  status.textContent = "";
+
+  const needle = document.getElementById("ol-filter").value.trim().toLowerCase();
+  const rank = {
+    confirmable: 0,
+    discrepancy: 1,
+    requeued: 2,
+    "zero-claim": 3,
+    "needs-walk": 4,
+  };
+  let rows = olData.items
+    .filter((r) => !olAnsweredOnly || r.verdict === "confirmable")
+    .filter(
+      (r) =>
+        !needle ||
+        [r.sku, r.product_title, r.vendor, r.bin]
+          .join(" ")
+          .toLowerCase()
+          .includes(needle)
+    )
+    .sort(
+      (a, b) =>
+        (rank[a.verdict] ?? 9) - (rank[b.verdict] ?? 9) ||
+        String(a.detected_date || "").localeCompare(
+          String(b.detected_date || "")
+        )
+    );
+  const total = rows.length;
+  rows = rows.slice(0, 150);
+
+  list.innerHTML = total
+    ? ""
+    : '<li class="recent__empty">Nothing matches.</li>';
+  rows.forEach((r) => {
+    const li = document.createElement("li");
+    li.className = "olrow";
+    const sub = [
+      r.vendor,
+      r.bin ? `bin ${r.bin}` : "no bin",
+      r.claimed == null ? "claims ?" : `claims ${r.claimed}`,
+      `${r.tag_count} tag(s) on file`,
+      `raised ${fmtAgo(r.detected_date)}`,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    const evidence = (r.evidence || []).join("; ");
+    li.innerHTML = `
+      ${olVerdictChip(r.verdict)}
+      <div class="olrow__main">
+        <span class="binlist__name ol-sku" data-sku="${escapeHtml(r.sku)}"
+              title="Open this product's panel">${escapeHtml(r.sku)}</span>
+        <span class="olrow__title">${escapeHtml(r.product_title || "")}</span>
+        <div class="olrow__sub" title="${escapeHtml(sub + (evidence ? " · " + evidence : ""))}">
+          ${escapeHtml(sub)}${evidence ? ` · <b>${escapeHtml(evidence)}</b>` : ""}
+        </div>
+      </div>
+      ${canWrite ? `<button class="binlist__go ol-confirm" type="button" data-sku="${escapeHtml(r.sku)}"
+        title="Mark this check verified on the dashboard — same as its own Verify button. Undoable with re-queue.">Confirm ✓</button>` : ""}`;
+    list.append(li);
+  });
+  if (total > rows.length) {
+    const li = document.createElement("li");
+    li.className = "recent__empty";
+    li.textContent = `…and ${total - rows.length} more — narrow with the filter.`;
+    list.append(li);
+  }
+  renderOneleftReceipts();
+}
+
+function renderOneleftReceipts() {
+  const list = document.getElementById("ol-receipts");
+  const receipts = (olData && olData.receipts) || [];
+  const canWrite = olData && olData.mode === "confirm";
+  list.innerHTML = receipts.length
+    ? ""
+    : '<li class="recent__empty">No 1-left actions taken from here yet.</li>';
+  receipts.forEach((r) => {
+    const li = document.createElement("li");
+    li.className = "olrow" + (r.ok ? " olrow--done" : "");
+    const what =
+      r.action === "requeue"
+        ? "re-queued on the dashboard"
+        : r.action === "manual"
+          ? `confirmed on the dashboard (as ${r.employee || "?"})`
+          : `auto-cleared (as ${r.employee || "?"}) — evidence ${r.evidence_units} vs claimed ${r.claimed == null ? "?" : r.claimed}`;
+    li.innerHTML = `
+      <span class="binaudit-chip ${r.ok ? "chip--ok" : "chip--bad"}">${r.ok ? "done" : "FAILED"}</span>
+      <div class="olrow__main">
+        <span class="binlist__name ol-sku" data-sku="${escapeHtml(r.sku)}">${escapeHtml(r.sku)}</span>
+        <span class="olrow__title">${escapeHtml(what)}</span>
+        <div class="olrow__sub" title="${escapeHtml(r.evidence || "")}">
+          ${escapeHtml([r.operator, fmtAgo(r.created_at), r.error].filter(Boolean).join(" · "))}
+        </div>
+      </div>
+      ${
+        canWrite && r.ok && r.action !== "requeue"
+          ? `<button class="binlist__go ol-requeue" type="button" data-sku="${escapeHtml(r.sku)}"
+              title="Undo: put this SKU back on the dashboard's pending queue">Re-queue</button>`
+          : ""
+      }`;
+    list.append(li);
+  });
+}
+
+document.getElementById("ol-list").addEventListener("click", olRowClick);
+document.getElementById("ol-receipts").addEventListener("click", olRowClick);
+
+async function olRowClick(e) {
+  const sku = e.target.closest(".ol-sku");
+  if (sku) {
+    openProductHistory(sku.dataset.sku);
+    return;
+  }
+  const confirmBtn = e.target.closest(".ol-confirm");
+  if (confirmBtn) {
+    const s = confirmBtn.dataset.sku;
+    if (
+      !window.confirm(
+        `Mark ${s} as stock-checked on the warehouse dashboard?\n\n` +
+          "This clears its 1-left alert there, exactly like the " +
+          "dashboard's own Verify button. Re-queue undoes it."
+      )
+    )
+      return;
+    confirmBtn.disabled = true;
+    try {
+      await postJson("/api/oneleft/confirm", {
+        sku: s,
+        worker: operatorEl.value || null,
+      });
+    } catch (err) {
+      alert(err.message);
+    }
+    loadOneleft();
+    return;
+  }
+  const requeueBtn = e.target.closest(".ol-requeue");
+  if (requeueBtn) {
+    requeueBtn.disabled = true;
+    try {
+      await postJson("/api/oneleft/requeue", {
+        sku: requeueBtn.dataset.sku,
+        worker: operatorEl.value || null,
+      });
+    } catch (err) {
+      alert(err.message);
+    }
+    loadOneleft();
+  }
+}
+
+document.getElementById("ol-auto").addEventListener("click", async () => {
+  if (!olData) return;
+  const next = !olData.auto;
+  if (
+    !next &&
+    !window.confirm(
+      "Pause auto-clear? Checks the RFID evidence answers will pile up " +
+        "on the dashboard until it's back on."
+    )
+  )
+    return;
+  try {
+    await postJson("/api/oneleft/auto", {
+      on: next,
+      worker: operatorEl.value || null,
+    });
+  } catch (err) {
+    alert(err.message);
+  }
+  loadOneleft();
+});
+
+document.getElementById("ol-scan").addEventListener("click", async (ev) => {
+  const btn = ev.currentTarget;
+  btn.disabled = true;
+  btn.textContent = "Checking…";
+  try {
+    const res = await postJson("/api/oneleft/scan", {
+      worker: operatorEl.value || null,
+    });
+    const n = (res.confirmed || []).length;
+    btn.textContent = res.ran
+      ? n
+        ? `Cleared ${n} ✓`
+        : "Nothing to clear"
+      : "Auto is paused";
+  } catch (err) {
+    btn.textContent = "Failed";
+    alert(err.message);
+  }
+  setTimeout(() => {
+    btn.textContent = "Clear answered checks now";
+    btn.disabled = false;
+    loadOneleft();
+  }, 1600);
+});
+
+document.getElementById("ol-answered").addEventListener("click", () => {
+  olAnsweredOnly = !olAnsweredOnly;
+  renderOneleft();
+});
+
+document.getElementById("ol-reload").addEventListener("click", loadOneleft);
+
+let olFilterTimer;
+document.getElementById("ol-filter").addEventListener("input", () => {
+  clearTimeout(olFilterTimer);
+  olFilterTimer = setTimeout(renderOneleft, 150);
+});
 
 // === History tab ============================================================
 let historyEvents = [];

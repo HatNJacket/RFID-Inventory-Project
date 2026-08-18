@@ -27,14 +27,6 @@ FILES = [
     ".gitignore",
     "README.md",
     "ROADMAP.md",
-    "app/__init__.py",
-    "app/auth.py",
-    "app/config.py",
-    "app/database.py",
-    "app/main.py",
-    "app/models.py",
-    "app/planner.py",
-    "app/shopify.py",
     "app/static/app.js",
     "app/static/styles.css",
     "app/static/tc-rfid-sweep.apk",
@@ -47,6 +39,15 @@ FILES = [
     "startup.txt",
     "test_shopify.py",
 ]
+
+# Every app/*.py ships, discovered rather than listed: the hand-kept list
+# silently dropped app/oneleft.py (2026-08-18) and prod crash-looped on
+# the ImportError until a rebuilt zip landed. A new module can't be
+# forgotten again.
+FILES += sorted(
+    f"app/{name}" for name in os.listdir(os.path.join(ROOT, "app"))
+    if name.endswith(".py")
+)
 
 missing = [f for f in FILES if not os.path.isfile(os.path.join(ROOT, f))]
 if missing:
@@ -66,6 +67,20 @@ with zipfile.ZipFile(OUT) as z:
     assert not bad, f"BACKSLASH ENTRIES (would break the deploy): {bad}"
     assert "app/main.py" in names, "app/main.py missing -> cannot import app"
     assert "app/__init__.py" in names, "app/__init__.py missing -> no package"
+    # Belt and braces: every module app/main.py imports from app must be
+    # in the package, or gunicorn dies on ImportError at boot.
+    with open(os.path.join(ROOT, "app", "main.py"), encoding="utf-8") as fh:
+        main_src = fh.read()
+    import re
+    imported = re.findall(r"^from app import (.+)$", main_src, re.M)
+    for group in imported:
+        for mod in group.split(","):
+            mod = mod.strip()
+            if mod and f"app/{mod}.py" not in names:
+                raise SystemExit(
+                    f"app/{mod}.py is imported by app/main.py but missing "
+                    f"from the package"
+                )
 
 print(f"OK  {OUT}")
 print(f"    {len(names)} entries, all POSIX paths, app/ package intact")

@@ -793,6 +793,75 @@ class LocateQueueEntry(Base):
     )
 
 
+class AppSetting(Base):
+    """Server-stored key/value switches the web UI can flip without an
+    app-settings change (no restart, no az CLI). First user: the 1-left
+    auto-confirm pause switch."""
+
+    __tablename__ = "rfid_app_settings"
+
+    key: Mapped[str] = mapped_column(String(60), primary_key=True)
+    value: Mapped[str] = mapped_column(String(500), nullable=False)
+    updated_by: Mapped[str | None] = mapped_column(String(100))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(),
+        onupdate=func.now(), nullable=False
+    )
+
+
+class OneLeftCheck(Base):
+    """One action taken against the 1-left dashboard's verification queue
+    (the Inventory Verification Function App): an auto-confirm backed by
+    RFID evidence, an operator's manual confirm, or a re-queue (the undo).
+    The dashboard side only records a name and a date — THIS row is where
+    the actual evidence lives, and History renders it."""
+
+    __tablename__ = "rfid_oneleft_checks"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sku: Mapped[str] = mapped_column(String(100), index=True, nullable=False)
+    product_title: Mapped[str | None] = mapped_column(String(255))
+    vendor: Mapped[str | None] = mapped_column(String(150))
+    # Shopify's stock claim at action time (None = their API couldn't say).
+    claimed: Mapped[int | None] = mapped_column(Integer)
+    evidence_units: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    # Human-readable evidence summary ("2 tags paired 2026-08-17 by Nick").
+    evidence: Mapped[str | None] = mapped_column(String(500))
+    action: Mapped[str] = mapped_column(String(20), nullable=False)
+    # The name their confirm endpoint accepted (its fixed employee list).
+    employee: Mapped[str | None] = mapped_column(String(100))
+    # Who, in RFID terms, caused it: the operator, or the trigger for autos.
+    operator: Mapped[str | None] = mapped_column(String(100))
+    ok: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
+    error: Mapped[str | None] = mapped_column(String(300))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    def as_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "sku": self.sku,
+            "product_title": self.product_title,
+            "vendor": self.vendor,
+            "claimed": self.claimed,
+            "evidence_units": self.evidence_units,
+            "evidence": self.evidence,
+            "action": self.action,
+            "employee": self.employee,
+            "operator": self.operator,
+            "ok": self.ok,
+            "error": self.error,
+            "created_at": (
+                self.created_at.isoformat() if self.created_at else None
+            ),
+        }
+
+
 class EpcCapture(Base):
     """One RFID sweep sent from the C72 companion app: the operator scans a
     shelf freely (everything held on the device), then hits Send once —

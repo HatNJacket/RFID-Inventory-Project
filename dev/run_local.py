@@ -14,6 +14,7 @@ os.environ["SHOPIFY_STORE"] = "t.myshopify.com"
 os.environ["SHOPIFY_CLIENT_ID"] = "x"
 os.environ["SHOPIFY_CLIENT_SECRET"] = "x"
 os.environ["SHOPIFY_WRITE_MODE"] = "scan_station_only,verify_onhand"
+os.environ["ONELEFT_MODE"] = "confirm"  # the bridge itself is faked below
 os.environ.pop("STATION_KEY", None)
 os.environ.pop("PRINT_AGENT_KEY", None)
 
@@ -260,6 +261,56 @@ def _fake_on_order(sku, operator=None):
         base["total_remaining"] = 4
     return base
 _pl.on_order_for_sku = _fake_on_order
+
+# Fake 1-left dashboard: an in-memory pending queue shaped exactly like
+# the Inventory Verification app's /pending answer, so the Audits panel
+# (verdicts, auto-clear, confirm, re-queue) runs end to end offline.
+from datetime import timedelta  # noqa: E402
+from app import oneleft as _ol  # noqa: E402
+_detected = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+def _pend(sku, title, vendor, bin_, stock):
+    return {"sku": sku, "product_title": title, "vendor": vendor,
+            "stock_bin": bin_, "barcode": "", "detected_date": _detected,
+            "current_stock": stock}
+_OL_QUEUE = [
+    # Tags were paired at seed time (after detection) -> RFID answers it.
+    _pend("NORMAL-1", "Baader UHC Filter 2in", "Baader", "T1-1",
+          {"available": 1, "on_hand": 1}),
+    # Never tagged -> needs a walk.
+    _pend("PROD-Z", "Product Z (never tagged)", "Generic", "BIN-T",
+          {"available": 1, "on_hand": 1}),
+    # Shopify has since dropped to 0 -> walk it (never auto-cleared).
+    _pend("GONE-1", "Celestron X-Cel 9mm (now zero)", "Celestron", "F2-2",
+          {"available": 0, "on_hand": 0}),
+    # Claims 0 but MIS-1 has tags paired after detection -> discrepancy.
+    _pend("MIS-1", "Svbony SV405CC (mismatch test)", "Svbony", "T1-1",
+          {"available": 0, "on_hand": 0}),
+    # Their live stock fetch failed -> treated as claiming 1.
+    _pend("PROD-A", "Product A", "Generic", "BIN-T", "?"),
+]
+def _ol_get(path):
+    return {"success": True, "count": len(_OL_QUEUE), "items": _OL_QUEUE}
+def _ol_post(path, body):
+    global _OL_QUEUE
+    if path == "/bulk-confirm":
+        skus = set(body["skus"])
+        confirmed = [i["sku"] for i in _OL_QUEUE if i["sku"] in skus]
+        _OL_QUEUE = [i for i in _OL_QUEUE if i["sku"] not in skus]
+        print(f"[fake 1-left] bulk confirm {confirmed} by {body['employee']}")
+        return {"success": True, "confirmed_skus": confirmed,
+                "not_found_skus": sorted(skus - set(confirmed))}
+    if path == "/confirm":
+        _OL_QUEUE = [i for i in _OL_QUEUE if i["sku"] != body["sku"]]
+        print(f"[fake 1-left] confirm {body['sku']} by {body['employee']}")
+        return {"success": True}
+    if path == "/import-skus":
+        sku = body["csv_content"].splitlines()[-1].strip()
+        _OL_QUEUE.append(_pend(sku, f"Re-queued {sku}", "Generic", "", "?"))
+        print(f"[fake 1-left] re-queued {sku}")
+        return {"success": True}
+    raise RuntimeError(f"unexpected 1-left call: {path}")
+_ol._get = _ol_get
+_ol._post = _ol_post
 
 import uvicorn  # noqa: E402
 uvicorn.run(app, host="127.0.0.1", port=8123)

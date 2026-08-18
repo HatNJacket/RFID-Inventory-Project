@@ -83,6 +83,26 @@ def _parse_user_tokens(raw: str) -> dict[str, str]:
 
 PLANNER_USER_TOKENS = _parse_user_tokens(os.getenv("PLANNER_USER_TOKENS", ""))
 
+# Bridge to the 1-left dashboard (Inventory Verification Function App —
+# the queue behind the Ops Dashboard's "Stock Checks" number). What it may
+# do is gated hard, because it is ANOTHER system:
+#   "off"     (default) — bridge disabled, the Audits panel says so
+#   "read"    — read the pending queue and join it against RFID evidence;
+#               never calls a write endpoint
+#   "confirm" — additionally allowed to CONFIRM checks (move a pending
+#               item to their history) and to RE-QUEUE one (the undo).
+#               These are the two write calls the dashboard's own UI makes
+#               all day; stock/bin/barcode writes are never called by us.
+ONELEFT_MODE = os.getenv("ONELEFT_MODE", "off").strip().lower()
+ONELEFT_URL = os.getenv(
+    "ONELEFT_URL",
+    "https://inventory-verification-func.azurewebsites.net/api/api",
+).rstrip("/")
+# Their confirm endpoint validates the employee name against a fixed
+# list; automated confirms are attributed to this name when the RFID
+# operator isn't on it (the full evidence trail lives in OUR History).
+ONELEFT_EMPLOYEE = os.getenv("ONELEFT_EMPLOYEE", "Steve").strip()
+
 # Who can be picked in the UI's operator dropdown, comma-separated.
 OPERATORS = [
     name.strip()
