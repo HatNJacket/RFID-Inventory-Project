@@ -1077,75 +1077,88 @@
     </div>
 
     <!-- Product panel: opened from History OR Print queue (modal) -->
+    <!-- Product window, reordered (Nick, 2026-08-18): product + image,
+         then PRINT (the everyday action), then the edge-case options
+         folded behind one toggle, then the history table. Every control
+         keeps its id — only the layout moved. -->
     <div class="phist-overlay" id="phist-overlay" hidden>
       <section class="linkbox serialbox phist-modal" id="phist-panel">
-        <div class="linkbox__product" style="margin-bottom:8px">
-          <img class="linkbox__img" id="phist-img" alt="" hidden />
+        <div class="linkbox__product phist-head" style="margin-bottom:8px">
+          <img class="phist-img" id="phist-img" alt="" hidden />
           <div>
             <div class="linkbox__ptitle" id="phist-title">—</div>
             <p class="linkbox__text" id="phist-meta"></p>
           </div>
         </div>
-        <!-- Multi-box / bundle standing, and the way back -->
-        <div class="kindrow kindrow--bundle" id="phist-kind" hidden style="margin-bottom:10px">
-          <span class="kindrow__what" id="phist-kind-what"></span>
-          <button class="reset" id="phist-kind-restore" type="button" title="Hand this product back to automatic detection">Put it back / detect automatically</button>
-        </div>
-        <!-- Bundle contents: what ONE unit of this SKU physically contains.
-             Defined bundles stop being separately countable in batch collect
-             (the component count covers them). -->
-        <div class="kindrow" id="phist-bundle" style="margin-bottom:10px">
-          <span class="kindrow__what" id="phist-bundle-what"></span>
-          <button class="reset" id="phist-bundle-import" type="button" hidden
-                  title="Reads the bundle's component list straight from Shopify (the Bundles app relationship) — no typing">⇣ Import from Shopify</button>
-          <button class="reset" id="phist-bundle-btn" type="button"></button>
-        </div>
-        <div id="phist-serial" hidden>
-          <p class="linkbox__extra-label" id="phist-label-hint">Edit the two label lines — saved store-wide, every future print uses them:</p>
-          <div class="labeledit">
-            <div class="labeledit__fields">
-              <label class="step__label" for="phist-top">Top line</label>
-              <div class="phist-inputwrap">
-                <input id="phist-top" class="linkbox__input" type="text" maxlength="76" autocomplete="off" spellcheck="false" />
-                <button class="phist-clear" id="phist-top-reset" type="button" title="Back to the store header">✕</button>
-              </div>
-              <label class="step__label" for="phist-skuline">SKU line</label>
-              <div class="phist-inputwrap">
-                <input id="phist-skuline" class="linkbox__input" type="text" maxlength="56" autocomplete="off" spellcheck="false" />
-                <button class="phist-clear" id="phist-skuline-reset" type="button" title="Back to the plain SKU">✕</button>
-              </div>
-              <p class="breprint__fitwarn" id="phist-fitwarn" hidden></p>
-              <div class="linkbox__actions">
-                <button class="reset" id="phist-label-save" type="button">Save label</button>
-              </div>
-            </div>
-            <div class="labeledit__preview">
-              <div class="label-preview" id="phist-preview">
-                <div class="label-preview__header" id="phist-prev-header">Telescopes Canada</div>
-                <div class="label-preview__sku" id="phist-prev-sku"></div>
-                <div class="label-preview__bc" id="phist-prev-bc"></div>
-                <div class="label-preview__bin" id="phist-prev-bin"></div>
-              </div>
-            </div>
-          </div>
-        </div>
-        <!-- Won't-RFID-scan flag: add or remove, always visible for a real
-             product. Sweeps stop expecting flagged products to answer. -->
-        <div class="kindrow" id="phist-norfid" hidden style="margin:10px 0">
-          <span class="kindrow__what" id="phist-norfid-what"></span>
-          <button class="reset" id="phist-norfid-btn" type="button"></button>
-        </div>
-        <!-- Send to the gun: queue this product on the shared locate list
-             so the C72's LOCATE tab can hunt its tags without typed EPCs -->
-        <div class="kindrow" id="phist-locate" hidden style="margin:10px 0">
-          <span class="kindrow__what" id="phist-locate-what"></span>
-          <button class="reset" id="phist-locate-btn" type="button"></button>
-        </div>
+
+        <!-- Print: right under the product, not below the edge cases -->
         <div class="linkbox__form" style="margin:10px 0">
           <input id="phist-qty" class="linkbox__input" type="number" min="1" max="50" value="1" style="max-width:90px" />
           <button class="print__btn" id="phist-print" type="button">Print label(s)</button>
           <span class="linkbox__text" id="phist-msg"></span>
         </div>
+
+        <!-- Edge cases, folded: label format, bundle, RFID flag, locate -->
+        <details class="phist-options" id="phist-options">
+          <summary>⚙ Product options — label format · bundle · RFID flag · locate</summary>
+
+          <!-- Multi-box / bundle standing, and the way back -->
+          <div class="kindrow kindrow--bundle" id="phist-kind" hidden style="margin:10px 0">
+            <span class="kindrow__what" id="phist-kind-what"></span>
+            <button class="reset" id="phist-kind-restore" type="button" title="Hand this product back to automatic detection">Put it back / detect automatically</button>
+          </div>
+          <!-- Bundle contents: what ONE unit of this SKU physically contains.
+               Defined bundles stop being separately countable in batch collect
+               (the component count covers them). -->
+          <div class="kindrow" id="phist-bundle" style="margin:10px 0">
+            <span class="kindrow__what" id="phist-bundle-what"></span>
+            <button class="reset" id="phist-bundle-import" type="button" hidden
+                    title="Reads the bundle's component list straight from Shopify (the Bundles app relationship) — no typing">⇣ Import from Shopify</button>
+            <button class="reset" id="phist-bundle-btn" type="button"></button>
+          </div>
+          <div id="phist-serial" hidden>
+            <p class="linkbox__extra-label" id="phist-label-hint">Edit the two label lines — saved store-wide, every future print uses them:</p>
+            <div class="labeledit">
+              <div class="labeledit__fields">
+                <label class="step__label" for="phist-top">Top line</label>
+                <div class="phist-inputwrap">
+                  <input id="phist-top" class="linkbox__input" type="text" maxlength="76" autocomplete="off" spellcheck="false" />
+                  <button class="phist-clear" id="phist-top-reset" type="button" title="Back to the store header">✕</button>
+                </div>
+                <label class="step__label" for="phist-skuline">SKU line</label>
+                <div class="phist-inputwrap">
+                  <input id="phist-skuline" class="linkbox__input" type="text" maxlength="56" autocomplete="off" spellcheck="false" />
+                  <button class="phist-clear" id="phist-skuline-reset" type="button" title="Back to the plain SKU">✕</button>
+                </div>
+                <p class="breprint__fitwarn" id="phist-fitwarn" hidden></p>
+                <div class="linkbox__actions">
+                  <button class="reset" id="phist-label-save" type="button">Save label</button>
+                </div>
+              </div>
+              <div class="labeledit__preview">
+                <div class="label-preview" id="phist-preview">
+                  <div class="label-preview__header" id="phist-prev-header">Telescopes Canada</div>
+                  <div class="label-preview__sku" id="phist-prev-sku"></div>
+                  <div class="label-preview__bc" id="phist-prev-bc"></div>
+                  <div class="label-preview__bin" id="phist-prev-bin"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <!-- Won't-RFID-scan flag: add or remove, always visible for a real
+               product. Sweeps stop expecting flagged products to answer. -->
+          <div class="kindrow" id="phist-norfid" hidden style="margin:10px 0">
+            <span class="kindrow__what" id="phist-norfid-what"></span>
+            <button class="reset" id="phist-norfid-btn" type="button"></button>
+          </div>
+          <!-- Send to the gun: queue this product on the shared locate list
+               so the C72's LOCATE tab can hunt its tags without typed EPCs -->
+          <div class="kindrow" id="phist-locate" hidden style="margin:10px 0">
+            <span class="kindrow__what" id="phist-locate-what"></span>
+            <button class="reset" id="phist-locate-btn" type="button"></button>
+          </div>
+        </details>
+
         <div class="inventory__scroll">
           <table class="inventory__table">
             <thead><tr><th>When</th><th>Event</th><th>Who</th><th>Detail</th><th>Shopify</th></tr></thead>

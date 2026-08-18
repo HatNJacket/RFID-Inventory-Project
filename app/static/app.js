@@ -8725,7 +8725,7 @@ function renderHistory() {
           : "";
       const sub =
         e.epcs && e.epcs.length
-          ? `<tr class="hist-epcrow" data-for="${i}" hidden><td colspan="7"><div class="hist-epclist">${e.epcs
+          ? `<tr class="hist-epcrow" data-for="${i}" hidden><td colspan="7"><div class="hist-epclist hist-epclist--grid">${e.epcs
               .map((x) => `<div class="mono">${escapeHtml(x || "?")}</div>`)
               .join("")}</div></td></tr>`
           : "";
@@ -8879,21 +8879,50 @@ async function openProductHistory(term) {
         '<tr><td colspan="5" class="inventory__empty">No recorded events for this product yet.</td></tr>';
       return;
     }
+    // Multi-tag events expand into a FULL-WIDTH sub-row (colspan) —
+    // opening one never resizes the table's columns, and the EPC list
+    // spreads across all the empty space instead of squeezing into the
+    // Detail column (Nick, 2026-08-18).
     body.innerHTML = data.events
-      .map(
-        (e) => `<tr>
+      .map((e, i) => {
+        const hasEpcs = e.epcs && e.epcs.length;
+        const detailText = hasEpcs
+          ? String(e.detail || "")
+              .replace(/^\d+\s*×\s*RFID tag(\s*\(sweep\))?/, "")
+              .replace(/^\s*·\s*/, "")
+          : e.detail || "";
+        const exp = hasEpcs
+          ? `<a href="#" class="phist-exp" data-idx="${i}">▸ ${e.epcs.length}× EPC tags</a>${detailText ? " · " : ""}`
+          : "";
+        const sub = hasEpcs
+          ? `<tr class="phist-epcrow" data-for="${i}" hidden><td colspan="5"><div class="hist-epclist hist-epclist--grid">${e.epcs
+              .map((x) => `<div class="mono">${escapeHtml(x || "?")}</div>`)
+              .join("")}</div></td></tr>`
+          : "";
+        return `<tr>
         <td class="recent__meta" style="white-space:nowrap">${escapeHtml(fmtWhen(e.at))}</td>
         <td>${evChip(e.type)}</td>
         <td>${escapeHtml(e.worker || "—")}</td>
-        <td class="recent__meta">${epcsDetailCell(e)}</td>
+        <td class="recent__meta">${exp}${escapeHtml(detailText)}</td>
         <td>${
           e.shopify
             ? '<span class="chip-status chip-status--done" title="This event wrote to (or read from) the live Shopify store">Shopify ✓</span>'
             : '<span class="chip-status chip-status--pending" title="This event only touched the RFID system\'s own records — nothing in Shopify changed">RFID only</span>'
         }</td>
-      </tr>`
-      )
+      </tr>${sub}`;
+      })
       .join("");
+    body.querySelectorAll(".phist-exp").forEach((a) => {
+      a.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        const sub = body.querySelector(
+          `tr.phist-epcrow[data-for="${a.dataset.idx}"]`
+        );
+        if (!sub) return;
+        sub.hidden = !sub.hidden;
+        a.textContent = (sub.hidden ? "▸" : "▾") + a.textContent.slice(1);
+      });
+    });
   } catch (err) {
     body.innerHTML = `<tr><td colspan="5" class="inventory__empty">${escapeHtml(err.message)}</td></tr>`;
   }
