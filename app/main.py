@@ -60,6 +60,7 @@ from app.models import (
     Printer,
     PrintJob,
     ProductKind,
+    RefreshLog,
     ReviewNote,
     ReviewTask,
     RfidAssignment,
@@ -1191,6 +1192,86 @@ def claim_print_jobs(
         job.status = "printing"
     session.commit()
     return {"count": len(rows), "jobs": [j.as_dict() for j in rows]}
+
+
+# --- Refresh timing ---------------------------------------------------------
+# Every refresh button on the site (manual or automatic) reports how long
+# it took; the stats endpoint serves a recent median per kind so buttons
+# can show "Estimated N seconds" with a fill that means something.
+# Server-side autos mark themselves running in rfid_app_settings
+# ("refresh_running:<kind>") so a page that loads mid-refresh picks the
+# animation up at the right fill level instead of at zero.
+
+class RefreshLogIn(BaseModel):
+    kind: str = Field(max_length=60)
+    source: str = Field(default="manual", pattern="^(manual|auto)$")
+    ms: int = Field(ge=0, le=3_600_000)
+
+
+@app.post(
+    "/api/refresh-log", status_code=201, dependencies=[Depends(require_user)]
+)
+def log_refresh(payload: RefreshLogIn, session: Session = Depends(get_session)):
+    session.add(RefreshLog(
+        kind=payload.kind.strip(), source=payload.source, ms=payload.ms
+    ))
+    # Keep ~50 rows per kind — the estimate only ever reads the newest 7.
+    old_ids = session.scalars(
+        select(RefreshLog.id)
+        .where(RefreshLog.kind == payload.kind.strip())
+        .order_by(RefreshLog.id.desc())
+        .offset(50)
+    ).all()
+    if old_ids:
+        session.execute(delete(RefreshLog).where(RefreshLog.id.in_(old_ids)))
+    session.commit()
+    return {"ok": True}
+
+
+def _mark_refresh_running(session: Session, kind: str) -> None:
+    """Server-side auto refresh started — visible to every open page."""
+    key = f"refresh_running:{kind}"
+    row = session.get(AppSetting, key)
+    if row is None:
+        row = AppSetting(key=key)
+        session.add(row)
+    row.value = datetime.utcnow().isoformat()
+
+
+def _clear_refresh_running(session: Session, kind: str, ms: int) -> None:
+    """Auto refresh finished: clear the marker and log the duration."""
+    row = session.get(AppSetting, f"refresh_running:{kind}")
+    if row is not None:
+        session.delete(row)
+    session.add(RefreshLog(kind=kind, source="auto", ms=ms))
+
+
+@app.get("/api/refresh-stats", dependencies=[Depends(require_user)])
+def refresh_stats(session: Session = Depends(get_session)):
+    """Median duration per refresh kind + which autos are running NOW."""
+    stats: dict[str, int] = {}
+    for kind in session.scalars(select(RefreshLog.kind).distinct()).all():
+        recent = session.scalars(
+            select(RefreshLog.ms)
+            .where(RefreshLog.kind == kind)
+            .order_by(RefreshLog.id.desc())
+            .limit(7)
+        ).all()
+        if recent:
+            stats[kind] = sorted(recent)[len(recent) // 2]
+    running: dict[str, str] = {}
+    for row in session.scalars(
+        select(AppSetting).where(AppSetting.key.like("refresh_running:%"))
+    ).all():
+        started = None
+        try:
+            started = datetime.fromisoformat(row.value or "")
+        except ValueError:
+            pass
+        # A marker older than 30 min is a crashed run, not a live one.
+        if started and (datetime.utcnow() - started).total_seconds() < 1800:
+            running[row.key.split(":", 1)[1]] = row.value
+    return {"stats": stats, "running": running}
 
 
 @app.post(

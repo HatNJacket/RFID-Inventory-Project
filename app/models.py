@@ -338,6 +338,27 @@ class Printer(Base):
         }
 
 
+class RefreshLog(Base):
+    """Duration log for the site's refresh buttons, manual and automatic.
+
+    Feeds every refresh button's ETA ("Estimated 30 seconds") and its
+    left-to-right fill: clients post how long a finished refresh took,
+    the stats endpoint serves a recent median per kind, and server-side
+    auto refreshes log here too so the estimate covers both."""
+
+    __tablename__ = "rfid_refresh_log"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[str] = mapped_column(String(60), index=True, nullable=False)
+    source: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="manual"
+    )  # manual | auto
+    ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class Batch(Base):
     """One bin-tagging session (Batch Tagging tab): walk to a bin, scan every
     box, print one label per box, apply them, pair each label's EPC, verify.

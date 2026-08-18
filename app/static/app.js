@@ -223,6 +223,123 @@ function requireOperator() {
   return null;
 }
 
+// === Refresh buttons =========================================================
+// One parent behavior every refresh-ish button on the site shares
+// (refreshify keeps each button's own name, size and styling):
+//  - durations are logged server-side (manual AND automatic runs), so the
+//    button can promise "Estimated N seconds" and mean it;
+//  - while running, the label counts down and the button fills left to
+//    right with the site's dim green;
+//  - a server-side auto refresh already underway when the page loads (or
+//    finishing as the user watches) shows the same animation, picked up
+//    at the right fill level rather than starting from zero.
+const RF_STATS = {}; // kind -> recent median ms (server, blended locally)
+const RF_BUTTONS = {}; // kind -> {btn, run}
+const RF_DEFAULT_ETA = 4000;
+
+function rfEta(kind) {
+  return RF_STATS[kind] || RF_DEFAULT_ETA;
+}
+
+function refreshify(btnId, kind, run) {
+  const btn = document.getElementById(btnId);
+  if (!btn) return;
+  RF_BUTTONS[kind] = { btn, run };
+  btn.classList.add("rfbtn");
+  btn.addEventListener("click", () => runRefresh(kind, "manual"));
+}
+
+function rfPaint(btn, orig, startedAt, eta) {
+  const elapsed = Date.now() - startedAt;
+  const pct = Math.min(96, (elapsed / eta) * 100);
+  btn.style.setProperty("--rf-fill", pct.toFixed(1) + "%");
+  const left = Math.ceil(Math.max(0, eta - elapsed) / 1000);
+  btn.textContent = left > 0 ? `${orig} · ~${left}s` : `${orig} · almost…`;
+}
+
+function rfFinish(btn, orig, resultText) {
+  btn.style.setProperty("--rf-fill", "100%");
+  setTimeout(() => {
+    btn.classList.remove("rfbtn--run");
+    btn.style.removeProperty("--rf-fill");
+    btn.disabled = false;
+    delete btn.dataset.rfRunning;
+    const custom = typeof resultText === "string" && resultText;
+    btn.textContent = custom ? resultText : orig;
+    // A run's outcome text ("Cleared 3 ✓") shows briefly, then the
+    // button goes back to being itself.
+    if (custom) setTimeout(() => (btn.textContent = orig), 2500);
+  }, 350);
+}
+
+async function runRefresh(kind, source, startedAt = Date.now()) {
+  const entry = RF_BUTTONS[kind];
+  if (!entry || entry.btn.dataset.rfRunning) return;
+  const { btn, run } = entry;
+  btn.dataset.rfRunning = "1";
+  btn.disabled = true;
+  btn.classList.add("rfbtn--run");
+  const orig = btn.dataset.rfLabel || (btn.dataset.rfLabel = btn.textContent);
+  const eta = rfEta(kind);
+  btn.title = `Estimated ${Math.max(1, Math.round(eta / 1000))} seconds`;
+  rfPaint(btn, orig, startedAt, eta);
+  const timer = setInterval(() => rfPaint(btn, orig, startedAt, eta), 250);
+  let resultText = null;
+  try {
+    resultText = await run();
+  } finally {
+    clearInterval(timer);
+    const ms = Date.now() - startedAt;
+    // Blend locally so the very next run is already smarter, and feed the
+    // shared log (fire and forget).
+    RF_STATS[kind] = Math.max(500, Math.round((eta + ms) / 2));
+    rfFinish(btn, orig, resultText);
+    postJson("/api/refresh-log", { kind, source, ms }).catch(() => {});
+  }
+}
+
+// A refresh the SERVER is running (the daily order sync, etc.): animate
+// from its real start time and let the stats endpoint tell us when it's
+// done — the server logs its own duration.
+async function rfAnimateServerAuto(kind, startedAt) {
+  const entry = RF_BUTTONS[kind];
+  if (!entry || entry.btn.dataset.rfRunning) return;
+  const { btn } = entry;
+  btn.dataset.rfRunning = "1";
+  btn.disabled = true;
+  btn.classList.add("rfbtn--run");
+  const orig = btn.dataset.rfLabel || (btn.dataset.rfLabel = btn.textContent);
+  const eta = rfEta(kind);
+  const timer = setInterval(() => rfPaint(btn, orig, startedAt, eta), 250);
+  const poll = setInterval(async () => {
+    try {
+      const data = await apiJson("/api/refresh-stats");
+      if (!(data.running || {})[kind]) {
+        clearInterval(timer);
+        clearInterval(poll);
+        Object.assign(RF_STATS, data.stats || {});
+        rfFinish(btn, orig, null);
+      }
+    } catch {
+      /* transient — keep polling */
+    }
+  }, 5000);
+  rfPaint(btn, orig, startedAt, eta);
+}
+
+async function loadRefreshStats() {
+  try {
+    const data = await apiJson("/api/refresh-stats");
+    Object.assign(RF_STATS, data.stats || {});
+    Object.entries(data.running || {}).forEach(([kind, startedIso]) => {
+      const t = Date.parse(startedIso + "Z");
+      rfAnimateServerAuto(kind, isNaN(t) ? Date.now() : t);
+    });
+  } catch {
+    /* stats are decoration — buttons still work without them */
+  }
+}
+
 // --- Event chips -------------------------------------------------------------
 // Every event/category tag renders as readable text in a coloured chip.
 // Colours live in CSS variables (--ev-<type>) set from defaults merged
@@ -3201,10 +3318,8 @@ document.getElementById("binboard-sort").addEventListener("change", (e) => {
 // Force a full re-read of bins from Shopify. Needed because Shopify can't
 // be asked "which products are in bin X" — only the whole catalog walk
 // finds products that MOVED INTO a bin.
-document.getElementById("binboard-refresh").addEventListener("click", async () => {
-  const btn = document.getElementById("binboard-refresh");
+refreshify("binboard-refresh", "bin-map-pull", async () => {
   const countEl = document.getElementById("binboard-count");
-  btn.disabled = true;
   const original = countEl.textContent;
   const stopDots = startDots(countEl, "(re-reading bins from Shopify");
   try {
@@ -3220,8 +3335,6 @@ document.getElementById("binboard-refresh").addEventListener("click", async () =
     stopDots();
     countEl.textContent = original;
     setBatchResult(err.message, "err");
-  } finally {
-    btn.disabled = false;
   }
 });
 
@@ -3704,7 +3817,7 @@ function stopBatchPrintPoll() {
   }
 }
 
-document.getElementById("batch-refresh").addEventListener("click", refreshBatch);
+refreshify("batch-refresh", "batch-pull", () => refreshBatch());
 
 // Leave the batch open and go back to the bin list — the batch keeps its
 // counts and can be resumed from any device.
@@ -4661,9 +4774,7 @@ async function bitemSetKind(kind, excluded) {
   loadBatchReview();
 }
 
-document.getElementById("bcheck-refresh").addEventListener("click", () => {
-  loadBatchReview();
-});
+refreshify("bcheck-refresh", "batch-checks", () => loadBatchReview());
 
 document
   .getElementById("bitem-kind-multi")
@@ -4685,9 +4796,7 @@ document.getElementById("bitem-kind-drop").addEventListener("click", () => {
 document
   .getElementById("bitem-recheck")
   .addEventListener("click", bitemRecheck);
-document
-  .getElementById("bitem-refresh")
-  .addEventListener("click", bitemRecheck);
+refreshify("bitem-refresh", "product-recheck", () => bitemRecheck());
 
 // Same thing for every unknown barcode at once — one at a time so a bin
 // full of them doesn't fire twenty Shopify lookups in parallel.
@@ -7479,30 +7588,16 @@ document.getElementById("audit-filter").addEventListener("input", () => {
 });
 // Full re-read of bins + on-hand from Shopify (~a minute in the
 // background), then the list reloads itself when the walk finishes.
-document.getElementById("audit-refresh").addEventListener("click", async (ev) => {
-  const btn = ev.currentTarget;
-  btn.disabled = true;
-  const stopDots = startDots(btn, "Refreshing from Shopify (about a minute)");
+refreshify("audit-refresh", "audit-onhand-pull", async () => {
   try {
     await postJson("/api/bin-map/refresh", {});
-    const poll = setInterval(async () => {
-      try {
-        const s = await apiJson("/api/bin-map/status");
-        if (!s.refreshing) {
-          clearInterval(poll);
-          stopDots();
-          btn.disabled = false;
-          loadAuditBins();
-        }
-      } catch {
-        clearInterval(poll);
-        stopDots();
-        btn.disabled = false;
-      }
-    }, 5000);
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => setTimeout(r, 3000));
+      const s = await apiJson("/api/bin-map/status");
+      if (!s.refreshing) break;
+    }
+    loadAuditBins();
   } catch (err) {
-    stopDots();
-    btn.disabled = false;
     setResult(err.message, "err");
   }
 });
@@ -7853,29 +7948,24 @@ document.getElementById("ol-auto").addEventListener("click", async () => {
   loadOneleft();
 });
 
-document.getElementById("ol-scan").addEventListener("click", async (ev) => {
-  const btn = ev.currentTarget;
-  btn.disabled = true;
-  btn.textContent = "Checking…";
+refreshify("ol-scan", "oneleft-scan", async () => {
+  let outcome;
   try {
     const res = await postJson("/api/oneleft/scan", {
       worker: operatorEl.value || null,
     });
     const n = (res.confirmed || []).length;
-    btn.textContent = res.ran
+    outcome = res.ran
       ? n
         ? `Cleared ${n} ✓`
         : "Nothing to clear"
       : "Auto is paused";
   } catch (err) {
-    btn.textContent = "Failed";
+    outcome = "Failed";
     alert(err.message);
   }
-  setTimeout(() => {
-    btn.textContent = "Clear answered checks now";
-    btn.disabled = false;
-    loadOneleft();
-  }, 1600);
+  loadOneleft();
+  return outcome;
 });
 
 document.getElementById("ol-answered").addEventListener("click", () => {
@@ -7883,7 +7973,7 @@ document.getElementById("ol-answered").addEventListener("click", () => {
   renderOneleft();
 });
 
-document.getElementById("ol-reload").addEventListener("click", loadOneleft);
+refreshify("ol-reload", "oneleft-board", () => loadOneleft());
 
 let olFilterTimer;
 document.getElementById("ol-filter").addEventListener("input", () => {
@@ -9045,3 +9135,4 @@ document.getElementById("hist-search").addEventListener("input", () => {
 // Boot
 resetStation();
 loadRecent();
+loadRefreshStats();

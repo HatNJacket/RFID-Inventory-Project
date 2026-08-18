@@ -186,6 +186,19 @@ body {
 .settings__item--sub { margin-left: 24px; }
 .settings__item--off { opacity: 0.45; pointer-events: none; }
 
+/* Refresh buttons: the shared parent look while a refresh runs — a dim
+   green fill sweeping left to right under the button's own label. Each
+   button keeps its own name, size and styling; only the run state is
+   shared. */
+.rfbtn--run {
+  background-image: linear-gradient(
+    to right,
+    rgba(41, 132, 90, 0.18) var(--rf-fill, 0%),
+    transparent var(--rf-fill, 0%)
+  );
+  cursor: progress;
+}
+
 /* Printer picker */
 .print__printer { white-space: nowrap; }
 .printerpick__head { display: flex; align-items: center; gap: 8px; }
