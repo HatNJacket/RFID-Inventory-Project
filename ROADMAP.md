@@ -56,6 +56,22 @@ sync is deployed fail-soft and reports "waiting for scope" until then.
 - Tests: test_printers (12), test_refresh (7), test_orders_sync (23) +
   full run_all before deploy.
 
+Late additions (same day, all deployed): product window + Scan Station
+card rebuilt (image header, print-first, options folded/one-line, edit
+window with SKU/barcode/scan-note rows + greyed-at-saved saves); SCAN
+NOTES (rfid_scan_notes, ride every lookup, amber banner + C72 triple
+beep — C72 side code-only, ships with next APK); duplicate-product
+detection (EXACT evidence only: shared barcode or same-SKU-different-
+formatting, open-box ignored; merge picker moves tags + files an
+inventory check; VARCHAR ate the old '⇄' key → 8,460 ghost tasks
+closed, keys are ASCII now); bin-updated History rows carry Undo;
+1-left Confirm opens a stock-tile window (unavailable/committed/
+available/on-hand + actual count; higher → increase-only write offered,
+lower → inventory-check filed); THEIR func app redeployed on Nick's go
+(Nick+Clay valid employees; webhook guards: 0→1 never queues, 7-day
+confirm cooldown, update-stock echo suppression — sync verified intact
+after).
+
 Decisions (Nick, this session): sync cadence = daily 8 AM + manual
 (15 min was too hot); workers = Steve, Matt, Clay, Nick + Guest; the
 1-left dashboard's stale VALID_EMPLOYEES stays untouched (their system
