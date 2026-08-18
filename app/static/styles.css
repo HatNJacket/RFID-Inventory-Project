@@ -199,6 +199,33 @@ body {
   cursor: progress;
 }
 
+/* Review timelines (inside an expanded task) */
+.rv-timeline { margin-top: 10px; }
+.rv-tl__title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--ink-dim, #6d7175);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 4px;
+}
+.rv-tl__row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 0;
+  border-top: 1px dashed var(--line);
+  font-size: 12px;
+}
+.rv-tl__when { color: var(--ink-dim, #6d7175); white-space: nowrap; }
+.rv-tl__detail { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.rv-tl__count {
+  font-family: Consolas, monospace;
+  color: #29845a;
+  white-space: nowrap;
+}
+.rv-tl__baseline { opacity: 0.65; font-style: italic; }
+
 /* Scan Station walkthrough (help slideshow) */
 .linkbar__help { margin-left: auto; white-space: nowrap; }
 .help-modal { max-width: 760px; width: min(760px, 94vw); }

@@ -6444,6 +6444,7 @@ async function loadQueue() {
 // === Review tab (WIP: task inbox) ==========================================
 let reviewTasks = [];
 let reviewFilter = "";
+let reviewNotesOnly = false;
 let reviewOpenIds = new Set();
 // Tasks whose dismiss is waiting on the notes are-you-sure strip.
 let dismissConfirmIds = new Set();
@@ -6514,9 +6515,17 @@ function renderReview() {
     .getElementById("review-search")
     .value.trim()
     .toLowerCase();
+  // The with-notes filter only exists while some open task carries notes.
+  const anyNotes = reviewTasks.some((t) => (t.notes || []).length);
+  const notesBtn = document.getElementById("review-notesonly");
+  notesBtn.hidden = !anyNotes;
+  if (!anyNotes) reviewNotesOnly = false;
+  notesBtn.textContent = reviewNotesOnly ? "📝 All tasks" : "📝 With notes";
+  notesBtn.classList.toggle("chip-toggle--on", reviewNotesOnly);
   const tasks = reviewTasks.filter(
     (t) =>
       (!reviewFilter || t.category === reviewFilter) &&
+      (!reviewNotesOnly || (t.notes || []).length) &&
       (!q ||
         (t.sku || "").toLowerCase().includes(q) ||
         (t.barcode || "").toLowerCase().includes(q) ||
@@ -6562,12 +6571,6 @@ function renderReview() {
             ? `<span class="rv-noteflag" data-act="notes" title="${(t.notes || []).length} note(s) — click to read">📝 ${(t.notes || []).length}</span>`
             : ""
         }
-        ${
-          t.synthetic
-            ? `<button class="binfix rv-setbin" data-act="setbin" type="button"
-                 title="Shopify says ${escapeHtml(t.shopify_bin || "?")}, the tags say ${escapeHtml(t.tag_bin || "?")}. Write ${escapeHtml(t.tag_bin || "?")} to Shopify — the normal audited bin update, undoable from History.">${escapeHtml(t.shopify_bin || "?")} ⇢ ${escapeHtml(t.tag_bin || "?")}</button>`
-            : ""
-        }
         <button class="rv-btn rv-btn--resolve" data-act="resolve" type="button">resolve</button>
         <button class="rv-btn rv-btn--dismiss" data-act="dismiss" type="button">dismiss</button>
         <span class="auditrow__chev">${open ? "▾" : "▸"}</span>
@@ -6602,6 +6605,7 @@ function renderReview() {
                   ? `<div class="recent__meta" style="margin-top:4px"><i>${escapeHtml(rec[0].trim())}</i></div>`
                   : ""
               }
+              <div class="rv-timeline"><div class="rv-note__empty">Loading timeline…</div></div>
               <div class="rv-notes">
                 <div class="rv-notes__title">Notes</div>
                 ${
@@ -6728,41 +6732,145 @@ function renderReview() {
     const auditBtn = li.querySelector('[data-act="audit"]');
     if (auditBtn)
       auditBtn.addEventListener("click", () => jumpToBinAudit(checkBin[1]));
-    // Live bin-mismatch entries: the one-tap fix is the normal audited
-    // bin write; a fixed entry vanishes rather than being "resolved".
-    const setbinBtn = li.querySelector('[data-act="setbin"]');
-    if (setbinBtn)
-      setbinBtn.addEventListener("click", async () => {
-        const operator = operatorEl.value;
-        if (!operator) {
-          alert("Pick who's scanning (top right) first.");
-          return;
-        }
-        if (
-          !confirm(
-            `Set the Shopify bin for ${t.sku} to ${t.tag_bin}?\n\n` +
-              `Shopify currently says: ${t.shopify_bin}. This is the ` +
-              `normal audited bin write — Shopify, the bin map and this ` +
-              `product's tags all follow, with a History entry.`
-          )
-        )
-          return;
-        setbinBtn.disabled = true;
-        try {
-          await postJson("/api/bin-updates", {
-            target: t.sku,
-            bin: t.tag_bin,
-            changed_by: operator,
-          });
-          reviewTasks = reviewTasks.filter((x) => x.id !== t.id);
-          renderReview();
-        } catch (err) {
-          setbinBtn.disabled = false;
-          alert(err.message);
-        }
-      });
+    // (The old inline bin-write chip is gone — the resolve window offers
+    // the same fix with full context.)
+    const tlHost = li.querySelector(".rv-timeline");
+    if (tlHost) loadReviewTimeline(t, tlHost);
     list.append(li);
   });
+}
+
+// === Review timelines =======================================================
+// A scoped view of the product's history inside the expanded task — from
+// the noticed discrepancy up to now, only the event types that matter for
+// this category. It's a FILTER over the same events as the product's full
+// History panel: resolving the task simply removes this view; the product
+// history keeps everything.
+const RV_TIMELINE_TYPES = {
+  "bin-mismatch": new Set([
+    "tag-assigned", "tags-rebinned", "bin-updated", "batch-completed",
+    "batch-started", "receiving-completed", "bin-check",
+  ]),
+  "inventory-check": new Set([
+    "tag-assigned", "tag-unlinked", "on-hand-updated", "on-hand-undone",
+    "batch-counted", "already-tagged-set", "receiving-completed",
+    "inventory-check", "oneleft", "order-sold",
+  ]),
+};
+const rvHistCache = {}; // sku -> {at, events}
+
+async function rvProductEvents(sku) {
+  const hit = rvHistCache[sku];
+  if (hit && Date.now() - hit.at < 60000) return hit.events;
+  const data = await apiJson(
+    `/api/product-history?term=${encodeURIComponent(sku)}`
+  );
+  const events = (data.events || []).slice();
+  // Oldest first — timelines read downward.
+  events.sort((a, b) => String(a.at || "").localeCompare(String(b.at || "")));
+  rvHistCache[sku] = { at: Date.now(), events };
+  return events;
+}
+
+function rvTimelineRow(e, extra = "") {
+  return (
+    `<div class="rv-tl__row">
+       ${evChip(e.type)}
+       <span class="rv-tl__when" title="${escapeHtml(fmtWhen(e.at))}">${escapeHtml(fmtAgo(e.at))}</span>
+       <span class="rv-tl__detail">${escapeHtml(e.detail || "")}${
+         e.worker ? ` · ${escapeHtml(e.worker)}` : ""
+       }</span>${extra}
+     </div>`
+  );
+}
+
+async function loadReviewTimeline(t, host) {
+  const cat = t.category;
+  // Categories without a meaningful movement history: when it was filed,
+  // during what, and by whom — straight from the task itself.
+  if (!RV_TIMELINE_TYPES[cat] || !t.sku) {
+    host.innerHTML =
+      `<div class="rv-tl__row">
+         ${evChip(cat)}
+         <span class="rv-tl__when">${escapeHtml(fmtAgo(t.created_at))}</span>
+         <span class="rv-tl__detail">filed${
+           t.created_by ? ` by ${escapeHtml(t.created_by)}` : " by the system"
+         }${t.batch_id ? ` · during batch #${t.batch_id}` : ""}</span>
+       </div>`;
+    return;
+  }
+  try {
+    const all = await rvProductEvents(t.sku);
+    const wanted = all.filter((e) => RV_TIMELINE_TYPES[cat].has(e.type));
+    const since = t.synthetic ? null : t.created_at;
+    let rows = wanted;
+    let baseline = null;
+    if (since) {
+      rows = wanted.filter((e) => (e.at || "") >= since);
+      // The last good state right before the discrepancy — the baseline.
+      const before = wanted.filter((e) => (e.at || "") < since);
+      baseline = before.length ? before[before.length - 1] : null;
+    } else {
+      // Live (synthetic) entries have no filed date: recent movement only.
+      rows = wanted.slice(-12);
+    }
+    if (cat === "inventory-check") {
+      // Running tag count per event, derived backwards from the live
+      // count so each row can say "tags: N".
+      let tags = null;
+      try {
+        const tg = await apiJson(
+          `/api/products/tags?sku=${encodeURIComponent(t.sku)}`
+        );
+        tags = (tg.tags || tg.assignments || []).length;
+      } catch { /* count column just stays blank */ }
+      if (tags != null) {
+        const deltas = rows.map((e) =>
+          e.type === "tag-assigned"
+            ? (e.epcs || [null]).length
+            : e.type === "tag-unlinked"
+              ? -1
+              : 0
+        );
+        let running = tags;
+        const counts = new Array(rows.length);
+        for (let i = rows.length - 1; i >= 0; i--) {
+          counts[i] = running;
+          running -= deltas[i];
+        }
+        host.innerHTML =
+          `<div class="rv-tl__title">Timeline since the discrepancy</div>` +
+          (baseline
+            ? `<div class="rv-tl__baseline">baseline · ${rvTimelineRow(baseline)}</div>`
+            : "") +
+          (rows.length
+            ? rows
+                .map((e, i) =>
+                  rvTimelineRow(
+                    e,
+                    `<span class="rv-tl__count">tags: ${counts[i]}</span>`
+                  )
+                )
+                .join("")
+            : `<div class="rv-note__empty">No stock-relevant events since this was filed.</div>`);
+        return;
+      }
+    }
+    host.innerHTML =
+      `<div class="rv-tl__title">${
+        since ? "Timeline since the discrepancy" : "Recent movement"
+      }</div>` +
+      (baseline
+        ? `<div class="rv-tl__baseline">baseline · ${rvTimelineRow(baseline)}</div>`
+        : "") +
+      (rows.length
+        ? rows.map((e) => rvTimelineRow(e)).join("")
+        : `<div class="rv-note__empty">No movement recorded${
+            since ? " since this was filed" : ""
+          }.</div>`);
+  } catch (err) {
+    host.innerHTML = `<div class="rv-note__empty">Timeline unavailable.</div>`;
+  }
 }
 
 // === Review resolve window ==================================================
@@ -7208,6 +7316,10 @@ function renderBundleSetup(t, slot, existing) {
     });
 }
 
+document.getElementById("review-notesonly").addEventListener("click", () => {
+  reviewNotesOnly = !reviewNotesOnly;
+  renderReview();
+});
 document.getElementById("review-filter").addEventListener("change", (e) => {
   reviewFilter = e.target.value;
   renderReview();
