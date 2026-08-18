@@ -248,14 +248,27 @@ def send_windows(zpl: str, printer_name: str) -> None:
 
 # --------------------------------------------------------------- app I/O ----
 class AppClient:
-    def __init__(self, base_url: str, agent_key: str | None):
+    def __init__(self, base_url: str, agent_key: str | None,
+                 printer_id: str | None = None,
+                 printer_kind: str | None = None):
         self.base = base_url.rstrip("/")
         self.headers = {"X-Agent-Key": agent_key} if agent_key else {}
+        # Identifies this printer to the app: claims register it in the
+        # Scan Station's printer picker and only take jobs aimed at it
+        # (or at no printer). Without an id the agent claims everything —
+        # the pre-picker behavior.
+        self.printer_id = printer_id
+        self.printer_kind = printer_kind
 
     def claim(self, limit: int = 5) -> list[dict]:
+        params: dict = {"limit": limit}
+        if self.printer_id:
+            params["printer"] = self.printer_id
+            if self.printer_kind:
+                params["kind"] = self.printer_kind
         r = requests.post(
             f"{self.base}/api/print-jobs/claim",
-            params={"limit": limit},
+            params=params,
             headers=self.headers,
             timeout=30,
         )
@@ -289,6 +302,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--printer-port", type=int, default=9100)
     parser.add_argument("--printer-name", help="Windows printer name (USB)")
     parser.add_argument("--agent-key", help="Matches app PRINT_AGENT_KEY")
+    parser.add_argument(
+        "--printer-id",
+        help="Name this printer registers under in the Scan Station's "
+             "printer picker (e.g. warehouse-zebra). With an id set, this "
+             "agent only claims jobs aimed at it or at no printer; "
+             "without one it claims everything (old behavior).",
+    )
+    parser.add_argument(
+        "--printer-kind",
+        help="Descriptor shown on the picker card, e.g. "
+             '"ZD621R · RFID encoder"',
+    )
     parser.add_argument("--poll", type=float, default=3.0)
     parser.add_argument("--once", action="store_true", help="Single pass")
     parser.add_argument(
@@ -348,7 +373,12 @@ def main() -> None:
         return
 
     encode_rfid = not args.no_rfid
-    client = AppClient(args.app, args.agent_key)
+    kind = args.printer_kind
+    if not kind and args.printer_id:
+        # A useful default card descriptor from what we already know.
+        kind = ((args.printer_name or args.printer_host or "Zebra")
+                + (" · RFID encoder" if encode_rfid else " · barcode only"))
+    client = AppClient(args.app, args.agent_key, args.printer_id, kind)
     print(f"Print agent watching {args.app} "
           f"({'DRY RUN' if args.dry_run else 'live'}, "
           f"{'RFID encode' if encode_rfid else 'barcode-only'}). "

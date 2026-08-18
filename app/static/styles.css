@@ -186,6 +186,47 @@ body {
 .settings__item--sub { margin-left: 24px; }
 .settings__item--off { opacity: 0.45; pointer-events: none; }
 
+/* Printer picker */
+.print__printer { white-space: nowrap; }
+.printerpick__head { display: flex; align-items: center; gap: 8px; }
+.printerpick__head span:first-child { flex: 1; }
+.printerpick__add { font-size: 15px; position: relative; padding-right: 14px; }
+.printerpick__plus {
+  position: absolute; right: 3px; top: -2px;
+  font-weight: 700; font-size: 13px; color: var(--accent, #29845a);
+}
+.printerpick__cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+  margin: 10px 0;
+}
+.printercard {
+  border: 1.5px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+  cursor: pointer;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  text-align: center;
+}
+.printercard:hover { border-color: var(--accent, #29845a); }
+.printercard--sel {
+  border-color: var(--accent, #29845a);
+  box-shadow: 0 0 0 2px rgba(41, 132, 90, 0.25);
+}
+.printercard__icon { color: var(--ink-dim, #6d7175); }
+.printercard--sel .printercard__icon { color: var(--accent, #29845a); }
+.printercard__name { font-weight: 650; font-size: 13px; word-break: break-all; }
+.printercard__kind { font-size: 11px; color: var(--ink-dim, #6d7175); }
+.printercard__dot { font-size: 11px; color: var(--ink-dim, #6d7175); }
+.printercard__dot--ok { color: #29845a; font-weight: 600; }
+
 /* operator dropdown */
 .operator {
   font-size: 13px;

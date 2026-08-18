@@ -57,6 +57,7 @@ from app.models import (
     LocateQueueEntry,
     MismatchDismissal,
     OneLeftCheck,
+    Printer,
     PrintJob,
     ProductKind,
     ReviewNote,
@@ -1049,6 +1050,8 @@ class PrintJobIn(BaseModel):
         default=None, pattern="^(header|sku|both)$"
     )
     requested_by: str | None = Field(default=None, max_length=100)
+    # Target printer (rfid_printers.name); omitted = any agent prints it.
+    printer: str | None = Field(default=None, max_length=100)
 
     @field_validator("shopify_variant_id", "product_title")
     @classmethod
@@ -1105,6 +1108,11 @@ def list_print_jobs(
 # restart the next poll repopulates it within seconds.
 _agent_last_seen: float | None = None
 
+# What a claim from an agent too old to send --printer-id registers as.
+# Keeps the single-printer warehouse on the picker without touching it.
+DEFAULT_PRINTER = "warehouse-zebra"
+PRINTER_ONLINE_SECONDS = 120  # agent polls every ~3 s; be generous
+
 
 @app.get("/api/print-agent/status", dependencies=[Depends(require_user)])
 def print_agent_status():
@@ -1117,19 +1125,68 @@ def print_agent_status():
     }
 
 
+@app.get("/api/printers", dependencies=[Depends(require_user)])
+def list_printers(session: Session = Depends(get_session)):
+    """Every printer whose agent has ever checked in, with liveness.
+
+    Rows are created by agent claims, never by hand — "detected" printers
+    in the picker's sense. online = a claim within the last 2 minutes."""
+    now = datetime.utcnow()
+    printers = []
+    for p in session.scalars(select(Printer).order_by(Printer.name)).all():
+        seen = p.last_seen
+        if seen is not None and seen.tzinfo is not None:
+            seen = seen.astimezone(timezone.utc).replace(tzinfo=None)
+        age = None if seen is None else (now - seen).total_seconds()
+        printers.append({
+            **p.as_dict(),
+            "online": age is not None and age < PRINTER_ONLINE_SECONDS,
+            "last_seen_seconds": None if age is None else int(age),
+        })
+    return {"count": len(printers), "printers": printers}
+
+
+def _touch_printer(session: Session, name: str, kind: str | None) -> None:
+    """Upsert the claiming agent's printer row (detection + liveness)."""
+    row = session.scalars(
+        select(Printer).where(Printer.name == name)
+    ).first()
+    if row is None:
+        row = Printer(name=name)
+        session.add(row)
+    if kind:
+        row.kind = kind[:100]
+    row.last_seen = datetime.utcnow()
+
+
 @app.post("/api/print-jobs/claim", dependencies=[Depends(require_agent_key)])
 def claim_print_jobs(
-    limit: int = 5, session: Session = Depends(get_session)
+    limit: int = 5,
+    printer: str | None = None,
+    kind: str | None = None,
+    session: Session = Depends(get_session),
 ):
-    """Agent: take the oldest pending jobs and mark them printing."""
+    """Agent: take the oldest pending jobs and mark them printing.
+
+    An agent that names its printer claims only jobs aimed at it (or at
+    no printer in particular). A legacy agent names nothing: it registers
+    as DEFAULT_PRINTER and claims EVERYTHING, exactly as before the
+    picker existed — right for a warehouse with one physical printer."""
     global _agent_last_seen
     _agent_last_seen = time.time()
-    rows = session.scalars(
+    printer = (printer or "").strip()[:100] or None
+    _touch_printer(session, printer or DEFAULT_PRINTER, kind)
+    stmt = (
         select(PrintJob)
         .where(PrintJob.status == "pending")
         .order_by(PrintJob.id)
         .limit(min(limit, 20))
-    ).all()
+    )
+    if printer:
+        stmt = stmt.where(
+            (PrintJob.printer.is_(None)) | (PrintJob.printer == printer)
+        )
+    rows = session.scalars(stmt).all()
     for job in rows:
         job.status = "printing"
     session.commit()

@@ -294,8 +294,29 @@
                 title="This product has no bin assigned — its labels print without a shelf. Click the bin chip above to set one.">⚠ No bin set</span>
           <span class="print__nobin" id="print-fitwarn" hidden></span>
           <span class="print__status" id="print-status"></span>
+          <button class="reset print__printer" id="printer-btn" type="button"
+                  title="Choose which printer prints these labels">🖨 …</button>
         </div>
       </section>
+
+      <!-- Printer picker: one card per detected printer. Rows appear on
+           their own when a print agent checks in — nothing is hand-typed. -->
+      <div class="phist-overlay" id="printer-overlay" hidden>
+        <section class="linkbox serialbox phist-modal" style="max-width:520px">
+          <div class="linkbox__title printerpick__head">
+            <span>Choose a printer</span>
+            <button class="reset printerpick__add" id="printer-detect" type="button"
+                    title="Add a printer — start a print agent next to it and press this to detect it">🖨<span class="printerpick__plus">+</span></button>
+          </div>
+          <p class="linkbox__text">Labels queue to the selected printer. A printer adds itself here the moment its print agent checks in.</p>
+          <div class="printerpick__cards" id="printer-cards"></div>
+          <p class="linkbox__text" id="printer-msg"></p>
+          <div class="linkbox__actions">
+            <button class="print__btn" id="printer-confirm" type="button" disabled>Use this printer</button>
+            <button class="reset" id="printer-cancel" type="button">Cancel</button>
+          </div>
+        </section>
+      </div>
 
       <!-- Big print run: >10 labels of one product takes a deliberate yes -->
       <div class="phist-overlay" id="bigprint-overlay" hidden>

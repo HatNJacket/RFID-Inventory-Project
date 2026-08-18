@@ -1726,6 +1726,13 @@ async function queueLabels(quantity, confirmedBig = false) {
     openBigPrint(quantity);
     return;
   }
+  // Printer gate: when printers ARE registered, printing needs a live
+  // selection — otherwise the picker opens and this run continues after
+  // the confirm. An empty registry queues exactly as before the picker.
+  if (!(await printerReady())) {
+    openPrinterPicker(() => queueLabels(quantity, confirmedBig));
+    return;
+  }
   autoPrintedThisScan = true; // any print covers the unit in hand
   el.printBtn.disabled = true;
   el.printStatus.textContent = "Queueing…";
@@ -1745,6 +1752,7 @@ async function queueLabels(quantity, confirmedBig = false) {
         ...pendingProduct,
         label_name: labelName,
         requested_by: operator,
+        printer: selectedPrinter || null,
       }),
     });
     if (!res.ok) {
@@ -1777,6 +1785,146 @@ async function queueLabels(quantity, confirmedBig = false) {
 el.printBtn.addEventListener("click", () =>
   queueLabels(Math.max(1, Math.min(100, Number(el.printQty.value) || 1)))
 );
+
+// --- Printer picker ----------------------------------------------------------
+// One card per detected printer (rows come from agent check-ins — nothing
+// is hand-typed). The choice is per device; queued jobs carry it so a
+// multi-printer future routes correctly, and today's single Zebra keeps
+// printing everything either way.
+let selectedPrinter = localStorage.getItem("printerName") || "";
+let printersCache = { at: 0, printers: [] };
+let printerAfterPick = null; // continuation for a print held by the picker
+
+async function fetchPrinters(force = false) {
+  if (!force && Date.now() - printersCache.at < 30000)
+    return printersCache.printers;
+  try {
+    const data = await apiJson("/api/printers");
+    printersCache = { at: Date.now(), printers: data.printers || [] };
+  } catch (err) {
+    /* offline app — keep the stale list */
+  }
+  return printersCache.printers;
+}
+
+function printerBtnRender() {
+  const btn = document.getElementById("printer-btn");
+  if (!btn) return;
+  btn.textContent = selectedPrinter
+    ? `🖨 ${selectedPrinter}`
+    : "🖨 Choose printer…";
+}
+
+const PRINTER_SVG = `<svg viewBox="0 0 48 40" width="44" height="37" aria-hidden="true">
+  <rect x="6" y="4" width="36" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="2.4"/>
+  <rect x="2" y="16" width="44" height="14" rx="3" fill="none" stroke="currentColor" stroke-width="2.4"/>
+  <circle cx="40" cy="23" r="2" fill="currentColor"/>
+  <rect x="12" y="28" width="24" height="9" fill="none" stroke="currentColor" stroke-width="2.2"/>
+  <line x1="16" y1="32.5" x2="32" y2="32.5" stroke="currentColor" stroke-width="1.6"/>
+</svg>`;
+
+let printerPickSel = "";
+
+function renderPrinterCards(printers) {
+  const wrap = document.getElementById("printer-cards");
+  const confirmBtn = document.getElementById("printer-confirm");
+  wrap.innerHTML = "";
+  if (!printers.length) {
+    wrap.innerHTML =
+      `<p class="linkbox__text" style="grid-column:1/-1">No printers detected yet. ` +
+      `Start <span class="mono">print_agent.py</span> on the PC next to a printer and it registers itself here.</p>`;
+    confirmBtn.disabled = true;
+    return;
+  }
+  printers.forEach((p) => {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className =
+      "printercard" + (p.name === printerPickSel ? " printercard--sel" : "");
+    card.innerHTML =
+      `<span class="printercard__icon">${PRINTER_SVG}</span>` +
+      `<span class="printercard__name">${escapeHtml(p.name)}</span>` +
+      (p.kind
+        ? `<span class="printercard__kind">${escapeHtml(p.kind)}</span>`
+        : "") +
+      `<span class="printercard__dot ${p.online ? "printercard__dot--ok" : ""}">${
+        p.online
+          ? "● online"
+          : p.last_seen_seconds != null
+            ? `○ offline · seen ${fmtAgo(p.last_seen)}`
+            : "○ never seen"
+      }</span>`;
+    card.addEventListener("click", () => {
+      printerPickSel = p.name;
+      renderPrinterCards(printers);
+      confirmBtn.disabled = false;
+      confirmBtn.textContent = p.online
+        ? "Use this printer"
+        : "Use it anyway (offline — labels wait)";
+      confirmBtn.classList.add("print__btn--armed");
+    });
+    wrap.append(card);
+  });
+  confirmBtn.disabled = !printerPickSel;
+}
+
+async function openPrinterPicker(afterPick) {
+  printerAfterPick = afterPick || null;
+  printerPickSel = selectedPrinter;
+  document.getElementById("printer-msg").textContent = "";
+  document.getElementById("printer-overlay").hidden = false;
+  renderPrinterCards(await fetchPrinters(true));
+}
+
+// True when printing can proceed without asking: nothing registered yet
+// (queue exactly as before the picker existed), or a live selection.
+async function printerReady() {
+  const printers = await fetchPrinters();
+  if (!printers.length) return true;
+  const sel = printers.find((p) => p.name === selectedPrinter);
+  return !!(sel && sel.online);
+}
+
+document.getElementById("printer-btn").addEventListener("click", () =>
+  openPrinterPicker(null)
+);
+document
+  .getElementById("printer-cancel")
+  .addEventListener("click", () => {
+    document.getElementById("printer-overlay").hidden = true;
+    printerAfterPick = null;
+  });
+document.getElementById("printer-overlay").addEventListener("click", (e) => {
+  if (e.target === e.currentTarget) {
+    e.currentTarget.hidden = true;
+    printerAfterPick = null;
+  }
+});
+document
+  .getElementById("printer-confirm")
+  .addEventListener("click", () => {
+    if (!printerPickSel) return;
+    selectedPrinter = printerPickSel;
+    localStorage.setItem("printerName", selectedPrinter);
+    printerBtnRender();
+    document.getElementById("printer-overlay").hidden = true;
+    const go = printerAfterPick;
+    printerAfterPick = null;
+    if (go) go();
+  });
+document
+  .getElementById("printer-detect")
+  .addEventListener("click", async () => {
+    const before = new Set(printersCache.printers.map((p) => p.name));
+    const printers = await fetchPrinters(true);
+    renderPrinterCards(printers);
+    const fresh = printers.filter((p) => !before.has(p.name));
+    document.getElementById("printer-msg").textContent = fresh.length
+      ? `Detected: ${fresh.map((p) => p.name).join(", ")} ✓`
+      : "No new printers found. Run print_agent.py --printer-id <name> " +
+        "next to the new printer — it appears here on its next check-in.";
+  });
+printerBtnRender();
 
 // --- Big print run confirm (>10 labels of one product) ----------------------
 const bigprintOverlay = document.getElementById("bigprint-overlay");
@@ -6065,6 +6213,7 @@ async function loadQueue() {
               bin_location: j.bin_location,
               label_name: j.label_name,
               requested_by: operatorEl.value || j.requested_by,
+              printer: selectedPrinter || null,
             });
             loadQueue();
           } catch (err) {
@@ -8678,6 +8827,7 @@ document.getElementById("phist-print").addEventListener("click", async () => {
             : phistData.custom_placement || "header"
           : null,
         requested_by: operator,
+        printer: selectedPrinter || null,
       }),
     });
     if (!res.ok) {

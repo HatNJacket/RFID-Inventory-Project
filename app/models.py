@@ -264,6 +264,10 @@ class PrintJob(Base):
     # Queue groups and reports per batch.
     batch_id: Mapped[int | None] = mapped_column(Integer, index=True)
 
+    # Target printer (rfid_printers.name). NULL = any agent may claim it —
+    # the pre-selector behavior, and what legacy agents still expect.
+    printer: Mapped[str | None] = mapped_column(String(100))
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -290,11 +294,46 @@ class PrintJob(Base):
             "case_units": self.case_units,
             "requested_by": self.requested_by,
             "error": self.error,
+            "printer": self.printer,
             "created_at": (
                 self.created_at.isoformat() if self.created_at else None
             ),
             "printed_at": (
                 self.printed_at.isoformat() if self.printed_at else None
+            ),
+        }
+
+
+class Printer(Base):
+    """One known label printer, keyed by the name its print agent reports.
+
+    Rows are DETECTED, never hand-entered: every agent claim upserts its
+    printer's row and stamps last_seen, so the Scan Station's printer
+    picker always shows what has actually checked in. Agents older than
+    the printer param claim under the DEFAULT_PRINTER name, which keeps
+    the single-printer warehouse working unchanged."""
+
+    __tablename__ = "rfid_printers"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Stable identity, as reported by the agent (--printer-id).
+    name: Mapped[str] = mapped_column(
+        String(100), unique=True, index=True, nullable=False
+    )
+    # Human descriptor shown on the picker card ("ZD621R · RFID encoder").
+    kind: Mapped[str | None] = mapped_column(String(100))
+    last_seen: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    def as_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "kind": self.kind,
+            "last_seen": (
+                self.last_seen.isoformat() if self.last_seen else None
             ),
         }
 
