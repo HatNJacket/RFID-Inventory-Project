@@ -522,6 +522,56 @@ def get_stock_info_by_skus(skus: list[str]) -> dict[str, dict]:
     return result
 
 
+_QTY_BREAKDOWN_QUERY = """
+query stockBreakdown($search: String!) {
+  productVariants(first: 1, query: $search) {
+    nodes {
+      sku
+      inventoryItem {
+        inventoryLevels(first: 5) {
+          nodes {
+            quantities(names: ["available", "committed", "on_hand",
+                               "reserved", "damaged", "safety_stock",
+                               "quality_control"]) {
+              name
+              quantity
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+
+def get_quantity_breakdown(sku: str) -> dict | None:
+    """available / committed / on_hand / unavailable for ONE SKU, summed
+    across locations. "Unavailable" is the admin's bucket: reserved +
+    damaged + safety stock + quality control. Read-only."""
+    quoted = sku.replace('"', "")
+    data = query_shopify(
+        _QTY_BREAKDOWN_QUERY, {"search": f'sku:"{quoted}"'}
+    )
+    nodes = data["productVariants"]["nodes"]
+    if not nodes:
+        return None
+    totals: dict[str, int] = {}
+    for level in nodes[0]["inventoryItem"]["inventoryLevels"]["nodes"]:
+        for q in level["quantities"]:
+            totals[q["name"]] = totals.get(q["name"], 0) + q["quantity"]
+    return {
+        "available": totals.get("available", 0),
+        "committed": totals.get("committed", 0),
+        "on_hand": totals.get("on_hand", 0),
+        "unavailable": (
+            totals.get("reserved", 0) + totals.get("damaged", 0)
+            + totals.get("safety_stock", 0)
+            + totals.get("quality_control", 0)
+        ),
+    }
+
+
 _BUNDLE_COMPONENTS_QUERY = """
 query bundleComponents($id: ID!) {
   productVariant(id: $id) {

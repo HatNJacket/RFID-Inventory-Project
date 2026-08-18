@@ -328,6 +328,11 @@ _sh.get_on_hand_by_skus = lambda skus: {
     s: {"NORMAL-1": 1, "MIS-1": 0}.get((s or "").upper(), 0)
     for s in skus
 }
+# The 1-left confirm window's live tiles (MIS-1 shows an Unavailable one).
+_sh.get_quantity_breakdown = lambda sku: {
+    "available": 1, "committed": 1, "on_hand": 2,
+    "unavailable": 1 if (sku or "").upper() == "MIS-1" else 0,
+}
 
 import uvicorn  # noqa: E402
 uvicorn.run(app, host="127.0.0.1", port=8123)

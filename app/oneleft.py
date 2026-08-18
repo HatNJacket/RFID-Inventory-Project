@@ -71,10 +71,11 @@ from app.models import (
 logger = logging.getLogger("rfid.oneleft")
 
 _TIMEOUT = 20
-# Their confirm endpoint validates against this fixed list (recovered from
-# their deployed source, 2026-08-17). A name outside it gets a clean 400,
-# never a bad write — but keep it current if their app changes.
-VALID_EMPLOYEES = {"Danielle", "Evie", "Matt", "Noor", "Steve"}
+# Their confirm endpoint validates against this fixed list — mirror of
+# their deployed source. Nick + Clay added to BOTH sides 2026-08-18
+# (their func redeployed), so RFID confirms attribute to the real
+# operator instead of falling back to Steve.
+VALID_EMPLOYEES = {"Clay", "Danielle", "Evie", "Matt", "Nick", "Noor", "Steve"}
 
 # The pending queue barely moves minute to minute and every board build
 # starts with it; a short cache keeps kicks from hammering their app.

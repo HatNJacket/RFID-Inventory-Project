@@ -7355,6 +7355,9 @@ def planner_on_order(sku: str, operator: str | None = None):
 class OneLeftActIn(BaseModel):
     sku: str = Field(min_length=1, max_length=100)
     worker: str | None = Field(default=None, max_length=100)
+    # What the operator actually counted on the shelf (the confirm
+    # window's number). None = confirmed without entering a count.
+    counted: int | None = Field(default=None, ge=0, le=100000)
 
 
 class OneLeftAutoIn(BaseModel):
@@ -7402,6 +7405,19 @@ def oneleft_board(session: Session = Depends(get_session)):
     }
 
 
+@app.get("/api/oneleft/stock/{sku}", dependencies=[Depends(require_user)])
+def oneleft_stock(sku: str):
+    """Live Shopify quantity breakdown for the confirm window —
+    unavailable / committed / available / on-hand, read-only."""
+    try:
+        breakdown = shopify.get_quantity_breakdown(sku.strip())
+    except Exception as error:  # noqa: BLE001 — window degrades gracefully
+        return {"ok": False, "error": str(error)[:200]}
+    if breakdown is None:
+        return {"ok": False, "error": "SKU not found in Shopify."}
+    return {"ok": True, "sku": sku.strip(), **breakdown}
+
+
 @app.post("/api/oneleft/confirm", dependencies=[Depends(require_user)])
 def oneleft_confirm(
     payload: OneLeftActIn, session: Session = Depends(get_session)
@@ -7428,19 +7444,42 @@ def oneleft_confirm(
     except Exception as exc:  # noqa: BLE001 — recorded, surfaced, not raised
         ok, error = False, str(exc)[:300]
     oneleft.invalidate_pending_cache()
+    evidence_parts = (row or {}).get("evidence") or []
+    if payload.counted is not None:
+        evidence_parts = [f"counted {payload.counted} at confirm",
+                          *evidence_parts]
     session.add(OneLeftCheck(
         sku=sku,
         product_title=(row or {}).get("product_title"),
         vendor=(row or {}).get("vendor"),
         claimed=(row or {}).get("claimed"),
         evidence_units=(row or {}).get("evidence_units") or 0,
-        evidence="; ".join((row or {}).get("evidence") or [])[:500] or None,
+        evidence="; ".join(evidence_parts)[:500] or None,
         action="manual",
         employee=employee,
         operator=(payload.worker or "").strip()[:100] or None,
         ok=ok,
         error=error,
     ))
+    # A counted number BELOW Shopify's on-hand can't be written down from
+    # here (hard rule: nothing in this app lowers stock) — file the
+    # discrepancy for Review instead of losing it.
+    if ok and payload.counted is not None:
+        try:
+            live = shopify.get_quantity_breakdown(sku)
+        except Exception:  # noqa: BLE001 — the check is decoration
+            live = None
+        if live is not None and payload.counted < live["on_hand"]:
+            session.add(ReviewTask(
+                category="inventory-check",
+                sku=sku,
+                product_title=(row or {}).get("product_title"),
+                detail=(f"1-left check: {payload.counted} unit(s) counted "
+                        f"but Shopify on-hand is {live['on_hand']}. "
+                        f"Lowering stock stays a Shopify-admin job — "
+                        f"recount or fix it there."),
+                created_by=(payload.worker or "").strip()[:100] or None,
+            ))
     session.commit()
     if not ok:
         raise HTTPException(502, f"The dashboard refused the confirm: {error}")

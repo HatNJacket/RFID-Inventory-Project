@@ -8705,7 +8705,8 @@ function renderOneleft() {
         </div>
       </div>
       ${canWrite ? `<button class="binlist__go ol-confirm" type="button" data-sku="${escapeHtml(r.sku)}"
-        title="Mark this check verified on the dashboard — same as its own Verify button. Undoable with re-queue.">Confirm ✓</button>` : ""}`;
+        data-title="${escapeHtml(r.product_title || "")}"
+        title="Open the confirm window — live stock breakdown + the actual shelf count. Undoable with re-queue.">Confirm ✓</button>` : ""}`;
     list.append(li);
   });
   if (total > rows.length) {
@@ -8763,25 +8764,7 @@ async function olRowClick(e) {
   }
   const confirmBtn = e.target.closest(".ol-confirm");
   if (confirmBtn) {
-    const s = confirmBtn.dataset.sku;
-    if (
-      !window.confirm(
-        `Mark ${s} as stock-checked on the warehouse dashboard?\n\n` +
-          "This clears its 1-left alert there, exactly like the " +
-          "dashboard's own Verify button. Re-queue undoes it."
-      )
-    )
-      return;
-    confirmBtn.disabled = true;
-    try {
-      await postJson("/api/oneleft/confirm", {
-        sku: s,
-        worker: operatorEl.value || null,
-      });
-    } catch (err) {
-      alert(err.message);
-    }
-    loadOneleft();
+    openOlConfirm(confirmBtn.dataset.sku, confirmBtn.dataset.title || "");
     return;
   }
   const requeueBtn = e.target.closest(".ol-requeue");
@@ -8798,6 +8781,105 @@ async function olRowClick(e) {
     loadOneleft();
   }
 }
+
+// --- 1-left confirm window ---------------------------------------------------
+// Like the inventory-check window: live tiles (Unavailable when present,
+// Committed, Available, On-hand) plus the ACTUAL shelf count. Equal
+// count = plain confirm; higher = the audited increase-only on-hand
+// write is offered first; lower = confirmed, and the discrepancy is
+// filed for Review (nothing here writes stock DOWN).
+let olcSku = null;
+let olcOnHand = null;
+
+async function openOlConfirm(sku, title) {
+  olcSku = sku;
+  olcOnHand = null;
+  document.getElementById("olc-title").textContent =
+    `Confirm stock check — ${sku}`;
+  document.getElementById("olc-product").textContent = title || "";
+  document.getElementById("olc-stats").innerHTML =
+    '<div class="rvw-stat"><div class="rvw-stat__l">Loading…</div><div class="rvw-stat__n">…</div></div>';
+  document.getElementById("olc-live").textContent = "";
+  document.getElementById("olc-note").textContent = "";
+  document.getElementById("olc-count").value = "";
+  document.getElementById("olconfirm-overlay").hidden = false;
+  try {
+    const st = await apiJson(`/api/oneleft/stock/${encodeURIComponent(sku)}`);
+    if (!st.ok) throw new Error(st.error || "no answer");
+    olcOnHand = st.on_hand;
+    document.getElementById("olc-stats").innerHTML =
+      (st.unavailable
+        ? `<div class="rvw-stat"><div class="rvw-stat__l">Unavailable</div><div class="rvw-stat__n">${st.unavailable}</div></div>`
+        : "") +
+      `<div class="rvw-stat"><div class="rvw-stat__l">Committed</div><div class="rvw-stat__n">${st.committed}</div></div>
+       <div class="rvw-stat"><div class="rvw-stat__l">Available</div><div class="rvw-stat__n">${st.available}</div></div>
+       <div class="rvw-stat rvw-stat--live"><div class="rvw-stat__l">On-hand</div><div class="rvw-stat__n">${st.on_hand}</div></div>`;
+    document.getElementById("olc-count").value = st.on_hand;
+  } catch (err) {
+    document.getElementById("olc-stats").innerHTML = "";
+    document.getElementById("olc-live").textContent =
+      `Live stock unavailable right now (${err.message}) — you can still ` +
+      `confirm without a count.`;
+  }
+}
+
+document.getElementById("olc-cancel").addEventListener("click", () => {
+  document.getElementById("olconfirm-overlay").hidden = true;
+});
+document.getElementById("olconfirm-overlay").addEventListener("click", (e) => {
+  if (e.target === e.currentTarget) e.currentTarget.hidden = true;
+});
+document.getElementById("olc-go").addEventListener("click", async () => {
+  if (!olcSku) return;
+  const operator = operatorEl.value;
+  if (!operator) {
+    alert("Pick who's scanning (top right) first.");
+    return;
+  }
+  const raw = document.getElementById("olc-count").value.trim();
+  const counted = raw === "" ? null : Number(raw);
+  const btn = document.getElementById("olc-go");
+  btn.disabled = true;
+  try {
+    // A higher count is physical proof: offer the audited increase-only
+    // on-hand write BEFORE confirming the check.
+    if (counted != null && olcOnHand != null && counted > olcOnHand) {
+      if (
+        confirm(
+          `You counted ${counted} but Shopify on-hand is ${olcOnHand}.\n\n` +
+            `Write on-hand ${olcOnHand} → ${counted} to Shopify? ` +
+            `Confirmed, logged, undoable from History. (Cancel keeps ` +
+            `Shopify as is — the check still confirms.)`
+        )
+      ) {
+        await postJson("/api/onhand-updates", {
+          sku: olcSku,
+          new_qty: counted,
+          confirmed: true,
+          changed_by: operator,
+        });
+      }
+    }
+    await postJson("/api/oneleft/confirm", {
+      sku: olcSku,
+      worker: operator,
+      counted,
+    });
+    if (counted != null && olcOnHand != null && counted < olcOnHand) {
+      alert(
+        `Check confirmed. You counted ${counted} vs on-hand ${olcOnHand} ` +
+          `— nothing here writes stock DOWN, so the discrepancy was ` +
+          `filed in Review.`
+      );
+    }
+    document.getElementById("olconfirm-overlay").hidden = true;
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    btn.disabled = false;
+  }
+  loadOneleft();
+});
 
 document.getElementById("ol-auto").addEventListener("click", async () => {
   if (!olData) return;

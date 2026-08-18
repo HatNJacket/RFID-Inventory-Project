@@ -392,6 +392,25 @@
         </section>
       </div>
 
+      <!-- 1-left confirm: live stock tiles + the actual shelf count -->
+      <div class="phist-overlay" id="olconfirm-overlay" hidden>
+        <section class="linkbox serialbox phist-modal" style="max-width:460px">
+          <div class="linkbox__title" id="olc-title">Confirm stock check</div>
+          <p class="linkbox__text" id="olc-product"></p>
+          <div class="rvw-stats" id="olc-stats"></div>
+          <p class="linkbox__text" id="olc-live"></p>
+          <div class="linkbox__form" style="margin:10px 0">
+            <label class="linkbox__text" for="olc-count">How many are actually there?</label>
+            <input id="olc-count" class="linkbox__input" type="number" min="0" max="99999" style="max-width:110px" />
+          </div>
+          <p class="linkbox__text" id="olc-note"></p>
+          <div class="linkbox__actions">
+            <button class="print__btn" id="olc-go" type="button">Confirm check</button>
+            <button class="reset" id="olc-cancel" type="button">Cancel</button>
+          </div>
+        </section>
+      </div>
+
       <!-- Big print run: >10 labels of one product takes a deliberate yes -->
       <div class="phist-overlay" id="bigprint-overlay" hidden>
         <section class="linkbox serialbox phist-modal" style="max-width:420px">

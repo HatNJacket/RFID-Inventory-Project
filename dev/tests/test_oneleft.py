@@ -222,6 +222,28 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
               c[1] == "/import-skus" and "NAKED" in c[2]["csv_content"]
               for c in calls), str(calls))
 
+    # ---- confirm with a counted number (the confirm window) ----------
+    # Nick is on their employee list now: attribution keeps his name.
+    check("Nick attributes as himself, not Steve",
+          oneleft.employee_for("Nick") == "Nick", oneleft.employee_for("Nick"))
+    from app.models import ReviewTask as _RT
+    from sqlalchemy import select as _sel
+    with patch("app.shopify.get_quantity_breakdown",
+               return_value={"available": 3, "committed": 2,
+                             "on_hand": 5, "unavailable": 0}):
+        r = cl.post("/api/oneleft/confirm",
+                    json={"sku": "GONE", "worker": "Nick", "counted": 3})
+        check("counted-below-on-hand confirm still succeeds",
+              r.status_code == 200, r.text)
+    from app.database import get_engine as _ge
+    from sqlalchemy.orm import Session as _S
+    with _S(_ge()) as _s:
+        t = _s.scalars(_sel(_RT).where(
+            _RT.category == "inventory-check", _RT.sku == "GONE")).first()
+        check("low count files an inventory-check (nothing writes down)",
+              t is not None and "3 unit(s) counted" in t.detail
+              and "on-hand is 5" in t.detail, t.detail if t else None)
+
     # ---- a re-queue pins the check for a human -----------------------
     # SWEPT's walk-scan evidence would re-clear it on the next pass;
     # after an operator re-queues it, it must stay put until NEW
