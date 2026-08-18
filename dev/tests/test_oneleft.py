@@ -14,6 +14,12 @@ os.environ["SHOPIFY_CLIENT_SECRET"]="x"
 os.environ.pop("STATION_KEY", None); os.environ.pop("PRINT_AGENT_KEY", None)
 os.environ["ONELEFT_MODE"] = "confirm"
 os.environ["ONELEFT_URL"] = "http://oneleft.test/api/api"
+# The one-time purge line, pinned relative to the test clock so the
+# pre-epoch scenario stays meaningful forever.
+from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+os.environ["ONELEFT_EVIDENCE_SINCE"] = (
+    _dt.now(_tz.utc) - _td(days=3)
+).replace(tzinfo=None).isoformat()
 db = os.path.join(tempfile.gettempdir(), "rfid_oneleft_test.db")
 if os.path.exists(db): os.remove(db)
 os.environ["DATABASE_URL"] = "sqlite:///" + db.replace("\\","/")
@@ -48,17 +54,16 @@ def item(sku, on_hand=1, detected=DETECT, **kw):
     }
 
 PENDING = [
-    item("FRESH-TAG"),        # tag paired after detection -> confirmable
+    item("FRESH-TAG"),        # tag PAIRED after detection: NOT a check
     item("OLD-TAG"),          # tag paired before detection -> needs-walk
     item("SWEPT"),            # old tag HEARD by a new sweep -> confirmable
     item("BATCHED"),          # counted in a post-detection batch
     item("NAKED"),            # no tags at all -> needs-walk
     item("GONE", on_hand=0),  # claim dropped to 0 -> never auto
-    item("GHOST", on_hand=0), # claim 0 but evidence -> discrepancy
+    item("GHOST", on_hand=0), # claim 0 but swept -> discrepancy
     item("MYSTERY", on_hand=None),  # their stock fetch failed -> claim 1
-    # Evidence AFTER detection but OUTSIDE the freshness window: the box
-    # was seen once, five days ago — it could have sold since (Nick,
-    # 2026-08-18). Never auto-cleared.
+    # Swept AFTER detection but BEFORE the one-time purge line: that
+    # evidence stays purged (Nick, 2026-08-18) -> needs-walk.
     item("STALE", detected=(NOW - timedelta(days=10))
          .replace(tzinfo=timezone.utc).isoformat()),
 ]
@@ -113,11 +118,19 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
         tag("MYSTERY",   "E"*24, NOW)
         tag("STALE",     "F0"*12, NOW - timedelta(days=5))
 
+        # The walk-scan hears SWEPT's, GHOST's and MYSTERY's tags.
         r = cl.post("/api/epc-captures", json={
-            "epcs": ["C"*24, "F"*24], "device": "C72-test"})
+            "epcs": ["C"*24, "D"*24, "E"*24, "F"*24], "device": "C72-test"})
         check("sweep accepted", r.status_code == 201, r.text)
-        check("pair and sweep both kicked an auto pass",
-              "tag paired" in kicks and "C72 sweep" in kicks, str(kicks))
+        check("sweep kicked an auto pass; a mere pair did NOT",
+              "C72 sweep" in kicks and "tag paired" not in kicks,
+              str(kicks))
+        # STALE was swept AFTER its detection but BEFORE the purge line.
+        with S(get_engine()) as s:
+            from app.models import EpcCapture
+            s.add(EpcCapture(device="old", epc_count=1, epcs="F0"*12,
+                             created_at=NOW - timedelta(days=5)))
+            s.commit()
 
         with S(get_engine()) as s:
             batch = Batch(bin_name="B1-1", created_by="Nick",
@@ -133,9 +146,9 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
     b = r.json()
     check("board ok", r.status_code == 200 and b["ok"], r.text)
     verdicts = {i["sku"]: i["verdict"] for i in b["items"]}
-    check("fresh tag answers", verdicts.get("FRESH-TAG") == "confirmable",
-          str(verdicts))
-    check("stale tag does not", verdicts.get("OLD-TAG") == "needs-walk",
+    check("a pair alone is NOT a stock check",
+          verdicts.get("FRESH-TAG") == "needs-walk", str(verdicts))
+    check("stale tag does not answer", verdicts.get("OLD-TAG") == "needs-walk",
           str(verdicts))
     check("new sweep of old tag answers",
           verdicts.get("SWEPT") == "confirmable", str(verdicts))
@@ -145,16 +158,16 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
           str(verdicts))
     check("claim 0 never auto-clears", verdicts.get("GONE") == "zero-claim",
           str(verdicts))
-    check("claim 0 with evidence flags",
+    check("claim 0 with sweep evidence flags",
           verdicts.get("GHOST") == "discrepancy", str(verdicts))
     check("unknown claim treated as 1",
           verdicts.get("MYSTERY") == "confirmable", str(verdicts))
-    check("evidence outside the freshness window never clears",
-          verdicts.get("STALE") == "stale-evidence", str(verdicts))
-    fresh = next(i for i in b["items"] if i["sku"] == "FRESH-TAG")
-    check("evidence text names the source",
-          any("paired" in d for d in fresh["evidence"]),
-          str(fresh["evidence"]))
+    check("pre-epoch evidence stays purged (one-time launch line)",
+          verdicts.get("STALE") == "needs-walk", str(verdicts))
+    swept = next(i for i in b["items"] if i["sku"] == "SWEPT")
+    check("evidence text names the walk-scan",
+          any("walk-scan" in d for d in swept["evidence"]),
+          str(swept["evidence"]))
 
     # ---- the auto pass -----------------------------------------------
     calls.clear()
@@ -164,9 +177,9 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
     check("one bulk-confirm", len(bulk) == 1, str(len(bulk)))
     if bulk:
         body = bulk[0][2]
-        check("bulk-confirm only evidence-complete SKUs",
-              sorted(body["skus"]) == ["BATCHED", "FRESH-TAG", "MYSTERY",
-                                       "SWEPT"], str(body))
+        check("bulk-confirm only shelf-counted SKUs (no pair-only ones)",
+              sorted(body["skus"]) == ["BATCHED", "MYSTERY", "SWEPT"],
+              str(body))
         check("employee mapped to a valid dashboard name (Nick isn't one)",
               body["employee"] in oneleft.VALID_EMPLOYEES, str(body))
     forbidden = [c for c in calls if any(
@@ -177,17 +190,17 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
 
     receipts = cl.get("/api/oneleft/board").json()["receipts"]
     auto = [x for x in receipts if x["action"] == "auto" and x["ok"]]
-    check("receipts recorded for the auto pass", len(auto) == 4,
+    check("receipts recorded for the auto pass", len(auto) == 3,
           str([(x['sku'], x['action'], x['ok']) for x in receipts]))
     check("receipt carries evidence text",
-          any("paired" in (x["evidence"] or "") for x in auto),
+          any("walk-scan" in (x["evidence"] or "") for x in auto),
           str([x["evidence"] for x in auto]))
 
     # ---- history shows the story -------------------------------------
     ev = cl.get("/api/history?limit=300").json()["events"]
     ol = [e for e in ev if e["type"] == "oneleft"]
-    check("history has 1-left events", len(ol) >= 4, str(len(ol)))
-    ph = cl.get("/api/product-history?term=FRESH-TAG").json()["events"]
+    check("history has 1-left events", len(ol) >= 3, str(len(ol)))
+    ph = cl.get("/api/product-history?term=SWEPT").json()["events"]
     check("product history includes its 1-left clear",
           any(e["type"] == "oneleft" for e in ph),
           str([e["type"] for e in ph]))
@@ -210,34 +223,34 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
               for c in calls), str(calls))
 
     # ---- a re-queue pins the check for a human -----------------------
-    # FRESH-TAG's evidence would re-clear it on the next pass; after an
-    # operator re-queues it, it must stay put until NEW evidence.
-    r = cl.post("/api/oneleft/requeue", json={"sku": "FRESH-TAG",
+    # SWEPT's walk-scan evidence would re-clear it on the next pass;
+    # after an operator re-queues it, it must stay put until NEW
+    # evidence (a tie on second-granular timestamps counts as pinned).
+    r = cl.post("/api/oneleft/requeue", json={"sku": "SWEPT",
                                               "worker": "Nick"})
     check("second requeue ok", r.status_code == 200, r.text)
     b2 = cl.get("/api/oneleft/board").json()
     v2 = {i["sku"]: i["verdict"] for i in b2["items"]}
     check("re-queued check is pinned, not confirmable",
-          v2.get("FRESH-TAG") == "requeued", str(v2))
+          v2.get("SWEPT") == "requeued", str(v2))
     calls.clear()
     cl.post("/api/oneleft/scan", json={"worker": "Nick"})
     bulk2 = [c for c in calls if c[1] == "/bulk-confirm"]
     check("auto pass skips the pinned check",
-          all("FRESH-TAG" not in c[2]["skus"] for c in bulk2), str(bulk2))
-    # New evidence (a sweep hearing its tag NOW) unpins it. Backdate the
-    # requeue receipt first: CURRENT_TIMESTAMP is second-granular, and
-    # "same second" must stay pinned, so give the sweep a clear lead.
+          all("SWEPT" not in c[2]["skus"] for c in bulk2), str(bulk2))
+    # A fresh walk-scan hearing its tag unpins it. Backdate the requeue
+    # receipt first so the new sweep has a clear timestamp lead.
     from app.models import OneLeftCheck as OLC
     with S(get_engine()) as s:
         s.execute(update(OLC).where(OLC.action == "requeue")
                   .values(created_at=NOW - timedelta(seconds=90)))
         s.commit()
-    r = cl.post("/api/epc-captures", json={"epcs": ["A"*24],
+    r = cl.post("/api/epc-captures", json={"epcs": ["C"*24],
                                            "device": "C72-test"})
     v3 = {i["sku"]: i["verdict"]
           for i in cl.get("/api/oneleft/board").json()["items"]}
     check("new evidence after the re-queue unpins it",
-          v3.get("FRESH-TAG") == "confirmable", str(v3))
+          v3.get("SWEPT") == "confirmable", str(v3))
 
     # ---- pause switch blocks autos, scan endpoint says so ------------
     r = cl.post("/api/oneleft/auto", json={"on": False, "worker": "Nick"})

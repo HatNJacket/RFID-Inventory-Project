@@ -7270,7 +7270,7 @@ const OL_VERDICTS = {
   confirmable: [
     "chip--ok",
     "RFID answers this",
-    "Evidence since the check was raised covers the claimed stock — auto-clear will take it, or confirm it yourself",
+    "A bin walk-scan or batch count since the check was raised covers the claimed stock — auto-clear will take it, or confirm it yourself",
   ],
   discrepancy: [
     "chip--bad",
@@ -7286,11 +7286,6 @@ const OL_VERDICTS = {
     "chip--warn",
     "re-queued — walk it",
     "An operator put this back on the queue after it was cleared, so it stays for a human until NEW evidence shows up",
-  ],
-  "stale-evidence": [
-    "chip--na",
-    "evidence too old",
-    "RFID saw this product's stock, but not recently enough to trust it hasn't sold since — only fresh discoveries clear a check",
   ],
   "needs-walk": [
     "chip--na",
@@ -7361,9 +7356,8 @@ function renderOneleft() {
     confirmable: 0,
     discrepancy: 1,
     requeued: 2,
-    "stale-evidence": 3,
-    "zero-claim": 4,
-    "needs-walk": 5,
+    "zero-claim": 3,
+    "needs-walk": 4,
   };
   let rows = olData.items
     .filter((r) => !olAnsweredOnly || r.verdict === "confirmable")

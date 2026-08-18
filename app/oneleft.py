@@ -25,27 +25,33 @@ Everything is gated by config.ONELEFT_MODE ("off" default / "read" /
 "confirm") and fails SOFT — a dashboard outage can never break a scan,
 a sweep, or a batch.
 
-Evidence rules (what counts as "a user discovered stock"):
-  · a tag paired to the SKU AFTER the check was detected (someone held
-    the physical box);
-  · a C72 sweep AFTER detection that heard one of the SKU's tags — even
-    a tag paired long before (the box was physically on a shelf just
-    now);
+Evidence rules (Nick, 2026-08-18: a stock CHECK is confirmed by the
+kinds of work that actually count a shelf — bin audits and batch
+tagging — not by a tag merely being added; pairing a tag proves a box
+existed in someone's hand, not that the shelf was checked):
+  · a C72 sweep AFTER the check was detected that heard one of the
+    SKU's tags — however old the tag — because a walk-scan of the
+    shelf is exactly what a bin audit is;
   · a batch STARTED after detection that counted the SKU — collect
     scans, sealed cases, and already-tagged/baseline boxes all count
     (bins recorded as tagged from an audit sweep are excluded: those
     rows are copied from tags already on file, and the sweep behind
     them already counts).
+Both are additionally floored at ONELEFT_EVIDENCE_SINCE — the one-time
+launch purge (2026-08-18): evidence recorded before the feature
+existed stays purged, but new work confirms regardless of age.
 Evidence sources overlap on the same physical boxes, so the item's
 evidence_units is the MAX across sources, never the sum. Auto-confirm
 requires evidence_units >= Shopify's current claim and a claim >= 1;
 a claim of 0 is never auto-confirmed (nothing physical can prove an
-absence here — and evidence AGAINST a zero is flagged for a human).
+absence here — and evidence AGAINST a zero is flagged for a human;
+"if none are found, the check stays unconfirmed in case the box is
+somewhere weird").
 """
 import logging
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import requests
 from sqlalchemy import func, select
@@ -82,6 +88,17 @@ _scan_lock = threading.Lock()
 _last_scan = 0.0
 
 AUTO_SETTING_KEY = "oneleft_auto"
+
+
+def _evidence_floor() -> datetime | None:
+    """The one-time purge line: evidence recorded before it never
+    confirms. Unparseable config answers None (no floor) rather than
+    guessing."""
+    try:
+        floor = datetime.fromisoformat(config.ONELEFT_EVIDENCE_SINCE)
+    except (TypeError, ValueError):
+        return None
+    return _naive_utc(floor)
 
 
 # ------------------------------------------------------------- HTTP layer ---
@@ -313,37 +330,39 @@ def build_board(session: Session, pending: list[dict]) -> list[dict]:
         claimed_eff = claimed if claimed is not None else 1
         tags = tags_by_sku.get(key, [])
 
+        # Evidence must postdate BOTH the check itself and the one-time
+        # purge line. No qualifying window with an unknown detected date:
+        # better to leave a check for a human than clear it on a guess.
+        epoch = _evidence_floor()
+        if detected is None:
+            floor = None
+        elif epoch is None:
+            floor = detected
+        else:
+            floor = max(detected, epoch)
+
+        # A tag being paired is deliberately NOT evidence — a pair proves
+        # a box was in someone's hand, not that the shelf got a stock
+        # check. Only shelf-counting work (sweeps, batches) confirms.
         details: list[str] = []
-        paired_units = 0
-        paired_last = None
         seen_units = 0
         seen_last = None
         for a in tags:
-            at = _naive_utc(a.assigned_at)
             units = a.case_units or 1
-            if detected is not None and at is not None and at > detected:
-                paired_units += units
-                if paired_last is None or at > paired_last:
-                    paired_last = at
             heard = epc_last_heard.get((a.rfid_id or "").strip().upper())
-            if detected is not None and heard is not None and heard > detected:
+            if floor is not None and heard is not None and heard > floor:
                 seen_units += units
                 if seen_last is None or heard > seen_last:
                     seen_last = heard
-        if paired_units:
-            details.append(
-                f"{paired_units} tag(s) paired since detection"
-                + (f" (last {paired_last:%b %d %H:%M})" if paired_last else "")
-            )
         if seen_units:
             details.append(
-                f"{seen_units} tagged box(es) heard by a sweep since"
+                f"{seen_units} tagged box(es) heard by a walk-scan"
                 + (f" (last {seen_last:%b %d %H:%M})" if seen_last else "")
             )
         batch_units = 0
         batch_last = None
         for at, units, label in batch_counts.get(key, []):
-            if detected is not None and at > detected:
+            if floor is not None and at > floor:
                 if units > batch_units:
                     batch_units = units
                     batch_label = label
@@ -354,10 +373,9 @@ def build_board(session: Session, pending: list[dict]) -> list[dict]:
                 f"{batch_units} unit(s) counted in batch {batch_label}"
             )
 
-        evidence_units = max(paired_units, seen_units, batch_units)
+        evidence_units = max(seen_units, batch_units)
         evidence_last = max(
-            (t for t in (paired_last, seen_last, batch_last)
-             if t is not None),
+            (t for t in (seen_last, batch_last) if t is not None),
             default=None,
         )
         if claimed is not None and claimed <= 0:
@@ -370,14 +388,6 @@ def build_board(session: Session, pending: list[dict]) -> list[dict]:
         if (verdict == "confirmable" and pin is not None
                 and (evidence_last is None or evidence_last <= pin)):
             verdict = "requeued"
-        # Old evidence can't clear a check: a tag paired weeks ago says
-        # nothing about whether the box has sold since. Only a discovery
-        # inside the freshness window counts as "answered".
-        if verdict == "confirmable":
-            cutoff = (datetime.now(timezone.utc).replace(tzinfo=None)
-                      - timedelta(hours=config.ONELEFT_FRESH_HOURS))
-            if evidence_last is None or evidence_last < cutoff:
-                verdict = "stale-evidence"
 
         rows.append({
             "sku": sku,

@@ -697,9 +697,6 @@ def create_assignment(
             f"first to reassign.",
         )
     session.refresh(assignment)
-    # A pair is a physical box in someone's hand — it may answer a 1-left
-    # stock check that's waiting on exactly that discovery.
-    oneleft.kick("tag paired", payload.assigned_by)
     return assignment.as_dict()
 
 
@@ -791,7 +788,6 @@ def sweep_assign(
         )
     for a in assigned:
         session.refresh(a)
-    oneleft.kick("bulk sweep assign", payload.assigned_by)
     return {
         "count": len(assigned),
         "assigned": [a.as_dict() for a in assigned],

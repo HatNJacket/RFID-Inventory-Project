@@ -829,17 +829,19 @@
       <div class="recent__head">
         <h2>1-left stock checks <span class="recent__note" id="ol-meta"></span></h2>
         <input id="ol-filter" class="recent__search" type="search"
-               placeholder="Filter by SKU, title, vendor or bin…" autocomplete="off" />
+               placeholder="Filter by SKU, vendor or bin…" autocomplete="off" />
       </div>
       <p class="linkbox__text" style="max-width:78ch">
         The warehouse dashboard queues every product Shopify drops to 1
-        on-hand for a physical stock check. When RFID work already proves
-        the stock exists — a tag paired, a sweep that heard the product's
-        tag, a batch that counted it, all <em>after</em> the check was
-        raised — the check clears itself from the dashboard (logged in
-        History with the evidence, undoable with re-queue). Everything
-        else stays for a real walk. Nothing here ever changes a stock
-        number, a bin or a barcode anywhere.
+        on-hand for a physical stock check. When shelf-counting work
+        proves the stock exists — a bin walk-scan that heard the
+        product's tag, or batch tagging that counted it, <em>after</em>
+        the check was raised — the check clears itself from the
+        dashboard (logged in History with the evidence, undoable with
+        re-queue). A tag merely being paired doesn't count: that proves
+        a box, not a checked shelf. If nothing is found the check stays,
+        in case the box is somewhere weird. Nothing here ever changes a
+        stock number, a bin or a barcode anywhere.
       </p>
       <div class="linkbox__actions" style="margin-bottom:10px">
         <button class="reset" id="ol-auto" type="button"
