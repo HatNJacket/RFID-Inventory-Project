@@ -1371,6 +1371,145 @@ def mark_assignments_sold(
     }
 
 
+class SplitSideIn(BaseModel):
+    sku: str = Field(min_length=1, max_length=100)      # current SKU
+    new_sku: str = Field(min_length=1, max_length=100)
+    new_barcode: str | None = Field(default=None, max_length=64)
+
+
+class SplitProductsIn(BaseModel):
+    sides: list[SplitSideIn] = Field(min_length=2, max_length=2)
+    changed_by: str | None = Field(default=None, max_length=100)
+
+
+def _norm_id(value: str | None) -> str:
+    return re.sub(r"[^A-Z0-9]", "", (value or "").upper())
+
+
+@app.post("/api/products/split", dependencies=[Depends(require_user)])
+def split_products(
+    payload: SplitProductsIn, session: Session = Depends(get_session)
+):
+    """Declare a flagged pair genuinely TWO products, each with a
+    distinct identity. A side that lives in the catalog writes its new
+    SKU/barcode to Shopify (audited, History-logged); an RFID-only side
+    (the usual misspelling) updates its tag records locally. A barcode
+    equal to the side's OWN new SKU is allowed — the no-manufacturer-
+    barcode convention. The duplicate flag closes as dismissed-forever."""
+    a, b = payload.sides
+    # The two identities must stop interacting.
+    if _norm_id(a.new_sku) == _norm_id(b.new_sku):
+        raise HTTPException(422, "The two SKUs are still the same.")
+    for x, y in ((a, b), (b, a)):
+        bc = _norm_id(x.new_barcode)
+        if not bc:
+            continue
+        if bc == _norm_id(y.new_barcode):
+            raise HTTPException(422, "The two barcodes are still the same.")
+        if bc == _norm_id(y.new_sku):
+            raise HTTPException(
+                422,
+                f"{x.sku}'s barcode equals the other product's SKU — "
+                f"they'd still collide.",
+            )
+    by = (payload.changed_by or "").strip()[:100] or None
+    summary = []
+    for side in payload.sides:
+        cur = side.sku.strip()
+        new_sku = side.new_sku.strip()
+        new_bc = (side.new_barcode or "").strip() or None
+        tags = session.scalars(
+            select(RfidAssignment).where(
+                func.upper(RfidAssignment.sku) == cur.upper()
+            )
+        ).all()
+        bm = session.scalar(
+            select(BinMapEntry).where(
+                func.upper(BinMapEntry.sku) == cur.upper()
+            )
+        )
+        old_bc = (
+            (bm.barcode if bm is not None else None)
+            or (tags[0].barcode if tags else None)
+        )
+        sku_changed = new_sku != cur
+        bc_changed = new_bc is not None and new_bc != (old_bc or "")
+        wrote_shopify = False
+        if bm is not None and (sku_changed or bc_changed):
+            # Catalog product: the identity change is a real Shopify
+            # write, through the same mutations the edit window uses.
+            require_shopify_write("scan_station")
+            try:
+                product = _lookup_api(cur)
+            except RuntimeError as error:
+                raise HTTPException(502, f"Shopify lookup failed: {error}")
+            if product is None:
+                raise HTTPException(
+                    404, f"{cur} is in the bin map but not in Shopify."
+                )
+            try:
+                if sku_changed:
+                    shopify.update_variant_sku(
+                        product["shopify_product_id"],
+                        product["shopify_variant_id"], new_sku,
+                    )
+                if bc_changed:
+                    shopify.update_variant_barcode(
+                        product["shopify_product_id"],
+                        product["shopify_variant_id"], new_bc,
+                    )
+            except RuntimeError as error:
+                raise HTTPException(502, f"Shopify update failed: {error}")
+            wrote_shopify = True
+        # RFID records follow either way.
+        for t in tags:
+            t.sku = new_sku
+            if new_bc is not None:
+                t.barcode = new_bc[:64]
+        if sku_changed:
+            session.add(BarcodeChange(
+                sku=new_sku, product_title=tags[0].product_title if tags
+                else None,
+                changed_field="sku",
+                old_barcode=cur[:64], new_barcode=new_sku[:64],
+                changed_by=by,
+            ))
+        if bc_changed:
+            session.add(BarcodeChange(
+                sku=new_sku, product_title=tags[0].product_title if tags
+                else None,
+                changed_field="barcode",
+                old_barcode=(old_bc or "")[:64] or None,
+                new_barcode=new_bc[:64],
+                changed_by=by,
+            ))
+        summary.append({
+            "sku": new_sku, "barcode": new_bc,
+            "shopify": wrote_shopify, "tags": len(tags),
+        })
+    # The pair is two products by declaration: close its flag for good
+    # (the any-status pair match means it is never re-filed).
+    closed = 0
+    for t in session.scalars(
+        select(ReviewTask).where(
+            ReviewTask.category == orders_sync.DUP_CATEGORY,
+            ReviewTask.status == "open",
+        )
+    ).all():
+        pair = orders_sync.dup_pair_of(t.detail)
+        if pair == frozenset((a.sku.strip().upper(), b.sku.strip().upper())):
+            t.status = "resolved"
+            t.resolved_by = by or "split"
+            t.resolved_at = datetime.utcnow()
+            t.resolution_note = (
+                f"Split into two distinct products: {a.new_sku} and "
+                f"{b.new_sku}."
+            )
+            closed += 1
+    session.commit()
+    return {"sides": summary, "tasks_closed": closed}
+
+
 class MergeProductsIn(BaseModel):
     from_sku: str = Field(min_length=1, max_length=100)
     into_sku: str = Field(min_length=1, max_length=100)
@@ -1855,14 +1994,6 @@ def overwrite_barcode(
     if config.check_shopify_env():
         raise HTTPException(500, "Shopify credentials are not configured.")
 
-    db_ok = database_configured()
-    if _resolve(payload.new_barcode, config.BARCODE_LOOKUP, db_ok, True):
-        raise HTTPException(
-            409,
-            "That scanned code already belongs to a product — it can't "
-            "replace another product's barcode.",
-        )
-
     # Must resolve via the Shopify API: the mutation needs real Shopify ids.
     try:
         product = _lookup_api(payload.target)
@@ -1872,6 +2003,29 @@ def overwrite_barcode(
         raise HTTPException(
             404, "No product found in Shopify for that barcode or SKU."
         )
+
+    db_ok = database_configured()
+    existing = _resolve(payload.new_barcode, config.BARCODE_LOOKUP, db_ok, True)
+    if existing:
+        # A code that already belongs to a DIFFERENT product is refused.
+        # The SAME product is fine: setting barcode = its own SKU is the
+        # house convention for brands that ship no barcode (Svbony) —
+        # both codes resolve to one product, nothing collides (Nick,
+        # 2026-08-18).
+        same = (
+            existing.get("shopify_variant_id")
+            == product.get("shopify_variant_id")
+        ) or (
+            (existing.get("sku") or "").strip().upper()
+            == (product.get("sku") or "").strip().upper()
+            != ""
+        )
+        if not same:
+            raise HTTPException(
+                409,
+                "That scanned code already belongs to a product — it can't "
+                "replace another product's barcode.",
+            )
 
     try:
         shopify.update_variant_barcode(
@@ -7230,11 +7384,21 @@ def review_task_context(
                 })
                 if bm is not None and bm.product_title:
                     titles = sorted(set(titles) | {bm.product_title})
+                newest = max(tags, key=lambda t: t.id) if tags else None
                 sides.append({
                     "sku": raw,
                     "units": sum((t.case_units or 1) for t in tags),
                     "titles": titles,
                     "in_catalog": bm is not None,
+                    "barcode": (
+                        (bm.barcode if bm is not None else None)
+                        or (newest.barcode if newest else None)
+                    ),
+                    "image_url": bm.image_url if bm is not None else None,
+                    "bin": (
+                        (bm.bin if bm is not None else None)
+                        or (newest.bin_location if newest else None)
+                    ),
                 })
             ctx["sides"] = sides
     return ctx

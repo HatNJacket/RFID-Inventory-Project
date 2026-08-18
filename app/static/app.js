@@ -7651,97 +7651,249 @@ async function loadResolveContext(t, counted) {
   }
 }
 
-// The duplicate-merge picker: choose the surviving SKU, choose which of
-// the recorded names the merged product keeps, then MERGE — tags move,
-// the task closes, and an inventory check is filed (all local records;
-// nothing in Shopify changes).
+// The duplicate resolver: both products side by side as PREVIEW cards
+// (click a card to pick the survivor), their recorded names underneath
+// (click one name to pick what the merged product is called), and a
+// SPLIT mode for pairs that really are two products — new SKU + barcode
+// per side, with the confirm lighting up only once the two identities
+// stop interacting. "Use SKU as barcode" covers the no-manufacturer-
+// barcode brands (Svbony).
 function renderDupeMerge(t, ctx) {
   const host = document.getElementById("rvw-dupe");
   if (!host || !ctx.sides || ctx.sides.length !== 2) {
     if (host) host.textContent = "Couldn't load the two sides.";
     return;
   }
-  const [A, B] = ctx.sides;
-  const titles = [...new Set([...(A.titles || []), ...(B.titles || [])])];
-  const side = (s, i) => `
-    <label class="dupe-side">
-      <input type="radio" name="dupe-keep" value="${i}" ${
-        s.in_catalog && !ctx.sides[1 - i].in_catalog ? "checked" : ""
-      } />
-      <span class="dupe-side__body">
-        <b class="mono">${escapeHtml(s.sku)}</b>
-        <span class="recent__meta">${s.units} tag unit(s) · ${
-          s.in_catalog
-            ? "in the live catalog ✓"
-            : "NOT in the catalog (likely the misspelling)"
-        }</span>
-      </span>
-    </label>`;
-  host.innerHTML =
-    `<div class="rv-tl__title">Which SKU survives?</div>` +
-    side(A, 0) +
-    side(B, 1) +
-    `<div class="rv-tl__title" style="margin-top:10px">Which name does it keep?</div>` +
-    titles
-      .map(
-        (name, i) => `
-      <label class="dupe-side">
-        <input type="radio" name="dupe-title" value="${i}" ${i === 0 ? "checked" : ""} />
-        <span class="dupe-side__body">${escapeHtml(name)}</span>
-      </label>`
-      )
-      .join("") +
-    `<button class="reset rvw-wide rvw-ok" id="rvw-merge" type="button" style="margin-top:10px">Merge the tags into one product</button>`;
-  document.getElementById("rvw-merge").addEventListener("click", async () => {
-    const operator = operatorEl.value;
-    if (!operator) {
-      alert("Pick who's scanning (top right) first.");
+  const S = ctx.sides;
+  const normId = (v) => String(v || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  let survivor =
+    S[0].in_catalog && !S[1].in_catalog ? 0
+    : S[1].in_catalog && !S[0].in_catalog ? 1
+    : -1;
+  let nameSel = null; // {side, idx}
+  let splitMode = false;
+
+  const card = (s, i) => `
+    <div class="dupe2__col">
+      <button type="button" class="dupe2__card${
+        !splitMode && survivor === i ? " dupe2__card--sel" : ""
+      }" data-side="${i}" ${splitMode ? "disabled" : ""}>
+        ${
+          s.image_url
+            ? `<img class="dupe2__img" src="${escapeHtml(s.image_url)}" alt="">`
+            : `<div class="dupe2__img dupe2__img--none">📦</div>`
+        }
+        <div class="mono dupe2__sku">${escapeHtml(s.sku)}</div>
+        <div class="recent__meta">Barcode ${escapeHtml(s.barcode || "—")}</div>
+        <div class="recent__meta">${s.units} tag unit(s)${
+          s.bin ? ` · bin ${escapeHtml(s.bin)}` : ""
+        }</div>
+        <span class="dupe2__chip ${
+          s.in_catalog ? "dupe2__chip--ok" : "dupe2__chip--warn"
+        }">${s.in_catalog ? "in the live catalog ✓" : "not in the catalog"}</span>
+      </button>
+      <div class="dupe2__names">
+        ${(s.titles.length ? s.titles : ["(no recorded name)"])
+          .map(
+            (n, j) => `<button type="button" class="dupe2__name${
+              !splitMode && nameSel && nameSel.side === i && nameSel.idx === j
+                ? " dupe2__name--sel"
+                : ""
+            }" data-side="${i}" data-idx="${j}" ${
+              splitMode ? "disabled" : ""
+            }>${escapeHtml(n)}</button>`
+          )
+          .join("")}
+      </div>
+      <div class="dupe2__splitin" ${splitMode ? "" : "hidden"}>
+        <input class="linkbox__input dupe2__insku" data-side="${i}"
+               placeholder="Enter SKU" value="${escapeHtml(s.sku)}"
+               autocomplete="off" spellcheck="false" />
+        <input class="linkbox__input dupe2__inbc" data-side="${i}"
+               placeholder="Enter Barcode" value="${escapeHtml(s.barcode || "")}"
+               autocomplete="off" spellcheck="false" />
+      </div>
+    </div>`;
+
+  const validate = () => {
+    const hint = document.getElementById("dupe2-hint");
+    if (!splitMode) {
+      const merge = document.getElementById("dupe2-merge");
+      merge.disabled = !(survivor >= 0 && nameSel);
+      hint.textContent = merge.disabled
+        ? "Click the product that survives, and the name it keeps."
+        : `Merging ${S[1 - survivor].sku} into ${S[survivor].sku}, named "${
+            S[nameSel.side].titles[nameSel.idx] || S[survivor].sku
+          }".`;
       return;
     }
-    const keepIdx = Number(
-      document.querySelector('input[name="dupe-keep"]:checked')?.value ?? -1
+    const val = (cls, i) =>
+      host.querySelector(`.${cls}[data-side="${i}"]`).value.trim();
+    const [sa, sb] = [val("dupe2__insku", 0), val("dupe2__insku", 1)];
+    const [ba, bb] = [val("dupe2__inbc", 0), val("dupe2__inbc", 1)];
+    let problem = null;
+    if (!sa || !sb) problem = "Both products need a SKU.";
+    else if (normId(sa) === normId(sb)) problem = "The two SKUs are still the same.";
+    else if (ba && bb && normId(ba) === normId(bb))
+      problem = "The two barcodes are still the same.";
+    else if (ba && normId(ba) === normId(sb))
+      problem = `${sa}'s barcode equals the other SKU — they'd still collide.`;
+    else if (bb && normId(bb) === normId(sa))
+      problem = `${sb}'s barcode equals the other SKU — they'd still collide.`;
+    document.getElementById("dupe2-splitgo").disabled = !!problem;
+    document.getElementById("dupe2-hint").textContent =
+      problem ||
+      "The two identities no longer interact ✓ — a barcode matching its " +
+        "OWN SKU is fine.";
+  };
+
+  const draw = () => {
+    host.innerHTML =
+      `<div class="dupe2">${card(S[0], 0)}${card(S[1], 1)}</div>` +
+      `<div class="dupe2__actions">${
+        splitMode
+          ? `<button class="reset" id="dupe2-usesku" type="button"
+               title="Set each product's barcode to its own SKU — the house convention when the manufacturer ships no barcode">Use SKU as barcode for both</button>
+             <button class="reset rvw-ok" id="dupe2-splitgo" type="button" disabled>Confirm split</button>
+             <button class="reset" id="dupe2-splitback" type="button">Back</button>`
+          : `<button class="reset rvw-ok" id="dupe2-merge" type="button" disabled>Merge into the selected product</button>
+             <button class="reset" id="dupe2-split" type="button"
+               title="They really are two products — give each its own SKU and barcode">Split them</button>`
+      }</div>` +
+      `<p class="recent__meta" id="dupe2-hint" style="margin-top:6px"></p>`;
+
+    host.querySelectorAll(".dupe2__card").forEach((c) =>
+      c.addEventListener("click", () => {
+        survivor = Number(c.dataset.side);
+        draw();
+      })
     );
-    if (keepIdx !== 0 && keepIdx !== 1) {
-      alert("Pick which SKU survives first.");
-      return;
-    }
-    const survivor = ctx.sides[keepIdx];
-    const loser = ctx.sides[1 - keepIdx];
-    const titleIdx = Number(
-      document.querySelector('input[name="dupe-title"]:checked')?.value ?? 0
+    host.querySelectorAll(".dupe2__name").forEach((n) =>
+      n.addEventListener("click", () => {
+        nameSel = { side: Number(n.dataset.side), idx: Number(n.dataset.idx) };
+        draw();
+      })
     );
-    const title = titles[titleIdx] || null;
-    if (
-      !confirm(
-        `Merge ${loser.sku} into ${survivor.sku}?\n\n` +
-          `${loser.units} tag unit(s) move over, the merged product is ` +
-          `named "${title || survivor.sku}", and an inventory check is ` +
-          `filed. RFID records only — Shopify is not touched.`
-      )
-    )
-      return;
-    const btn = document.getElementById("rvw-merge");
-    btn.disabled = true;
-    try {
-      const r = await postJson("/api/products/merge", {
-        from_sku: loser.sku,
-        into_sku: survivor.sku,
-        title,
-        changed_by: operator,
+    host.querySelectorAll(".dupe2__insku, .dupe2__inbc").forEach((inp) =>
+      inp.addEventListener("input", validate)
+    );
+    const splitBtn = document.getElementById("dupe2-split");
+    if (splitBtn)
+      splitBtn.addEventListener("click", () => {
+        splitMode = true;
+        survivor = -1;
+        nameSel = null;
+        draw();
       });
-      reviewTasks = reviewTasks.filter((x) => x.id !== t.id);
-      closeResolveWindow();
-      renderReview();
-      loadReview();
-      alert(
-        `Merged ✓ — ${r.moved_tags} tag(s) now under ${r.into_sku}. ` +
-          `An inventory check was filed for it.`
-      );
-    } catch (err) {
-      btn.disabled = false;
-      alert(err.message);
-    }
-  });
+    const backBtn = document.getElementById("dupe2-splitback");
+    if (backBtn)
+      backBtn.addEventListener("click", () => {
+        splitMode = false;
+        draw();
+      });
+    const useSku = document.getElementById("dupe2-usesku");
+    if (useSku)
+      useSku.addEventListener("click", () => {
+        [0, 1].forEach((i) => {
+          host.querySelector(`.dupe2__inbc[data-side="${i}"]`).value =
+            host.querySelector(`.dupe2__insku[data-side="${i}"]`).value.trim();
+        });
+        validate();
+      });
+    const mergeBtn = document.getElementById("dupe2-merge");
+    if (mergeBtn)
+      mergeBtn.addEventListener("click", async () => {
+        const operator = operatorEl.value;
+        if (!operator) {
+          alert("Pick who's scanning (top right) first.");
+          return;
+        }
+        const into = S[survivor];
+        const from = S[1 - survivor];
+        const title = S[nameSel.side].titles[nameSel.idx] || null;
+        if (
+          !confirm(
+            `Merge ${from.sku} into ${into.sku}?\n\n${from.units} tag ` +
+              `unit(s) move over, the merged product is named ` +
+              `"${title || into.sku}", and an inventory check is filed. ` +
+              `RFID records only — Shopify is not touched.`
+          )
+        )
+          return;
+        mergeBtn.disabled = true;
+        try {
+          const r = await postJson("/api/products/merge", {
+            from_sku: from.sku,
+            into_sku: into.sku,
+            title,
+            changed_by: operator,
+          });
+          reviewTasks = reviewTasks.filter((x) => x.id !== t.id);
+          closeResolveWindow();
+          renderReview();
+          loadReview();
+          alert(
+            `Merged ✓ — ${r.moved_tags} tag(s) now under ${r.into_sku}. ` +
+              `An inventory check was filed for it.`
+          );
+        } catch (err) {
+          mergeBtn.disabled = false;
+          alert(err.message);
+        }
+      });
+    const splitGo = document.getElementById("dupe2-splitgo");
+    if (splitGo)
+      splitGo.addEventListener("click", async () => {
+        const operator = operatorEl.value;
+        if (!operator) {
+          alert("Pick who's scanning (top right) first.");
+          return;
+        }
+        const sideIn = (i) => ({
+          sku: S[i].sku,
+          new_sku: host
+            .querySelector(`.dupe2__insku[data-side="${i}"]`)
+            .value.trim(),
+          new_barcode:
+            host.querySelector(`.dupe2__inbc[data-side="${i}"]`).value.trim() ||
+            null,
+        });
+        const sides = [sideIn(0), sideIn(1)];
+        if (
+          !confirm(
+            `Split them into two distinct products?\n\n` +
+              `${S[0].sku} → SKU ${sides[0].new_sku}` +
+              `${sides[0].new_barcode ? `, barcode ${sides[0].new_barcode}` : ""}\n` +
+              `${S[1].sku} → SKU ${sides[1].new_sku}` +
+              `${sides[1].new_barcode ? `, barcode ${sides[1].new_barcode}` : ""}\n\n` +
+              `Catalog products write to Shopify (History-logged); ` +
+              `RFID-only records update locally. This pair is never ` +
+              `flagged again.`
+          )
+        )
+          return;
+        splitGo.disabled = true;
+        try {
+          const r = await postJson("/api/products/split", {
+            sides,
+            changed_by: operator,
+          });
+          reviewTasks = reviewTasks.filter((x) => x.id !== t.id);
+          closeResolveWindow();
+          renderReview();
+          loadReview();
+          alert(
+            `Split ✓ — ${r.sides.map((s) => s.sku).join(" and ")} are two ` +
+              `distinct products now.`
+          );
+        } catch (err) {
+          splitGo.disabled = false;
+          alert(err.message);
+        }
+      });
+    validate();
+  };
+  draw();
 }
 
 // Bundles in the could-not-scan window: bundles are never tagged — their

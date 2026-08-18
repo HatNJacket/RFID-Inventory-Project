@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(
 os.environ["SHOPIFY_STORE"]="t.myshopify.com"; os.environ["SHOPIFY_CLIENT_ID"]="x"
 os.environ["SHOPIFY_CLIENT_SECRET"]="x"
 os.environ["ORDERS_SYNC_DISABLE"]="1"
+os.environ["SHOPIFY_WRITE_MODE"]="scan_station_only,verify_onhand"
 os.environ.pop("STATION_KEY", None); os.environ.pop("PRINT_AGENT_KEY", None)
 db = os.path.join(tempfile.gettempdir(), "rfid_dupes_test.db")
 if os.path.exists(db): os.remove(db)
@@ -157,6 +158,69 @@ with patch("app.shopify.get_fulfilled_orders",
     r = cl.post("/api/orders-sync/run").json()
     check("old-format dismissal still blocks re-filing",
           r.get("dupes_opened")==0, r)
+
+    # ---- SPLIT: they really are two products -------------------------
+    with Session(get_engine()) as s:
+        tag(s, "S1", "SPLIT-A", "Widget A", "303")
+        tag(s, "S2", "SPLITA", "Widget B", "303")
+        s.commit()
+    r = cl.post("/api/orders-sync/run").json()
+    check("split candidates flagged", r.get("dupes_opened")==1, r)
+
+    # Still-colliding identities are refused.
+    r = cl.post("/api/products/split", json={"sides":[
+        {"sku":"SPLIT-A","new_sku":"SPLIT-A","new_barcode":None},
+        {"sku":"SPLITA","new_sku":"SPLIT.A","new_barcode":None}],
+        "changed_by":"Nick"})
+    check("same-normalized SKUs refused", r.status_code==422, r.text)
+    r = cl.post("/api/products/split", json={"sides":[
+        {"sku":"SPLIT-A","new_sku":"SPLIT-A","new_barcode":"WIDGETB"},
+        {"sku":"SPLITA","new_sku":"WIDGET-B","new_barcode":None}],
+        "changed_by":"Nick"})
+    check("barcode crossing the other SKU refused", r.status_code==422, r.text)
+
+    # The Svbony convention: each barcode = its OWN new SKU is fine.
+    r = cl.post("/api/products/split", json={"sides":[
+        {"sku":"SPLIT-A","new_sku":"SPLIT-A","new_barcode":"SPLIT-A"},
+        {"sku":"SPLITA","new_sku":"WIDGET-B","new_barcode":"WIDGET-B"}],
+        "changed_by":"Nick"})
+    d = r.json()
+    check("split accepted with own-SKU barcodes",
+          r.status_code==200 and d["tasks_closed"]==1, r.text[:200])
+    with Session(get_engine()) as s:
+        a = s.scalars(select(RfidAssignment).where(
+            RfidAssignment.rfid_id=="S1")).first()
+        b = s.scalars(select(RfidAssignment).where(
+            RfidAssignment.rfid_id=="S2")).first()
+        check("both sides re-identified locally",
+              a.sku=="SPLIT-A" and a.barcode=="SPLIT-A"
+              and b.sku=="WIDGET-B" and b.barcode=="WIDGET-B",
+              (a.sku, a.barcode, b.sku, b.barcode))
+    r = cl.post("/api/orders-sync/run").json()
+    check("split pair never re-flagged", r.get("dupes_opened")==0, r)
+
+    # ---- barcode = the product's OWN SKU (the Svbony overwrite) ------
+    PROD = {"shopify_variant_id":"gid://shopify/PV/77",
+            "shopify_product_id":"gid://shopify/Product/77",
+            "product_title":"Svbony SV223","sku":"W9180A","barcode":"OLD-1",
+            "bin_location":"C1-1"}
+    with patch("app.main._lookup_api", return_value=dict(PROD)), \
+         patch("app.main._resolve", return_value=dict(PROD)), \
+         patch("app.shopify.update_variant_barcode", return_value={}):
+        r = cl.post("/api/barcode-overwrites", json={
+            "target":"W9180A","new_barcode":"W9180A",
+            "confirmed":True,"changed_by":"Nick"})
+        check("own-SKU barcode overwrite accepted",
+              r.status_code==201, r.text[:200])
+    OTHER = dict(PROD, shopify_variant_id="gid://shopify/PV/88", sku="ZZZ-9")
+    with patch("app.main._lookup_api", return_value=dict(PROD)), \
+         patch("app.main._resolve", return_value=OTHER), \
+         patch("app.shopify.update_variant_barcode", return_value={}):
+        r = cl.post("/api/barcode-overwrites", json={
+            "target":"W9180A","new_barcode":"ZZZ-9",
+            "confirmed":True,"changed_by":"Nick"})
+        check("another product's code still refused",
+              r.status_code==409, r.status_code)
 
     # Bin-updated History rows carry the undo payload.
     with Session(get_engine()) as s:
