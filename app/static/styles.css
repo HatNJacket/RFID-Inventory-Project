@@ -270,7 +270,27 @@ body {
 .help-cap p { margin: 4px 0 0; font-size: 14px; line-height: 1.45; }
 
 /* Printer picker */
-.print__printer { white-space: nowrap; }
+.printerbtn { font-size: 15px; padding: 4px 9px; line-height: 1; }
+.printerbtn--set { border-color: var(--accent, #29845a); }
+/* EPC expander (product history, review timelines) */
+.epc-exp { display: inline-block; vertical-align: top; }
+.epc-exp summary {
+  cursor: pointer;
+  color: var(--accent, #29845a);
+  font-weight: 600;
+  user-select: none;
+}
+.epc-exp .hist-epclist { margin: 4px 0 2px; }
+/* Bin-record rows in the mismatch timeline */
+.rv-tl__binv { font-weight: 700; white-space: nowrap; }
+.rv-tl__src {
+  font-size: 11px;
+  color: var(--ink-dim, #6d7175);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 1px 7px;
+  white-space: nowrap;
+}
 .printerpick__head { display: flex; align-items: center; gap: 8px; }
 .printerpick__head span:first-child { flex: 1; }
 .printerpick__add { font-size: 15px; position: relative; padding-right: 14px; }

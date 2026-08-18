@@ -397,7 +397,28 @@ const EVENT_META = {
   "order-sold": ["Order Sold", "#5c6ac4"],
   "tag-sold": ["Tag Sold", "#4053b8"],
   "tag-onhand-mismatch": ["Tags ≠ On-hand", "#8e44ad"],
+  "shopify-bin-read": ["Read From Shopify", "#1f5f8b"],
 };
+
+// Multi-tag events render their EPC list behind an expander — the cell
+// reads "4× EPC tags", the tags are one click away. Everything that
+// shows a product's assigned tags (product history, review timelines)
+// goes through this so a sweep is never a mystery event (Nick's note).
+function epcsDetailCell(e) {
+  if (!e.epcs || !e.epcs.length) return escapeHtml(e.detail || "");
+  // The prefix duplicates what the expander summary says; keep only the
+  // trailing facts (bin, suspects).
+  const rest = String(e.detail || "")
+    .replace(/^\d+\s*×\s*RFID tag(\s*\(sweep\))?/, "")
+    .replace(/^\s*·\s*/, "");
+  return (
+    `<details class="epc-exp"><summary>${e.epcs.length}× EPC tags</summary>` +
+    `<div class="hist-epclist">${e.epcs
+      .map((x) => `<div class="mono">${escapeHtml(x || "?")}</div>`)
+      .join("")}</div></details>` +
+    (rest ? ` <span>${escapeHtml(rest)}</span>` : "")
+  );
+}
 
 function evLabel(type) {
   const m = EVENT_META[type];
@@ -2034,9 +2055,15 @@ async function fetchPrinters(force = false) {
 function printerBtnRender() {
   const btn = document.getElementById("printer-btn");
   if (!btn) return;
-  btn.textContent = selectedPrinter
-    ? `🖨 ${selectedPrinter}`
-    : "🖨 Choose printer…";
+  // A little icon in the header (left of ⚙): the choice applies to every
+  // label this device queues, so it lives outside any one tab. Only on
+  // stations that can print at all.
+  btn.hidden = !printingEnabled;
+  btn.textContent = "🖨";
+  btn.title = selectedPrinter
+    ? `Printer: ${selectedPrinter} — click to change`
+    : "Choose which printer prints this device's labels";
+  btn.classList.toggle("printerbtn--set", !!selectedPrinter);
 }
 
 const PRINTER_SVG = `<svg viewBox="0 0 48 40" width="44" height="37" aria-hidden="true">
@@ -6760,9 +6787,10 @@ function renderReview() {
 // History panel: resolving the task simply removes this view; the product
 // history keeps everything.
 const RV_TIMELINE_TYPES = {
+  // Only events that SET or REPORT a bin — the mismatch timeline shows
+  // bin records, never tag-by-tag noise (Nick's note, 2026-08-18).
   "bin-mismatch": new Set([
-    "tag-assigned", "tags-rebinned", "bin-updated", "batch-completed",
-    "batch-started", "receiving-completed", "bin-check",
+    "shopify-bin-read", "bin-updated", "tags-rebinned", "tag-assigned",
   ]),
   "inventory-check": new Set([
     "tag-assigned", "tag-unlinked", "on-hand-updated", "on-hand-undone",
@@ -6791,12 +6819,54 @@ async function rvProductEvents(sku) {
   return events;
 }
 
+// Distill events into BIN RECORD rows for the mismatch timeline: which
+// side claimed which bin, when, from where — [event] [when] [Bin X]
+// [source]. Runs of tag assignments to the same bin collapse into one
+// row carrying the tag count; nobody needs the per-tag stream here.
+function rvBinRecordRows(events) {
+  const rows = [];
+  const afterArrow = (e) => {
+    const m = /→\s*(.+)$/.exec(e.detail || "");
+    return m ? m[1].trim() : null;
+  };
+  events.forEach((e) => {
+    let bin = null;
+    let src = null;
+    let count = 0;
+    if (e.type === "shopify-bin-read") {
+      bin = (e.detail || "").split(" · ")[0].trim();
+      src = "Shopify";
+    } else if (e.type === "bin-updated") {
+      bin = afterArrow(e);
+      src = e.worker || "Shopify";
+    } else if (e.type === "tags-rebinned") {
+      bin = afterArrow(e);
+      src = e.worker || "RFID system";
+    } else if (e.type === "tag-assigned") {
+      bin = (/(?:^|· )bin (.+)$/.exec(e.detail || "") || [])[1];
+      src = e.worker || "C72";
+      count = (e.epcs || [null]).length;
+    } else {
+      return;
+    }
+    if (!bin) return;
+    const prev = rows[rows.length - 1];
+    if (prev && prev.type === e.type && prev.bin === bin && prev.src === src) {
+      prev.at = e.at;
+      prev.count += count;
+    } else {
+      rows.push({ type: e.type, at: e.at, bin, src, count });
+    }
+  });
+  return rows;
+}
+
 function rvTimelineRow(e, extra = "") {
   return (
     `<div class="rv-tl__row">
        ${evChip(e.type)}
        <span class="rv-tl__when" title="${escapeHtml(fmtWhen(e.at))}">${escapeHtml(fmtAgo(e.at))}</span>
-       <span class="rv-tl__detail">${escapeHtml(e.detail || "")}${
+       <span class="rv-tl__detail">${epcsDetailCell(e)}${
          e.worker ? ` · ${escapeHtml(e.worker)}` : ""
        }</span>${extra}
      </div>`
@@ -6832,6 +6902,26 @@ async function loadReviewTimeline(t, host) {
     } else {
       // Live (synthetic) entries have no filed date: recent movement only.
       rows = wanted.slice(-12);
+    }
+    if (cat === "bin-mismatch") {
+      const recs = rvBinRecordRows(since ? wanted : rows);
+      host.innerHTML =
+        `<div class="rv-tl__title">Bin record</div>` +
+        (recs.length
+          ? recs
+              .map(
+                (r) =>
+                  `<div class="rv-tl__row">
+                     ${evChip(r.type)}
+                     <span class="rv-tl__when" title="${escapeHtml(fmtWhen(r.at))}">${escapeHtml(fmtAgo(r.at))}</span>
+                     <span class="rv-tl__binv">Bin ${escapeHtml(r.bin)}</span>
+                     <span class="rv-tl__src">${escapeHtml(r.src)}</span>
+                     ${r.count > 1 ? `<span class="rv-tl__count">${r.count} tags</span>` : ""}
+                   </div>`
+              )
+              .join("")
+          : `<div class="rv-note__empty">No bin records on file.</div>`);
+      return;
     }
     if (cat === "inventory-check" || cat === "tag-onhand-mismatch") {
       // Running tag count per event, derived backwards from the live
@@ -8795,7 +8885,7 @@ async function openProductHistory(term) {
         <td class="recent__meta" style="white-space:nowrap">${escapeHtml(fmtWhen(e.at))}</td>
         <td>${evChip(e.type)}</td>
         <td>${escapeHtml(e.worker || "—")}</td>
-        <td class="recent__meta">${escapeHtml(e.detail || "")}</td>
+        <td class="recent__meta">${epcsDetailCell(e)}</td>
         <td>${
           e.shopify
             ? '<span class="chip-status chip-status--done">Shopify ✓</span>'

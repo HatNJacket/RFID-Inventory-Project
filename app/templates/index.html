@@ -26,6 +26,10 @@
         {% if not db_ready %}
         <span class="pill pill--warn">No database — assignments won't save</span>
         {% endif %}
+        <!-- Printer choice lives up here, outside any tab — it applies
+             to every label this device queues, whichever tab queued it. -->
+        <button class="reset printerbtn" id="printer-btn" type="button" hidden
+                title="Choose which printer prints this device's labels">🖨</button>
         <details class="settings" id="settings-menu">
           <summary>⚙ Settings</summary>
           <div class="settings__panel">
@@ -316,8 +320,6 @@
                 title="This product has no bin assigned — its labels print without a shelf. Click the bin chip above to set one.">⚠ No bin set</span>
           <span class="print__nobin" id="print-fitwarn" hidden></span>
           <span class="print__status" id="print-status"></span>
-          <button class="reset print__printer" id="printer-btn" type="button"
-                  title="Choose which printer prints these labels">🖨 …</button>
         </div>
       </section>
 

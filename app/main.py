@@ -7811,6 +7811,23 @@ def product_history(term: str, session: Session = Depends(get_session)):
             not in ("rfid-scan", "locate-list", "tag-sold"),
         })
 
+    # What Shopify currently says the product's bin IS, and when we last
+    # read it — the "Shopify side" row of a bin-mismatch timeline.
+    for bm in session.scalars(
+        select(BinMapEntry).where(
+            func.upper(BinMapEntry.sku) == sku.upper()
+        )
+    ):
+        events.append({
+            "at": iso(bm.updated_at),
+            "type": "shopify-bin-read",
+            "worker": None,
+            "detail": (bm.bin or "").strip()
+                      + (f" · other: {bm.other_bins}" if bm.other_bins
+                         else ""),
+            "shopify": True,
+        })
+
     # Fulfilled-order sales from the sold ledger: the events that lower
     # the EXPECTED tag count while the tags themselves stay on file.
     for sr in session.scalars(
