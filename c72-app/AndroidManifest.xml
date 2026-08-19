@@ -1,11 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.telcan.rfidsweep"
-    android:versionCode="65"
-    android:versionName="3.47">
+    android:versionCode="66"
+    android:versionName="3.48">
 
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="33" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Self-update: the app downloads its own new APK from the server and
+         hands it to the system installer (one-time user grant on-device). -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
         android:label="TC RFID Sweep"
@@ -20,5 +23,9 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- PackageInstaller status callback for the self-update flow -->
+        <receiver
+            android:name=".MainActivity$InstallReceiver"
+            android:exported="false" />
     </application>
 </manifest>

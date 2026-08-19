@@ -15,7 +15,15 @@ package com.telcan.rfidsweep;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.PendingIntent;
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageInstaller;
+import android.net.Uri;
+import android.os.Build;
+import android.provider.Settings;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
@@ -712,6 +720,9 @@ public class MainActivity extends Activity {
         // One batch of sensor lines per launch — tells the desk whether
         // this gun has a real gyro (drives the radar engine choice).
         ui.postDelayed(this::postSensorInventory, 4000);
+        // Quiet update check once the network has had a moment — only
+        // speaks up when the server actually has a newer APK.
+        ui.postDelayed(() -> checkAppUpdate(false), 2500);
     }
 
     // ------------------------------------------------------- view builders --
@@ -9458,6 +9469,45 @@ public class MainActivity extends Activity {
         conn.setOnClickListener(v -> showConnectionSettings(refreshSum));
         box.addView(conn);
 
+        // App update card: shows the running version, tap to ask the
+        // server for a newer one (the check on app open is silent).
+        LinearLayout upd = new LinearLayout(this);
+        upd.setOrientation(LinearLayout.HORIZONTAL);
+        upd.setGravity(Gravity.CENTER_VERTICAL);
+        upd.setBackground(btnBg(C_CARD, C_LINE, C_PRESS, 8));
+        upd.setPadding(dp(12), dp(10), dp(12), dp(10));
+        LinearLayout ut = new LinearLayout(this);
+        ut.setOrientation(LinearLayout.VERTICAL);
+        TextView uTitle = new TextView(this);
+        uTitle.setText("App update");
+        uTitle.setTextSize(14);
+        uTitle.setTextColor(C_TEXT);
+        uTitle.setTypeface(null, Typeface.BOLD);
+        ut.addView(uTitle);
+        TextView uSum = new TextView(this);
+        uSum.setTextSize(11);
+        uSum.setTextColor(C_MUTED);
+        uSum.setText("v" + ownVersionName()
+                + " installed — tap to check the server");
+        ut.addView(uSum);
+        upd.addView(ut, new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        TextView uArrow = new TextView(this);
+        uArrow.setText("›");
+        uArrow.setTextSize(22);
+        uArrow.setTextColor(C_MUTED);
+        upd.addView(uArrow);
+        upd.setOnClickListener(v -> {
+            Toast.makeText(this, "Checking the server…",
+                    Toast.LENGTH_SHORT).show();
+            checkAppUpdate(true);
+        });
+        LinearLayout.LayoutParams updLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        updLp.topMargin = dp(8);
+        box.addView(upd, updLp);
+
         box.addView(sectionLabel("TRIGGER READ"));
         final Switch swStrong =
                 mkToggle(prefs.getBoolean("strongest_read", true));
@@ -10394,6 +10444,192 @@ public class MainActivity extends Activity {
                 });
             }
         }).start();
+    }
+
+    // ------------------------------------------------------ self-update ----
+    // build.py writes /static/apk-version.json next to the APK. The gun
+    // compares versionCode on open (silent) or from Settings (verbose),
+    // downloads the new APK itself and hands it to the system installer —
+    // no browser, no file manager, no app store. One-time on-device grant:
+    // "allow this app to install unknown apps".
+
+    private int ownVersionCode() {
+        try {
+            return getPackageManager()
+                    .getPackageInfo(getPackageName(), 0).versionCode;
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    private String ownVersionName() {
+        try {
+            return getPackageManager()
+                    .getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Exception e) {
+            return "?";
+        }
+    }
+
+    private String serverBase() {
+        return prefs.getString("server", DEFAULT_SERVER)
+                .replaceAll("/+$", "");
+    }
+
+    /** Plain GET without the station key — static files are open. */
+    private String fetchRaw(String path) throws Exception {
+        HttpURLConnection conn = (HttpURLConnection)
+                new URL(serverBase() + path).openConnection();
+        conn.setConnectTimeout(10000);
+        conn.setReadTimeout(20000);
+        int code = conn.getResponseCode();
+        if (code >= 400) {
+            conn.disconnect();
+            throw new Exception("HTTP " + code);
+        }
+        String text = readAll(conn.getInputStream());
+        conn.disconnect();
+        return text;
+    }
+
+    private void checkAppUpdate(final boolean verbose) {
+        new Thread(() -> {
+            try {
+                JSONObject v = new JSONObject(
+                        fetchRaw("/static/apk-version.json"));
+                final int server = v.optInt("versionCode", 0);
+                final String name = v.optString("versionName", "?");
+                ui.post(() -> {
+                    if (server > ownVersionCode()) {
+                        offerAppUpdate(name);
+                    } else if (verbose) {
+                        Toast.makeText(this, "Up to date ✓ — v"
+                                + ownVersionName(), Toast.LENGTH_SHORT)
+                                .show();
+                    }
+                });
+            } catch (Exception e) {
+                // Silent checks stay silent: an old server without the
+                // version file (or no Wi-Fi yet) is not the gun's problem.
+                if (verbose) {
+                    ui.post(() -> Toast.makeText(this,
+                            "Update check failed: " + e.getMessage(),
+                            Toast.LENGTH_LONG).show());
+                }
+            }
+        }).start();
+    }
+
+    private void offerAppUpdate(String name) {
+        dlg()
+                .setTitle("App update available")
+                .setMessage("v" + name + " is on the server (you're on v"
+                        + ownVersionName() + ").\n\nDownload and install "
+                        + "now? It takes a few seconds and the app reopens "
+                        + "on the new version.")
+                .setPositiveButton("INSTALL", (d, w) -> startAppUpdate())
+                .setNegativeButton("Later", null)
+                .show();
+    }
+
+    private void startAppUpdate() {
+        if (!getPackageManager().canRequestPackageInstalls()) {
+            dlg()
+                    .setTitle("One-time permission")
+                    .setMessage("Android needs you to allow this app to "
+                            + "install its own updates — once. Flip the "
+                            + "toggle on the next screen, come back, and "
+                            + "check for the update again.")
+                    .setPositiveButton("OPEN SETTING", (d, w) ->
+                            startActivity(new Intent(
+                                    Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                    Uri.parse("package:" + getPackageName()))))
+                    .setNegativeButton("Cancel", null)
+                    .show();
+            return;
+        }
+        downloadAndInstallUpdate();
+    }
+
+    private void downloadAndInstallUpdate() {
+        showLoading("Downloading the update…");
+        new Thread(() -> {
+            PackageInstaller.Session session = null;
+            try {
+                HttpURLConnection conn = (HttpURLConnection) new URL(
+                        serverBase() + "/static/tc-rfid-sweep.apk")
+                        .openConnection();
+                conn.setConnectTimeout(10000);
+                conn.setReadTimeout(60000);
+                if (conn.getResponseCode() >= 400) {
+                    throw new Exception("HTTP " + conn.getResponseCode());
+                }
+                PackageInstaller pi =
+                        getPackageManager().getPackageInstaller();
+                PackageInstaller.SessionParams params =
+                        new PackageInstaller.SessionParams(
+                                PackageInstaller.SessionParams
+                                        .MODE_FULL_INSTALL);
+                params.setAppPackageName(getPackageName());
+                int sid = pi.createSession(params);
+                session = pi.openSession(sid);
+                try (InputStream in = conn.getInputStream();
+                     OutputStream out = session.openWrite(
+                             "update.apk", 0, -1)) {
+                    byte[] buf = new byte[65536];
+                    int n;
+                    while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                    session.fsync(out);
+                }
+                conn.disconnect();
+                // The system takes over from here: the receiver fires the
+                // confirm dialog, Android swaps the app on approval.
+                Intent cb = new Intent(this, InstallReceiver.class);
+                int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+                if (Build.VERSION.SDK_INT >= 31) {
+                    flags |= PendingIntent.FLAG_MUTABLE;
+                }
+                session.commit(PendingIntent.getBroadcast(
+                        this, 7348, cb, flags).getIntentSender());
+                ui.post(() -> {
+                    hideLoading();
+                    status.setText("Update downloaded — confirm the "
+                            + "install when Android asks.");
+                });
+            } catch (Exception e) {
+                if (session != null) session.abandon();
+                ui.post(() -> {
+                    hideLoading();
+                    beep(SOUND_ERR);
+                    status.setText("Update failed: " + e.getMessage());
+                });
+            }
+        }).start();
+    }
+
+    /** PackageInstaller status callback: fire the system confirm dialog
+     *  when asked; say why on failure. Success needs no handling — the
+     *  system replaces the app and the operator reopens it. */
+    public static class InstallReceiver extends BroadcastReceiver {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            int status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS,
+                    PackageInstaller.STATUS_FAILURE);
+            if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
+                Intent confirm =
+                        intent.getParcelableExtra(Intent.EXTRA_INTENT);
+                if (confirm != null) {
+                    confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    context.startActivity(confirm);
+                }
+            } else if (status != PackageInstaller.STATUS_SUCCESS) {
+                String msg = intent.getStringExtra(
+                        PackageInstaller.EXTRA_STATUS_MESSAGE);
+                Toast.makeText(context, "App update failed: "
+                        + (msg == null ? "status " + status : msg),
+                        Toast.LENGTH_LONG).show();
+            }
+        }
     }
 
     // ------------------------------------------------------- persistence ----

@@ -135,7 +135,26 @@ def main():
         "-jar", os.path.join(BT, "lib", "apksigner.jar"), "sign",
         "--ks", KEYSTORE, "--ks-pass", "pass:telcansweep",
         "--out", OUT_APK, aligned)
+
+    # Version file for the app's self-updater: the gun GETs this tiny json
+    # and compares versionCode against its own before offering the APK.
+    import json
+    import re
+    manifest = open(os.path.join(HERE, "AndroidManifest.xml"),
+                    encoding="utf-8").read()
+    version = {
+        "versionCode": int(re.search(r'versionCode="(\d+)"', manifest)
+                           .group(1)),
+        "versionName": re.search(r'versionName="([^"]+)"', manifest)
+                       .group(1),
+        "apk": "/static/tc-rfid-sweep.apk",
+    }
+    ver_path = os.path.join(os.path.dirname(OUT_APK), "apk-version.json")
+    with open(ver_path, "w", encoding="utf-8") as fh:
+        json.dump(version, fh)
     print(f"OK: {OUT_APK} ({os.path.getsize(OUT_APK)} bytes)")
+    print(f"    apk-version.json -> v{version['versionName']} "
+          f"(code {version['versionCode']})")
 
 
 if __name__ == "__main__":
