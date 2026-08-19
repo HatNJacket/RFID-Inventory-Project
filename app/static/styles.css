@@ -297,14 +297,17 @@ body {
 }
 .phist-editdock[hidden] { display: none; }
 .phist-editdock .linkbox { margin: 0; }
-/* Duplicate resolver: two product panels side by side */
+/* Duplicate resolver: two product panels side by side. ONE grid with
+   real rows (cards / names / split inputs), so both sides stay
+   horizontally parallel: the images share an axis and the input rows
+   line up even when one side has more names. */
 .dupe2 {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px 12px;
+  align-items: stretch;
   margin: 8px 0;
 }
-.dupe2__col { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .dupe2__card {
   font: inherit;
   color: inherit;
@@ -367,7 +370,20 @@ body {
   font-weight: 650;
 }
 .dupe2__name:disabled { opacity: 0.5; cursor: default; }
-.dupe2__splitin { display: flex; flex-direction: column; gap: 6px; }
+.dupe2__splitin { display: flex; flex-direction: column; gap: 6px; align-self: start; }
+/* The linkbox input carries flex: 1 1 240px — inside this flex COLUMN
+   that basis becomes 240px of HEIGHT (the giant boxes Nick saw). Pin
+   the split inputs to a normal control size. */
+.dupe2__splitin .dupe2__in {
+  flex: 0 0 auto;
+  height: auto;
+  font-size: 13px;
+  padding: 7px 9px;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.dupe2__names { align-self: start; }
 .dupe2__actions {
   display: flex;
   gap: 8px;

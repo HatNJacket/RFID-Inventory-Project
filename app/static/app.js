@@ -7673,8 +7673,10 @@ function renderDupeMerge(t, ctx) {
   let nameSel = null; // {side, idx}
   let splitMode = false;
 
+  // One shared grid, row by row — cards, then names, then split inputs —
+  // so the two sides stay horizontally parallel no matter how many
+  // names one of them has (the old per-side columns drifted).
   const card = (s, i) => `
-    <div class="dupe2__col">
       <button type="button" class="dupe2__card${
         !splitMode && survivor === i ? " dupe2__card--sel" : ""
       }" data-side="${i}" ${splitMode ? "disabled" : ""}>
@@ -7691,7 +7693,8 @@ function renderDupeMerge(t, ctx) {
         <span class="dupe2__chip ${
           s.in_catalog ? "dupe2__chip--ok" : "dupe2__chip--warn"
         }">${s.in_catalog ? "in the live catalog ✓" : "not in the catalog"}</span>
-      </button>
+      </button>`;
+  const names = (s, i) => `
       <div class="dupe2__names">
         ${(s.titles.length ? s.titles : ["(no recorded name)"])
           .map(
@@ -7704,16 +7707,16 @@ function renderDupeMerge(t, ctx) {
             }>${escapeHtml(n)}</button>`
           )
           .join("")}
-      </div>
+      </div>`;
+  const splitIn = (s, i) => `
       <div class="dupe2__splitin" ${splitMode ? "" : "hidden"}>
-        <input class="linkbox__input dupe2__insku" data-side="${i}"
+        <input class="linkbox__input dupe2__in dupe2__insku" data-side="${i}"
                placeholder="Enter SKU" value="${escapeHtml(s.sku)}"
                autocomplete="off" spellcheck="false" />
-        <input class="linkbox__input dupe2__inbc" data-side="${i}"
+        <input class="linkbox__input dupe2__in dupe2__inbc" data-side="${i}"
                placeholder="Enter Barcode" value="${escapeHtml(s.barcode || "")}"
                autocomplete="off" spellcheck="false" />
-      </div>
-    </div>`;
+      </div>`;
 
   const validate = () => {
     const hint = document.getElementById("dupe2-hint");
@@ -7749,7 +7752,7 @@ function renderDupeMerge(t, ctx) {
 
   const draw = () => {
     host.innerHTML =
-      `<div class="dupe2">${card(S[0], 0)}${card(S[1], 1)}</div>` +
+      `<div class="dupe2">${card(S[0], 0)}${card(S[1], 1)}${names(S[0], 0)}${names(S[1], 1)}${splitIn(S[0], 0)}${splitIn(S[1], 1)}</div>` +
       `<div class="dupe2__actions">${
         splitMode
           ? `<button class="reset" id="dupe2-usesku" type="button"
