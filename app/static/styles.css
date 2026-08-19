@@ -465,6 +465,9 @@ body {
   background: rgba(41, 132, 90, 0.1);
 }
 .dupe2__names { align-self: start; }
+/* Disabled merge / confirm-split visibly grey out — .rvw-ok's green
+   otherwise shows full-strength even while the click is blocked */
+.dupe2__act:disabled { opacity: 0.45; cursor: default; }
 /* Both action rows are simply centered — same line, both modes */
 .dupe2__actions {
   display: flex;
