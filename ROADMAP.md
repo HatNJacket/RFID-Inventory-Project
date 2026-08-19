@@ -72,6 +72,19 @@ lower → inventory-check filed); THEIR func app redeployed on Nick's go
 confirm cooldown, update-stock echo suppression — sync verified intact
 after).
 
+Bad-chars fix-on-the-spot (2026-08-19, deployed; C72 3.47/code 65
+released with it — that APK also ships the waiting scan-note
+display+beep): ZWO SKUs carrying the single Unicode char 'Ⅱ' get
+stored as literal '?' by VARCHAR, so records stop matching the live
+product (Nick hit it on EFW-Nikon-II; six more ZWO SKUs still carry
+it in Shopify). The Check step now flags 'bad-chars' (literal '?' or
+any non-ASCII in SKU/barcode), and BOTH terminals let the operator
+change any resolved item's SKU/barcode right there (web: editor rows
+in the item window; C72: CHANGE SKU / BARCODE… in the item editor).
+Overwrites target a CLEAN barcode/scanned code (a mangled SKU
+matches nothing live); SKU saves re-resolve the row so labels print
+the new code. test_badchars.py covers the matrix.
+
 Duplicate RESOLVER finalized 2026-08-19 (several rounds to Nick's
 spec, all deployed): reason line names the shared value ("Duplicate
 barcodes detected: X"); preview cards lead with the product name
