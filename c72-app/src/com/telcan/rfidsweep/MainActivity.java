@@ -5274,6 +5274,34 @@ public class MainActivity extends Activity {
                 showStrayReview(true);
                 return;
             }
+            // Re-tagged bins often have NOTHING left to print — every
+            // box already wears a sticker. That used to dead-end at the
+            // queue-labels 422; now it's a question, and the road ahead
+            // (verify) stays open (Nick, 2026-08-19).
+            int printable = 0, alreadyTagged = 0;
+            for (BItem b : bItems) {
+                if (b.resolved && !b.skipped) printable += b.qty;
+                alreadyTagged += b.taggedBefore;
+            }
+            if (printable == 0) {
+                dlg()
+                        .setTitle("Nothing to print")
+                        .setMessage("No untagged boxes were counted"
+                                + (alreadyTagged > 0
+                                   ? " — all " + alreadyTagged + " box(es)"
+                                     + " here already wear a tag"
+                                   : "")
+                                + ", so there are no labels to queue and "
+                                + "nothing to pair.\n\nSure there's "
+                                + "nothing to print? VERIFY still runs: "
+                                + "the final sweep checks every tag on "
+                                + "the shelf.")
+                        .setPositiveButton("NOTHING TO PRINT — VERIFY",
+                                (d, w) -> skipPrint(true))
+                        .setNegativeButton("Back", null)
+                        .show();
+                return;
+            }
             askPrintOrSkip();
         } else if (step == STEP_PAIR) {
             // Sweep the finished bin here rather than sending the operator
@@ -6312,15 +6340,31 @@ public class MainActivity extends Activity {
     }
 
     private void skipPrint() {
+        skipPrint(false);
+    }
+
+    /** toVerify: nothing to print AND nothing to pair (the re-tagged
+     *  bin case) — pairing would be a dead stop, so land on verify. */
+    private void skipPrint(final boolean toVerify) {
         new Thread(() -> {
             try {
                 api("POST", "/api/batches/" + batchId + "/skip-print",
                         new JSONObject());
                 ui.post(() -> {
                     beep(SOUND_OK);
-                    step = STEP_PAIR;
-                    applyBatchUi();
-                    status.setText("Straight to pairing — no labels queued.");
+                    if (toVerify) {
+                        step = STEP_VERIFY;
+                        startVerifyStep();
+                        applyBatchUi();
+                        status.setText("No labels — straight to VERIFY: "
+                                + "pull the trigger and sweep the whole "
+                                + "shelf, then SEND SWEEP.");
+                    } else {
+                        step = STEP_PAIR;
+                        applyBatchUi();
+                        status.setText("Straight to pairing — no labels "
+                                + "queued.");
+                    }
                 });
             } catch (Exception e) {
                 ui.post(() -> status.setText(e.getMessage()));

@@ -5861,6 +5861,37 @@ document.getElementById("bitem-overlay").addEventListener("click", (e) => {
 
 bEl.queue.addEventListener("click", async () => {
   const total = labelItems().reduce((n, i) => n + i.qty_scanned, 0);
+  // Re-tagged bins often have NOTHING to print — every box already
+  // wears a sticker. Ask instead of dead-ending on the server's 422;
+  // verify still matters (the final sweep checks every tag).
+  if (total === 0) {
+    const tagged = batchItems.reduce((n, i) => n + (i.tagged_before || 0), 0);
+    if (
+      !confirm(
+        `No untagged boxes were counted` +
+          (tagged ? ` — all ${tagged} box(es) here already wear a tag` : "") +
+          `, so there are no labels to queue and nothing to pair.\n\n` +
+          `Sure there's nothing to print? OK skips straight ahead — ` +
+          `run the verify sweep to finish the bin.`
+      )
+    )
+      return;
+    bEl.queue.disabled = true;
+    try {
+      await postJson(`/api/batches/${batch.id}/skip-print`, {});
+      batch.status = "pairing";
+      setBatchResult(
+        "No labels — go to Verify and sweep the shelf to finish.",
+        "ok"
+      );
+      showBatchStage("verify");
+    } catch (err) {
+      setBatchResult(err.message, "err");
+    } finally {
+      bEl.queue.disabled = false;
+    }
+    return;
+  }
   if (!confirm(`Queue ${total} label(s) for bin ${batch.bin_name}?`)) return;
   bEl.queue.disabled = true;
   try {
