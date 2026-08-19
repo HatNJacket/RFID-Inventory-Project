@@ -7389,6 +7389,12 @@ def review_task_context(
                     "sku": raw,
                     "units": sum((t.case_units or 1) for t in tags),
                     "titles": titles,
+                    # The card's display name: what the catalog calls it,
+                    # else the newest tag's recorded title.
+                    "title": (
+                        (bm.product_title if bm is not None else None)
+                        or (newest.product_title if newest else None)
+                    ),
                     "in_catalog": bm is not None,
                     "barcode": (
                         (bm.barcode if bm is not None else None)

@@ -344,6 +344,19 @@ body {
   font-size: 28px;
 }
 .dupe2__sku { font-weight: 700; word-break: break-all; }
+/* Card name line: the product's title, at most two lines, ellipsed
+   past that (Nick) */
+.dupe2__title {
+  font-weight: 700;
+  font-size: 13px;
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
 .dupe2__chip {
   font-size: 11px;
   border-radius: 8px;
@@ -366,7 +379,11 @@ body {
   gap: 10px;
   margin-top: 10px;
 }
-.dupe2__group { display: block; padding: 8px 10px 10px; }
+/* .optgroup (defined LATER in this file, same specificity) is a
+   shrink-wrapping flex row — that left-hugged the SKU pair. The
+   double-class selector outranks it: these groups are block and span
+   the window so the pair halves line up under the product cards. */
+.optgroup.dupe2__group { display: block; width: auto; padding: 8px 10px 10px; }
 .dupe2__group--ghost { visibility: hidden; }
 .dupe2__pair {
   display: grid;
@@ -399,8 +416,11 @@ body {
   box-shadow: inset 0 0 0 1px var(--accent, #29845a);
 }
 .dupe2__name:disabled { cursor: default; }
-.dupe2__splitrow { display: flex; flex-direction: row; gap: 6px; align-items: stretch; }
-.dupe2__splitrow .dupe2__in { flex: 1; }
+/* Selector buttons and split inputs fill their half of the pair, so
+   they sit squarely under their product card (Nick: the SKU buttons
+   were hugging the left) */
+.dupe2__pair .dupe2__name { width: 100%; box-sizing: border-box; }
+.dupe2__splitrow { display: flex; flex-direction: row; gap: 6px; align-items: center; }
 .dupe2__usesku {
   flex-shrink: 0;
   min-width: 34px;
@@ -408,38 +428,40 @@ body {
   line-height: 1;
   padding: 4px 8px;
   cursor: pointer;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
 }
-/* The linkbox input carries flex: 1 1 240px — inside this flex COLUMN
-   that basis becomes 240px of HEIGHT (the giant boxes Nick saw). Pin
-   the split inputs to a normal control size. */
-.dupe2__splitin .dupe2__in {
-  flex: 0 0 auto;
+.dupe2__usesku:hover { border-color: var(--accent, #29845a); }
+/* The linkbox input carries flex: 1 1 240px — inside a flex COLUMN
+   that basis becomes 240px of HEIGHT (the giant barcode boxes Nick
+   saw). Pin the split inputs to the same size and shape as the
+   selector buttons above them. */
+.dupe2__pair .dupe2__in {
+  flex: 1 1 auto;
   height: auto;
-  font-size: 13px;
-  padding: 7px 9px;
-  width: 100%;
+  font-size: 12.5px;
+  padding: 6px 9px;
   min-width: 0;
   box-sizing: border-box;
+  border-radius: 8px;
+  text-align: center;
 }
+/* Barcode inputs sit in a flex COLUMN — no basis, or 240px becomes
+   height. The SKU row is a flex ROW where the input must shrink to
+   make room for the ↴ button, so exclude it. */
+.dupe2__cell:not(.dupe2__splitrow) > .dupe2__in { flex: 0 0 auto; }
 .dupe2__names { align-self: start; }
-/* The two actions sit ON THE THIRDS of the window — same anchors in
-   merge and split mode, so the buttons line up between the views */
+/* Both action rows are simply centered — same line, both modes */
 .dupe2__actions {
-  position: relative;
-  height: 40px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
   margin-top: 10px;
+  min-height: 40px;
 }
-.dupe2__act {
-  position: absolute;
-  top: 0;
-  transform: translateX(-50%);
-  white-space: nowrap;
-  max-width: 46%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.dupe2__act--1 { left: 33.333%; }
-.dupe2__act--2 { left: 66.666%; }
 /* The hint line re-words as picks change — hold its space so nothing
    below it moves */
 #dupe2-hint { min-height: 2.6em; margin-top: 4px; }

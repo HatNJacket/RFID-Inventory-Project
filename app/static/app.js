@@ -7708,8 +7708,14 @@ function renderDupeMerge(t, ctx) {
             ? `<img class="dupe2__img" src="${escapeHtml(s.image_url)}" alt="">`
             : `<div class="dupe2__img dupe2__img--none">📦</div>`
         }
-        <div class="mono dupe2__sku">${escapeHtml(s.sku)}</div>
-        <div class="recent__meta">Barcode ${escapeHtml(s.barcode || "—")}</div>
+        <div class="dupe2__title">${escapeHtml(
+          s.title || (s.titles && s.titles[0]) || s.sku
+        )}</div>
+        <div class="recent__meta mono">${
+          identLabel
+            ? `${identLabel} ${escapeHtml(identValue(s))}`
+            : `SKU ${escapeHtml(s.sku)}`
+        }</div>
         <div class="recent__meta">${s.units} tag unit(s)${
           s.bin ? ` · bin ${escapeHtml(s.bin)}` : ""
         }</div>
@@ -7846,11 +7852,11 @@ function renderDupeMerge(t, ctx) {
       }</div>` +
       `<div class="dupe2__actions">${
         mode === "merge"
-          ? `<button class="reset rvw-ok dupe2__act dupe2__act--1" id="dupe2-merge" type="button" disabled>Merge products into one</button>
-             <button class="reset dupe2__act dupe2__act--2" id="dupe2-split" type="button"
+          ? `<button class="reset rvw-ok dupe2__act" id="dupe2-merge" type="button" disabled>Merge products into one</button>
+             <button class="reset dupe2__act" id="dupe2-split" type="button"
                title="They really are two products — give each its own SKU and barcode">Split products into two</button>`
-          : `<button class="reset rvw-ok dupe2__act dupe2__act--1" id="dupe2-splitgo" type="button" disabled>Confirm split</button>
-             <button class="reset dupe2__act dupe2__act--2" id="dupe2-splitback" type="button">Back</button>`
+          : `<button class="reset rvw-ok dupe2__act" id="dupe2-splitgo" type="button" disabled>Confirm split</button>
+             <button class="reset dupe2__act" id="dupe2-splitback" type="button">Back</button>`
       }</div>` +
       `<p class="recent__meta" id="dupe2-hint"></p>`;
 
@@ -7984,16 +7990,17 @@ function renderDupeMerge(t, ctx) {
     validate();
   };
   draw();
-  // Freeze the window's geometry after the first paint: mode swaps and
+  // Freeze the window's geometry after the first draw: mode swaps and
   // hint changes must never move or flex it (Nick, 2026-08-19).
-  requestAnimationFrame(() => {
-    const modal = host.closest(".phist-modal");
-    if (modal && !modal.style.minHeight) {
-      const r = modal.getBoundingClientRect();
-      modal.style.minHeight = `${Math.ceil(r.height)}px`;
-      modal.style.width = `${Math.ceil(r.width)}px`;
-    }
-  });
+  // Synchronous, not rAF — getBoundingClientRect forces layout, and rAF
+  // never fires in a hidden tab. Card images are fixed-size, so nothing
+  // late-loading can change the height.
+  const modal = host.closest(".phist-modal");
+  if (modal && !modal.style.minHeight) {
+    const r = modal.getBoundingClientRect();
+    modal.style.minHeight = `${Math.ceil(r.height)}px`;
+    modal.style.width = `${Math.ceil(r.width)}px`;
+  }
 }
 
 // Bundles in the could-not-scan window: bundles are never tagged — their
