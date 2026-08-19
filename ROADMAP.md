@@ -85,9 +85,20 @@ Overwrites target a CLEAN barcode/scanned code (a mangled SKU
 matches nothing live); SKU saves re-resolve the row so labels print
 the new code. test_badchars.py covers the matrix.
 
-RE-TAGGING done bins (2026-08-19, built + tested, NOT yet deployed —
-waiting on Nick's restart window; C72 3.49/code 67 rides along, as
-does 3.48's self-updater): sold stock leaves stale tag records, so a
+RE-TAGGING done bins (2026-08-19, DEPLOYED through C72 3.53/code 71
+after four field-test rounds with Nick; the 3.48 self-updater shipped
+with it — the first self-update was 3.49→3.50). Field revisions:
+shelf sweep became its own trigger-driven STEP between collect and
+check (power chip reachable, reads accumulate, RESULTS dialog with
+pinned-on-top buttons); apply SPLITS the collected count (tagged =
+heard, qty = boxes − heard) — never additive (the first cut double-
+counted every heard box); nothing-to-print asks instead of blocking
+and jumps to verify; VERIFY is tri-state — the red chain is printed →
+paired → THIS batch's tags heard (detected split by provenance), and
+earlier tags going quiet is YELLOW ("likely sold or moved before this
+batch"), with the C72 report rebuilt as EasyScan-style cards (status
+stripe/pill + labelled count chips, both themes). Original design:
+sold stock leaves stale tag records, so a
 bin with a COMPLETED full batch gets the re-tag flow. Scanning a bin
 barcode on the gun now CREATES the batch without entering it (card on
 the pick list; yellow "⚠ Previous batch tagging: X ago" chip;
