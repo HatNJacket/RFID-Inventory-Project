@@ -4598,6 +4598,16 @@ def batch_scan(
     }
 
 
+def _mojibake(*vals: str | None) -> bool:
+    """True when a SKU/barcode carries a literal '?' or any non-ASCII
+    char. The database's VARCHAR columns store non-Latin chars AS '?', so
+    neither form survives a round trip and record matching silently
+    breaks (ZWO's SKUs used the single Unicode char 'Ⅱ' for II)."""
+    return any(
+        ch == "?" or ord(ch) > 126 for v in vals for ch in (v or "")
+    )
+
+
 @app.get(
     "/api/batches/{batch_id}/review", dependencies=[Depends(require_user)]
 )
@@ -4607,7 +4617,8 @@ def batch_review(batch_id: int, session: Session = Depends(get_session)):
     matches several listings — candidates included, primary first),
     'count-mismatch' (scanned != expected), 'unconfirmed-name' (serialized
     product whose label name was never operator-confirmed), 'unresolved'
-    (barcode matched nothing)."""
+    (barcode matched nothing), 'bad-chars' (SKU/barcode carries a literal
+    '?' or a non-ASCII char that the database mangles)."""
     batch = _get_batch(session, batch_id)
     # The bin map is read ONCE here and handed to the per-item helpers.
     # Before this, the stale-barcode check and the sibling scan each read
@@ -4765,6 +4776,13 @@ def batch_review(batch_id: int, session: Session = Depends(get_session)):
             # "X new boxes plus Y tagged ones" is physically possible.
             if item.qty_scanned and item.tagged_before:
                 flags.append("double-count")
+            # A literal '?' or any non-ASCII char in the SKU/barcode is a
+            # record that can't round-trip: SQL Server's VARCHAR stores
+            # such chars AS '?' (the Ⅱ-in-a-SKU ZWO case), so every later
+            # lookup quietly misses. Flag it here, where the operator can
+            # fix the SKU/barcode on the spot.
+            if _mojibake(item.sku, item.barcode):
+                flags.append("bad-chars")
         if flags:
             flagged.append({
                 "item": item.as_dict(),

@@ -4752,6 +4752,9 @@ const FLAG_TEXT = {
   "count-mismatch": "count differs from Shopify",
   "unconfirmed-name": "serial name not confirmed",
   unresolved: "unknown barcode",
+  "bad-chars":
+    "the SKU or barcode has a broken special character — records can't " +
+    "match until it's fixed",
   "wrong-bin": "saved bin is a different shelf",
   "double-count":
     "boxes scanned AND marked already-tagged — if the stickered boxes " +
@@ -4989,6 +4992,20 @@ function renderBitem() {
   }
   document.getElementById("bitem-splitwrap").hidden = true;
 
+  // SKU / barcode editor — any resolved product, right here in Check.
+  // The warning line only appears when a broken char was flagged.
+  const identWrap = document.getElementById("bitem-identwrap");
+  identWrap.hidden = !it.resolved;
+  if (it.resolved) {
+    document.getElementById("bitem-identwarn").hidden =
+      !bitemEntry.flags.includes("bad-chars");
+    const skuIn = document.getElementById("bitem-sku");
+    const bcIn = document.getElementById("bitem-bc");
+    skuIn.value = it.sku || "";
+    bcIn.value = it.barcode || "";
+    updateBitemIdentButtons();
+  }
+
   const nameWrap = document.getElementById("bitem-namewrap");
   nameWrap.hidden = !bitemEntry.flags.includes("unconfirmed-name");
   if (!nameWrap.hidden) {
@@ -5076,6 +5093,126 @@ document.getElementById("bitem-labelmode").addEventListener("click", () => {
   bitemLabelMode =
     BITEM_MODES[(BITEM_MODES.indexOf(bitemLabelMode) + 1) % BITEM_MODES.length];
   updateBitemLabelMode();
+});
+
+// --- SKU / barcode fixes in the Check step ----------------------------------
+// Any resolved product's SKU or barcode can be changed on the spot (the
+// mangled-character flag is the loud case, but it works for all). Save
+// buttons grey out at the saved value; ✕ returns the box to what's saved.
+function updateBitemIdentButtons() {
+  const it = bitemEntry ? bitemEntry.item : {};
+  const sku = document.getElementById("bitem-sku").value.trim();
+  const bc = document.getElementById("bitem-bc").value.trim();
+  document.getElementById("bitem-skusave").disabled =
+    !sku || sku === (it.sku || "");
+  document.getElementById("bitem-bcsave").disabled =
+    !bc || bc === (it.barcode || "");
+}
+
+// The overwrite endpoints look the product up in LIVE Shopify, so the
+// target must be a value that still matches there. A mangled SKU
+// ("ZWO EFW-Nikon-?") matches nothing — prefer a clean barcode or
+// scanned code and only fall back to the SKU.
+function bitemIdentTarget() {
+  const it = bitemEntry.item;
+  const clean = (v) => v && !/[?-￿]/.test(v);
+  const vals = [it.barcode, it.scanned_code, it.sku];
+  return vals.find(clean) || vals.find((v) => v) || "";
+}
+
+document
+  .getElementById("bitem-sku")
+  .addEventListener("input", updateBitemIdentButtons);
+document
+  .getElementById("bitem-bc")
+  .addEventListener("input", updateBitemIdentButtons);
+document.getElementById("bitem-skureset").addEventListener("click", () => {
+  if (!bitemEntry) return;
+  document.getElementById("bitem-sku").value = bitemEntry.item.sku || "";
+  updateBitemIdentButtons();
+});
+document.getElementById("bitem-bcreset").addEventListener("click", () => {
+  if (!bitemEntry) return;
+  document.getElementById("bitem-bc").value = bitemEntry.item.barcode || "";
+  updateBitemIdentButtons();
+});
+
+document.getElementById("bitem-skusave").addEventListener("click", async () => {
+  if (!bitemEntry || !batch) return;
+  const operator = operatorEl.value;
+  if (!operator) {
+    alert("Pick who's scanning (top right) first.");
+    return;
+  }
+  const it = bitemEntry.item;
+  const newSku = document.getElementById("bitem-sku").value.trim();
+  const msg = document.getElementById("bitem-msg");
+  const btn = document.getElementById("bitem-skusave");
+  btn.disabled = true;
+  msg.textContent = "Writing the SKU to Shopify…";
+  try {
+    await postJson("/api/sku-overwrites", {
+      target: bitemIdentTarget(),
+      new_sku: newSku,
+      changed_by: operator,
+      confirmed: true,
+    });
+    // Pull the change into this batch row too, so the labels print the
+    // NEW SKU. Shopify's search can trail the write by a few seconds —
+    // if the re-read misses, the row catches up on the next ↻.
+    let note = "";
+    try {
+      const r = await postJson(
+        `/api/batches/${batch.id}/items/${it.id}/resolve`,
+        {}
+      );
+      if (r.item) bitemEntry.item = r.item;
+      if (!r.resolved)
+        note = " (batch row catches up in a few seconds — hit ↻ if needed)";
+    } catch (e) {
+      note = ` (batch row refresh failed: ${e.message})`;
+    }
+    bitemEntry.flags = bitemEntry.flags.filter((f) => f !== "bad-chars");
+    renderBitem();
+    renderCheckList();
+    msg.textContent = `SKU saved ✓ — now ${newSku}${note}.`;
+  } catch (err) {
+    msg.textContent = err.message;
+    updateBitemIdentButtons();
+  }
+});
+
+document.getElementById("bitem-bcsave").addEventListener("click", async () => {
+  if (!bitemEntry || !batch) return;
+  const operator = operatorEl.value;
+  if (!operator) {
+    alert("Pick who's scanning (top right) first.");
+    return;
+  }
+  const it = bitemEntry.item;
+  const newBc = document.getElementById("bitem-bc").value.trim();
+  const msg = document.getElementById("bitem-msg");
+  const btn = document.getElementById("bitem-bcsave");
+  btn.disabled = true;
+  msg.textContent = "Writing the barcode to Shopify…";
+  try {
+    await postJson("/api/barcode-overwrites", {
+      target: bitemIdentTarget(),
+      new_barcode: newBc,
+      changed_by: operator,
+      confirmed: true,
+    });
+    // No re-lookup here: the OLD barcode is what this row scanned as, so
+    // a live search by it would now miss. The row's display just follows.
+    it.barcode = newBc;
+    bitemEntry.flags = bitemEntry.flags.filter((f) => f !== "bad-chars");
+    renderBitem();
+    renderCheckList();
+    msg.textContent = `Barcode saved ✓ — now ${newBc}.`;
+  } catch (err) {
+    msg.textContent = err.message;
+    updateBitemIdentButtons();
+  }
 });
 document
   .getElementById("bitem-labeltext")

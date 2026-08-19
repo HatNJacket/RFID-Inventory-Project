@@ -742,6 +742,27 @@
                     <button class="reset" id="bitem-split-cancel" type="button">Cancel</button>
                   </div>
                 </div>
+                <!-- SKU / barcode fixes: change either on the spot, for any
+                     resolved product (writes to Shopify, History-logged) -->
+                <div id="bitem-identwrap" hidden>
+                  <div class="binwarn" id="bitem-identwarn" hidden>
+                    <span>⚠ The SKU or barcode contains a character the database can't store (it shows as <b>?</b>) — records won't match until it's replaced. Fix it below; the change writes to Shopify.</span>
+                  </div>
+                  <div class="linkbox__form">
+                    <span class="phist-inputwrap">
+                      <input id="bitem-sku" class="linkbox__input" type="text" maxlength="100" autocomplete="off" spellcheck="false" placeholder="Enter SKU" />
+                      <button class="phist-clear" id="bitem-skureset" type="button" title="Back to the saved SKU">✕</button>
+                    </span>
+                    <button class="reset" id="bitem-skusave" type="button" disabled>Save SKU</button>
+                  </div>
+                  <div class="linkbox__form">
+                    <span class="phist-inputwrap">
+                      <input id="bitem-bc" class="linkbox__input" type="text" maxlength="64" autocomplete="off" spellcheck="false" placeholder="Enter Barcode" />
+                      <button class="phist-clear" id="bitem-bcreset" type="button" title="Back to the saved barcode">✕</button>
+                    </span>
+                    <button class="reset" id="bitem-bcsave" type="button" disabled>Save Barcode</button>
+                  </div>
+                </div>
                 <div id="bitem-namewrap" hidden>
                   <p class="linkbox__extra-label">Label name (serialized product — needs confirming):</p>
                   <div class="linkbox__form">

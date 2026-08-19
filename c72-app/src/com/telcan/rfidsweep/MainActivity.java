@@ -3343,6 +3343,7 @@ public class MainActivity extends Activity {
     private Button editPriorBtn;
     private Button editDblBtn;
     private Button editSplitBtn;
+    private Button editIdentBtn;
 
     private void buildItemEditor(FrameLayout outer) {
         editScrim = new FrameLayout(this);
@@ -3540,6 +3541,14 @@ public class MainActivity extends Activity {
         editNoScanBtn = smallBtn("WON'T RFID SCAN");
         editNoScanBtn.setOnClickListener(v -> toggleNoScan());
         mid.addView(editNoScanBtn);
+
+        // Change the product's SKU or barcode on the spot (writes to
+        // Shopify, History-logged). The loud case is the bad-chars flag —
+        // a '?' or unicode char the database mangles — but any resolved
+        // product can be fixed here.
+        editIdentBtn = smallBtn("CHANGE SKU / BARCODE…");
+        editIdentBtn.setOnClickListener(v -> showIdentDialog());
+        mid.addView(editIdentBtn);
 
         // "Some of these boxes already wear a sticker" — the same answer
         // the first-scan question sets, reachable again here for the shelf
@@ -3743,6 +3752,7 @@ public class MainActivity extends Activity {
                 it.resolved && it.sku != null ? View.VISIBLE : View.GONE);
         editNoScanBtn.setText(it.noScan
                 ? "⊘ RFID FLAG ON — REMOVE" : "WON'T RFID SCAN");
+        editIdentBtn.setVisibility(it.resolved ? View.VISIBLE : View.GONE);
         // Only while the count still matters (labels not queued yet) and
         // only when there ARE earlier tags to account for.
         editPriorBtn.setVisibility(it.resolved && step <= STEP_CHECK
@@ -3795,6 +3805,153 @@ public class MainActivity extends Activity {
                              : "sku".equals(mode) ? "SKU line" : "name")));
             } catch (Exception e) {
                 ui.post(() -> editMsg.setText(e.getMessage()));
+            }
+        }).start();
+    }
+
+    /** True when a SKU/barcode carries a literal '?' or a non-ASCII char
+     *  — the server's VARCHAR mangles those and lookups quietly miss
+     *  (ZWO shipped SKUs with the single Unicode char 'Ⅱ' for II). */
+    private static boolean mojibake(String v) {
+        if (v == null) return false;
+        for (int i = 0; i < v.length(); i++) {
+            char c = v.charAt(i);
+            if (c == '?' || c > 126) return true;
+        }
+        return false;
+    }
+
+    /** A lookup target that still matches LIVE Shopify. A mangled SKU
+     *  ("ZWO EFW-Nikon-?") matches nothing there, so prefer a clean
+     *  barcode or scanned code and only fall back to the SKU. */
+    private String identTarget(BItem it) {
+        String[] vals = {it.barcode, it.scannedCode, it.sku};
+        for (String v : vals) {
+            if (v != null && !v.isEmpty() && !mojibake(v)) return v;
+        }
+        for (String v : vals) {
+            if (v != null && !v.isEmpty()) return v;
+        }
+        return null;
+    }
+
+    /** Change this product's SKU and/or barcode in Shopify, right here.
+     *  Any resolved product qualifies — the bad-chars flag is just the
+     *  case that shouts. */
+    private void showIdentDialog() {
+        if (editEntry == null || !editEntry.item.resolved) return;
+        final BItem it = editEntry.item;
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(20), dp(8), dp(20), 0);
+        if (editEntry.flags.contains("bad-chars")) {
+            TextView warn = new TextView(this);
+            warn.setText("⚠ The SKU or barcode has a character the "
+                    + "database can't store (it shows as ?) — records "
+                    + "won't match until it's replaced.");
+            warn.setTextColor(C_WARN);
+            warn.setTextSize(12);
+            warn.setPadding(0, 0, 0, dp(8));
+            box.addView(warn);
+        }
+        TextView skuLbl = new TextView(this);
+        skuLbl.setText("SKU");
+        skuLbl.setTextSize(12);
+        skuLbl.setTextColor(C_MUTED);
+        box.addView(skuLbl);
+        final EditText skuIn = themedEdit();
+        skuIn.setSingleLine(true);
+        skuIn.setText(it.sku == null ? "" : it.sku);
+        box.addView(skuIn);
+        TextView bcLbl = new TextView(this);
+        bcLbl.setText("Barcode");
+        bcLbl.setTextSize(12);
+        bcLbl.setTextColor(C_MUTED);
+        bcLbl.setPadding(0, dp(8), 0, 0);
+        box.addView(bcLbl);
+        final EditText bcIn = themedEdit();
+        bcIn.setSingleLine(true);
+        bcIn.setText(it.barcode != null ? it.barcode
+                : it.scannedCode == null ? "" : it.scannedCode);
+        box.addView(bcIn);
+        TextView note = new TextView(this);
+        note.setText("Writes to Shopify with a History entry. Only the "
+                + "changed field is touched.");
+        note.setTextSize(11);
+        note.setTextColor(C_MUTED);
+        note.setPadding(0, dp(8), 0, 0);
+        box.addView(note);
+        dlg()
+                .setTitle("Change SKU / barcode")
+                .setView(box)
+                .setPositiveButton("SAVE", (d, w) -> saveIdent(it,
+                        skuIn.getText().toString().trim(),
+                        bcIn.getText().toString().trim()))
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void saveIdent(final BItem it, final String newSku,
+            final String newBc) {
+        final String target = identTarget(it);
+        final boolean skuChanged = !newSku.isEmpty()
+                && !newSku.equals(it.sku == null ? "" : it.sku);
+        final boolean bcChanged = !newBc.isEmpty()
+                && !newBc.equals(it.barcode == null ? "" : it.barcode);
+        if (!skuChanged && !bcChanged) {
+            editMsg.setText("Nothing changed.");
+            return;
+        }
+        if (target == null) {
+            editMsg.setText("This row has no code to look the product "
+                    + "up by.");
+            return;
+        }
+        editMsg.setText("Writing to Shopify…");
+        new Thread(() -> {
+            try {
+                // Barcode first: the original target is still fully valid.
+                // If the SKU then changes too, the fresh barcode is the
+                // target that's guaranteed to match live Shopify.
+                if (bcChanged) {
+                    api("POST", "/api/barcode-overwrites", new JSONObject()
+                            .put("target", target)
+                            .put("new_barcode", newBc)
+                            .put("changed_by",
+                                    prefs.getString("device", "C72"))
+                            .put("confirmed", true));
+                }
+                if (skuChanged) {
+                    api("POST", "/api/sku-overwrites", new JSONObject()
+                            .put("target", bcChanged ? newBc : target)
+                            .put("new_sku", newSku)
+                            .put("changed_by",
+                                    prefs.getString("device", "C72"))
+                            .put("confirmed", true));
+                    // Pull the new SKU into the batch row so its labels
+                    // print the NEW code. Shopify's search can trail the
+                    // write — a miss here just means the row catches up
+                    // on the next re-check.
+                    try {
+                        api("POST", "/api/batches/" + batchId + "/items/"
+                                + it.id + "/resolve", new JSONObject());
+                    } catch (Exception ignore) { }
+                }
+                ui.post(() -> {
+                    beep(SOUND_OK);
+                    closeItemEditor();
+                    status.setText("Saved ✓ — "
+                            + (skuChanged && bcChanged
+                               ? "SKU " + newSku + " · barcode " + newBc
+                               : skuChanged ? "SKU is now " + newSku
+                               : "barcode is now " + newBc) + ".");
+                    reloadBatchAndReview();
+                });
+            } catch (Exception e) {
+                ui.post(() -> {
+                    beep(SOUND_ERR);
+                    editMsg.setText(e.getMessage());
+                });
             }
         }).start();
     }
@@ -3875,6 +4032,9 @@ public class MainActivity extends Activity {
             else if ("double-count".equals(f)) sb.append("scanned AND "
                     + "marked already-tagged - stickered boxes may be "
                     + "counted twice");
+            else if ("bad-chars".equals(f)) sb.append("SKU/barcode has a "
+                    + "broken character (?) - records can't match; fix it "
+                    + "with CHANGE SKU / BARCODE");
             else sb.append(f);
         }
         return sb.toString();
