@@ -322,13 +322,13 @@ body {
   align-items: center;
   cursor: pointer;
 }
-.dupe2__card:hover:not(:disabled) { border-color: var(--accent, #29845a); }
+/* Cards are fixed previews now — selection happens in the trait pairs
+   below; the --sel ring just mirrors which side survives */
+.dupe2__card { cursor: default; }
 .dupe2__card--sel {
   border-color: var(--accent, #29845a);
   box-shadow: 0 0 0 2px rgba(41, 132, 90, 0.25);
 }
-/* Split mode: previews stay full-strength — just not clickable */
-.dupe2__card:disabled { cursor: default; }
 .dupe2__img {
   width: 72px;
   height: 72px;
@@ -352,7 +352,33 @@ body {
 }
 .dupe2__chip--ok { background: rgba(41, 132, 90, 0.14); color: #29845a; }
 .dupe2__chip--warn { background: rgba(217, 178, 92, 0.18); color: #8a6116; }
-.dupe2__names { display: flex; flex-direction: column; gap: 5px; }
+/* Concise reason line above the cards */
+.dupe2__reason {
+  margin: 0 0 8px;
+  font-size: 13.5px;
+  font-weight: 650;
+  text-align: center;
+}
+/* Labelled trait groups (the bundle-style broken outline) */
+.dupe2__groups {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+.dupe2__group { display: block; padding: 8px 10px 10px; }
+.dupe2__group--ghost { visibility: hidden; }
+.dupe2__pair {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+}
+.dupe2__cell {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
 .dupe2__name {
   font: inherit;
   color: inherit;
@@ -373,18 +399,7 @@ body {
   box-shadow: inset 0 0 0 1px var(--accent, #29845a);
 }
 .dupe2__name:disabled { cursor: default; }
-/* Split inputs occupy their space from the FIRST render (visibility,
-   not display) — opening split mode never grows or shifts the window. */
-.dupe2__splitin {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  align-self: start;
-}
-/* Class, not the hidden attribute: the global [hidden] display:none
-   !important would collapse the reserved space. */
-.dupe2__splitin--off { visibility: hidden; }
-.dupe2__splitrow { display: flex; gap: 6px; align-items: stretch; }
+.dupe2__splitrow { display: flex; flex-direction: row; gap: 6px; align-items: stretch; }
 .dupe2__splitrow .dupe2__in { flex: 1; }
 .dupe2__usesku {
   flex-shrink: 0;
@@ -407,16 +422,27 @@ body {
   box-sizing: border-box;
 }
 .dupe2__names { align-self: start; }
+/* The two actions sit ON THE THIRDS of the window — same anchors in
+   merge and split mode, so the buttons line up between the views */
 .dupe2__actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
+  position: relative;
+  height: 40px;
   margin-top: 10px;
-  min-height: 34px;
 }
-/* The hint line re-words as picks change — hold its space so the
-   buttons above never move */
-#dupe2-hint { min-height: 2.6em; }
+.dupe2__act {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  max-width: 46%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dupe2__act--1 { left: 33.333%; }
+.dupe2__act--2 { left: 66.666%; }
+/* The hint line re-words as picks change — hold its space so nothing
+   below it moves */
+#dupe2-hint { min-height: 2.6em; margin-top: 4px; }
 
 /* Duplicate-merge picker (resolve window) */
 .dupe-side {

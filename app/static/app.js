@@ -7426,7 +7426,13 @@ function openResolveWindow(t) {
     <div class="recent__meta" style="margin-bottom:10px">${
       t.sku ? `SKU ${escapeHtml(t.sku)} · ` : ""
     }${escapeHtml(t.synthetic ? "live entry — clears itself once the bins agree" : `filed ${fmtAgo(t.created_at)}${t.created_by ? ` by ${t.created_by}` : ""}`)}</div>
-    <div class="recent__meta" style="margin-bottom:10px">${escapeHtml(t.detail || "")}</div>
+    ${
+      // The duplicate resolver writes its own concise reason line — the
+      // raw task detail would repeat the SKUs already on the cards.
+      t.category === "duplicate-product"
+        ? ""
+        : `<div class="recent__meta" style="margin-bottom:10px">${escapeHtml(t.detail || "")}</div>`
+    }
     ${notesHtml}
     ${middle}
     <input class="rv-notein rvw-resnote" id="rvw-note" type="text" maxlength="255" placeholder="Resolution note…" />
@@ -7651,13 +7657,14 @@ async function loadResolveContext(t, counted) {
   }
 }
 
-// The duplicate resolver: both products side by side as PREVIEW cards
-// (click a card to pick the survivor), their recorded names underneath
-// (click one name to pick what the merged product is called), and a
-// SPLIT mode for pairs that really are two products — new SKU + barcode
-// per side, with the confirm lighting up only once the two identities
-// stop interacting. "Use SKU as barcode" covers the no-manufacturer-
-// barcode brands (Svbony).
+// The duplicate resolver (Nick's spec, 2026-08-19): a concise reason
+// line up top ("Duplicate barcodes detected."), the two products as
+// fixed preview panels, and the traits that still TELL THEM APART
+// offered as labelled selector pairs — bundle-style broken-outline
+// groups — pick one from each pair, then merge. Split swaps those
+// selector pairs for SKU + Barcode inputs in the same slots. The two
+// action buttons sit on the window's horizontal thirds in BOTH modes,
+// and the window never moves or resizes once open.
 function renderDupeMerge(t, ctx) {
   const host = document.getElementById("rvw-dupe");
   if (!host || !ctx.sides || ctx.sides.length !== 2) {
@@ -7666,20 +7673,36 @@ function renderDupeMerge(t, ctx) {
   }
   const S = ctx.sides;
   const normId = (v) => String(v || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-  let survivor =
-    S[0].in_catalog && !S[1].in_catalog ? 0
-    : S[1].in_catalog && !S[0].in_catalog ? 1
-    : -1;
-  let nameSel = null; // {side, idx}
-  let splitMode = false;
+  // Why the pair was flagged decides which traits are offered: shared
+  // barcode -> pick Name + SKU; shared SKU -> pick Name + Barcode;
+  // both shared -> only the name still tells them apart.
+  const sameBc = !!(
+    S[0].barcode && S[1].barcode &&
+    normId(S[0].barcode) === normId(S[1].barcode)
+  );
+  const sameSku = normId(S[0].sku) === normId(S[1].sku);
+  const reason =
+    sameBc && sameSku
+      ? "Duplicate SKUs and barcodes detected."
+      : sameBc
+        ? "Duplicate barcodes detected."
+        : "Duplicate SKUs detected.";
+  const identLabel = sameBc && sameSku ? null : sameBc ? "SKU" : "Barcode";
+  const identValue = (s) =>
+    identLabel === "SKU" ? s.sku : s.barcode || "(no barcode)";
 
-  // One shared grid, row by row — cards, then names, then split inputs —
-  // so the two sides stay horizontally parallel no matter how many
-  // names one of them has (the old per-side columns drifted).
+  let mode = "merge";
+  let nameSel = null; // {side, idx}
+  let identSel = null; // 0 | 1 — the surviving identity's side
+  if (identLabel && S[0].in_catalog !== S[1].in_catalog)
+    identSel = S[0].in_catalog ? 0 : 1;
+  const survivorSide = () =>
+    identLabel ? identSel : nameSel ? nameSel.side : null;
+
   const card = (s, i) => `
-      <button type="button" class="dupe2__card${
-        !splitMode && survivor === i ? " dupe2__card--sel" : ""
-      }" data-side="${i}" ${splitMode ? "disabled" : ""}>
+      <div class="dupe2__card${
+        mode === "merge" && survivorSide() === i ? " dupe2__card--sel" : ""
+      }">
         ${
           s.image_url
             ? `<img class="dupe2__img" src="${escapeHtml(s.image_url)}" alt="">`
@@ -7693,46 +7716,102 @@ function renderDupeMerge(t, ctx) {
         <span class="dupe2__chip ${
           s.in_catalog ? "dupe2__chip--ok" : "dupe2__chip--warn"
         }">${s.in_catalog ? "in the live catalog ✓" : "not in the catalog"}</span>
-      </button>`;
-  const names = (s, i) => `
-      <div class="dupe2__names">
-        ${(s.titles.length ? s.titles : ["(no recorded name)"])
-          .map(
-            (n, j) => `<button type="button" class="dupe2__name${
-              !splitMode && nameSel && nameSel.side === i && nameSel.idx === j
-                ? " dupe2__name--sel"
-                : ""
-            }" data-side="${i}" data-idx="${j}" ${
-              splitMode ? "disabled" : ""
-            }>${escapeHtml(n)}</button>`
-          )
-          .join("")}
       </div>`;
-  // Rendered from the start (visibility-hidden outside split mode) so
-  // entering split never grows or shifts the window.
-  const splitIn = (s, i) => `
-      <div class="dupe2__splitin${splitMode ? "" : " dupe2__splitin--off"}">
-        <div class="dupe2__splitrow">
-          <input class="linkbox__input dupe2__in dupe2__insku" data-side="${i}"
-                 placeholder="Enter SKU" value="${escapeHtml(s.sku)}"
-                 autocomplete="off" spellcheck="false" />
-          <button type="button" class="reset dupe2__usesku" data-side="${i}"
-                  title="Use this SKU as the barcode — the house convention when the manufacturer ships no barcode">↴</button>
+
+  const nameGroup = () => `
+      <fieldset class="optgroup dupe2__group">
+        <legend class="optgroup__legend">Product Name</legend>
+        <div class="dupe2__pair">
+          ${[0, 1]
+            .map(
+              (i) => `<div class="dupe2__cell">${(S[i].titles.length
+                ? S[i].titles
+                : ["(no recorded name)"]
+              )
+                .map(
+                  (n, j) => `<button type="button" class="dupe2__name${
+                    nameSel && nameSel.side === i && nameSel.idx === j
+                      ? " dupe2__name--sel"
+                      : ""
+                  }" data-side="${i}" data-idx="${j}">${escapeHtml(n)}</button>`
+                )
+                .join("")}</div>`
+            )
+            .join("")}
         </div>
-        <input class="linkbox__input dupe2__in dupe2__inbc" data-side="${i}"
-               placeholder="Enter Barcode" value="${escapeHtml(s.barcode || "")}"
-               autocomplete="off" spellcheck="false" />
-      </div>`;
+      </fieldset>`;
+  const identGroup = () =>
+    identLabel
+      ? `<fieldset class="optgroup dupe2__group">
+          <legend class="optgroup__legend">${identLabel}</legend>
+          <div class="dupe2__pair">
+            ${[0, 1]
+              .map(
+                (i) => `<div class="dupe2__cell">
+                  <button type="button" class="dupe2__name dupe2__ident${
+                    identSel === i ? " dupe2__name--sel" : ""
+                  }" data-side="${i}">${escapeHtml(identValue(S[i]))}</button>
+                </div>`
+              )
+              .join("")}
+          </div>
+        </fieldset>`
+      : // Both traits shared: reserve the second group's space so the
+        // split view (always two groups) doesn't grow the window.
+        `<fieldset class="optgroup dupe2__group dupe2__group--ghost" aria-hidden="true">
+          <legend class="optgroup__legend">&nbsp;</legend>
+          <div class="dupe2__pair">
+            <div class="dupe2__cell"><button type="button" class="dupe2__name" disabled>&nbsp;</button></div>
+            <div class="dupe2__cell"><button type="button" class="dupe2__name" disabled>&nbsp;</button></div>
+          </div>
+        </fieldset>`;
+
+  const skuInputs = () => `
+      <fieldset class="optgroup dupe2__group">
+        <legend class="optgroup__legend">SKU</legend>
+        <div class="dupe2__pair">
+          ${[0, 1]
+            .map(
+              (i) => `<div class="dupe2__cell dupe2__splitrow">
+                <input class="linkbox__input dupe2__in dupe2__insku" data-side="${i}"
+                       placeholder="Enter SKU" value="${escapeHtml(S[i].sku)}"
+                       autocomplete="off" spellcheck="false" />
+                <button type="button" class="reset dupe2__usesku" data-side="${i}"
+                        title="Use this SKU as the barcode — the house convention when the manufacturer ships no barcode">↴</button>
+              </div>`
+            )
+            .join("")}
+        </div>
+      </fieldset>`;
+  const bcInputs = () => `
+      <fieldset class="optgroup dupe2__group">
+        <legend class="optgroup__legend">Barcode</legend>
+        <div class="dupe2__pair">
+          ${[0, 1]
+            .map(
+              (i) => `<div class="dupe2__cell">
+                <input class="linkbox__input dupe2__in dupe2__inbc" data-side="${i}"
+                       placeholder="Enter Barcode" value="${escapeHtml(S[i].barcode || "")}"
+                       autocomplete="off" spellcheck="false" />
+              </div>`
+            )
+            .join("")}
+        </div>
+      </fieldset>`;
 
   const validate = () => {
     const hint = document.getElementById("dupe2-hint");
-    if (!splitMode) {
+    if (mode === "merge") {
       const merge = document.getElementById("dupe2-merge");
-      merge.disabled = !(survivor >= 0 && nameSel);
-      hint.textContent = merge.disabled
-        ? "Click the product that survives, and the name it keeps."
-        : `Merging ${S[1 - survivor].sku} into ${S[survivor].sku}, named "${
-            S[nameSel.side].titles[nameSel.idx] || S[survivor].sku
+      const ready = !!nameSel && (identLabel ? identSel != null : true);
+      merge.disabled = !ready;
+      const surv = survivorSide();
+      hint.textContent = !ready
+        ? identLabel
+          ? `Pick the name and the ${identLabel.toLowerCase()} the merged product keeps.`
+          : "Pick the name the merged product keeps."
+        : `Merging ${S[1 - surv].sku} into ${S[surv].sku}, named "${
+            S[nameSel.side].titles[nameSel.idx] || S[surv].sku
           }".`;
       return;
     }
@@ -7758,26 +7837,32 @@ function renderDupeMerge(t, ctx) {
 
   const draw = () => {
     host.innerHTML =
-      `<div class="dupe2">${card(S[0], 0)}${card(S[1], 1)}${names(S[0], 0)}${names(S[1], 1)}${splitIn(S[0], 0)}${splitIn(S[1], 1)}</div>` +
-      `<div class="dupe2__actions">${
-        splitMode
-          ? `<button class="reset rvw-ok" id="dupe2-splitgo" type="button" disabled>Confirm split</button>
-             <button class="reset" id="dupe2-splitback" type="button">Back</button>`
-          : `<button class="reset rvw-ok" id="dupe2-merge" type="button" disabled>Merge into the selected product</button>
-             <button class="reset" id="dupe2-split" type="button"
-               title="They really are two products — give each its own SKU and barcode">Split them</button>`
+      `<p class="dupe2__reason">${reason}</p>` +
+      `<div class="dupe2">${card(S[0], 0)}${card(S[1], 1)}</div>` +
+      `<div class="dupe2__groups">${
+        mode === "merge"
+          ? nameGroup() + identGroup()
+          : skuInputs() + bcInputs()
       }</div>` +
-      `<p class="recent__meta" id="dupe2-hint" style="margin-top:6px"></p>`;
+      `<div class="dupe2__actions">${
+        mode === "merge"
+          ? `<button class="reset rvw-ok dupe2__act dupe2__act--1" id="dupe2-merge" type="button" disabled>Merge products into one</button>
+             <button class="reset dupe2__act dupe2__act--2" id="dupe2-split" type="button"
+               title="They really are two products — give each its own SKU and barcode">Split products into two</button>`
+          : `<button class="reset rvw-ok dupe2__act dupe2__act--1" id="dupe2-splitgo" type="button" disabled>Confirm split</button>
+             <button class="reset dupe2__act dupe2__act--2" id="dupe2-splitback" type="button">Back</button>`
+      }</div>` +
+      `<p class="recent__meta" id="dupe2-hint"></p>`;
 
-    host.querySelectorAll(".dupe2__card").forEach((c) =>
-      c.addEventListener("click", () => {
-        survivor = Number(c.dataset.side);
+    host.querySelectorAll(".dupe2__name[data-idx]").forEach((n) =>
+      n.addEventListener("click", () => {
+        nameSel = { side: Number(n.dataset.side), idx: Number(n.dataset.idx) };
         draw();
       })
     );
-    host.querySelectorAll(".dupe2__name").forEach((n) =>
+    host.querySelectorAll(".dupe2__ident").forEach((n) =>
       n.addEventListener("click", () => {
-        nameSel = { side: Number(n.dataset.side), idx: Number(n.dataset.idx) };
+        identSel = Number(n.dataset.side);
         draw();
       })
     );
@@ -7787,15 +7872,13 @@ function renderDupeMerge(t, ctx) {
     const splitBtn = document.getElementById("dupe2-split");
     if (splitBtn)
       splitBtn.addEventListener("click", () => {
-        splitMode = true;
-        survivor = -1;
-        nameSel = null;
+        mode = "split";
         draw();
       });
     const backBtn = document.getElementById("dupe2-splitback");
     if (backBtn)
       backBtn.addEventListener("click", () => {
-        splitMode = false;
+        mode = "merge";
         draw();
       });
     host.querySelectorAll(".dupe2__usesku").forEach((b) =>
@@ -7814,8 +7897,9 @@ function renderDupeMerge(t, ctx) {
           alert("Pick who's scanning (top right) first.");
           return;
         }
-        const into = S[survivor];
-        const from = S[1 - survivor];
+        const surv = survivorSide();
+        const into = S[surv];
+        const from = S[1 - surv];
         const title = S[nameSel.side].titles[nameSel.idx] || null;
         if (
           !confirm(
@@ -7900,6 +7984,16 @@ function renderDupeMerge(t, ctx) {
     validate();
   };
   draw();
+  // Freeze the window's geometry after the first paint: mode swaps and
+  // hint changes must never move or flex it (Nick, 2026-08-19).
+  requestAnimationFrame(() => {
+    const modal = host.closest(".phist-modal");
+    if (modal && !modal.style.minHeight) {
+      const r = modal.getBoundingClientRect();
+      modal.style.minHeight = `${Math.ceil(r.height)}px`;
+      modal.style.width = `${Math.ceil(r.width)}px`;
+    }
+  });
 }
 
 // Bundles in the could-not-scan window: bundles are never tagged — their
