@@ -164,6 +164,38 @@ with patch("app.shopify.lookup_barcode", side_effect=fake_lookup), \
           and items["RETAG-B"]["tagged_before"] == 1
           and items["RETAG-C"]["tagged_before"] == 0,
           {k: v["tagged_before"] for k, v in items.items()})
+    # The SPLIT, not a sum: collect counted every box (2×A, 3×B, 1×C);
+    # the sweep moves heard boxes OUT of qty_scanned so nothing counts
+    # twice and labels print only for the untagged remainder.
+    check("apply SPLITS the collected count (A 2->0, B 3->2, C stays 1)",
+          items["RETAG-A"]["qty_scanned"] == 0
+          and items["RETAG-B"]["qty_scanned"] == 2
+          and items["RETAG-C"]["qty_scanned"] == 1,
+          {k: v["qty_scanned"] for k, v in items.items()})
+    check("box totals survive the split (qty + tagged = collected)",
+          all(items[s]["qty_scanned"] + items[s]["tagged_before"] == n
+              for s, n in (("RETAG-A", 2), ("RETAG-B", 3),
+                           ("RETAG-C", 1))),
+          {k: (v["qty_scanned"], v["tagged_before"])
+           for k, v in items.items()})
+    # Re-apply is idempotent: same sweep, same numbers.
+    cl.post(f"/api/batches/{bid}/shelf-sweep",
+            json={"epcs": swept, "device": "C72", "apply": True})
+    items = {i["sku"]: i for i in cl.get(
+        f"/api/batches/{bid}").json()["items"] if i["sku"]}
+    check("re-applying the same sweep changes nothing",
+          items["RETAG-A"]["qty_scanned"] == 0
+          and items["RETAG-A"]["tagged_before"] == 2
+          and items["RETAG-B"]["qty_scanned"] == 2
+          and items["RETAG-B"]["tagged_before"] == 1,
+          {k: (v["qty_scanned"], v["tagged_before"])
+           for k, v in items.items()})
+    # Split rows never raise the additive double-count nag — qty +
+    # tagged IS the box count there.
+    rev = cl.get(f"/api/batches/{bid}/review").json()
+    check("swept items never flag double-count",
+          all("double-count" not in e["flags"] for e in rev["items"]),
+          [(e["item"]["sku"], e["flags"]) for e in rev["items"]])
     g = cl.get(f"/api/batches/{bid}/shelf-sweep").json()
     check("stored sweep re-reconciles on GET",
           g.get("swept") is True and any(

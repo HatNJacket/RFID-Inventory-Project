@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.telcan.rfidsweep"
-    android:versionCode="68"
-    android:versionName="3.50">
+    android:versionCode="69"
+    android:versionName="3.51">
 
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="33" />
     <uses-permission android:name="android.permission.INTERNET" />

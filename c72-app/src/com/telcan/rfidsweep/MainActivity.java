@@ -5362,7 +5362,10 @@ public class MainActivity extends Activity {
     }
 
     /** RESULTS: the per-product verdicts for everything heard so far.
-     *  KEEP SWEEPING returns to the step with every read intact. */
+     *  The three actions sit PINNED AT THE TOP — the row list scrolls
+     *  in a fixed-height pane below them, so no option ever hides
+     *  behind a scroll (Nick, 2026-08-19). KEEP SWEEPING (and back)
+     *  return to the step with every read intact. */
     private void showShelfResults() {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
@@ -5375,30 +5378,66 @@ public class MainActivity extends Activity {
         shelfStatusLine.setPadding(0, 0, 0, dp(6));
         box.addView(shelfStatusLine);
 
+        final AlertDialog[] ref = new AlertDialog[1];
+        Button applyBtn = smallBtn("APPLY → CHECK");
+        makePrimary(applyBtn);
+        applyBtn.setOnClickListener(v -> {
+            shelfRowsBox = null;
+            shelfStatusLine = null;
+            if (ref[0] != null) ref[0].dismiss();
+            applyShelfSweep();
+        });
+        box.addView(applyBtn, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        LinearLayout brow = new LinearLayout(this);
+        brow.setOrientation(LinearLayout.HORIZONTAL);
+        Button keepBtn = smallBtn("KEEP SWEEPING");
+        keepBtn.setOnClickListener(v -> {
+            if (ref[0] != null) ref[0].dismiss();
+        });
+        brow.addView(keepBtn, weight());
+        Button newBtn = smallBtn("NEW SWEEP");
+        newBtn.setOnClickListener(v -> {
+            shelfRowsBox = null;
+            shelfStatusLine = null;
+            if (ref[0] != null) ref[0].dismiss();
+            clearShelfSweep();
+        });
+        brow.addView(newBtn, weight());
+        LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        bl.topMargin = dp(4);
+        bl.bottomMargin = dp(8);
+        box.addView(brow, bl);
+
         shelfRowsBox = new LinearLayout(this);
         shelfRowsBox.setOrientation(LinearLayout.VERTICAL);
-        box.addView(shelfRowsBox);
+        ScrollView rowsScroll = new ScrollView(this);
+        rowsScroll.addView(shelfRowsBox);
+        // Fixed-height pane: only the ROWS scroll; the buttons above
+        // never move off screen.
+        box.addView(rowsScroll, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(300)));
 
-        ScrollView sc = new ScrollView(this);
-        sc.addView(box);
-        dlg()
+        AlertDialog d = dlg()
                 .setTitle("Shelf sweep — " + batchBin)
-                .setView(sc)
-                .setPositiveButton("APPLY → CHECK", (d, w) ->
-                        applyShelfSweep())
-                .setNegativeButton("KEEP SWEEPING", (d, w) -> {
-                    shelfRowsBox = null;
-                    shelfStatusLine = null;
-                    status.setText(shelfEpcs.size() + " tag(s) kept — "
-                            + "trigger to add more (PWR chip changes "
-                            + "power), RESULTS when done.");
-                })
-                .setNeutralButton("NEW SWEEP", (d, w) -> {
-                    shelfRowsBox = null;
-                    shelfStatusLine = null;
-                    clearShelfSweep();
-                })
-                .show();
+                .setView(box)
+                .create();
+        ref[0] = d;
+        d.setOnDismissListener(dg -> {
+            if (shelfRowsBox != null) {
+                // Closed without APPLY/NEW (back key or KEEP SWEEPING):
+                // the step continues with every read intact.
+                shelfRowsBox = null;
+                shelfStatusLine = null;
+                status.setText(shelfEpcs.size() + " tag(s) kept — "
+                        + "trigger to add more (PWR chip changes "
+                        + "power), RESULTS when done.");
+            }
+        });
+        d.show();
         updateShelfStatusLine();
         renderShelfRows();
     }
@@ -5507,11 +5546,14 @@ public class MainActivity extends Activity {
             batchShelfSweptAt = "applied";
             beep(SOUND_OK);
             step = STEP_CHECK;
-            fetchReview();
+            // Full reload: apply just SPLIT every item's collected count
+            // into already-tagged vs gets-a-label — local numbers are
+            // stale until the server's are pulled back.
+            reloadBatchAndReview();
             applyBatchUi();
-            status.setText("Shelf sweep applied ✓ — already-tagged "
-                    + "counts set from what was heard. Yellow/red rows "
-                    + "are in the check list.");
+            status.setText("Shelf sweep applied ✓ — collected counts "
+                    + "split into already-tagged vs needs-a-label. "
+                    + "Yellow/red rows are in the check list.");
         });
     }
 
@@ -5529,6 +5571,8 @@ public class MainActivity extends Activity {
             int expected = r.optInt("expected");
             int sold = r.optInt("presumed_sold");
             String basis = r.optString("basis");
+            int boxes = r.optInt("boxes");
+            int labels = Math.max(0, boxes - heard);
 
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
@@ -5561,16 +5605,19 @@ public class MainActivity extends Activity {
             if ("match".equals(state)) {
                 line.setTextColor(C_OK);
                 line.setText("✓ " + heard + " heard · " + expected
-                        + " expected" + (sold > 0
-                        ? " — " + sold + " presumed sold ("
+                        + " expected — " + heard + " of " + boxes
+                        + " boxes tagged, " + labels + " get labels"
+                        + (sold > 0
+                        ? " · " + sold + " presumed sold ("
                           + ("sales".equals(basis) ? "sales" : "on-hand")
                           + ")"
                         : ""));
             } else if ("unheard".equals(state)) {
                 line.setTextColor(C_WARN);
                 line.setText("⚠ " + heard + " heard · " + onFile
-                        + " on record · expected " + expected
-                        + " — tap to resolve");
+                        + " on record · expected " + expected + " · "
+                        + labels + " of " + boxes + " boxes get labels "
+                        + "— tap to resolve");
             } else if ("silent".equals(state)) {
                 line.setTextColor(C_OVER);
                 line.setText("✗ " + expected

@@ -4639,6 +4639,9 @@ def _shelf_reconcile(
             "presumed_sold": max(0, on_file - expected),
             "state": state,
             "unheard_epcs": unheard_epcs,
+            # Physical boxes counted at collect (qty + tagged survives
+            # the apply split, so this is stable across re-applies).
+            "boxes": (item.qty_scanned or 0) + (item.tagged_before or 0),
         })
 
     known = set(by_epc.keys())
@@ -4698,16 +4701,25 @@ def batch_shelf_sweep(
             epcs="\n".join(uniq),
         ))
         batch.baseline_at = datetime.now(timezone.utc)
-        # Sweep sets the counter (Nick): tagged_before = tags actually
-        # heard. Noscan products sit out — their stickers can't answer,
-        # so overwriting with 0 would queue double labels.
+        # Collect counts EVERY box on a re-tag bin (Nick: scan without
+        # worrying about stickers); the sweep SPLITS that count into
+        # already-tagged vs needs-a-label. Never additive — the first
+        # cut set tagged_before on top of qty_scanned and every heard
+        # box counted twice. The boxes-here baseline is qty + tagged,
+        # which keeps a re-apply (KEEP SWEEPING → APPLY again)
+        # idempotent. Noscan products sit out entirely — their stickers
+        # can't answer, and zeroing a hand-set count prints doubles.
         by_item = {r["item_id"]: r for r in result["items"]}
         for item in _batch_items(session, batch_id):
             r = by_item.get(item.id)
             if r is None or r["state"] == "noscan":
                 continue
             if r["heard"] > 0 or r["on_file"] > 0:
+                baseline = (
+                    (item.qty_scanned or 0) + (item.tagged_before or 0)
+                )
                 item.tagged_before = r["heard"]
+                item.qty_scanned = max(0, baseline - r["heard"])
         session.commit()
     result["applied"] = payload.apply
     return result
@@ -5331,7 +5343,17 @@ def batch_review(batch_id: int, session: Session = Depends(get_session)):
             # stickered boxes were among the scans, the units double up.
             # A reminder with a one-tap fix, never an automatic change —
             # "X new boxes plus Y tagged ones" is physically possible.
-            if item.qty_scanned and item.tagged_before:
+            # NOT on shelf-swept items: there the sweep SPLIT the
+            # collected count, so qty + tagged together IS the box count.
+            sh_dc = shelf_by_item.get(item.id)
+            if (
+                item.qty_scanned
+                and item.tagged_before
+                and not (
+                    sh_dc is not None
+                    and sh_dc["state"] in ("match", "unheard", "silent")
+                )
+            ):
                 flags.append("double-count")
             # A literal '?' or any non-ASCII char in the SKU/barcode is a
             # record that can't round-trip: SQL Server's VARCHAR stores
