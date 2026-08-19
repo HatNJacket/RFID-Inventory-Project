@@ -4589,6 +4589,25 @@ def _shelf_reconcile(
         }
     except Exception as error:
         logger.warning("shelf-sweep on-hand lookup failed: %s", error)
+    # Offline fallback = the bin-map SNAPSHOT (the house rule), never
+    # raw record counts. The first verify after a restart failed the
+    # live lookup and expected jumped from min(records, on-hand) to ALL
+    # records — Nick's 5/6 became 5/8 and stale sold tags were suddenly
+    # "silent" again.
+    snapshot: dict[str, int] = {}
+    missing = {k for k in skus_upper if k not in on_hand}
+    if missing:
+        for bm in session.scalars(
+            select(BinMapEntry).where(
+                func.upper(BinMapEntry.sku).in_(sorted(missing))
+            )
+        ):
+            if bm.qty is None:
+                continue
+            if not bin_contains(bm.bin, batch.bin_name):
+                continue
+            key = (bm.sku or "").strip().upper()
+            snapshot[key] = snapshot.get(key, 0) + bm.qty
     # "Won't RFID scan" products are EXPECTED silent: no red/yellow, and
     # apply must never zero their already-tagged count (that would print
     # doubles for stickered-but-mute Astronomik boxes).
@@ -4622,6 +4641,9 @@ def _shelf_reconcile(
         elif key in on_hand:
             expected = min(on_file, on_hand[key])
             basis = "on-hand"
+        elif key in snapshot:
+            expected = min(on_file, snapshot[key])
+            basis = "snapshot"
         else:
             expected = on_file
             basis = "records"
@@ -7281,6 +7303,13 @@ def batch_verify(
                     f"{gap} earlier tag(s) silent — likely sold or "
                     f"moved before this batch "
                     f"({do} of {prior_expected} answered)"
+                    + (
+                        " · live count unavailable, comparing against "
+                        "raw records — re-send the sweep to re-check"
+                        if sh is not None
+                        and sh.get("basis") == "records"
+                        else ""
+                    )
                 )
         else:
             r["state"] = "ok"

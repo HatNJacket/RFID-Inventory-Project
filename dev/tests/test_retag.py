@@ -266,6 +266,33 @@ with patch("app.shopify.lookup_barcode", side_effect=fake_lookup), \
             RfidAssignment.rfid_id == "E200BATCH0000000000000001")))
         s.commit()
 
+    # ---- live on-hand outage: bin-map SNAPSHOT is the fallback ------------
+    # (the raw-records fallback resurrected sold tags as "silent" the
+    # moment the API hiccuped — Nick's 5/6 became 5/8 after a restart)
+    from app.models import BinMapEntry
+    with S(get_engine()) as s:
+        s.add(BinMapEntry(sku="RETAG-B", bin="F1-1", qty=3,
+                          product_title="Telrad Finder"))
+        s.commit()
+    with patch("app.shopify.get_quantities_by_skus",
+               side_effect=RuntimeError("cold start")):
+        r = cl.post(f"/api/batches/{bid}/shelf-sweep",
+                    json={"epcs": swept, "device": "C72",
+                          "apply": False}).json()
+    st = {x["sku"]: x for x in r["items"]}
+    check("on-hand outage: bin-map snapshot caps expected (B stays 3)",
+          st["RETAG-B"]["expected"] == 3
+          and st["RETAG-B"]["basis"] == "snapshot", st.get("RETAG-B"))
+    check("on-hand outage: A's expected stays capped by its snapshot-less "
+          "records only as last resort",
+          st["RETAG-A"]["basis"] == "records"
+          and st["RETAG-A"]["expected"] == st["RETAG-A"]["on_file"],
+          st.get("RETAG-A"))
+    with S(get_engine()) as s:
+        s.delete(s.scalar(select(BinMapEntry).where(
+            BinMapEntry.sku == "RETAG-B")))
+        s.commit()
+
     # ---- "won't RFID scan" products sit the verdicts out ------------------
     from app.models import BatchItem, RfidIncompatible
     with S(get_engine()) as s:
