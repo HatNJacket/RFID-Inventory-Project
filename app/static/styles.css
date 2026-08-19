@@ -327,7 +327,8 @@ body {
   border-color: var(--accent, #29845a);
   box-shadow: 0 0 0 2px rgba(41, 132, 90, 0.25);
 }
-.dupe2__card:disabled { opacity: 0.55; cursor: default; }
+/* Split mode: previews stay full-strength — just not clickable */
+.dupe2__card:disabled { cursor: default; }
 .dupe2__img {
   width: 72px;
   height: 72px;
@@ -364,13 +365,35 @@ body {
   text-align: center;
 }
 .dupe2__name:hover:not(:disabled) { border-color: var(--accent, #29845a); }
+/* Selection must not change TEXT METRICS: bolding widened the label and
+   shifted the whole grid on every click (Nick). Border + fill only. */
 .dupe2__name--sel {
   border-color: var(--accent, #29845a);
-  background: rgba(41, 132, 90, 0.10);
-  font-weight: 650;
+  background: rgba(41, 132, 90, 0.14);
+  box-shadow: inset 0 0 0 1px var(--accent, #29845a);
 }
-.dupe2__name:disabled { opacity: 0.5; cursor: default; }
-.dupe2__splitin { display: flex; flex-direction: column; gap: 6px; align-self: start; }
+.dupe2__name:disabled { cursor: default; }
+/* Split inputs occupy their space from the FIRST render (visibility,
+   not display) — opening split mode never grows or shifts the window. */
+.dupe2__splitin {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-self: start;
+}
+/* Class, not the hidden attribute: the global [hidden] display:none
+   !important would collapse the reserved space. */
+.dupe2__splitin--off { visibility: hidden; }
+.dupe2__splitrow { display: flex; gap: 6px; align-items: stretch; }
+.dupe2__splitrow .dupe2__in { flex: 1; }
+.dupe2__usesku {
+  flex-shrink: 0;
+  min-width: 34px;
+  font-size: 16px;
+  line-height: 1;
+  padding: 4px 8px;
+  cursor: pointer;
+}
 /* The linkbox input carries flex: 1 1 240px — inside this flex COLUMN
    that basis becomes 240px of HEIGHT (the giant boxes Nick saw). Pin
    the split inputs to a normal control size. */
@@ -389,7 +412,11 @@ body {
   gap: 8px;
   flex-wrap: wrap;
   margin-top: 10px;
+  min-height: 34px;
 }
+/* The hint line re-words as picks change — hold its space so the
+   buttons above never move */
+#dupe2-hint { min-height: 2.6em; }
 
 /* Duplicate-merge picker (resolve window) */
 .dupe-side {

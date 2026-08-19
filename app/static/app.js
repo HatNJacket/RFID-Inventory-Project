@@ -7708,11 +7708,17 @@ function renderDupeMerge(t, ctx) {
           )
           .join("")}
       </div>`;
+  // Rendered from the start (visibility-hidden outside split mode) so
+  // entering split never grows or shifts the window.
   const splitIn = (s, i) => `
-      <div class="dupe2__splitin" ${splitMode ? "" : "hidden"}>
-        <input class="linkbox__input dupe2__in dupe2__insku" data-side="${i}"
-               placeholder="Enter SKU" value="${escapeHtml(s.sku)}"
-               autocomplete="off" spellcheck="false" />
+      <div class="dupe2__splitin${splitMode ? "" : " dupe2__splitin--off"}">
+        <div class="dupe2__splitrow">
+          <input class="linkbox__input dupe2__in dupe2__insku" data-side="${i}"
+                 placeholder="Enter SKU" value="${escapeHtml(s.sku)}"
+                 autocomplete="off" spellcheck="false" />
+          <button type="button" class="reset dupe2__usesku" data-side="${i}"
+                  title="Use this SKU as the barcode — the house convention when the manufacturer ships no barcode">↴</button>
+        </div>
         <input class="linkbox__input dupe2__in dupe2__inbc" data-side="${i}"
                placeholder="Enter Barcode" value="${escapeHtml(s.barcode || "")}"
                autocomplete="off" spellcheck="false" />
@@ -7755,9 +7761,7 @@ function renderDupeMerge(t, ctx) {
       `<div class="dupe2">${card(S[0], 0)}${card(S[1], 1)}${names(S[0], 0)}${names(S[1], 1)}${splitIn(S[0], 0)}${splitIn(S[1], 1)}</div>` +
       `<div class="dupe2__actions">${
         splitMode
-          ? `<button class="reset" id="dupe2-usesku" type="button"
-               title="Set each product's barcode to its own SKU — the house convention when the manufacturer ships no barcode">Use SKU as barcode for both</button>
-             <button class="reset rvw-ok" id="dupe2-splitgo" type="button" disabled>Confirm split</button>
+          ? `<button class="reset rvw-ok" id="dupe2-splitgo" type="button" disabled>Confirm split</button>
              <button class="reset" id="dupe2-splitback" type="button">Back</button>`
           : `<button class="reset rvw-ok" id="dupe2-merge" type="button" disabled>Merge into the selected product</button>
              <button class="reset" id="dupe2-split" type="button"
@@ -7794,15 +7798,14 @@ function renderDupeMerge(t, ctx) {
         splitMode = false;
         draw();
       });
-    const useSku = document.getElementById("dupe2-usesku");
-    if (useSku)
-      useSku.addEventListener("click", () => {
-        [0, 1].forEach((i) => {
-          host.querySelector(`.dupe2__inbc[data-side="${i}"]`).value =
-            host.querySelector(`.dupe2__insku[data-side="${i}"]`).value.trim();
-        });
+    host.querySelectorAll(".dupe2__usesku").forEach((b) =>
+      b.addEventListener("click", () => {
+        const i = b.dataset.side;
+        host.querySelector(`.dupe2__inbc[data-side="${i}"]`).value =
+          host.querySelector(`.dupe2__insku[data-side="${i}"]`).value.trim();
         validate();
-      });
+      })
+    );
     const mergeBtn = document.getElementById("dupe2-merge");
     if (mergeBtn)
       mergeBtn.addEventListener("click", async () => {
