@@ -206,8 +206,13 @@ with patch("app.shopify.lookup_barcode", side_effect=look), \
           rep["ok"] is True, rep)
     rep = cl.post(f"/api/batches/{bidv}/verify",
                   json={"epcs":["AAAA000000000000000000A4"]}).json()
-    check("hearing only PART of the already-tagged bundle = flagged",
-          rep["ok"] is False, rep)
+    # Contract change (Nick, 2026-08-19): earlier tags going quiet is
+    # YELLOW (sold/moved before this batch), never a red failure of the
+    # batch itself — ok stays True, the row carries the yellow verdict.
+    row = next(i for i in rep["items"] if i["sku"]=="DEEP-1")
+    check("hearing only PART of the already-tagged bundle = YELLOW row",
+          rep["ok"] is True and row["state"]=="prior-silent"
+          and "earlier tag(s) silent" in row["reason"], row)
     rep = cl.post(f"/api/batches/{bidv}/verify", json={"epcs":[]}).json()
     check("hearing only this batch's own pairs (X, none of the earlier "
           "tags) = accepted", rep["ok"] is True, rep)

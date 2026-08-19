@@ -215,6 +215,57 @@ with patch("app.shopify.lookup_barcode", side_effect=fake_lookup), \
           by.get("RETAG-B", {}).get("shelf", {}).get("on_file") == 3,
           by.get("RETAG-B", {}).get("shelf"))
 
+    # ---- verify tri-state: reds only for THIS batch's chain ---------------
+    from app.models import BatchItem
+    v = cl.post(f"/api/batches/{bid}/verify", json={"epcs": swept}).json()
+    vst = {x["sku"]: x for x in v["items"] if x["sku"]}
+    check("verify: A reconciles clean (state ok, presumed sold noted)",
+          vst["RETAG-A"]["state"] == "ok"
+          and "presumed sold" in vst["RETAG-A"]["reason"],
+          vst.get("RETAG-A"))
+    check("verify: B earlier tags silent -> YELLOW, not red",
+          vst["RETAG-B"]["state"] == "prior-silent", vst.get("RETAG-B"))
+    check("verify: C all-silent earlier tags -> YELLOW, not red",
+          vst["RETAG-C"]["state"] == "prior-silent", vst.get("RETAG-C"))
+    v_clean = cl.post(f"/api/batches/{bid}/verify",
+                      json={"epcs": a_epcs + b_epc}).json()
+    check("verify: yellows never break the ok verdict",
+          v_clean["ok"] is True,
+          {k: x["state"] for x in v_clean["items"] if x["sku"]
+           for k in [x["sku"]]})
+    check("verify: a truly unknown EPC still breaks ok",
+          v["ok"] is False and len(v["unknown_epcs"]) == 1,
+          v["unknown_epcs"])
+    # A tag paired IN THIS BATCH that stays silent is the real red.
+    d_item = items["RETAG-D"]
+    with S(get_engine()) as s:
+        s.add(RfidAssignment(
+            rfid_id="E200BATCH0000000000000001",
+            shopify_variant_id="gid:RETAG-D",
+            product_title="Svbony SV220", sku="RETAG-D",
+            bin_location="F1-1", batch_id=bid,
+        ))
+        row = s.get(BatchItem, d_item["id"])
+        row.paired_count = 1
+        s.commit()
+    v = cl.post(f"/api/batches/{bid}/verify", json={"epcs": swept}).json()
+    vst = {x["sku"]: x for x in v["items"] if x["sku"]}
+    check("verify: this batch's pair unheard -> RED batch-silent",
+          vst["RETAG-D"]["state"] == "batch-silent"
+          and v["ok"] is False, vst.get("RETAG-D"))
+    v = cl.post(f"/api/batches/{bid}/verify",
+                json={"epcs": swept + ["E200BATCH0000000000000001"]}).json()
+    vst = {x["sku"]: x for x in v["items"] if x["sku"]}
+    check("verify: hearing that pair turns D green again",
+          vst["RETAG-D"]["state"] == "ok"
+          and vst["RETAG-D"]["detected_batch"] == 1, vst.get("RETAG-D"))
+    with S(get_engine()) as s:
+        row = s.get(BatchItem, d_item["id"])
+        row.paired_count = 0
+        s.delete(s.scalar(select(RfidAssignment).where(
+            RfidAssignment.rfid_id == "E200BATCH0000000000000001")))
+        s.commit()
+
     # ---- "won't RFID scan" products sit the verdicts out ------------------
     from app.models import BatchItem, RfidIncompatible
     with S(get_engine()) as s:

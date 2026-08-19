@@ -5992,22 +5992,21 @@ public class MainActivity extends Activity {
                 // SKUs ride along — open-box twins and kept strays live
                 // in this batch without being in the bin map, and their
                 // tags deserve real counts, not "seen 0 of 0".
-                JSONArray batchSkus = new JSONArray();
-                for (BItem b : bItems) {
-                    if (b.resolved && b.sku != null) batchSkus.put(b.sku);
-                }
-                JSONObject check = api("POST", "/api/bins/"
-                        + URLEncoder.encode(batchBin, "UTF-8") + "/check",
+                // The verdicts come from the batch verify endpoint: it
+                // splits detections into THIS batch's pairs vs earlier
+                // records, so a sold-out tag can only ever go yellow \u2014
+                // never fail the bin (Nick, 2026-08-19).
+                JSONObject check = api("POST", "/api/batches/" + batchId
+                        + "/verify",
                         new JSONObject()
-                                .put("epcs", new JSONArray(epcs))
-                                .put("skus", batchSkus));
-                final JSONArray checkItems = check.optJSONArray("items");
+                                .put("epcs", new JSONArray(epcs)));
+                final JSONObject rep = check;
                 final int sweptCount = epcs.size();
                 ui.post(() -> {
                     beep(SOUND_OK);
                     status.setText("Sweep sent \u2713 (" + sweptCount
                             + " tags) - the PC/iPad is showing it too.");
-                    showVerifyReport(checkItems);
+                    showVerifyReport(rep);
                 });
             } catch (Exception e) {
                 ui.post(() -> {
@@ -6020,178 +6019,249 @@ public class MainActivity extends Activity {
         }).start();
     }
 
-    /** One line of the on-device verify table: a batch item, a bin-map
-     *  product, or both merged by (case-insensitive) SKU. */
+    /** One card of the on-device verify report — straight from the
+     *  batch verify endpoint, verdict included. The chain that must
+     *  hold is printed → paired → THIS batch's tags heard (red when
+     *  broken); earlier tags going quiet is sold/moved-before territory
+     *  and only ever yellow (Nick, 2026-08-19). */
     private static class VRow {
-        String sku, title, variant, imageUrl;
+        String sku, title, imageUrl, state, reason;
         Integer expected;
-        int printed, paired, detected, tagsHere, tagsOnFile;
-        // Boxes stickered before this batch — 0 printed / 0 paired on
-        // this row is correct, the sweep just has to hear their tags.
+        int printed, paired, detected, detectedBatch, detectedOther;
         int taggedBefore;
-        boolean noScan, inBatch;
+        boolean noScan;
 
         String name() {
-            String n = title == null || title.isEmpty() ? "(unknown)"
-                    : title;
-            if (variant != null && !variant.isEmpty()) {
-                n += " (" + variant + ")";
-            }
-            return n;
+            return title == null || title.isEmpty() ? "(unknown)" : title;
+        }
+
+        boolean red() {
+            return "pairing-short".equals(state)
+                    || "batch-silent".equals(state);
+        }
+
+        boolean yellow() {
+            return "prior-silent".equals(state);
         }
     }
 
-    /** A row passes when every printed label got a tag AND every tag this
-     *  bin should hold answered the sweep \u2014 including tags from earlier
-     *  sessions the batch itself never touched. "Won't RFID scan"
-     *  products are expected silent, so only pairing is judged. */
-    private boolean verifyRowOk(VRow r) {
-        if (r.noScan) return r.paired >= r.printed;
-        return r.paired >= r.printed
-                && r.detected >= Math.max(r.paired, r.tagsHere);
+    /** A small labelled stat chip — the EasyScan-style count block:
+     *  muted label on top, bold number under it, tinted when it is the
+     *  offending number. Palette colours only, so both themes work. */
+    private LinearLayout statChip(String label, String value, int tint,
+            int tintBg) {
+        LinearLayout chip = new LinearLayout(this);
+        chip.setOrientation(LinearLayout.VERTICAL);
+        chip.setGravity(Gravity.CENTER);
+        chip.setBackground(rr(tintBg, 0, 8));
+        chip.setPadding(dp(8), dp(3), dp(8), dp(3));
+        TextView l = new TextView(this);
+        l.setText(label);
+        l.setTextSize(9);
+        l.setTextColor(C_MUTED);
+        chip.addView(l);
+        TextView v = new TextView(this);
+        v.setText(value);
+        v.setTextSize(14);
+        v.setTypeface(null, Typeface.BOLD);
+        v.setTextColor(tint);
+        chip.addView(v);
+        return chip;
     }
 
-    /** The verify table: the WHOLE bin's story, not just this batch's \u2014
-     *  a product tagged on an earlier side trip shows its tags and
-     *  whether the sweep heard them. Worst rows first; every row shows
-     *  its SKU and taps open a preview. */
-    private void showVerifyReport(JSONArray checkItems) {
-        java.util.HashMap<String, VRow> bySku = new java.util.HashMap<>();
+    /** The verify report: one card per product — thumbnail, name,
+     *  status pill, a row of count chips and the verdict line. Worst
+     *  first (red, then yellow, then green). */
+    private void showVerifyReport(JSONObject rep) {
         List<VRow> rows = new ArrayList<>();
-        for (int i = 0; checkItems != null && i < checkItems.length(); i++) {
-            JSONObject o = checkItems.optJSONObject(i);
-            if (o == null || o.isNull("sku")) continue;
+        JSONArray items = rep.optJSONArray("items");
+        for (int i = 0; items != null && i < items.length(); i++) {
+            JSONObject o = items.optJSONObject(i);
+            if (o == null) continue;
             VRow r = new VRow();
-            r.sku = o.optString("sku");
+            r.sku = o.isNull("sku") ? "—" : o.optString("sku");
             r.title = o.isNull("product_title") ? ""
                     : o.optString("product_title");
-            r.variant = o.isNull("variant_title") ? null
-                    : o.optString("variant_title");
             r.imageUrl = o.isNull("image_url") ? null
                     : o.optString("image_url");
             r.expected = o.isNull("expected_qty") ? null
-                    : o.optInt("expected_qty");
-            r.tagsOnFile = o.optInt("tags_on_file", 0);
-            // Older servers don't send tags_here; the store-wide count is
-            // the honest fallback.
-            r.tagsHere = o.optInt("tags_here", r.tagsOnFile);
+                    : (Integer) o.optInt("expected_qty");
+            r.printed = o.optInt("printed_count", 0);
+            r.paired = o.optInt("paired_count", 0);
             r.detected = o.optInt("detected", 0);
+            r.detectedBatch = o.optInt("detected_batch", 0);
+            r.detectedOther = o.optInt("detected_other", 0);
+            r.taggedBefore = o.optInt("tagged_before", 0);
             r.noScan = o.optBoolean("rfid_incompatible", false);
-            bySku.put(r.sku.toUpperCase(java.util.Locale.ROOT), r);
+            r.state = o.optString("state", "ok");
+            r.reason = o.isNull("reason") ? "" : o.optString("reason");
+            // Untouched clean rows are collect/check business — only
+            // lines with something to verify (or something wrong) show.
+            if ("ok".equals(r.state) && r.printed == 0 && r.paired == 0
+                    && r.detected == 0 && r.taggedBefore == 0
+                    && (r.reason == null || r.reason.isEmpty())) {
+                continue;
+            }
+            if (r.imageUrl == null && r.sku != null) {
+                for (BItem b : bItems) {
+                    if (r.sku.equalsIgnoreCase(b.sku)) {
+                        r.imageUrl = b.imageUrl;
+                        break;
+                    }
+                }
+            }
             rows.add(r);
         }
-        // Batch rows fold in on top: printed/paired counts, and any stray
-        // worked here that the bin map doesn't list gets its own line.
-        for (BItem b : bItems) {
-            if (!b.resolved) continue;
-            VRow r = b.sku == null ? null
-                    : bySku.get(b.sku.toUpperCase(java.util.Locale.ROOT));
-            if (r == null) {
-                if (b.labelsTotal == 0 && b.paired == 0) continue;
-                r = new VRow();
-                r.sku = b.sku == null ? "\u2014" : b.sku;
-                r.title = b.title;
-                r.variant = b.variant;
-                r.imageUrl = b.imageUrl;
-                r.expected = b.expected;
-                rows.add(r);
-            }
-            r.inBatch = true;
-            r.printed = b.labelsTotal;
-            r.paired = b.paired;
-            r.taggedBefore = b.taggedBefore;
-            r.noScan = r.noScan || b.noScan;
-            if (r.imageUrl == null) r.imageUrl = b.imageUrl;
-        }
-        // Nothing printed, nothing paired, no tags to hear: there is
-        // nothing to verify on that line \u2014 it's collect/check business.
-        java.util.Iterator<VRow> itr = rows.iterator();
-        while (itr.hasNext()) {
-            VRow r = itr.next();
-            if (r.printed == 0 && r.paired == 0 && r.tagsHere == 0
-                    && r.detected == 0 && r.taggedBefore == 0) {
-                itr.remove();
-            }
-        }
-        int bad = 0;
+        int reds = 0, yellows = 0;
         for (VRow r : rows) {
-            if (!verifyRowOk(r)) bad++;
+            if (r.red()) reds++;
+            else if (r.yellow()) yellows++;
         }
-        // Worst first: the rows needing eyes should not hide under a page
-        // of green.
         java.util.Collections.sort(rows, (a, b2) -> {
-            boolean oa = verifyRowOk(a);
-            boolean ob = verifyRowOk(b2);
-            return oa == ob ? 0 : (oa ? 1 : -1);
+            int ra = a.red() ? 0 : a.yellow() ? 1 : 2;
+            int rb = b2.red() ? 0 : b2.yellow() ? 1 : 2;
+            return ra - rb;
         });
 
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(dp(14), dp(8), dp(14), dp(4));
         GradientDrawable gapD = new GradientDrawable();
-        gapD.setSize(0, dp(6));
+        gapD.setSize(0, dp(7));
         box.setShowDividers(LinearLayout.SHOW_DIVIDER_MIDDLE);
         box.setDividerDrawable(gapD);
 
         TextView head = new TextView(this);
-        head.setText(bad == 0
-                ? "Every product checks out \u2713"
-                : bad + " product(s) need a look:");
+        head.setText(reds == 0 && yellows == 0
+                ? "Every product checks out ✓"
+                : (reds > 0 ? reds + " need a look" : "")
+                  + (reds > 0 && yellows > 0 ? " · " : "")
+                  + (yellows > 0
+                     ? yellows + " likely sold/moved earlier" : ""));
         head.setTextSize(13);
         head.setTypeface(null, Typeface.BOLD);
-        head.setTextColor(bad == 0 ? C_OK : C_OVER);
+        head.setTextColor(reds > 0 ? C_OVER
+                : yellows > 0 ? C_WARN : C_OK);
         box.addView(head);
 
         for (VRow r : rows) {
             final VRow fr = r;
-            boolean ok = verifyRowOk(r);
-            LinearLayout row = new LinearLayout(this);
-            row.setGravity(Gravity.CENTER_VERTICAL);
-            row.setBackground(rr(ok ? C_OK_BG : C_OVER_BG, 0, 8));
-            row.setPadding(dp(8), dp(6), dp(8), dp(6));
-            // Product preview in the row itself (Nick, 2026-08-19) \u2014
-            // the \u2713/\u2717 mark rides the corner of the thumbnail.
+            boolean red = r.red();
+            boolean yel = r.yellow();
+            int tone = red ? C_OVER : yel ? C_WARN : C_OK;
+            int toneBg = red ? C_OVER_BG : yel ? C_WARN_BG : C_OK_BG;
+
+            LinearLayout card = new LinearLayout(this);
+            card.setOrientation(LinearLayout.HORIZONTAL);
+            card.setBackground(rr(C_CARD, C_LINE, 10));
+            // Status stripe on the left edge — readable at arm's
+            // length in either theme.
+            View stripe = new View(this);
+            stripe.setBackground(rr(tone, 0, 3));
+            LinearLayout.LayoutParams stl = new LinearLayout.LayoutParams(
+                    dp(4), LinearLayout.LayoutParams.MATCH_PARENT);
+            card.addView(stripe, stl);
+
+            LinearLayout body = new LinearLayout(this);
+            body.setOrientation(LinearLayout.VERTICAL);
+            body.setPadding(dp(8), dp(7), dp(8), dp(7));
+
+            LinearLayout top = new LinearLayout(this);
+            top.setOrientation(LinearLayout.HORIZONTAL);
+            top.setGravity(Gravity.CENTER_VERTICAL);
             ImageView iv = new ImageView(this);
             iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
             iv.setBackgroundColor(C_BG);
             LinearLayout.LayoutParams il =
-                    new LinearLayout.LayoutParams(dp(40), dp(40));
+                    new LinearLayout.LayoutParams(dp(44), dp(44));
             il.rightMargin = dp(8);
-            row.addView(iv, il);
+            top.addView(iv, il);
             loadImage(r.imageUrl, iv);
-            TextView mark = new TextView(this);
-            mark.setText(r.noScan && ok ? "\u2298" : ok ? "\u2713" : "\u2717");
-            mark.setTextSize(18);
-            mark.setTypeface(null, Typeface.BOLD);
-            mark.setTextColor(ok ? C_OK : C_OVER);
-            mark.setPadding(0, 0, dp(10), 0);
-            row.addView(mark);
-            LinearLayout col = new LinearLayout(this);
-            col.setOrientation(LinearLayout.VERTICAL);
+            LinearLayout nameCol = new LinearLayout(this);
+            nameCol.setOrientation(LinearLayout.VERTICAL);
             TextView nm = new TextView(this);
             nm.setText(r.name());
             nm.setTextSize(13);
             nm.setTypeface(null, Typeface.BOLD);
             nm.setTextColor(C_TEXT);
             nm.setMaxLines(2);
-            col.addView(nm);
-            TextView counts = new TextView(this);
-            counts.setText("SKU " + r.sku + "  \u00b7  "
-                    + (r.inBatch
-                       ? "printed " + r.printed + "  \u00b7  tagged " + r.paired
-                         + (r.taggedBefore > 0
-                            ? "  \u00b7  \u2713" + r.taggedBefore + " already tagged"
-                            : "")
-                       : "not in this batch")
-                    + "  \u00b7  "
-                    + (r.noScan ? "won't scan on box \u2014 seen n/a"
-                       : "seen " + r.detected + " of " + r.tagsHere));
-            counts.setTextSize(12);
-            counts.setTextColor(C_MUTED);
-            col.addView(counts);
-            row.addView(col, weight());
-            row.setOnClickListener(vw -> showVerifyRowPreview(fr));
-            box.addView(row);
+            nameCol.addView(nm);
+            TextView skuLine = new TextView(this);
+            skuLine.setText(r.sku
+                    + (r.expected != null
+                       ? "  ·  on-hand " + r.expected : ""));
+            skuLine.setTextSize(11);
+            skuLine.setTextColor(C_MUTED);
+            nameCol.addView(skuLine);
+            top.addView(nameCol, weight());
+            TextView pill = new TextView(this);
+            pill.setText(r.noScan && !red ? "⊘ MUTE"
+                    : red ? "✗ CHECK" : yel ? "⚠ EARLIER"
+                    : "✓ OK");
+            pill.setTextSize(11);
+            pill.setTypeface(null, Typeface.BOLD);
+            pill.setTextColor(tone);
+            pill.setBackground(rr(toneBg, 0, 9));
+            pill.setPadding(dp(8), dp(3), dp(8), dp(3));
+            top.addView(pill);
+            body.addView(top);
+
+            LinearLayout chips = new LinearLayout(this);
+            chips.setOrientation(LinearLayout.HORIZONTAL);
+            LinearLayout.LayoutParams chl = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            chl.topMargin = dp(5);
+            boolean pairShort = "pairing-short".equals(r.state);
+            boolean batchSilent = "batch-silent".equals(r.state);
+            LinearLayout c1 = statChip("PRINTED",
+                    String.valueOf(r.printed),
+                    pairShort ? C_OVER : C_TEXT,
+                    pairShort ? C_OVER_BG : C_SOFT);
+            LinearLayout c2 = statChip("PAIRED",
+                    String.valueOf(r.paired),
+                    pairShort ? C_OVER : C_TEXT,
+                    pairShort ? C_OVER_BG : C_SOFT);
+            LinearLayout c3 = statChip("HEARD (BATCH)",
+                    r.noScan ? "n/a"
+                            : r.detectedBatch + "/" + r.paired,
+                    batchSilent ? C_OVER : C_TEXT,
+                    batchSilent ? C_OVER_BG : C_SOFT);
+            LinearLayout c4 = statChip("HEARD (EARLIER)",
+                    r.noScan ? "n/a"
+                            : r.detectedOther + "/" + Math.max(
+                                    r.taggedBefore, r.detectedOther),
+                    yel ? C_WARN : C_TEXT,
+                    yel ? C_WARN_BG : C_SOFT);
+            LinearLayout.LayoutParams cgap = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            cgap.rightMargin = dp(5);
+            chips.addView(c1, cgap);
+            chips.addView(c2, cgap);
+            chips.addView(c3, cgap);
+            if (r.taggedBefore > 0 || r.detectedOther > 0 || yel) {
+                chips.addView(c4, cgap);
+            }
+            android.widget.HorizontalScrollView hs =
+                    new android.widget.HorizontalScrollView(this);
+            hs.setHorizontalScrollBarEnabled(false);
+            hs.addView(chips);
+            body.addView(hs, chl);
+
+            if (r.reason != null && !r.reason.isEmpty()) {
+                TextView why = new TextView(this);
+                why.setText(("ok".equals(r.state) ? "✓ " : "")
+                        + r.reason);
+                why.setTextSize(11);
+                why.setTextColor("ok".equals(r.state) ? C_MUTED : tone);
+                why.setPadding(0, dp(4), 0, 0);
+                body.addView(why);
+            }
+
+            card.addView(body, weight());
+            card.setOnClickListener(vw -> showVerifyRowPreview(fr));
+            box.addView(card);
         }
         if (rows.isEmpty()) {
             TextView none = new TextView(this);
@@ -6201,12 +6271,47 @@ public class MainActivity extends Activity {
             box.addView(none);
         }
 
+        // Tombstones, foreign tags and unknowns — named, never lumped.
+        JSONArray retired = rep.optJSONArray("retired_heard");
+        for (int i = 0; retired != null && i < retired.length(); i++) {
+            JSONObject t = retired.optJSONObject(i);
+            if (t == null) continue;
+            TextView w = new TextView(this);
+            w.setText("⚠ " + t.optString("sku", "?") + ": "
+                    + t.optString("message"));
+            w.setTextSize(11);
+            w.setTextColor(C_WARN);
+            box.addView(w);
+        }
+        JSONArray foreign = rep.optJSONArray("foreign");
+        if (foreign != null && foreign.length() > 0) {
+            TextView w = new TextView(this);
+            StringBuilder fb = new StringBuilder();
+            for (int i = 0; i < foreign.length(); i++) {
+                JSONObject f = foreign.optJSONObject(i);
+                if (f == null) continue;
+                if (fb.length() > 0) fb.append(", ");
+                fb.append(f.isNull("sku")
+                        ? f.optString("product_title", "?")
+                        : f.optString("sku"));
+            }
+            w.setText(foreign.length() + " tag(s) from other products "
+                    + "in range: " + fb);
+            w.setTextSize(11);
+            w.setTextColor(C_MUTED);
+            box.addView(w);
+        }
+        JSONArray unk = rep.optJSONArray("unknown_epcs");
+        if (unk != null && unk.length() > 0) {
+            TextView w = new TextView(this);
+            w.setText(unk.length() + " unknown tag(s) in range.");
+            w.setTextSize(11);
+            w.setTextColor(C_MUTED);
+            box.addView(w);
+        }
+
         ScrollView sc = new ScrollView(this);
         sc.addView(box);
-        // "Sweep again" used to CLEAR — miss two boxes and you redid the
-        // whole shelf. CONTINUE keeps every read (go catch the missed
-        // boxes, trigger adds to the same sweep, SEND again); NEW SWEEP
-        // is the deliberate start-over (Nick, 2026-08-19).
         dlg()
                 .setTitle("Verify bin " + batchBin)
                 .setView(sc)
@@ -6227,8 +6332,8 @@ public class MainActivity extends Activity {
                 .show();
     }
 
-    /** Tap a verify row: the product card \u2014 image, names, SKU, expected
-     *  stock, and the tag story in words. Read-only. */
+    /** Tap a verify card: the product — image, SKU, and the tag story
+     *  in words. Read-only. */
     private void showVerifyRowPreview(VRow r) {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
@@ -6249,26 +6354,24 @@ public class MainActivity extends Activity {
         StringBuilder sb = new StringBuilder();
         sb.append("SKU: ").append(r.sku);
         if (r.expected != null) {
-            sb.append("\nExpected on this shelf: ").append(r.expected);
+            sb.append("\nShopify on-hand: ").append(r.expected);
         }
-        sb.append("\nTags in the system: ").append(r.tagsOnFile)
-          .append(" (").append(r.tagsHere).append(" in this bin)");
-        if (r.inBatch) {
-            sb.append("\nThis batch: printed ").append(r.printed)
-              .append(", tagged ").append(r.paired);
-            if (r.taggedBefore > 0) {
-                sb.append("\n✓ ").append(r.taggedBefore)
-                  .append(" box(es) were already tagged before this "
-                          + "batch — 0 printed/0 tagged here is "
-                          + "expected; the sweep just has to hear them.");
-            }
-        } else {
-            sb.append("\nNot part of this batch \u2014 tagged in an earlier "
-                    + "session.");
+        sb.append("\nThis batch: printed ").append(r.printed)
+          .append(", paired ").append(r.paired)
+          .append(", heard ").append(r.noScan ? "n/a"
+                  : String.valueOf(r.detectedBatch));
+        if (r.taggedBefore > 0 || r.detectedOther > 0) {
+            sb.append("\nEarlier sessions: ").append(r.taggedBefore)
+              .append(" box(es) already tagged here, heard ")
+              .append(r.detectedOther);
         }
-        sb.append("\nSweep heard: ").append(
-                r.noScan ? "n/a \u2014 flagged \"won't scan on box\""
-                         : r.detected + " of " + r.tagsHere);
+        if (r.noScan) {
+            sb.append("\n⊘ Flagged 'won't RFID scan' — sweeps never "
+                    + "expect these tags to answer.");
+        }
+        if (r.reason != null && !r.reason.isEmpty()) {
+            sb.append("\n\n").append(r.reason);
+        }
         meta.setText(sb.toString());
         box.addView(meta);
 

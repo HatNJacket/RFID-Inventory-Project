@@ -4597,7 +4597,13 @@ def _shelf_reconcile(
     out_items = []
     for item in items:
         key = item.sku.strip().upper()
-        tags = per_sku.get(key, [])
+        # Tags paired by THIS batch are not "earlier records" — they're
+        # the work in progress. Counting them here made a freshly paired
+        # tag look like a silent prior record at verify time.
+        tags = [
+            t for t in per_sku.get(key, [])
+            if t.batch_id != batch.id
+        ]
         in_bin = [
             t for t in tags if bin_contains(t.bin_location, batch.bin_name)
         ]
@@ -7067,6 +7073,11 @@ def batch_verify(
     batch_skus = {(i.sku or "").upper() for i in items if i.sku}
     skuless_barcodes = {i.barcode for i in items if not i.sku and i.barcode}
     detected = {}  # upper-SKU (or ("", barcode)) -> count
+    # Split by provenance: tags paired IN THIS BATCH are the ones a red
+    # verdict is allowed to shout about; everything older only ever goes
+    # yellow (sold/moved before this batch — Nick, 2026-08-19).
+    detected_batch: dict = {}
+    detected_other: dict = {}
     # Where each detected tag's RECORD says it lives — the expandable
     # verify row uses this to explain "1 tag answered, recorded at I1-5".
     detected_bins: dict = {}  # key -> {bin: count}
@@ -7084,6 +7095,10 @@ def batch_verify(
             key = ("", row.barcode)
         if key is not None:
             detected[key] = detected.get(key, 0) + 1
+            if row.batch_id == batch_id:
+                detected_batch[key] = detected_batch.get(key, 0) + 1
+            else:
+                detected_other[key] = detected_other.get(key, 0) + 1
             bkey = (row.bin_location or "").strip() or "(no bin)"
             detected_bins.setdefault(key, {})
             detected_bins[key][bkey] = detected_bins[key].get(bkey, 0) + 1
@@ -7136,6 +7151,19 @@ def batch_verify(
         rec = _shelf_reconcile(session, batch, sorted(epcs))
         shelf_by_item = {r["item_id"]: r for r in rec["items"]}
 
+    # Labels this batch printed per SKU: the anchor of the verdict —
+    # printed vs paired vs this-batch-tags-heard is the chain that must
+    # hold; older records can only colour things yellow.
+    printed: dict[str, int] = {}
+    for job in session.scalars(
+        select(PrintJob).where(
+            PrintJob.batch_id == batch_id,
+            PrintJob.status.in_(("pending", "printing", "done")),
+        )
+    ):
+        if job.sku:
+            printed[job.sku.upper()] = printed.get(job.sku.upper(), 0) + 1
+
     noscan = _noscan_skus(session)
     report = [
         {
@@ -7185,19 +7213,60 @@ def batch_verify(
     ]
     for r in report:
         r["shelf"] = shelf_by_item.get(r["item_id"])
+        key = (
+            (r["sku"] or "").upper()
+            if r["sku"]
+            else ("", next(
+                (i.barcode for i in items if i.id == r["item_id"]), None
+            ))
+        )
+        db = detected_batch.get(key, 0)
+        do = detected_other.get(key, 0)
+        r["detected_batch"] = db
+        r["detected_other"] = do
+        r["printed_count"] = printed.get((r["sku"] or "").upper(), 0)
+        # The verdict chain (Nick, 2026-08-19): printed → paired →
+        # this batch's tags heard must all agree, else RED. Older tags
+        # going quiet is a different story — sold or moved before this
+        # batch — and only ever YELLOW. Noscan products judge pairing
+        # alone.
+        sh = r["shelf"]
+        prior_expected = r["tagged_before"]
+        if sh is not None and sh["state"] != "noscan":
+            prior_expected = max(prior_expected, sh["expected"])
+        na = r["rfid_incompatible"]
+        if r["paired_count"] < r["printed_count"]:
+            r["state"] = "pairing-short"
+            r["reason"] = (
+                f"{r['printed_count'] - r['paired_count']} printed "
+                f"label(s) never got a tag paired — finish pairing"
+            )
+        elif not na and db < r["paired_count"]:
+            r["state"] = "batch-silent"
+            r["reason"] = (
+                f"{r['paired_count'] - db} tag(s) paired in THIS batch "
+                f"didn't answer — find those boxes"
+            )
+        elif not na and do < prior_expected:
+            r["state"] = "prior-silent"
+            r["reason"] = (
+                f"{prior_expected - do} earlier tag(s) silent — likely "
+                f"sold or moved before this batch"
+            )
+        else:
+            r["state"] = "ok"
+            r["reason"] = (
+                f"{sh['presumed_sold']} recorded tag(s) presumed sold"
+                if sh is not None and sh.get("presumed_sold")
+                else ""
+            )
     ok = (
         not unknown
         and not foreign
         and not retired_heard
         and all(
-            # A sweep is right when it hears this batch's own pairs
-            # alone (already-tagged boxes may sit out of range) OR pairs
-            # plus the already-tagged boxes together. In between — a
-            # couple answering from across the store rather than the
-            # whole bundle — or above means something needs eyes.
-            r["detected"] == r["paired_count"]
-            or r["detected"] == r["paired_count"] + r["tagged_before"]
-            for r in report if not r["rfid_incompatible"]
+            r["state"] not in ("pairing-short", "batch-silent")
+            for r in report
         )
     )
     return {

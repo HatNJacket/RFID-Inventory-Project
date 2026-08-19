@@ -1480,6 +1480,10 @@ body {
 }
 .bexp { font-size: 12px; color: var(--ink-dim); white-space: nowrap; }
 .bexp--off { color: var(--warn-ink); font-weight: 600; }
+/* Verify tri-state: yellow = earlier tags silent (sold/moved before
+   this batch) — informational amber, never the red of a broken batch */
+.bexp--warn { color: #a3781a; font-weight: 600; }
+.bvx-flag--yel td { background: rgba(217, 178, 92, 0.1); }
 .binwarn {
   flex-basis: 100%;
   display: flex;

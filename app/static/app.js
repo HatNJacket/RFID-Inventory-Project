@@ -6611,6 +6611,7 @@ async function runVerifyCheck() {
   let boxesOk = true;
   let pairedOk = true;
   let detectedOk = true;
+  let yellowCount = 0;
   const rows = rep.items
     .map((r) => {
       // "Won't RFID scan" products are expected silent: their detected
@@ -6628,13 +6629,18 @@ async function runVerifyCheck() {
       // together. A count in between — one or two answering from across
       // the store rather than the whole bundle — or above is the only
       // case worth a flag (Nick, 2026-08-06).
-      const detected =
-        na ||
-        r.detected === r.paired_count ||
-        r.detected === r.paired_count + tb;
+      // Server verdict (2026-08-19): red only when THIS batch's chain
+      // breaks (printed → paired → own tags heard); earlier tags going
+      // quiet is yellow — sold or moved before this batch, never a
+      // failure of the work just done.
+      const red =
+        r.state === "pairing-short" || r.state === "batch-silent";
+      const yel = r.state === "prior-silent";
+      const detected = !red;
       if (r.qty_scanned !== r.paired_count) boxesOk = false;
       if (!paired) pairedOk = false;
-      if (!detected) detectedOk = false;
+      if (red) detectedOk = false;
+      if (yel) yellowCount++;
       // Shopify's expected count, with the shortfall/overage in brackets:
       // "6 (−2)" = expected 6, found 4. DISPLAY ONLY — nothing here (and
       // no click) ever writes a count back.
@@ -6657,7 +6663,7 @@ async function runVerifyCheck() {
             title="Write the found count to Shopify on-hand — confirmed, logged, undoable from History">Set to ${found}</button></div>`;
         }
       }
-      const flaggedRow = !(paired && detected) && !na;
+      const flaggedRow = (red || yel || !paired) && !na;
       // A flagged row expands (like the Review inbox) into the item's
       // preview, what the sweep actually said, and the two counts whose
       // sum is checked against Shopify — corrected here, never written
@@ -6671,18 +6677,18 @@ async function runVerifyCheck() {
               ${r.image_url ? `<img class="bvx__img" src="${escapeHtml(r.image_url)}" alt="">` : ""}
               <div class="bvx__body">
                 <div class="bvx__why">${
-                  !paired
+                  r.reason ? `${escapeHtml(r.reason)}. ` : ""
+                }${
+                  !paired && !r.reason
                     ? `${r.paired_count} tag(s) paired vs ${r.qty_scanned} box(es) scanned — finish pairing at the gun, or fix the scan count below. `
                     : ""
-                }${
-                  !detected
-                    ? `The sweep heard <b>${r.detected}</b> tag(s) of this product${
-                        binsSaid ? ` (records say: ${binsSaid})` : ""
-                      }; this batch paired ${r.paired_count}${
-                        tb ? ` and ${tb} were marked already-tagged` : ""
-                      }. If the extra box(es) are really on this shelf, raise "Already tagged" until the numbers agree.`
-                    : ""
-                }</div>
+                }The sweep heard <b>${r.detected}</b> tag(s) of this product (${
+                  r.detected_batch ?? 0
+                } from this batch, ${r.detected_other ?? 0} earlier${
+                  binsSaid ? `; records say: ${binsSaid}` : ""
+                }); this batch printed ${r.printed_count ?? 0} and paired ${
+                  r.paired_count
+                }${tb ? `, with ${tb} marked already-tagged` : ""}.</div>
                 <div class="bvx__inputs">
                   <label>New boxes scanned
                     <input type="number" min="0" max="500" class="bvx-qty" value="${r.qty_scanned}"></label>
@@ -6697,7 +6703,7 @@ async function runVerifyCheck() {
         : "";
       return `<tr${
         flaggedRow
-          ? ` class="bvx-flag" data-item="${r.item_id}" title="Click to review — what the sweep heard vs this batch's counts"`
+          ? ` class="bvx-flag${yel && !red ? " bvx-flag--yel" : ""}" data-item="${r.item_id}" title="Click to review — what the sweep heard vs this batch's counts"`
           : ""
       }>
         <td>${productLink(r.product_title, r.shopify_product_id, r.sku)}${
@@ -6750,10 +6756,18 @@ async function runVerifyCheck() {
         <td class="num${paired ? "" : " bexp--off"}">${r.paired_count}${
           tb ? ` <span class="bexp--note" title="the ${tb} already-tagged box(es) were paired in an earlier session, not here">+${tb} earlier</span>` : ""
         }</td>
-        <td class="num${detected ? "" : " bexp--off"}">${
+        <td class="num${red ? " bexp--off" : yel ? " bexp--warn" : ""}">${
           na ? (r.detected > 0 ? `${r.detected} ⊘` : "n/a") : r.detected
         }</td>
-        <td>${na && paired ? "⊘" : paired && detected ? "✓" : "⚠ ▸"}</td>
+        <td>${
+          na && paired
+            ? "⊘"
+            : red || !paired
+              ? "⚠ ▸"
+              : yel
+                ? '<span class="bexp--warn" title="earlier tags silent — likely sold or moved before this batch">⚠ ▸</span>'
+                : "✓"
+        }</td>
       </tr>${detail}`;
     })
     .join("");
@@ -6774,12 +6788,16 @@ async function runVerifyCheck() {
   // The verdict line states which of the three columns agree.
   const mismatches = [];
   if (!pairedOk) mismatches.push("tags paired ≠ boxes scanned");
-  if (!detectedOk) mismatches.push("tags detected ≠ tags paired");
+  if (!detectedOk)
+    mismatches.push("tags paired in THIS batch are missing from the sweep");
   const verdict = mismatches.length
-    ? `<p class="result result--err">⚠ Boxes / paired / detected do NOT all agree — ${mismatches.join(
+    ? `<p class="result result--err">⚠ This batch's own chain (printed → paired → heard) does NOT hold — ${mismatches.join(
         " · "
       )}. Check the ⚠ rows.</p>`
-    : `<p class="result result--ok">✓ Boxes, paired and detected all agree for every product.</p>`;
+    : `<p class="result result--ok">✓ Every label printed here was paired, and every tag paired here answered the sweep.</p>`;
+  const yellowNote = yellowCount
+    ? `<p class="result result--warn-soft">⚠ ${yellowCount} product(s) have EARLIER tags that stayed silent — likely sold or moved before this batch. Yellow rows; the retire buttons clean their records.</p>`
+    : "";
   // Expected silence is stated out loud, not hidden inside a green tick:
   // flagged products were paired but no sweep will ever hear them.
   const naSilent = rep.items.filter(
@@ -6837,7 +6855,7 @@ async function runVerifyCheck() {
     : "";
 
   bEl.verifyReport.innerHTML = `
-    ${verdict}${retiredNote}${naNote}${tbNote}${unresolvedNote}
+    ${verdict}${yellowNote}${retiredNote}${naNote}${tbNote}${unresolvedNote}
     <div class="inventory__scroll"><table class="inventory__table">
       <thead><tr><th>Product</th><th>SKU</th><th class="num">Boxes</th><th class="num" title="Shopify on-hand for this shelf; brackets show scanned-vs-expected">Expected</th><th class="num">Paired</th><th class="num">Detected</th><th></th></tr></thead>
       <tbody>${rows}</tbody>
