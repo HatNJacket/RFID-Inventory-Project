@@ -7440,7 +7440,11 @@ function openResolveWindow(t) {
       ${
         t.synthetic
           ? `<button class="rv-btn rv-btn--dismiss rvw-grow" id="rvw-dismiss" type="button" title="Suppressed for this exact disagreement — reappears only if either bin changes">Dismiss this mismatch</button>`
-          : `<button class="rv-btn rv-btn--resolve rvw-grow" id="rvw-resolve" type="button">Mark resolved</button>`
+          : t.category === "duplicate-product"
+            ? // Merge or split IS the resolution — the only other honest
+              // exit is a dismissal (which this pair-flag never re-raises).
+              `<button class="rv-btn rv-btn--dismiss rvw-grow" id="rvw-dupedismiss" type="button" title="They're fine as they are — closes the flag without changing anything, and this pair is never flagged again">Dismiss</button>`
+            : `<button class="rv-btn rv-btn--resolve rvw-grow" id="rvw-resolve" type="button">Mark resolved</button>`
       }
       <button class="rv-btn" id="rvw-cancel" type="button">Cancel</button>
     </div>`;
@@ -7484,6 +7488,30 @@ function openResolveWindow(t) {
       if (code) {
         el.barcode.value = code;
         stationBarcodeScan(code);
+      }
+    });
+
+  const dupeDismiss = document.getElementById("rvw-dupedismiss");
+  if (dupeDismiss)
+    dupeDismiss.addEventListener("click", async () => {
+      const operator = operatorEl.value;
+      if (!operator) {
+        alert("Pick who's scanning (top right) first.");
+        return;
+      }
+      dupeDismiss.disabled = true;
+      try {
+        await postJson(`/api/review-tasks/${t.id}/resolve`, {
+          resolved_by: operator,
+          dismissed: true,
+          note: noteVal().slice(0, 255) || null,
+        });
+        reviewTasks = reviewTasks.filter((x) => x.id !== t.id);
+        closeResolveWindow();
+        renderReview();
+      } catch (err) {
+        dupeDismiss.disabled = false;
+        alert(err.message);
       }
     });
 
@@ -7681,12 +7709,18 @@ function renderDupeMerge(t, ctx) {
     normId(S[0].barcode) === normId(S[1].barcode)
   );
   const sameSku = normId(S[0].sku) === normId(S[1].sku);
+  // "Duplicate barcodes detected: DUMMY-000111" — name the value too
+  // (both saved forms when they differ only in formatting).
+  const joinVals = (a, b) =>
+    String(a || "").toUpperCase() === String(b || "").toUpperCase()
+      ? a
+      : `${a} / ${b}`;
   const reason =
     sameBc && sameSku
-      ? "Duplicate SKUs and barcodes detected."
+      ? `Duplicate SKUs and barcodes detected: ${joinVals(S[0].sku, S[1].sku)} · barcode ${joinVals(S[0].barcode, S[1].barcode)}`
       : sameBc
-        ? "Duplicate barcodes detected."
-        : "Duplicate SKUs detected.";
+        ? `Duplicate barcodes detected: ${joinVals(S[0].barcode, S[1].barcode)}`
+        : `Duplicate SKUs detected: ${joinVals(S[0].sku, S[1].sku)}`;
   const identLabel = sameBc && sameSku ? null : sameBc ? "SKU" : "Barcode";
   const identValue = (s) =>
     identLabel === "SKU" ? s.sku : s.barcode || "(no barcode)";
@@ -7783,7 +7817,7 @@ function renderDupeMerge(t, ctx) {
                        placeholder="Enter SKU" value="${escapeHtml(S[i].sku)}"
                        autocomplete="off" spellcheck="false" />
                 <button type="button" class="reset dupe2__usesku" data-side="${i}"
-                        title="Use this SKU as the barcode — the house convention when the manufacturer ships no barcode">↴</button>
+                        title="Use this SKU as the barcode.">↴</button>
               </div>`
             )
             .join("")}
@@ -7821,10 +7855,33 @@ function renderDupeMerge(t, ctx) {
           }".`;
       return;
     }
-    const val = (cls, i) =>
-      host.querySelector(`.${cls}[data-side="${i}"]`).value.trim();
-    const [sa, sb] = [val("dupe2__insku", 0), val("dupe2__insku", 1)];
-    const [ba, bb] = [val("dupe2__inbc", 0), val("dupe2__inbc", 1)];
+    const inEl = (cls, i) => host.querySelector(`.${cls}[data-side="${i}"]`);
+    const skuEls = [inEl("dupe2__insku", 0), inEl("dupe2__insku", 1)];
+    const bcEls = [inEl("dupe2__inbc", 0), inEl("dupe2__inbc", 1)];
+    const [sa, sb] = skuEls.map((e) => e.value.trim());
+    const [ba, bb] = bcEls.map((e) => e.value.trim());
+    // Which fields are in a live clash right now (an empty SKU counts —
+    // it can't stand on its own).
+    const clash = { sku: [!sa, !sb], bc: [false, false] };
+    if (sa && sb && normId(sa) === normId(sb)) clash.sku = [true, true];
+    if (ba && bb && normId(ba) === normId(bb)) clash.bc = [true, true];
+    if (ba && sb && normId(ba) === normId(sb)) {
+      clash.bc[0] = true;
+      clash.sku[1] = true;
+    }
+    if (bb && sa && normId(bb) === normId(sa)) {
+      clash.bc[1] = true;
+      clash.sku[0] = true;
+    }
+    // The fields that CAUSED the flag show red while clashing and green
+    // once fixed; innocent fields only ever go red (never green).
+    const offending = { sku: sameSku, bc: sameBc };
+    [["sku", skuEls], ["bc", bcEls]].forEach(([k, els]) =>
+      els.forEach((e, i) => {
+        e.classList.toggle("dupe2__in--bad", clash[k][i]);
+        e.classList.toggle("dupe2__in--ok", offending[k] && !clash[k][i]);
+      })
+    );
     let problem = null;
     if (!sa || !sb) problem = "Both products need a SKU.";
     else if (normId(sa) === normId(sb)) problem = "The two SKUs are still the same.";
@@ -7835,15 +7892,12 @@ function renderDupeMerge(t, ctx) {
     else if (bb && normId(bb) === normId(sa))
       problem = `${sb}'s barcode equals the other SKU — they'd still collide.`;
     document.getElementById("dupe2-splitgo").disabled = !!problem;
-    document.getElementById("dupe2-hint").textContent =
-      problem ||
-      "The two identities no longer interact ✓ — a barcode matching its " +
-        "OWN SKU is fine.";
+    document.getElementById("dupe2-hint").textContent = problem || "";
   };
 
   const draw = () => {
     host.innerHTML =
-      `<p class="dupe2__reason">${reason}</p>` +
+      `<p class="dupe2__reason">${escapeHtml(reason)}</p>` +
       `<div class="dupe2">${card(S[0], 0)}${card(S[1], 1)}</div>` +
       `<div class="dupe2__groups">${
         mode === "merge"

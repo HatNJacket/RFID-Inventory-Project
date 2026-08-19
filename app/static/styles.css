@@ -452,6 +452,18 @@ body {
    height. The SKU row is a flex ROW where the input must shrink to
    make room for the ↴ button, so exclude it. */
 .dupe2__cell:not(.dupe2__splitrow) > .dupe2__in { flex: 0 0 auto; }
+/* Split fields that still clash go red; the fields that caused the
+   flag go green once they stop clashing (innocent fields never do) */
+.dupe2__pair .dupe2__in--bad {
+  border-color: #c0392b;
+  box-shadow: inset 0 0 0 1px #c0392b;
+  background: rgba(192, 57, 43, 0.08);
+}
+.dupe2__pair .dupe2__in--ok {
+  border-color: var(--accent, #29845a);
+  box-shadow: inset 0 0 0 1px var(--accent, #29845a);
+  background: rgba(41, 132, 90, 0.1);
+}
 .dupe2__names { align-self: start; }
 /* Both action rows are simply centered — same line, both modes */
 .dupe2__actions {
