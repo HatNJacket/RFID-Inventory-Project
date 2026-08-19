@@ -6028,7 +6028,7 @@ public class MainActivity extends Activity {
         String sku, title, imageUrl, state, reason;
         Integer expected;
         int printed, paired, detected, detectedBatch, detectedOther;
-        int taggedBefore;
+        int taggedBefore, priorExpected;
         boolean noScan;
 
         String name() {
@@ -6092,6 +6092,7 @@ public class MainActivity extends Activity {
             r.detectedBatch = o.optInt("detected_batch", 0);
             r.detectedOther = o.optInt("detected_other", 0);
             r.taggedBefore = o.optInt("tagged_before", 0);
+            r.priorExpected = o.optInt("prior_expected", r.taggedBefore);
             r.noScan = o.optBoolean("rfid_incompatible", false);
             r.state = o.optString("state", "ok");
             r.reason = o.isNull("reason") ? "" : o.optString("reason");
@@ -6230,7 +6231,7 @@ public class MainActivity extends Activity {
             LinearLayout c4 = statChip("HEARD (EARLIER)",
                     r.noScan ? "n/a"
                             : r.detectedOther + "/" + Math.max(
-                                    r.taggedBefore, r.detectedOther),
+                                    r.priorExpected, r.detectedOther),
                     yel ? C_WARN : C_TEXT,
                     yel ? C_WARN_BG : C_SOFT);
             LinearLayout.LayoutParams cgap = new LinearLayout.LayoutParams(

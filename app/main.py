@@ -7235,6 +7235,10 @@ def batch_verify(
         if sh is not None and sh["state"] != "noscan":
             prior_expected = max(prior_expected, sh["expected"])
         na = r["rfid_incompatible"]
+        # The number the HEARD (EARLIER) chip must show as its target —
+        # the chip used to show already-confirmed counts as their own
+        # denominator ("5/5" on a row flagged for a silent 6th record).
+        r["prior_expected"] = prior_expected
         if r["paired_count"] < r["printed_count"]:
             r["state"] = "pairing-short"
             r["reason"] = (
@@ -7248,11 +7252,36 @@ def batch_verify(
                 f"didn't answer — find those boxes"
             )
         elif not na and do < prior_expected:
+            gap = prior_expected - do
             r["state"] = "prior-silent"
-            r["reason"] = (
-                f"{prior_expected - do} earlier tag(s) silent — likely "
-                f"sold or moved before this batch"
-            )
+            # Say WHY it's yellow with the numbers, and be honest about
+            # whether sales can explain it: when on-hand still counts
+            # the unit, "probably sold" would be a lie (Nick's EAF-PRO:
+            # 5 of 6 heard, on-hand 6 — that's a missing box or a wrong
+            # count, not a sale).
+            if sh is not None and sh.get("basis") == "sales":
+                r["reason"] = (
+                    f"{gap} earlier tag(s) silent beyond what recorded "
+                    f"sales explain — sold-but-unsynced, misplaced, or "
+                    f"a weak tag ({do} of {prior_expected} answered)"
+                )
+            elif (
+                r["expected_qty"] is not None
+                and r["expected_qty"] > do + r["paired_count"]
+            ):
+                r["reason"] = (
+                    f"{gap} earlier tag(s) silent and Shopify on-hand "
+                    f"({r['expected_qty']}) still counts "
+                    f"{'it' if gap == 1 else 'them'} — a box is "
+                    f"missing, the count is off, or the tag is dead "
+                    f"({do} of {prior_expected} answered)"
+                )
+            else:
+                r["reason"] = (
+                    f"{gap} earlier tag(s) silent — likely sold or "
+                    f"moved before this batch "
+                    f"({do} of {prior_expected} answered)"
+                )
         else:
             r["state"] = "ok"
             r["reason"] = (
