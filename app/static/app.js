@@ -7347,6 +7347,15 @@ async function commitResolve(t, note) {
 function openResolveWindow(t) {
   const overlay = document.getElementById("resolve-overlay");
   const body = document.getElementById("resolve-body");
+  // The duplicate resolver freezes this SHARED modal's geometry with
+  // inline min-height/width; the element is reused across opens, so
+  // clear it here or every other category inherits the dupe window's
+  // tall frame (Nick, 2026-08-19).
+  const modalBox = body.closest(".phist-modal");
+  if (modalBox) {
+    modalBox.style.minHeight = "";
+    modalBox.style.width = "";
+  }
   const binFromDetail = (/^Bin\s+(.+?):/.exec(t.detail || "") || [])[1];
   const counts = /(\d+)\s+unit\(s\).*?on-hand is (\d+)/.exec(t.detail || "");
   const counted = counts ? Number(counts[1]) : null;
