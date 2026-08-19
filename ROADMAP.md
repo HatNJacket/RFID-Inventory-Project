@@ -72,6 +72,22 @@ lower → inventory-check filed); THEIR func app redeployed on Nick's go
 confirm cooldown, update-stock echo suppression — sync verified intact
 after).
 
+Duplicate RESOLVER finalized 2026-08-19 (several rounds to Nick's
+spec, all deployed): reason line names the shared value ("Duplicate
+barcodes detected: X"); preview cards lead with the product name
+(2-line clamp) then the identifier the pair DOESN'T share; differing
+traits as bundle-outline selector pairs (barcode dup → Name+SKU, SKU
+dup → Name+Barcode, both → name only), one pick each arms "Merge
+products into one"; "Split products into two" swaps the pairs for
+SKU+Barcode inputs in the same slots with live red/green verdicts
+(offending fields red-while-clashing/green-when-fixed; innocent
+fields red only if MADE to clash, never green) and a ↴ use-SKU-as-
+barcode button per side; disabled actions grey at 45%; footer is
+Dismiss (merge/split IS the resolution; dismissed pairs never
+re-flag); window geometry frozen at first draw (synchronous — rAF
+never fires in hidden tabs). Test pair verified in prod, then
+deleted (tags/bin rows/task; zero DUMMY remnants confirmed).
+
 Decisions (Nick, this session): sync cadence = daily 8 AM + manual
 (15 min was too hot); workers = Steve, Matt, Clay, Nick + Guest; the
 1-left dashboard's stale VALID_EMPLOYEES stays untouched (their system
