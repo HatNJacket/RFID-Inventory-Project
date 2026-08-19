@@ -62,6 +62,7 @@ from app.models import (
     PrintJob,
     ProductKind,
     RefreshLog,
+    RetiredTag,
     ReviewNote,
     ReviewTask,
     RfidAssignment,
@@ -4364,6 +4365,8 @@ def list_batches(
 ):
     stmt = select(Batch).order_by(Batch.id.desc())
     if status == "open":
+        # Lazy mis-scan cleanup: untouched batches self-abandon at 4h.
+        _expire_stale_batches(session)
         stmt = stmt.where(Batch.status.notin_(("done", "abandoned")))
     elif status:
         stmt = stmt.where(Batch.status == status.strip())
@@ -4381,6 +4384,7 @@ def list_batches(
             .group_by(BatchItem.batch_id)
         ).all():
             totals[r.batch_id] = r
+    prev_done = _prev_done_map(session, [b.bin_name for b in rows])
     batches = []
     for b in rows:
         d = b.as_dict()
@@ -4388,6 +4392,15 @@ def list_batches(
         d["products"] = t.products if t else 0
         d["boxes"] = int(t.boxes or 0) if t else 0
         d["paired"] = int(t.paired or 0) if t else 0
+        # A bin that already had a FULL tagging session: the C72 list
+        # shows the yellow "Previous batch tagging: X ago" line, and the
+        # batch itself runs the re-tag flow (quiet collect, shelf sweep
+        # at Check). A done batch would match ITSELF — skip those rows.
+        d["prev_done_at"] = (
+            prev_done.get((b.bin_name or "").strip().upper())
+            if b.status != "done"
+            else None
+        )
         batches.append(d)
     return {"count": len(batches), "batches": batches}
 
@@ -4423,7 +4436,23 @@ def get_batch(batch_id: int, session: Session = Depends(get_session)):
         # product so stickered boxes aren't labelled twice.
         d["prior_tags"] = prior.get((item.sku or "").strip().upper(), 0)
         payload.append(d)
-    return {"batch": batch.as_dict(), "items": payload}
+    b = batch.as_dict()
+    if batch.status != "done":
+        b["prev_done_at"] = _prev_done_map(
+            session, [batch.bin_name]
+        ).get((batch.bin_name or "").strip().upper())
+        # Re-tagging a done bin leans on sales data: freshen the sold
+        # ledger in the background (throttled; silently a no-op until
+        # the read_orders scope exists).
+        if b["prev_done_at"] and any(p.get("prior_tags") for p in payload):
+            _kick_orders_sync_soon()
+    else:
+        b["prev_done_at"] = None
+    cap = _latest_shelf_sweep(session, batch_id)
+    b["shelf_swept_at"] = (
+        cap.created_at.isoformat() if cap and cap.created_at else None
+    )
+    return {"batch": b, "items": payload}
 
 
 def _prior_tag_counts(
@@ -4446,6 +4475,519 @@ def _prior_tag_counts(
         key = (t.sku or "").strip().upper()
         counts[key] = counts.get(key, 0) + 1
     return counts
+
+
+# ------------------------------------------------- re-tagging a done bin ----
+# A bin that already had a FULL batch-tagging session (not a side trip)
+# gets special treatment when tagged again (Nick, 2026-08-19): the
+# already-tagged popup stays quiet during collect, and the Check step
+# runs one bin-level SHELF SWEEP that sorts stickered boxes from new
+# ones — reconciled against sales where possible.
+
+def _prev_done_map(session: Session, bins: list[str]) -> dict[str, str]:
+    """bin (upper) -> ISO time of its newest COMPLETED full batch.
+    Side trips and receiving never count; abandoned never counts."""
+    wanted = {(b or "").strip().upper() for b in bins if b and b.strip()}
+    if not wanted:
+        return {}
+    out: dict[str, str] = {}
+    for b in session.scalars(
+        select(Batch).where(
+            Batch.status == "done",
+            Batch.parent_batch_id.is_(None),
+            func.upper(Batch.bin_name).in_(sorted(wanted)),
+        )
+    ):
+        key = b.bin_name.strip().upper()
+        when = b.completed_at or b.created_at
+        if when is None:
+            continue
+        prev = out.get(key)
+        if prev is None or when.isoformat() > prev:
+            out[key] = when.isoformat()
+    return out
+
+
+def _expire_stale_batches(session: Session) -> int:
+    """Mis-scan protection for scan-creates-batch: an open batch nobody
+    ever touched (zero scans, cases, pairs) quietly self-abandons after
+    4 hours. Deliberate batches survive the moment one box is scanned."""
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=4)
+    expired = 0
+    for b in session.scalars(
+        select(Batch).where(
+            Batch.status.notin_(("done", "abandoned")),
+        )
+    ):
+        created = b.created_at
+        if created is None:
+            continue
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        if created > cutoff:
+            continue
+        touched = any(
+            (i.qty_scanned or 0) > 0
+            or (i.case_count or 0) > 0
+            or (i.paired_count or 0) > 0
+            for i in _batch_items(session, b.id)
+        )
+        if not touched:
+            b.status = "abandoned"
+            expired += 1
+    if expired:
+        session.commit()
+    return expired
+
+
+def _latest_shelf_sweep(session: Session, batch_id: int) -> EpcCapture | None:
+    return session.scalar(
+        select(EpcCapture)
+        .where(
+            EpcCapture.batch_id == batch_id,
+            EpcCapture.note == "shelf-sweep",
+        )
+        .order_by(EpcCapture.id.desc())
+    )
+
+
+def _shelf_reconcile(
+    session: Session, batch: Batch, epcs: list[str]
+) -> dict:
+    """The shelf-sweep verdicts, per batch item with a SKU:
+      heard     — sweep EPCs belonging to this SKU (any recorded bin —
+                  a tag physically here counts, wherever its record says)
+      on_file   — active tag records for the SKU in THIS bin
+      expected  — on_file minus sold-since (real sales when the orders
+                  ledger has them; else min(on_file, live on-hand), the
+                  robust stand-in Nick approved until read_orders lands)
+      state     — match / unheard (yellow) / silent (red) / none
+    Plus: retired EPCs heard (peel-that-sticker warnings) and unknowns."""
+    swept = {e.strip().upper() for e in epcs if e and e.strip()}
+    items = [i for i in _batch_items(session, batch.id) if i.sku]
+    skus_upper = {i.sku.strip().upper() for i in items}
+
+    by_epc: dict[str, RfidAssignment] = {}
+    per_sku: dict[str, list[RfidAssignment]] = {}
+    if skus_upper:
+        for t in session.scalars(
+            select(RfidAssignment).where(
+                func.upper(RfidAssignment.sku).in_(sorted(skus_upper))
+            )
+        ):
+            by_epc[t.rfid_id.strip().upper()] = t
+            per_sku.setdefault(t.sku.strip().upper(), []).append(t)
+
+    sold = orders_sync.sold_unretired_map(session)
+    on_hand: dict[str, int] = {}
+    try:
+        raw = shopify.get_quantities_by_skus(sorted(skus_upper))
+        on_hand = {
+            (k or "").strip().upper(): v
+            for k, v in (raw or {}).items()
+            if v is not None
+        }
+    except Exception as error:
+        logger.warning("shelf-sweep on-hand lookup failed: %s", error)
+    # "Won't RFID scan" products are EXPECTED silent: no red/yellow, and
+    # apply must never zero their already-tagged count (that would print
+    # doubles for stickered-but-mute Astronomik boxes).
+    noscan = _noscan_skus(session)
+
+    out_items = []
+    for item in items:
+        key = item.sku.strip().upper()
+        tags = per_sku.get(key, [])
+        in_bin = [
+            t for t in tags if bin_contains(t.bin_location, batch.bin_name)
+        ]
+        heard_tags = [
+            t for t in tags if t.rfid_id.strip().upper() in swept
+        ]
+        heard = len(heard_tags)
+        on_file = len(in_bin)
+        unheard_epcs = [
+            t.rfid_id for t in in_bin
+            if t.rfid_id.strip().upper() not in swept
+        ]
+        if key in sold and sold[key] > 0:
+            expected = max(0, on_file - sold[key])
+            basis = "sales"
+        elif key in on_hand:
+            expected = min(on_file, on_hand[key])
+            basis = "on-hand"
+        else:
+            expected = on_file
+            basis = "records"
+        if key in noscan:
+            state = "noscan"
+        elif on_file == 0 and heard == 0:
+            state = "none"
+        elif heard == expected:
+            state = "match"
+        elif heard == 0:
+            state = "silent"
+        else:
+            state = "unheard"
+        out_items.append({
+            "item_id": item.id,
+            "sku": item.sku,
+            "heard": heard,
+            "on_file": on_file,
+            "expected": expected,
+            "basis": basis,
+            "presumed_sold": max(0, on_file - expected),
+            "state": state,
+            "unheard_epcs": unheard_epcs,
+        })
+
+    known = set(by_epc.keys())
+    strays = []
+    unknown = 0
+    for e in sorted(swept - known):
+        r = session.scalar(
+            select(RetiredTag).where(
+                func.upper(RetiredTag.rfid_id) == e
+            )
+        )
+        if r is not None:
+            strays.append({
+                "epc": r.rfid_id,
+                "sku": r.sku,
+                "kind": r.kind,
+                "message": (
+                    "replaced sticker still on a box — peel it off"
+                    if r.kind in ("replaced", "dead")
+                    else "retired tag heard — possible return; check the box"
+                ),
+            })
+        else:
+            unknown += 1
+    return {"items": out_items, "strays": strays, "unknown": unknown}
+
+
+class ShelfSweepIn(BaseModel):
+    epcs: list[str] = Field(default_factory=list, max_length=20000)
+    device: str | None = Field(default=None, max_length=100)
+    # False = live preview while sweeping; True = commit: store the
+    # capture (the web prompt watches for it), stamp baseline_at, and
+    # write each item's already-tagged count from what was heard.
+    apply: bool = False
+
+
+@app.post(
+    "/api/batches/{batch_id}/shelf-sweep",
+    dependencies=[Depends(require_user)],
+)
+def batch_shelf_sweep(
+    batch_id: int,
+    payload: ShelfSweepIn,
+    session: Session = Depends(get_session),
+):
+    batch = _get_batch(session, batch_id)
+    result = _shelf_reconcile(session, batch, payload.epcs)
+    if payload.apply:
+        uniq = sorted({
+            e.strip().upper() for e in payload.epcs if e and e.strip()
+        })
+        session.add(EpcCapture(
+            device=payload.device,
+            note="shelf-sweep",
+            batch_id=batch_id,
+            epc_count=len(uniq),
+            epcs="\n".join(uniq),
+        ))
+        batch.baseline_at = datetime.now(timezone.utc)
+        # Sweep sets the counter (Nick): tagged_before = tags actually
+        # heard. Noscan products sit out — their stickers can't answer,
+        # so overwriting with 0 would queue double labels.
+        by_item = {r["item_id"]: r for r in result["items"]}
+        for item in _batch_items(session, batch_id):
+            r = by_item.get(item.id)
+            if r is None or r["state"] == "noscan":
+                continue
+            if r["heard"] > 0 or r["on_file"] > 0:
+                item.tagged_before = r["heard"]
+        session.commit()
+    result["applied"] = payload.apply
+    return result
+
+
+@app.get(
+    "/api/batches/{batch_id}/shelf-sweep",
+    dependencies=[Depends(require_user)],
+)
+def batch_shelf_sweep_state(
+    batch_id: int, session: Session = Depends(get_session)
+):
+    """The stored shelf sweep, re-reconciled — what the web check/verify
+    steps read (and how they notice the C72 already swept)."""
+    batch = _get_batch(session, batch_id)
+    cap = _latest_shelf_sweep(session, batch_id)
+    if cap is None:
+        return {"swept": False}
+    result = _shelf_reconcile(
+        session, batch, cap.epcs.split("\n") if cap.epcs else []
+    )
+    result["swept"] = True
+    result["swept_at"] = (
+        cap.created_at.isoformat() if cap.created_at else None
+    )
+    result["device"] = cap.device
+    return result
+
+
+class RetireTagsIn(BaseModel):
+    epcs: list[str] = Field(min_length=1, max_length=1000)
+    # presumed-sold (verify cleanup) | replaced (peeled, read off-box) |
+    # dead (unreadable even off the box)
+    kind: Literal["presumed-sold", "replaced", "dead"]
+    changed_by: str | None = Field(default=None, max_length=100)
+    note: str | None = Field(default=None, max_length=255)
+
+
+@app.post(
+    "/api/assignments/retire",
+    dependencies=[Depends(require_user)],
+)
+def retire_tags(
+    payload: RetireTagsIn, session: Session = Depends(get_session)
+):
+    """Move tag records to the retired table. Local records only —
+    Shopify is never touched. Every EPC keeps a permanent, recognizable
+    row (tombstone) so a future sweep hearing it can say WHAT it is
+    instead of reporting an unknown tag."""
+    moved = []
+    for epc in payload.epcs:
+        t = session.scalar(
+            select(RfidAssignment).where(
+                func.upper(RfidAssignment.rfid_id)
+                == epc.strip().upper()
+            )
+        )
+        if t is None:
+            continue
+        session.add(RetiredTag(
+            rfid_id=t.rfid_id,
+            sku=t.sku,
+            product_title=t.product_title,
+            shopify_variant_id=t.shopify_variant_id,
+            bin_location=t.bin_location,
+            case_units=t.case_units,
+            kind=payload.kind,
+            retired_by=payload.changed_by,
+            note=payload.note,
+        ))
+        session.add(BarcodeChange(
+            sku=t.sku,
+            product_title=t.product_title,
+            shopify_variant_id=t.shopify_variant_id,
+            changed_field="tag-retired",
+            old_barcode=t.rfid_id,
+            new_barcode=payload.kind,
+            changed_by=payload.changed_by,
+        ))
+        session.delete(t)
+        moved.append(t.rfid_id)
+    if not moved:
+        raise HTTPException(404, "None of those EPCs are active tags.")
+    session.commit()
+    return {"retired": moved, "kind": payload.kind}
+
+
+class UnretireTagsIn(BaseModel):
+    epcs: list[str] = Field(min_length=1, max_length=1000)
+    changed_by: str | None = Field(default=None, max_length=100)
+
+
+@app.post(
+    "/api/assignments/unretire",
+    dependencies=[Depends(require_user)],
+)
+def unretire_tags(
+    payload: UnretireTagsIn, session: Session = Depends(get_session)
+):
+    """Undo for retire_tags: the row moves back to the active table
+    (a return, a mis-click, a sweep that lied)."""
+    restored = []
+    for epc in payload.epcs:
+        r = session.scalar(
+            select(RetiredTag).where(
+                func.upper(RetiredTag.rfid_id) == epc.strip().upper()
+            )
+        )
+        if r is None:
+            continue
+        if session.scalar(
+            select(RfidAssignment).where(
+                func.upper(RfidAssignment.rfid_id)
+                == epc.strip().upper()
+            )
+        ) is not None:
+            continue  # EPC re-used on a new box since — leave it alone
+        session.add(RfidAssignment(
+            rfid_id=r.rfid_id,
+            shopify_variant_id=r.shopify_variant_id or "",
+            product_title=r.product_title or r.sku or "(unknown)",
+            sku=r.sku,
+            bin_location=r.bin_location,
+            case_units=r.case_units,
+            assigned_by=payload.changed_by,
+        ))
+        session.add(BarcodeChange(
+            sku=r.sku,
+            product_title=r.product_title,
+            shopify_variant_id=r.shopify_variant_id,
+            changed_field="tag-unretired",
+            old_barcode=r.rfid_id,
+            new_barcode=r.kind,
+            changed_by=payload.changed_by,
+        ))
+        session.delete(r)
+        restored.append(r.rfid_id)
+    if not restored:
+        raise HTTPException(
+            404,
+            "None of those EPCs are in the retired list (or they were "
+            "re-used on new boxes since).",
+        )
+    session.commit()
+    return {"restored": restored}
+
+
+class ReplaceTagIn(BaseModel):
+    # The off-box read, when the peeled sticker still answered. Absent =
+    # truly dead: the oldest unheard record for the SKU in this bin goes.
+    epc: str | None = Field(default=None, max_length=128)
+    changed_by: str | None = Field(default=None, max_length=100)
+
+
+@app.post(
+    "/api/batches/{batch_id}/items/{item_id}/replace-tag",
+    dependencies=[Depends(require_user)],
+)
+def replace_dead_tag(
+    batch_id: int,
+    item_id: int,
+    payload: ReplaceTagIn,
+    session: Session = Depends(get_session),
+):
+    """The dead-tag last resort (after retries and one-by-one scanning):
+    the sticker comes OFF the box. Read off-box -> that exact EPC is
+    retired as 'replaced' (the product was blocking RF). Still silent ->
+    the oldest unheard record for this SKU in this bin is retired as
+    'dead'. Either way the box counts as untagged and gets a fresh
+    label. Sticker is discarded on the floor; records logged here."""
+    batch = _get_batch(session, batch_id)
+    item = session.get(BatchItem, item_id)
+    if item is None or item.batch_id != batch_id:
+        raise HTTPException(404, "No such item in this batch.")
+    if not item.sku:
+        raise HTTPException(422, "This row has no SKU.")
+
+    if payload.epc:
+        target = session.scalar(
+            select(RfidAssignment).where(
+                func.upper(RfidAssignment.rfid_id)
+                == payload.epc.strip().upper()
+            )
+        )
+        if target is None:
+            raise HTTPException(
+                404,
+                "That EPC isn't an active tag — it may already be "
+                "retired, or the read was garbled.",
+            )
+        if (target.sku or "").strip().upper() \
+                != item.sku.strip().upper():
+            raise HTTPException(
+                409,
+                f"That tag belongs to {target.sku}, not {item.sku} — "
+                "wrong sticker in hand?",
+            )
+        kind = "replaced"
+    else:
+        cap = _latest_shelf_sweep(session, batch_id)
+        swept = set()
+        if cap is not None and cap.epcs:
+            swept = {e.strip().upper() for e in cap.epcs.split("\n")}
+        target = next(
+            (
+                t for t in session.scalars(
+                    select(RfidAssignment)
+                    .where(
+                        func.upper(RfidAssignment.sku)
+                        == item.sku.strip().upper()
+                    )
+                    .order_by(RfidAssignment.id)
+                )
+                if bin_contains(t.bin_location, batch.bin_name)
+                and t.rfid_id.strip().upper() not in swept
+            ),
+            None,
+        )
+        if target is None:
+            raise HTTPException(
+                404,
+                "No unheard tag record is left for this product in "
+                "this bin — nothing to drop.",
+            )
+        kind = "dead"
+
+    session.add(RetiredTag(
+        rfid_id=target.rfid_id,
+        sku=target.sku,
+        product_title=target.product_title,
+        shopify_variant_id=target.shopify_variant_id,
+        bin_location=target.bin_location,
+        case_units=target.case_units,
+        kind=kind,
+        retired_by=payload.changed_by,
+        note=f"batch {batch_id} · {batch.bin_name}",
+    ))
+    session.add(BarcodeChange(
+        sku=target.sku,
+        product_title=target.product_title,
+        shopify_variant_id=target.shopify_variant_id,
+        changed_field="tag-retired",
+        old_barcode=target.rfid_id,
+        new_barcode=kind,
+        changed_by=payload.changed_by,
+    ))
+    retired_epc = target.rfid_id
+    session.delete(target)
+    # The box in hand is now untagged: it must NOT sit in the
+    # already-tagged count or it gets no replacement label.
+    if (item.tagged_before or 0) > 0:
+        item.tagged_before -= 1
+    session.commit()
+    session.refresh(item)
+    return {
+        "retired_epc": retired_epc,
+        "kind": kind,
+        "item": item.as_dict(),
+    }
+
+
+# Throttle: opening the same flagged bin twice in a row shouldn't hammer
+# the orders API. One kick per 10 minutes across all batches.
+_orders_kick_at: dict[str, float] = {"t": 0.0}
+
+
+def _kick_orders_sync_soon() -> None:
+    now = time.time()
+    if now - _orders_kick_at["t"] < 600:
+        return
+    _orders_kick_at["t"] = now
+
+    def _run():
+        try:
+            with Session(get_engine()) as s:
+                orders_sync.run(s, source="batch-open")
+        except Exception as error:
+            logger.warning("batch-open orders kick failed: %s", error)
+
+    threading.Thread(target=_run, daemon=True).start()
 
 
 class BatchScanIn(BaseModel):
@@ -4641,6 +5183,21 @@ def batch_review(batch_id: int, session: Session = Depends(get_session)):
 
     noscan = _noscan_skus(session)
 
+    # Re-tag flow: once the bin-level shelf sweep ran, its per-item
+    # verdicts ride the check list (yellow = fewer heard than expected,
+    # red = expected but silent).
+    shelf_by_item: dict[int, dict] = {}
+    if batch.status != "done" and _prev_done_map(
+        session, [batch.bin_name]
+    ).get((batch.bin_name or "").strip().upper()):
+        cap = _latest_shelf_sweep(session, batch_id)
+        if cap is not None:
+            rec = _shelf_reconcile(
+                session, batch,
+                cap.epcs.split("\n") if cap.epcs else [],
+            )
+            shelf_by_item = {r["item_id"]: r for r in rec["items"]}
+
     flagged = []
     for item in _batch_items(session, batch_id):
         # A skipped row is a decision already made, not a problem to solve.
@@ -4783,11 +5340,17 @@ def batch_review(batch_id: int, session: Session = Depends(get_session)):
             # fix the SKU/barcode on the spot.
             if _mojibake(item.sku, item.barcode):
                 flags.append("bad-chars")
+            sh = shelf_by_item.get(item.id)
+            if sh is not None and sh["state"] == "unheard":
+                flags.append("tags-unheard")
+            elif sh is not None and sh["state"] == "silent":
+                flags.append("tags-silent")
         if flags:
             flagged.append({
                 "item": item.as_dict(),
                 "flags": flags,
                 "candidates": candidates,
+                "shelf": shelf_by_item.get(item.id),
             })
     # Strays gathered by the shelf they actually belong on, so the Check step
     # can offer one trip per bin rather than one per product.
@@ -6512,6 +7075,45 @@ def batch_verify(
                 }
             )
 
+    # Unknown EPCs that are actually TOMBSTONES get named instead of
+    # shrugged at: a replaced/dead sticker still on a box means the peel
+    # step was skipped; a presumed-sold tag answering again is probably
+    # a return.
+    retired_heard = []
+    if unknown:
+        still_unknown = []
+        for epc in unknown:
+            r = session.scalar(
+                select(RetiredTag).where(
+                    func.upper(RetiredTag.rfid_id) == epc
+                )
+            )
+            if r is None:
+                still_unknown.append(epc)
+            else:
+                retired_heard.append({
+                    "epc": r.rfid_id,
+                    "sku": r.sku,
+                    "product_title": r.product_title,
+                    "kind": r.kind,
+                    "message": (
+                        "replaced sticker still on a box — peel it off"
+                        if r.kind in ("replaced", "dead")
+                        else "retired tag heard — possible return; "
+                             "check the box"
+                    ),
+                })
+        unknown = still_unknown
+
+    # Re-tag flow: the presumed-sold reconciliation rides each verify
+    # row, so the web can offer "retire N unheard tags" right here.
+    shelf_by_item: dict[int, dict] = {}
+    if batch.status != "done" and _prev_done_map(
+        session, [batch.bin_name]
+    ).get((batch.bin_name or "").strip().upper()):
+        rec = _shelf_reconcile(session, batch, sorted(epcs))
+        shelf_by_item = {r["item_id"]: r for r in rec["items"]}
+
     noscan = _noscan_skus(session)
     report = [
         {
@@ -6559,9 +7161,12 @@ def batch_verify(
         }
         for i in items
     ]
+    for r in report:
+        r["shelf"] = shelf_by_item.get(r["item_id"])
     ok = (
         not unknown
         and not foreign
+        and not retired_heard
         and all(
             # A sweep is right when it hears this batch's own pairs
             # alone (already-tagged boxes may sit out of range) OR pairs
@@ -6578,6 +7183,7 @@ def batch_verify(
         "scanned_epcs": len(epcs),
         "items": report,
         "foreign": foreign,
+        "retired_heard": retired_heard,
         "unknown_epcs": unknown,
         # Unresolved codes still in the batch: worth a heads-up at verify
         # (they were counted but match no product), never a blocker —
@@ -8242,6 +8848,8 @@ def product_history(term: str, session: Session = Depends(get_session)):
         "oneleft": "oneleft",
         "tag-sold": "tag-sold",
         "scan-note": "scan-note",
+        "tag-retired": "tag-retired",
+        "tag-unretired": "tag-unretired",
     }
     for c in session.scalars(
         select(BarcodeChange).where(or_(
@@ -8258,7 +8866,8 @@ def product_history(term: str, session: Session = Depends(get_session)):
             # Barcode/SKU/bin flows write to the store; the RFID-scan flag,
             # locate list, tag-sold and scan notes are local markers only.
             "shopify": c.changed_field
-            not in ("rfid-scan", "locate-list", "tag-sold", "scan-note"),
+            not in ("rfid-scan", "locate-list", "tag-sold", "scan-note",
+                    "tag-retired", "tag-unretired"),
         })
 
     # What Shopify currently says the product's bin IS, and when we last
@@ -8565,6 +9174,8 @@ def history(
         "oneleft": "oneleft",
         "tag-sold": "tag-sold",
         "scan-note": "scan-note",
+        "tag-retired": "tag-retired",
+        "tag-unretired": "tag-unretired",
     }
     # A sweep undo unlinks its tags with one shared timestamp — fold
     # those the same way sweep assigns fold.
@@ -8602,6 +9213,17 @@ def history(
                 "old_bin": c.old_barcode,
                 "new_bin": c.new_barcode,
             }
+        # Retired tags come back with one click: the row moves from the
+        # retired table to the active one (returns, mis-clicks).
+        elif c.changed_field == "tag-retired" and c.old_barcode:
+            event["detail"] = (
+                f"EPC {c.old_barcode} retired ({c.new_barcode})"
+            )
+            event["undo"] = {"kind": "tag-retired", "epc": c.old_barcode}
+        elif c.changed_field == "tag-unretired" and c.old_barcode:
+            event["detail"] = (
+                f"EPC {c.old_barcode} restored (was {c.new_barcode})"
+            )
         events.append(event)
     for key in unlink_order:
         group = unlink_groups[key]

@@ -87,6 +87,54 @@ class RfidAssignment(Base):
         }
 
 
+class RetiredTag(Base):
+    """Tag records pulled OUT of the active table, kept forever (rows of
+    text — storage is a non-issue, and Nick wants returns recoverable and
+    stray stickers recognizable). Kinds:
+      presumed-sold — unheard in a shelf sweep, shortfall matches sales/
+                      on-hand; may come back as a return.
+      replaced      — sticker peeled off a box, read OFF-box (the product
+                      was blocking RF), discarded; a sweep hearing it
+                      later means the peel step was skipped.
+      dead          — sticker unreadable even off the box, discarded.
+    Active-tag queries never touch this table — sweeps check it only to
+    NAME an unknown EPC instead of shrugging."""
+
+    __tablename__ = "rfid_retired_tags"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    rfid_id: Mapped[str] = mapped_column(
+        String(128), unique=True, index=True, nullable=False
+    )
+    sku: Mapped[str | None] = mapped_column(String(100), index=True)
+    product_title: Mapped[str | None] = mapped_column(String(255))
+    shopify_variant_id: Mapped[str | None] = mapped_column(String(64))
+    bin_location: Mapped[str | None] = mapped_column(String(100))
+    case_units: Mapped[int | None] = mapped_column(Integer)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    retired_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    retired_by: Mapped[str | None] = mapped_column(String(100))
+    note: Mapped[str | None] = mapped_column(String(255))
+
+    def as_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "rfid_id": self.rfid_id,
+            "sku": self.sku,
+            "product_title": self.product_title,
+            "bin_location": self.bin_location,
+            "case_units": self.case_units,
+            "kind": self.kind,
+            "retired_at": (
+                self.retired_at.isoformat() if self.retired_at else None
+            ),
+            "retired_by": self.retired_by,
+            "note": self.note,
+        }
+
+
 class BarcodeAlias(Base):
     """Maps a foreign ("fake") barcode — e.g. a manufacturer barcode on the
     box — to a known product, after an operator confirmed the link. Lives in

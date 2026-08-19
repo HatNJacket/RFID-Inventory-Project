@@ -395,6 +395,8 @@ const EVENT_META = {
   // arithmetic, visually distinct from the amber human-count families.
   "order-sold": ["Order Sold", "#5c6ac4"],
   "tag-sold": ["Tag Sold", "#4053b8"],
+  "tag-retired": ["Tag Retired", "#7a5ea8"],
+  "tag-unretired": ["Tag Restored", "#3f8f6b"],
   "tag-onhand-mismatch": ["Tags ≠ On-hand", "#8e44ad"],
   "shopify-bin-read": ["Read From Shopify", "#1f5f8b"],
   "scan-note": ["Scan Note", "#8a6116"],
@@ -4057,9 +4059,18 @@ async function pullBatch(announce) {
   if (!batch) return;
   try {
     const prevStatus = batch.status;
+    const prevShelfSweep = batch.shelf_swept_at;
     const data = await apiJson(`/api/batches/${batch.id}`);
     batch = data.batch;
     batchItems = data.items;
+    // The C72 just sent the shelf sweep: clear the check-step banner and
+    // pull the fresh verdicts once (the check list doesn't re-fetch on
+    // the normal 3s poll — this transition is the exception).
+    if (!prevShelfSweep && batch.shelf_swept_at) {
+      updateShelfWarn();
+      if (batchStage === "labels") loadBatchReview();
+      setBatchResult("Shelf sweep received from the gun ✓", "ok");
+    }
     // Resuming a side trip directly (or arriving from another terminal)
     // must still show the banner and the way back.
     renderSideTrip();
@@ -4755,6 +4766,12 @@ const FLAG_TEXT = {
   "bad-chars":
     "the SKU or barcode has a broken special character — records can't " +
     "match until it's fixed",
+  "tags-unheard":
+    "the shelf sweep heard fewer tags than expected — tap to resolve " +
+    "(scan one-by-one on the gun, or count by eye)",
+  "tags-silent":
+    "tags were expected on this shelf but the sweep heard NONE — find " +
+    "the stickered boxes before printing more",
   "wrong-bin": "saved bin is a different shelf",
   "double-count":
     "boxes scanned AND marked already-tagged — if the stickered boxes " +
@@ -4868,9 +4885,24 @@ document
     }
   });
 
+// The re-tag shelf-sweep banner: shown while a previously-done bin's
+// batch has no shelf sweep yet; clears itself when the C72's sweep
+// arrives (pullBatch watches for the flip).
+function updateShelfWarn() {
+  const warn = document.getElementById("bcheck-shelfwarn");
+  if (!warn) return;
+  warn.hidden = !(
+    batch &&
+    batch.prev_done_at &&
+    !batch.shelf_swept_at &&
+    !isReceivingBatch()
+  );
+}
+
 async function loadBatchReview(showAll) {
   const list = document.getElementById("bcheck-list");
   const empty = document.getElementById("bcheck-empty");
+  updateShelfWarn();
   empty.hidden = true;
   list.innerHTML = '<li class="recent__empty">Checking the batch…</li>';
   try {
@@ -4914,11 +4946,23 @@ function renderCheckList() {
   if (!checkEntries.length) return;
   checkEntries.forEach((entry) => {
     const li = itemCard(entry.item, "collect");
+    // Shelf-sweep verdicts tint the whole row, mirroring the gun.
+    if (entry.flags.includes("tags-silent")) {
+      li.classList.add("bcell--shelf-red");
+    } else if (entry.flags.includes("tags-unheard")) {
+      li.classList.add("bcell--shelf-yellow");
+    }
     if (entry.flags.length) {
       const flags = document.createElement("div");
       flags.className = "bcell__meta bcell__flags";
+      const sh = entry.shelf;
       flags.textContent =
-        "⚠ " + entry.flags.map((f) => FLAG_TEXT[f] || f).join(" · ");
+        "⚠ " +
+        entry.flags.map((f) => FLAG_TEXT[f] || f).join(" · ") +
+        (sh && sh.on_file
+          ? ` — sweep heard ${sh.heard} of ${sh.on_file} on file, expected ${sh.expected}` +
+            (sh.presumed_sold ? ` (${sh.presumed_sold} presumed sold)` : "")
+          : "");
       li.querySelector(".bcell__info").append(flags);
     }
     li.style.cursor = "pointer";
@@ -6365,6 +6409,47 @@ bEl.verifyReport.addEventListener("click", async (e) => {
     }
     return;
   }
+  // Presumed-sold cleanup: retire the unheard tag records whose
+  // shortfall matched sales/on-hand. Local records only — Shopify is
+  // never touched — and every EPC is undoable from History.
+  const retireBtn = e.target.closest(".bvx-retire");
+  if (retireBtn && batch) {
+    const operator = operatorEl.value;
+    if (!operator) {
+      alert("Pick who's scanning (top right) first.");
+      return;
+    }
+    const epcs = (retireBtn.dataset.epcs || "").split(",").filter(Boolean);
+    if (!epcs.length) return;
+    if (
+      !confirm(
+        `Retire ${epcs.length} tag record(s) for ${retireBtn.dataset.sku} ` +
+          `as presumed sold?\n\nThe sweep never heard them and the ` +
+          `shortfall matches the sales/on-hand numbers. Records move to ` +
+          `the retired list (kept forever — returns recoverable), ` +
+          `History-logged with Undo. Shopify is not touched.`
+      )
+    )
+      return;
+    retireBtn.disabled = true;
+    try {
+      await postJson("/api/assignments/retire", {
+        epcs,
+        kind: "presumed-sold",
+        changed_by: operator,
+        note: `verify sweep, bin ${batch.bin_name}`,
+      });
+      setBatchResult(
+        `${epcs.length} tag(s) retired as presumed sold ✓ (undo in History)`,
+        "ok"
+      );
+      await runVerifyCheck();
+    } catch (err) {
+      setBatchResult(err.message, "err");
+      retireBtn.disabled = false;
+    }
+    return;
+  }
   // Flagged rows expand into their explanation, like the Review inbox.
   const flagRow = e.target.closest("tr.bvx-flag");
   if (flagRow && !e.target.closest("a, button, input, label")) {
@@ -6593,6 +6678,23 @@ async function runVerifyCheck() {
             ? ` <span class="tagged-chip" title="${tb} box(es) on this shelf were already RFID tagged before this batch (side trip or earlier session) — no scans or pairs expected here, but the sweep must hear their tags">✓${tb} already tagged</span>`
             : ""
         }${
+          // Presumed-sold cleanup: the shelf reconciliation matched the
+          // shortfall to sales/on-hand, so the unheard records can be
+          // retired right here. Only offered when the numbers agree
+          // EXACTLY — a partial mismatch is check-step business.
+          r.shelf &&
+          r.shelf.presumed_sold > 0 &&
+          (r.shelf.unheard_epcs || []).length === r.shelf.presumed_sold
+            ? ` <button class="reset bvx-retire" type="button"
+                data-epcs="${escapeHtml(r.shelf.unheard_epcs.join(","))}"
+                data-sku="${escapeHtml(r.sku || "")}"
+                title="${r.shelf.heard} of ${r.shelf.on_file} recorded tag(s) answered and the ${r.shelf.presumed_sold} missing match ${
+                  r.shelf.basis === "sales"
+                    ? "sales since tagging"
+                    : "the live on-hand"
+                } — retire them (local records only, undoable from History)">Retire ${r.shelf.presumed_sold} presumed sold</button>`
+            : ""
+        }${
           r.bin_differs && r.sku
             ? ` <button class="binfix bvx-setbin" type="button" data-sku="${escapeHtml(
                 r.sku
@@ -6687,8 +6789,24 @@ async function runVerifyCheck() {
          </div>`
       : "";
 
+  // Tombstones that answered: a replaced/dead sticker still on a box
+  // (the peel step was skipped) or a presumed-sold tag back in range
+  // (probably a return). Named out loud, never lumped into "unknown".
+  const retiredNote = (rep.retired_heard || []).length
+    ? `<p class="result result--warn-soft">⚠ ${
+        rep.retired_heard.length
+      } retired tag(s) answered the sweep: ${rep.retired_heard
+        .map(
+          (t) =>
+            `${escapeHtml(t.sku || t.product_title || "?")} <span class="mono">${escapeHtml(
+              t.epc
+            )}</span> — ${escapeHtml(t.message)}`
+        )
+        .join(" · ")}</p>`
+    : "";
+
   bEl.verifyReport.innerHTML = `
-    ${verdict}${naNote}${tbNote}${unresolvedNote}
+    ${verdict}${retiredNote}${naNote}${tbNote}${unresolvedNote}
     <div class="inventory__scroll"><table class="inventory__table">
       <thead><tr><th>Product</th><th>SKU</th><th class="num">Boxes</th><th class="num" title="Shopify on-hand for this shelf; brackets show scanned-vs-expected">Expected</th><th class="num">Paired</th><th class="num">Detected</th><th></th></tr></thead>
       <tbody>${rows}</tbody>
@@ -10484,6 +10602,34 @@ async function undoHistoryEvent(e, btn) {
       await postJson("/api/bin-updates", {
         target: e.undo.sku,
         bin: e.undo.old_bin,
+        changed_by: operator,
+      });
+      await loadHistory();
+    } catch (err) {
+      btn.disabled = false;
+      alert(err.message);
+    }
+    return;
+  }
+  // Retired tags: undo moves the record straight back from the retired
+  // table to the active one (a return, a mis-click, a sweep that lied).
+  if (e.undo.kind === "tag-retired") {
+    const operator = operatorEl.value;
+    if (!operator) {
+      alert("Pick who's scanning (top right) first.");
+      return;
+    }
+    if (
+      !confirm(
+        `Restore tag ${e.undo.epc}?\n\n${e.sku || ""} — the record moves ` +
+          `back to the active tags, exactly as before it was retired.`
+      )
+    )
+      return;
+    btn.disabled = true;
+    try {
+      await postJson("/api/assignments/unretire", {
+        epcs: [e.undo.epc],
         changed_by: operator,
       });
       await loadHistory();

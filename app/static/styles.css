@@ -2328,6 +2328,18 @@ tr.binaudit-untagged td { opacity: 0.72; }
 .bitem-arrow:disabled { opacity: 0.25; cursor: default; }
 .bcell__flags { color: var(--warn-ink); font-weight: 600; }
 .bcell__split { color: var(--accent); font-weight: 600; }
+/* Shelf-sweep verdicts on the check list (re-tag flow): yellow = fewer
+   heard than expected, red = expected but silent — mirrors the gun */
+.bcell--shelf-yellow {
+  background: rgba(217, 178, 92, 0.12);
+  border: 1px solid rgba(217, 178, 92, 0.55);
+  border-radius: 10px;
+}
+.bcell--shelf-red {
+  background: rgba(201, 74, 74, 0.1);
+  border: 1px solid rgba(201, 74, 74, 0.5);
+  border-radius: 10px;
+}
 
 /* status + event chips (print queue, history) */
 .chip-status {

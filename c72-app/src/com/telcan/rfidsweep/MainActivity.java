@@ -399,6 +399,11 @@ public class MainActivity extends Activity {
 
     private int batchId = -1;
     private String batchBin = null;
+    // Re-tag flow: when this bin already had a FULL tagging session, the
+    // already-tagged popup stays quiet at collect and Check opens with a
+    // bin-level shelf sweep instead.
+    private String batchPrevDoneAt = null;
+    private String batchShelfSweptAt = null;
     private int step = STEP_COLLECT;
     // A receiving batch: bin-less, loops collect -> PRINT -> pair per
     // pallet pass, and finishes by filing per-bin inventory checks.
@@ -814,7 +819,11 @@ public class MainActivity extends Activity {
             // COLLECT: baseline a part-tagged shelf. (Unpair-everything
             // stays reachable via long-press on UNDO.)
             else if (step == STEP_COLLECT) baselineButton();
-            else undoAllPairing();
+            // CHECK on a previously-done bin: reopen the shelf sweep —
+            // the road back when the prompt was closed by accident.
+            else if (step == STEP_CHECK && batchPrevDoneAt != null) {
+                openShelfSweep();
+            } else undoAllPairing();
         });
         batchBtnRow.addView(btnSweep, weight());
         btnUndo = smallBtn("UNDO");
@@ -4046,6 +4055,11 @@ public class MainActivity extends Activity {
             else if ("bad-chars".equals(f)) sb.append("SKU/barcode has a "
                     + "broken character (?) - records can't match; fix it "
                     + "with CHANGE SKU / BARCODE");
+            else if ("tags-unheard".equals(f)) sb.append("shelf sweep "
+                    + "heard fewer tags than expected - tap to resolve");
+            else if ("tags-silent".equals(f)) sb.append("tags expected "
+                    + "on this shelf but the sweep heard NONE - tap to "
+                    + "resolve");
             else sb.append(f);
         }
         return sb.toString();
@@ -5210,6 +5224,11 @@ public class MainActivity extends Activity {
             step = STEP_CHECK;
             fetchReview();
             applyBatchUi();
+            // Re-tag flow: a previously-done bin opens Check with the
+            // bin-level shelf sweep (unless one was already applied).
+            if (batchPrevDoneAt != null && batchShelfSweptAt == null) {
+                openShelfSweep();
+            }
         } else if (step == STEP_CHECK) {
             // Undecided wrong-shelf boxes come first: a label printed
             // now names THIS bin, which forecloses the move.
@@ -5253,6 +5272,580 @@ public class MainActivity extends Activity {
         status.setText("Sweep cleared — pull the trigger to scan the bin "
                 + "again.");
         refreshBatchList();
+    }
+
+    // ---------------------------------------------- shelf sweep (re-tag) ---
+    // A bin that already had a FULL batch-tagging session: Check opens
+    // with ONE bin-level sweep that sorts stickered boxes from new ones
+    // (design settled with Nick 2026-08-19 against the widget mockup).
+    // Burst reads ACCUMULATE — pressing sweep again adds to the pile;
+    // NEW SWEEP is the deliberate clear. APPLY stores the sweep server-
+    // side (the web check banner watches for it) and writes each item's
+    // already-tagged count from what was actually heard.
+
+    private final java.util.LinkedHashSet<String> shelfEpcs =
+            new java.util.LinkedHashSet<>();
+    private JSONArray shelfItems = null;
+    private JSONArray shelfStrays = null;
+    private int shelfUnknown = 0;
+    private boolean shelfBusy = false;
+    private LinearLayout shelfRowsBox = null;
+    private TextView shelfStatusLine = null;
+
+    private BItem bItemById(int id) {
+        for (BItem b : bItems) {
+            if (b.id == id) return b;
+        }
+        return null;
+    }
+
+    private void openShelfSweep() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(16), dp(6), dp(16), dp(4));
+
+        TextView sub = new TextView(this);
+        sub.setText("This bin was batch tagged before ("
+                + (batchPrevDoneAt == null ? "?" : agoLong(batchPrevDoneAt))
+                + ") — the sweep sorts stickered boxes from new ones. "
+                + "Sweep as often as you like: reads ADD UP until you "
+                + "start a new sweep.");
+        sub.setTextSize(12);
+        sub.setTextColor(C_MUTED);
+        box.addView(sub);
+
+        shelfStatusLine = new TextView(this);
+        shelfStatusLine.setTextSize(13);
+        shelfStatusLine.setTypeface(null, Typeface.BOLD);
+        shelfStatusLine.setTextColor(C_BLUE);
+        shelfStatusLine.setPadding(0, dp(6), 0, dp(6));
+        box.addView(shelfStatusLine);
+
+        Button sweepBtn = smallBtn("⚡ SWEEP THE SHELF (3 s)");
+        LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        box.addView(sweepBtn, sl);
+
+        Button newBtn = smallBtn("NEW SWEEP — start over");
+        LinearLayout.LayoutParams nl = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        nl.topMargin = dp(4);
+        box.addView(newBtn, nl);
+
+        shelfRowsBox = new LinearLayout(this);
+        shelfRowsBox.setOrientation(LinearLayout.VERTICAL);
+        shelfRowsBox.setPadding(0, dp(8), 0, 0);
+        box.addView(shelfRowsBox);
+
+        sweepBtn.setOnClickListener(v -> shelfBurst(sweepBtn, null));
+        newBtn.setOnClickListener(v -> {
+            shelfEpcs.clear();
+            shelfItems = null;
+            shelfStrays = null;
+            shelfUnknown = 0;
+            renderShelfRows();
+            updateShelfStatusLine();
+        });
+
+        ScrollView sc = new ScrollView(this);
+        sc.addView(box);
+        dlg()
+                .setTitle("Shelf sweep — " + batchBin)
+                .setView(sc)
+                .setPositiveButton("APPLY + CLOSE", (d, w) ->
+                        applyShelfSweep())
+                .setNegativeButton("Later", (d, w) -> {
+                    status.setText("Shelf sweep parked — the SHELF SWEEP "
+                            + "button here on Check reopens it (reads "
+                            + "kept).");
+                    shelfRowsBox = null;
+                    shelfStatusLine = null;
+                })
+                .show();
+        updateShelfStatusLine();
+        renderShelfRows();
+        // Reopened with reads already in hand: show fresh verdicts.
+        if (!shelfEpcs.isEmpty() && shelfItems == null) {
+            shelfPost(false, null);
+        }
+    }
+
+    private void updateShelfStatusLine() {
+        if (shelfStatusLine == null) return;
+        shelfStatusLine.setText(shelfEpcs.isEmpty()
+                ? "No tags heard yet — press SWEEP with the gun at the "
+                  + "shelf."
+                : shelfEpcs.size() + " tag(s) heard so far — sweep again "
+                  + "to add, or APPLY.");
+    }
+
+    private void shelfBurst(Button btn, Runnable after) {
+        if (shelfBusy) return;
+        if (reader == null) {
+            status.setText("RFID reader isn't ready.");
+            return;
+        }
+        shelfBusy = true;
+        final String was = btn == null ? null : btn.getText().toString();
+        if (btn != null) {
+            btn.setEnabled(false);
+            btn.setText("Sweeping…");
+        }
+        new Thread(() -> {
+            final List<String> heard = new ArrayList<>();
+            try {
+                synchronized (tags) { tags.clear(); }
+                reader.startInventoryTag();
+                Thread.sleep(3000);
+            } catch (Exception ignored) {
+            } finally {
+                try {
+                    reader.stopInventory();
+                } catch (Exception ignored2) {
+                }
+            }
+            synchronized (tags) {
+                heard.addAll(tags.keySet());
+                tags.clear();
+            }
+            ui.post(() -> {
+                shelfBusy = false;
+                if (btn != null) {
+                    btn.setEnabled(true);
+                    btn.setText(was);
+                }
+                int before = shelfEpcs.size();
+                for (String e : heard) {
+                    shelfEpcs.add(e.trim().toUpperCase(
+                            java.util.Locale.US));
+                }
+                beep(heard.isEmpty() ? SOUND_OTHER : SOUND_OK);
+                int added = shelfEpcs.size() - before;
+                if (shelfStatusLine != null) {
+                    shelfStatusLine.setText(heard.size() + " read(s), "
+                            + added + " new — " + shelfEpcs.size()
+                            + " tag(s) total. Checking…");
+                }
+                shelfPost(false, after);
+            });
+        }).start();
+    }
+
+    /** POST the running EPC pile to the server for verdicts; apply=true
+     *  commits (stores the capture, writes already-tagged counts). */
+    private void shelfPost(boolean apply, Runnable after) {
+        new Thread(() -> {
+            try {
+                JSONObject body = new JSONObject()
+                        .put("epcs", new JSONArray(
+                                new ArrayList<>(shelfEpcs)))
+                        .put("device", prefs.getString("device", "C72"))
+                        .put("apply", apply);
+                JSONObject resp = api("POST", "/api/batches/" + batchId
+                        + "/shelf-sweep", body);
+                final JSONArray items = resp.optJSONArray("items");
+                final JSONArray strays = resp.optJSONArray("strays");
+                final int unk = resp.optInt("unknown", 0);
+                ui.post(() -> {
+                    shelfItems = items;
+                    shelfStrays = strays;
+                    shelfUnknown = unk;
+                    updateShelfStatusLine();
+                    renderShelfRows();
+                    if (after != null) after.run();
+                });
+            } catch (Exception e) {
+                ui.post(() -> {
+                    if (shelfStatusLine != null) {
+                        shelfStatusLine.setText("Check failed: "
+                                + e.getMessage());
+                    } else {
+                        status.setText("Shelf sweep failed: "
+                                + e.getMessage());
+                    }
+                });
+            }
+        }).start();
+    }
+
+    private void applyShelfSweep() {
+        shelfRowsBox = null;
+        shelfStatusLine = null;
+        shelfPost(true, () -> {
+            batchShelfSweptAt = "applied";
+            beep(SOUND_OK);
+            status.setText("Shelf sweep applied ✓ — already-tagged "
+                    + "counts set from what was heard. Yellow/red rows "
+                    + "stay in the check list.");
+            reloadBatchAndReview();
+        });
+    }
+
+    private void renderShelfRows() {
+        if (shelfRowsBox == null) return;
+        shelfRowsBox.removeAllViews();
+        if (shelfItems == null) return;
+        for (int i = 0; i < shelfItems.length(); i++) {
+            final JSONObject r = shelfItems.optJSONObject(i);
+            if (r == null) continue;
+            final String state = r.optString("state");
+            final BItem it = bItemById(r.optInt("item_id"));
+            int heard = r.optInt("heard");
+            int onFile = r.optInt("on_file");
+            int expected = r.optInt("expected");
+            int sold = r.optInt("presumed_sold");
+            String basis = r.optString("basis");
+
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            int bg = "unheard".equals(state) ? C_WARN_BG
+                    : "silent".equals(state) ? C_OVER_BG : C_CARD;
+            row.setBackground(rr(bg, 0, 8));
+            row.setPadding(dp(8), dp(6), dp(8), dp(6));
+
+            ImageView iv = new ImageView(this);
+            iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            iv.setBackgroundColor(C_BG);
+            LinearLayout.LayoutParams il =
+                    new LinearLayout.LayoutParams(dp(40), dp(40));
+            il.rightMargin = dp(8);
+            row.addView(iv, il);
+            if (it != null) loadImage(it.imageUrl, iv);
+
+            LinearLayout col = new LinearLayout(this);
+            col.setOrientation(LinearLayout.VERTICAL);
+            TextView nm = new TextView(this);
+            nm.setText(it != null ? it.name() : r.optString("sku"));
+            nm.setTextSize(13);
+            nm.setTypeface(null, Typeface.BOLD);
+            nm.setTextColor(C_TEXT);
+            nm.setMaxLines(2);
+            col.addView(nm);
+            TextView line = new TextView(this);
+            line.setTextSize(12);
+            if ("match".equals(state)) {
+                line.setTextColor(C_OK);
+                line.setText("✓ " + heard + " heard · " + expected
+                        + " expected" + (sold > 0
+                        ? " — " + sold + " presumed sold ("
+                          + ("sales".equals(basis) ? "sales" : "on-hand")
+                          + ")"
+                        : ""));
+            } else if ("unheard".equals(state)) {
+                line.setTextColor(C_WARN);
+                line.setText("⚠ " + heard + " heard · " + onFile
+                        + " on record · expected " + expected
+                        + " — tap to resolve");
+            } else if ("silent".equals(state)) {
+                line.setTextColor(C_OVER);
+                line.setText("✗ " + expected
+                        + " expected · NONE heard — tap to resolve");
+            } else if ("noscan".equals(state)) {
+                line.setTextColor(C_MUTED);
+                line.setText("⊘ won't RFID scan — sweeps can't count "
+                        + "these; set already-tagged on the item itself");
+            } else {
+                line.setTextColor(C_MUTED);
+                line.setText("no tags on record — "
+                        + (it != null ? it.qty : 0)
+                        + " box(es) get labels");
+            }
+            col.addView(line);
+            row.addView(col, weight());
+
+            if ("unheard".equals(state) || "silent".equals(state)) {
+                row.setOnClickListener(v -> openShelfResolve(r));
+            }
+            LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            rl.bottomMargin = dp(5);
+            shelfRowsBox.addView(row, rl);
+        }
+        // Tombstones and true unknowns, said out loud under the rows.
+        if (shelfStrays != null) {
+            for (int i = 0; i < shelfStrays.length(); i++) {
+                JSONObject s = shelfStrays.optJSONObject(i);
+                if (s == null) continue;
+                TextView t = new TextView(this);
+                t.setText("⚠ " + s.optString("sku", "?") + ": "
+                        + s.optString("message"));
+                t.setTextSize(11);
+                t.setTextColor(C_WARN);
+                t.setPadding(dp(4), dp(2), 0, dp(2));
+                shelfRowsBox.addView(t);
+            }
+        }
+        if (shelfUnknown > 0) {
+            TextView t = new TextView(this);
+            t.setText(shelfUnknown + " tag(s) in range belong to other "
+                    + "products/bins — ignored here.");
+            t.setTextSize(11);
+            t.setTextColor(C_MUTED);
+            t.setPadding(dp(4), dp(2), 0, 0);
+            shelfRowsBox.addView(t);
+        }
+    }
+
+    /** Tap a yellow/red row: one-by-one scanning, the count-by-eye
+     *  derivation, and the dead-tag last resort. */
+    private void openShelfResolve(JSONObject r) {
+        final BItem it = bItemById(r.optInt("item_id"));
+        if (it == null) return;
+        final int heard = r.optInt("heard");
+        final int onFile = r.optInt("on_file");
+        final int expected = r.optInt("expected");
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(16), dp(6), dp(16), dp(4));
+
+        TextView counts = new TextView(this);
+        counts.setText(onFile + " tag(s) on record here · sweep heard "
+                + heard + " · expected " + expected + " · "
+                + it.qty + " box(es) collected this batch");
+        counts.setTextSize(12);
+        counts.setTextColor(C_WARN);
+        counts.setBackground(rr(C_WARN_BG, 0, 8));
+        counts.setPadding(dp(8), dp(5), dp(8), dp(5));
+        box.addView(counts);
+
+        Button oneBtn = smallBtn("⚡ SCAN ITS TAGS ONE-BY-ONE (3 s)");
+        LinearLayout.LayoutParams ol = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        ol.topMargin = dp(8);
+        box.addView(oneBtn, ol);
+        TextView oneHint = new TextView(this);
+        oneHint.setText("Hold the gun right at each stickered box — "
+                + "every read joins the sweep. Metal-heavy products "
+                + "(dovetail bars) often answer only up close.");
+        oneHint.setTextSize(11);
+        oneHint.setTextColor(C_MUTED);
+        box.addView(oneHint);
+
+        // Count by eye: sets nothing by itself — the sweep stays the
+        // counter (Nick) — but the derivation says what needs doing.
+        TextView eyeLbl = new TextView(this);
+        eyeLbl.setText("Boxes you SEE wearing an RFID label:");
+        eyeLbl.setTextSize(12);
+        eyeLbl.setTextColor(C_TEXT);
+        eyeLbl.setPadding(0, dp(10), 0, 0);
+        box.addView(eyeLbl);
+        LinearLayout steprow = new LinearLayout(this);
+        steprow.setGravity(Gravity.CENTER);
+        Button minus = smallBtn("−");
+        TextView num = new TextView(this);
+        final int[] eye = {heard};
+        num.setText(String.valueOf(eye[0]));
+        num.setTextSize(24);
+        num.setTypeface(null, Typeface.BOLD);
+        num.setTextColor(C_TEXT);
+        num.setGravity(Gravity.CENTER);
+        num.setMinWidth(dp(56));
+        Button plus = smallBtn("+");
+        steprow.addView(minus, new LinearLayout.LayoutParams(dp(52),
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        steprow.addView(num);
+        steprow.addView(plus, new LinearLayout.LayoutParams(dp(52),
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        box.addView(steprow);
+        final TextView derived = new TextView(this);
+        derived.setTextSize(12);
+        derived.setTextColor(C_BLUE);
+        derived.setGravity(Gravity.CENTER);
+        box.addView(derived);
+        final Runnable refr = () -> {
+            num.setText(String.valueOf(eye[0]));
+            int silent = Math.max(0, eye[0] - heard);
+            int newLabels = Math.max(0, it.qty - heard);
+            derived.setText("→ " + newLabels + " box(es) get new labels"
+                    + (silent > 0
+                       ? " · " + silent + " sticker(s) silent — scan "
+                         + "one-by-one; still nothing = dead tag below"
+                       : ""));
+        };
+        minus.setOnClickListener(v -> {
+            if (eye[0] > 0) eye[0]--;
+            refr.run();
+        });
+        plus.setOnClickListener(v -> {
+            if (eye[0] < 500) eye[0]++;
+            refr.run();
+        });
+        refr.run();
+
+        Button deadBtn = smallBtn("REPLACE A DEAD TAG…");
+        LinearLayout.LayoutParams dl = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        dl.topMargin = dp(8);
+        box.addView(deadBtn, dl);
+
+        ScrollView sc = new ScrollView(this);
+        sc.addView(box);
+        final AlertDialog dlg = dlg()
+                .setTitle(it.name())
+                .setView(sc)
+                .setPositiveButton("DONE", null)
+                .create();
+        dlg.show();
+
+        oneBtn.setOnClickListener(v -> shelfBurst(oneBtn, () -> {
+            dlg.dismiss();
+            // Fresh verdicts land in the (still open) shelf window;
+            // reopen this product with its new numbers.
+            if (shelfItems != null) {
+                for (int i = 0; i < shelfItems.length(); i++) {
+                    JSONObject nr = shelfItems.optJSONObject(i);
+                    if (nr != null
+                            && nr.optInt("item_id") == it.id
+                            && ("unheard".equals(nr.optString("state"))
+                                || "silent".equals(
+                                        nr.optString("state")))) {
+                        openShelfResolve(nr);
+                        return;
+                    }
+                }
+            }
+            beep(SOUND_OK);
+        }));
+        deadBtn.setOnClickListener(v -> {
+            dlg.dismiss();
+            replaceDeadDialog(it);
+        });
+    }
+
+    /** The dead-tag LAST RESORT (after retries and one-by-one): peel the
+     *  sticker off the box and test it off-product. Reads off-box -> that
+     *  exact EPC retires as 'replaced'. Still silent -> oldest unheard
+     *  record retires as 'dead'. Either way the sticker is discarded and
+     *  the box counts as untagged, so it queues a fresh label. */
+    private void replaceDeadDialog(final BItem it) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(18), dp(6), dp(18), dp(4));
+        TextView msg = new TextView(this);
+        msg.setText("1. PEEL the silent sticker OFF the box (sticker "
+                + "removal doesn't hurt our packaging).\n2. Hold it "
+                + "against the gun and press SCAN — lots of products "
+                + "(metal!) block tags that are actually fine.\n\n"
+                + "Reads off the box → that tag's record is dropped and "
+                + "the box gets a fresh label.\nStill silent → the tag "
+                + "is dead; discard it.\n\nEither way: THROW THE STICKER "
+                + "AWAY. A crossed-out sticker still answers sweeps.");
+        msg.setTextSize(12);
+        msg.setTextColor(C_TEXT);
+        box.addView(msg);
+        final TextView out = new TextView(this);
+        out.setTextSize(12);
+        out.setTextColor(C_WARN);
+        out.setPadding(0, dp(6), 0, 0);
+        box.addView(out);
+
+        final AlertDialog dlg = dlg()
+                .setTitle("Replace a dead tag — " + it.name())
+                .setView(box)
+                .setPositiveButton("⚡ SCAN IT NOW — OFF THE BOX", null)
+                .setNeutralButton("STILL SILENT — DISCARD", null)
+                .setNegativeButton("Back", null)
+                .create();
+        dlg.show();
+        // Handlers attach post-show so the buttons don't auto-dismiss.
+        dlg.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(
+                v -> {
+            final java.util.Set<String> before =
+                    new java.util.HashSet<>(shelfEpcs);
+            out.setText("Scanning…");
+            new Thread(() -> {
+                final List<String> heard = new ArrayList<>();
+                try {
+                    synchronized (tags) { tags.clear(); }
+                    reader.startInventoryTag();
+                    Thread.sleep(2500);
+                } catch (Exception ignored) {
+                } finally {
+                    try {
+                        reader.stopInventory();
+                    } catch (Exception ignored2) {
+                    }
+                }
+                synchronized (tags) {
+                    heard.addAll(tags.keySet());
+                    tags.clear();
+                }
+                String fresh = null;
+                for (String e : heard) {
+                    String up = e.trim().toUpperCase(java.util.Locale.US);
+                    if (!before.contains(up)) {
+                        fresh = up;
+                        break;
+                    }
+                }
+                final String epc = fresh;
+                ui.post(() -> {
+                    if (epc == null) {
+                        out.setText(heard.isEmpty()
+                                ? "Nothing answered. If it's still "
+                                  + "silent this close, it's dead — "
+                                  + "use DISCARD."
+                                : "Only already-counted tags answered — "
+                                  + "step away from the shelf and try "
+                                  + "again.");
+                        return;
+                    }
+                    out.setText("Read " + epc + " — dropping its "
+                            + "record…");
+                    retireReplacedTag(it, epc, dlg, out);
+                });
+            }).start();
+        });
+        dlg.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(
+                v -> dlg()
+                .setMessage("Discard the sticker and drop ONE unheard "
+                        + "tag record for " + it.name() + "?\n\nA dead "
+                        + "sticker can't say which EPC it was, so the "
+                        + "oldest unheard record goes. Logged in "
+                        + "History; the box counts as untagged and "
+                        + "gets a fresh label.")
+                .setPositiveButton("DROP IT", (d2, w2) ->
+                        retireReplacedTag(it, null, dlg, out))
+                .setNegativeButton("Cancel", null)
+                .show());
+    }
+
+    private void retireReplacedTag(final BItem it, final String epc,
+            final AlertDialog parent, final TextView out) {
+        new Thread(() -> {
+            try {
+                JSONObject body = new JSONObject()
+                        .put("changed_by", prefs.getString("device",
+                                "C72"));
+                if (epc != null) body.put("epc", epc);
+                JSONObject resp = api("POST", "/api/batches/" + batchId
+                        + "/items/" + it.id + "/replace-tag", body);
+                final String gone = resp.optString("retired_epc");
+                final String kind = resp.optString("kind");
+                ui.post(() -> {
+                    beep(SOUND_OK);
+                    if (parent != null) parent.dismiss();
+                    status.setText("Tag " + gone + " retired ("
+                            + kind + ") ✓ — the box counts as untagged "
+                            + "and gets a fresh label. Bin the sticker.");
+                    shelfPost(false, null);
+                    reloadBatchAndReview();
+                });
+            } catch (Exception e) {
+                ui.post(() -> {
+                    beep(SOUND_ERR);
+                    if (out != null) out.setText(e.getMessage());
+                    else status.setText(e.getMessage());
+                });
+            }
+        }).start();
     }
 
     // Send the bin sweep to the server. The web terminal watching this
@@ -5449,6 +6042,16 @@ public class MainActivity extends Activity {
             row.setGravity(Gravity.CENTER_VERTICAL);
             row.setBackground(rr(ok ? C_OK_BG : C_OVER_BG, 0, 8));
             row.setPadding(dp(8), dp(6), dp(8), dp(6));
+            // Product preview in the row itself (Nick, 2026-08-19) \u2014
+            // the \u2713/\u2717 mark rides the corner of the thumbnail.
+            ImageView iv = new ImageView(this);
+            iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            iv.setBackgroundColor(C_BG);
+            LinearLayout.LayoutParams il =
+                    new LinearLayout.LayoutParams(dp(40), dp(40));
+            il.rightMargin = dp(8);
+            row.addView(iv, il);
+            loadImage(r.imageUrl, iv);
             TextView mark = new TextView(this);
             mark.setText(r.noScan && ok ? "\u2298" : ok ? "\u2713" : "\u2717");
             mark.setTextSize(18);
@@ -5493,12 +6096,23 @@ public class MainActivity extends Activity {
 
         ScrollView sc = new ScrollView(this);
         sc.addView(box);
+        // "Sweep again" used to CLEAR — miss two boxes and you redid the
+        // whole shelf. CONTINUE keeps every read (go catch the missed
+        // boxes, trigger adds to the same sweep, SEND again); NEW SWEEP
+        // is the deliberate start-over (Nick, 2026-08-19).
         dlg()
                 .setTitle("Verify bin " + batchBin)
                 .setView(sc)
                 .setPositiveButton("CONFIRM - finish on the web",
                         (d, w) -> confirmVerifyHandoff())
-                .setNegativeButton("SWEEP AGAIN", (d, w) -> {
+                .setNegativeButton("CONTINUE SWEEP", (d, w) -> {
+                    int kept;
+                    synchronized (tags) { kept = tags.size(); }
+                    status.setText("Sweep kept (" + kept + " tag(s))"
+                            + " - pull the trigger to add the missed "
+                            + "boxes, then SEND SWEEP again.");
+                })
+                .setNeutralButton("NEW SWEEP", (d, w) -> {
                     clearVerifySweep();
                     status.setText("Sweep cleared - pull the trigger to "
                             + "sweep the bin again, then SEND SWEEP.");
@@ -5925,25 +6539,18 @@ public class MainActivity extends Activity {
         }).start();
     }
 
-    /** Bin barcode scanned with no batch open: start one right here on
-     *  the gun (batches used to start on the PC/iPad only). */
+    /** Bin barcode scanned with no batch open: the batch is CREATED but
+     *  not entered — it lands on the pick list as a card (with the
+     *  previous-batch-tagging heads-up when the bin was done before),
+     *  and the operator taps it to start (Nick, 2026-08-19). Mis-scans
+     *  are harmless: untouched batches self-expire server-side at 4h. */
     private void askStartBatch(String bin) {
         beep(SOUND_OTHER);
-        dlg()
-                .setTitle("Start a batch on " + bin + "?")
-                .setMessage("Batch-tag bin " + bin + ": its expected "
-                        + "products load and you collect every box on the "
-                        + "shelf.\n\nIf a batch is already open on " + bin
-                        + " it resumes instead of doubling up.")
-                .setPositiveButton("START", (d, w) -> startBatchOnBin(bin))
-                .setNegativeButton("Cancel", (d, w) ->
-                        btInput.requestFocus())
-                .show();
+        startBatchOnBin(bin);
     }
 
     private void startBatchOnBin(String bin) {
-        status.setText("Setting up " + bin + "…");
-        showLoading("Loading bin " + bin + "…");
+        status.setText("Adding " + bin + " to the list…");
         new Thread(() -> {
             try {
                 // Resume before create: an open batch on this bin is the
@@ -5962,28 +6569,28 @@ public class MainActivity extends Activity {
                     }
                 }
                 if (resumeId > 0) {
-                    final int rid = resumeId;
                     ui.post(() -> {
-                        hideLoading();
-                        Toast.makeText(this, "Resuming the open batch on "
-                                + bin, Toast.LENGTH_SHORT).show();
-                        enterBatch(rid);
+                        status.setText("Bin " + bin + " is already on the "
+                                + "list — tap its card to resume.");
+                        loadBatchPickerInline();
+                        btInput.requestFocus();
                     });
                     return;
                 }
                 JSONObject body = new JSONObject().put("bin", bin)
                         .put("created_by", prefs.getString("device", "C72"));
-                JSONObject resp = api("POST", "/api/batches", body);
-                final int id = resp.optInt("id");
+                api("POST", "/api/batches", body);
                 ui.post(() -> {
-                    hideLoading();
-                    enterBatch(id);
+                    beep(SOUND_OK);
+                    status.setText("Bin " + bin + " added — tap its card "
+                            + "below to start collecting.");
+                    loadBatchPickerInline();
+                    btInput.requestFocus();
                 });
             } catch (Exception e) {
                 ui.post(() -> {
-                    hideLoading();
                     beep(SOUND_ERR);
-                    status.setText("Couldn't start " + bin + ": "
+                    status.setText("Couldn't add " + bin + ": "
                             + e.getMessage());
                 });
             }
@@ -6230,6 +6837,27 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** ago() for long spans — "3 hours ago" / "12 days ago" / "4 months
+     *  ago" — the previous-batch-tagging chip's wording (Nick). */
+    private static String agoLong(String iso) {
+        try {
+            java.text.SimpleDateFormat f = new java.text.SimpleDateFormat(
+                    "yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US);
+            f.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));
+            long m = (System.currentTimeMillis()
+                    - f.parse(iso.substring(0, 19)).getTime()) / 60000L;
+            if (m < 60) return "under an hour ago";
+            long h = m / 60;
+            if (h < 48) return h + (h == 1 ? " hour ago" : " hours ago");
+            long d = h / 24;
+            if (d < 61) return d + " days ago";
+            long mo = d / 30;
+            return mo + (mo == 1 ? " month ago" : " months ago");
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
     private static String stageWord(JSONObject b) {
         String s = b.optString("ui_step", "");
         if ("collect".equals(s)) return "collecting";
@@ -6379,6 +7007,28 @@ public class MainActivity extends Activity {
             t2.setTextColor(C_MUTED);
             mid.addView(t2);
 
+            // A bin that already had a FULL tagging session gets one
+            // extra line: the yellow heads-up that this is a RE-tag
+            // (quiet collect, shelf sweep at Check). Chip only — not
+            // a button.
+            String prevDone = b.optString("prev_done_at", "");
+            if (!prevDone.isEmpty() && !"null".equals(prevDone)
+                    && !sideTrip && !receiving) {
+                TextView warn = new TextView(this);
+                warn.setText("⚠ Previous batch tagging: "
+                        + agoLong(prevDone));
+                warn.setTextSize(11);
+                warn.setTextColor(C_WARN);
+                warn.setBackground(rr(C_WARN_BG, 0, 6));
+                warn.setPadding(dp(7), dp(2), dp(7), dp(2));
+                LinearLayout.LayoutParams wl =
+                        new LinearLayout.LayoutParams(
+                                LinearLayout.LayoutParams.WRAP_CONTENT,
+                                LinearLayout.LayoutParams.WRAP_CONTENT);
+                wl.topMargin = dp(3);
+                mid.addView(warn, wl);
+            }
+
             android.widget.ProgressBar pb = new android.widget.ProgressBar(
                     this, null, android.R.attr.progressBarStyleHorizontal);
             pb.setMax(Math.max(boxes, 1));
@@ -6472,10 +7122,16 @@ public class MainActivity extends Activity {
                 final String st = b.optString("status");
                 final boolean receiving =
                         "receiving".equals(b.optString("kind"));
+                final String prevDone = b.isNull("prev_done_at")
+                        ? null : b.optString("prev_done_at", null);
+                final String shelfSw = b.isNull("shelf_swept_at")
+                        ? null : b.optString("shelf_swept_at", null);
                 ui.post(() -> {
                     if (scanning) toggleScan();
                     batchId = id;
                     batchBin = bin;
+                    batchPrevDoneAt = prevDone;
+                    batchShelfSweptAt = shelfSw;
                     receivingBatch = receiving;
                     loadScanOrder();
                     loadPriorAsked();
@@ -6550,7 +7206,9 @@ public class MainActivity extends Activity {
         btnSweep.setText(step == STEP_PAIR ? "SWEEP"
                 : step == STEP_COLLECT
                   ? (baselineArmed ? "APPLY" : "BASELINE")
-                  : "UNPAIR");
+                  : step == STEP_CHECK && batchPrevDoneAt != null
+                    ? "SHELF SWEEP"
+                    : "UNPAIR");
         btnNext.setText(parentBatchId != 0 && step == STEP_PAIR
                 ? "FINISH TRIP"
                 : receivingBatch
@@ -6711,6 +7369,11 @@ public class MainActivity extends Activity {
      *  product per batch, collect step only. */
     private void maybePriorTagAlert(BItem it, boolean offerUncount) {
         if (!inBatch() || step != STEP_COLLECT) return;
+        // Re-tag flow: on a previously-done bin EVERY product may carry
+        // old tags — the popup would fire on each scan and slow the walk
+        // to a crawl. The Check step's shelf sweep answers the same
+        // question for the whole bin at once (Nick, 2026-08-19).
+        if (batchPrevDoneAt != null) return;
         if (it == null || !it.resolved || it.skipped) return;
         if (it.priorTags <= 0 || it.taggedBefore > 0) return;
         if (priorAsked.contains(it.id)) return;

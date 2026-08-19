@@ -662,6 +662,12 @@
               <p class="step__hint">Only products needing a decision appear here — barcodes matching several listings, counts that differ from Shopify, unconfirmed serial names. Click one to review it. A clean bin shows nothing.</p>
             </div>
           </section>
+          <!-- Re-tagging a previously-done bin: the shelf sweep sorts
+               stickered boxes from new ones. The gun runs the sweep;
+               this banner clears ITSELF the moment one arrives. -->
+          <div class="binwarn" id="bcheck-shelfwarn" hidden>
+            <span id="bcheck-shelfwarn-text">⚠ This bin was batch tagged before — sweep the shelf on the C72 (the Check step there prompts for it) so stickered boxes are sorted from new ones. This notice clears by itself once the sweep arrives.</span>
+          </div>
           <div id="bcheck-strays"></div>
           <p class="linkbox__text" id="bcheck-empty" hidden>Nothing needs checking ✓</p>
           <ul class="batch__items" id="bcheck-list"></ul>

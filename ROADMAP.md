@@ -85,6 +85,37 @@ Overwrites target a CLEAN barcode/scanned code (a mangled SKU
 matches nothing live); SKU saves re-resolve the row so labels print
 the new code. test_badchars.py covers the matrix.
 
+RE-TAGGING done bins (2026-08-19, built + tested, NOT yet deployed —
+waiting on Nick's restart window; C72 3.49/code 67 rides along, as
+does 3.48's self-updater): sold stock leaves stale tag records, so a
+bin with a COMPLETED full batch gets the re-tag flow. Scanning a bin
+barcode on the gun now CREATES the batch without entering it (card on
+the pick list; yellow "⚠ Previous batch tagging: X ago" chip;
+untouched batches self-expire at 4h). Collect never pops the
+already-tagged question on those bins; Check opens ONE bin-level
+SHELF SWEEP instead (burst reads ACCUMULATE — continue vs NEW SWEEP)
+with per-product verdicts: match (heard = expected, expected = tags
+on file minus sold; real sales once read_orders lands, else
+min(on-file, live on-hand)), yellow unheard, red silent, noscan
+exempt (never zeroes hand-set counts). Apply writes tagged_before
+from what was HEARD (sweep is the counter — eye-counts only derive
+"N boxes get labels"). Tap a highlighted row: one-by-one close-range
+scanning, count-by-eye, and the dead-tag LAST RESORT: peel the
+sticker, scan it OFF the box — reads = that exact EPC retired as
+'replaced' (product was blocking RF); silent = oldest unheard record
+retired as 'dead'. Retired EPCs live FOREVER in rfid_retired_tags
+(new table, auto-creates): presumed-sold ones read as "possible
+return", replaced/dead ones make future sweeps say "replaced sticker
+still on a box — peel it" instead of 'unknown tag' (Nick doesn't
+trust every worker to peel). Verify: presumed-sold note + one-tap
+"Retire N" per product (web), tombstones named in the report, undo
+via History (tag-retired/unretired events; unretire endpoint).
+Web check shows the needs-a-sweep banner and clears it ITSELF when
+the gun's sweep arrives; yellow/red row tints mirror the gun.
+Verify sweeps on the gun: CONTINUE SWEEP (keep reads, add the missed
+boxes, send again) vs NEW SWEEP — no more full redos; report rows
+carry product thumbnails. test_retag.py: 31 checks.
+
 Duplicate RESOLVER finalized 2026-08-19 (several rounds to Nick's
 spec, all deployed): reason line names the shared value ("Duplicate
 barcodes detected: X"); preview cards lead with the product name
