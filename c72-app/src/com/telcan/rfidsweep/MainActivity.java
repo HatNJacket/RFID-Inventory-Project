@@ -379,12 +379,17 @@ public class MainActivity extends Activity {
         }
     }
 
+    // SHELF only exists on re-tag bins (a previously-completed full
+    // batch): a real trigger-driven sweep step — power chip and all —
+    // between collect and check (Nick, 2026-08-19). Everyone else
+    // steps straight over it.
     private static final int STEP_COLLECT = 0;
-    private static final int STEP_CHECK = 1;
-    private static final int STEP_PAIR = 2;
-    private static final int STEP_VERIFY = 3;
+    private static final int STEP_SHELF = 1;
+    private static final int STEP_CHECK = 2;
+    private static final int STEP_PAIR = 3;
+    private static final int STEP_VERIFY = 4;
     private static final String[] STEP_NAMES =
-            {"COLLECT", "CHECK", "PAIR", "VERIFY"};
+            {"COLLECT", "SHELF", "CHECK", "PAIR", "VERIFY"};
     private static final int STEP_LAST = STEP_VERIFY;
 
     private static class CheckEntry {
@@ -819,16 +824,18 @@ public class MainActivity extends Activity {
             // COLLECT: baseline a part-tagged shelf. (Unpair-everything
             // stays reachable via long-press on UNDO.)
             else if (step == STEP_COLLECT) baselineButton();
-            // CHECK on a previously-done bin: reopen the shelf sweep —
-            // the road back when the prompt was closed by accident.
+            // CHECK on a previously-done bin: back to the shelf-sweep
+            // step, reads intact — re-sweep or re-apply any time.
             else if (step == STEP_CHECK && batchPrevDoneAt != null) {
-                openShelfSweep();
+                step = STEP_SHELF;
+                applyBatchUi();
             } else undoAllPairing();
         });
         batchBtnRow.addView(btnSweep, weight());
         btnUndo = smallBtn("UNDO");
         btnUndo.setOnClickListener(x -> {
             if (step == STEP_VERIFY) clearVerifySweep();
+            else if (step == STEP_SHELF) clearShelfSweep();
             else undoPair();
         });
         btnUndo.setOnLongClickListener(x -> {
@@ -4586,7 +4593,8 @@ public class MainActivity extends Activity {
         if (activeTab == TAB_BATCH) {
             if (inBatch() && step == STEP_PAIR) {
                 pairReadTag();
-            } else if (inBatch() && step == STEP_VERIFY) {
+            } else if (inBatch()
+                    && (step == STEP_VERIFY || step == STEP_SHELF)) {
                 toggleScan();   // same bulk sweep as the SWEEP tab
             } else if (inBatch() && baselineArmed) {
                 toggleScan();   // baseline sweep of a part-tagged shelf
@@ -5095,7 +5103,7 @@ public class MainActivity extends Activity {
     // --------------------------------------------------------- step flow ----
     private void stepBack() {
         if (!inBatch() || step == STEP_COLLECT) return;
-        if (step == STEP_VERIFY && scanning) {
+        if ((step == STEP_VERIFY || step == STEP_SHELF) && scanning) {
             try {
                 reader.stopInventory();
             } catch (Exception ignored) {
@@ -5106,6 +5114,13 @@ public class MainActivity extends Activity {
         // Receiving loops collect <-> pair; there is no Check step to
         // land on.
         if (receivingBatch && step == STEP_CHECK) step = STEP_COLLECT;
+        // The shelf-sweep step only exists on re-tag bins; everyone
+        // else steps straight over it. (Reads are KEPT when landing on
+        // it — BACK from check continues the same sweep.)
+        if (step == STEP_SHELF && (batchPrevDoneAt == null
+                || receivingBatch || parentBatchId != 0)) {
+            step = STEP_COLLECT;
+        }
         pairActive = null;
         if (step == STEP_CHECK) fetchReview();
         applyBatchUi();
@@ -5221,14 +5236,37 @@ public class MainActivity extends Activity {
                 askEmptyBin();
                 return;
             }
-            step = STEP_CHECK;
-            fetchReview();
-            applyBatchUi();
-            // Re-tag flow: a previously-done bin opens Check with the
-            // bin-level shelf sweep (unless one was already applied).
-            if (batchPrevDoneAt != null && batchShelfSweptAt == null) {
-                openShelfSweep();
+            // Re-tag flow: a previously-done bin gets its own trigger-
+            // driven SHELF sweep step first (power chip and all) —
+            // unless a sweep was already applied this batch.
+            if (batchPrevDoneAt != null && parentBatchId == 0
+                    && batchShelfSweptAt == null) {
+                step = STEP_SHELF;
+                applyBatchUi();
+            } else {
+                step = STEP_CHECK;
+                fetchReview();
+                applyBatchUi();
             }
+        } else if (step == STEP_SHELF) {
+            if (scanning) toggleScan();
+            mergeShelfReads();
+            if (shelfEpcs.isEmpty()) {
+                dlg()
+                        .setTitle("No tags heard yet")
+                        .setMessage("Pull the trigger to sweep the shelf "
+                                + "first (the PWR chip changes power). "
+                                + "If nothing on this shelf answers at "
+                                + "all, you can apply the empty sweep — "
+                                + "every product with tags on record "
+                                + "goes RED for a human look.")
+                        .setPositiveButton("APPLY EMPTY SWEEP", (d, w) ->
+                                applyShelfSweep())
+                        .setNegativeButton("Keep sweeping", null)
+                        .show();
+                return;
+            }
+            shelfPost(false, this::showShelfResults);
         } else if (step == STEP_CHECK) {
             // Undecided wrong-shelf boxes come first: a label printed
             // now names THIS bin, which forecloses the move.
@@ -5299,86 +5337,76 @@ public class MainActivity extends Activity {
         return null;
     }
 
-    private void openShelfSweep() {
+    /** Reads landed in `tags` by the trigger inventory join the running
+     *  shelf pile. Called from the live tick while sweeping and before
+     *  results/apply, so no read is ever lost. */
+    private void mergeShelfReads() {
+        synchronized (tags) {
+            for (String e : tags.keySet()) {
+                shelfEpcs.add(e.trim().toUpperCase(java.util.Locale.US));
+            }
+            tags.clear();
+        }
+    }
+
+    private void clearShelfSweep() {
+        if (scanning && step == STEP_SHELF) toggleScan();
+        shelfEpcs.clear();
+        shelfItems = null;
+        shelfStrays = null;
+        shelfUnknown = 0;
+        synchronized (tags) { tags.clear(); }
+        beep(SOUND_OTHER);
+        status.setText("Shelf sweep cleared — pull the trigger to sweep "
+                + "the shelf again.");
+    }
+
+    /** RESULTS: the per-product verdicts for everything heard so far.
+     *  KEEP SWEEPING returns to the step with every read intact. */
+    private void showShelfResults() {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(dp(16), dp(6), dp(16), dp(4));
-
-        TextView sub = new TextView(this);
-        sub.setText("This bin was batch tagged before ("
-                + (batchPrevDoneAt == null ? "?" : agoLong(batchPrevDoneAt))
-                + ") — the sweep sorts stickered boxes from new ones. "
-                + "Sweep as often as you like: reads ADD UP until you "
-                + "start a new sweep.");
-        sub.setTextSize(12);
-        sub.setTextColor(C_MUTED);
-        box.addView(sub);
 
         shelfStatusLine = new TextView(this);
         shelfStatusLine.setTextSize(13);
         shelfStatusLine.setTypeface(null, Typeface.BOLD);
         shelfStatusLine.setTextColor(C_BLUE);
-        shelfStatusLine.setPadding(0, dp(6), 0, dp(6));
+        shelfStatusLine.setPadding(0, 0, 0, dp(6));
         box.addView(shelfStatusLine);
-
-        Button sweepBtn = smallBtn("⚡ SWEEP THE SHELF (3 s)");
-        LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT);
-        box.addView(sweepBtn, sl);
-
-        Button newBtn = smallBtn("NEW SWEEP — start over");
-        LinearLayout.LayoutParams nl = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT);
-        nl.topMargin = dp(4);
-        box.addView(newBtn, nl);
 
         shelfRowsBox = new LinearLayout(this);
         shelfRowsBox.setOrientation(LinearLayout.VERTICAL);
-        shelfRowsBox.setPadding(0, dp(8), 0, 0);
         box.addView(shelfRowsBox);
-
-        sweepBtn.setOnClickListener(v -> shelfBurst(sweepBtn, null));
-        newBtn.setOnClickListener(v -> {
-            shelfEpcs.clear();
-            shelfItems = null;
-            shelfStrays = null;
-            shelfUnknown = 0;
-            renderShelfRows();
-            updateShelfStatusLine();
-        });
 
         ScrollView sc = new ScrollView(this);
         sc.addView(box);
         dlg()
                 .setTitle("Shelf sweep — " + batchBin)
                 .setView(sc)
-                .setPositiveButton("APPLY + CLOSE", (d, w) ->
+                .setPositiveButton("APPLY → CHECK", (d, w) ->
                         applyShelfSweep())
-                .setNegativeButton("Later", (d, w) -> {
-                    status.setText("Shelf sweep parked — the SHELF SWEEP "
-                            + "button here on Check reopens it (reads "
-                            + "kept).");
+                .setNegativeButton("KEEP SWEEPING", (d, w) -> {
                     shelfRowsBox = null;
                     shelfStatusLine = null;
+                    status.setText(shelfEpcs.size() + " tag(s) kept — "
+                            + "trigger to add more (PWR chip changes "
+                            + "power), RESULTS when done.");
+                })
+                .setNeutralButton("NEW SWEEP", (d, w) -> {
+                    shelfRowsBox = null;
+                    shelfStatusLine = null;
+                    clearShelfSweep();
                 })
                 .show();
         updateShelfStatusLine();
         renderShelfRows();
-        // Reopened with reads already in hand: show fresh verdicts.
-        if (!shelfEpcs.isEmpty() && shelfItems == null) {
-            shelfPost(false, null);
-        }
     }
 
     private void updateShelfStatusLine() {
         if (shelfStatusLine == null) return;
-        shelfStatusLine.setText(shelfEpcs.isEmpty()
-                ? "No tags heard yet — press SWEEP with the gun at the "
-                  + "shelf."
-                : shelfEpcs.size() + " tag(s) heard so far — sweep again "
-                  + "to add, or APPLY.");
+        shelfStatusLine.setText(shelfEpcs.size()
+                + " tag(s) heard — tap a yellow/red row to resolve it.");
     }
 
     private void shelfBurst(Button btn, Runnable after) {
@@ -5473,13 +5501,17 @@ public class MainActivity extends Activity {
     private void applyShelfSweep() {
         shelfRowsBox = null;
         shelfStatusLine = null;
+        if (scanning && step == STEP_SHELF) toggleScan();
+        mergeShelfReads();
         shelfPost(true, () -> {
             batchShelfSweptAt = "applied";
             beep(SOUND_OK);
+            step = STEP_CHECK;
+            fetchReview();
+            applyBatchUi();
             status.setText("Shelf sweep applied ✓ — already-tagged "
                     + "counts set from what was heard. Yellow/red rows "
-                    + "stay in the check list.");
-            reloadBatchAndReview();
+                    + "are in the check list.");
         });
     }
 
@@ -7161,8 +7193,11 @@ public class MainActivity extends Activity {
     // and check are both "collecting").
     private void publishStep() {
         if (!inBatch()) return;
+        // SHELF publishes as "check": the web has no shelf stage — its
+        // check banner ("sweep in progress on the gun") is the right
+        // thing for it to show while this step runs.
         final String name = step == STEP_COLLECT ? "collect"
-                : step == STEP_CHECK ? "check"
+                : step == STEP_CHECK || step == STEP_SHELF ? "check"
                 : step == STEP_VERIFY ? "verify" : "pair";
         final int id = batchId;
         new Thread(() -> {
@@ -7185,22 +7220,36 @@ public class MainActivity extends Activity {
         binChip.setText(in
                 ? (receivingBatch ? "RECEIVING" : "Bin " + batchBin)
                 : "No batch");
+        // The shelf step only exists on re-tag bins — everyone else's
+        // count skips it so COLLECT still reads "1/4".
+        boolean hasShelf = batchPrevDoneAt != null && !receivingBatch
+                && parentBatchId == 0;
+        int shownStep = step + 1;
+        int shownTotal = STEP_LAST + 1;
+        if (!hasShelf) {
+            shownTotal--;
+            if (step > STEP_SHELF) shownStep--;
+        }
         phaseChip.setText(in
                 ? (receivingBatch
                     ? (step == STEP_PAIR ? "PAIR ⟳" : "COLLECT ⟳")
-                    : STEP_NAMES[step] + "  " + (step + 1) + "/"
-                      + (STEP_LAST + 1))
+                    : STEP_NAMES[step] + "  " + shownStep + "/"
+                      + shownTotal)
                 : "PICK");
         batchPickerScroll.setVisibility(in ? View.GONE : View.VISIBLE);
         batchListView.setVisibility(in ? View.VISIBLE : View.GONE);
         if (!in) loadBatchPickerInline();
         batchBtnRow.setVisibility(in ? View.VISIBLE : View.GONE);
         // The two right-hand buttons change job with the step.
-        btnUndo.setText(step == STEP_VERIFY ? "CLEAR" : "UNDO");
+        btnUndo.setText(step == STEP_VERIFY || step == STEP_SHELF
+                ? "CLEAR" : "UNDO");
         if (step != STEP_COLLECT) baselineArmed = false;
-        // In VERIFY the advancing button IS the send, so the third slot
-        // would only duplicate it — hide it and the row reads as one path.
-        btnSweep.setVisibility(step == STEP_VERIFY ? View.GONE : View.VISIBLE);
+        // In VERIFY and SHELF the advancing button IS the send, so the
+        // third slot would only duplicate it — hide it and the row
+        // reads as one path.
+        btnSweep.setVisibility(
+                step == STEP_VERIFY || step == STEP_SHELF
+                ? View.GONE : View.VISIBLE);
         // One line at a slightly smaller size (set at build) — the
         // hyphen-newline version read as a typo (Nick, v3.44).
         btnSweep.setText(step == STEP_PAIR ? "SWEEP"
@@ -7213,7 +7262,8 @@ public class MainActivity extends Activity {
                 ? "FINISH TRIP"
                 : receivingBatch
                   ? (step == STEP_COLLECT ? "PRINT →" : "↩ COLLECT")
-                  : step == STEP_VERIFY ? "SEND SWEEP" : "NEXT →");
+                  : step == STEP_VERIFY ? "SEND SWEEP"
+                  : step == STEP_SHELF ? "RESULTS →" : "NEXT →");
         if (in && receivingBatch) {
             status.setText(step == STEP_PAIR
                     ? "PAIR: barcode selects, TRIGGER each sticker. "
@@ -7226,6 +7276,15 @@ public class MainActivity extends Activity {
             if (step == STEP_COLLECT) {
                 status.setText("COLLECT: scan every box in this bin, then "
                         + "NEXT.");
+            } else if (step == STEP_SHELF) {
+                status.setText("SHELF SWEEP: this bin was tagged before ("
+                        + (batchPrevDoneAt == null ? "?"
+                           : agoLong(batchPrevDoneAt))
+                        + "). Pull the trigger and sweep — reads add up "
+                        + "across pulls (PWR chip changes power). "
+                        + (shelfEpcs.isEmpty() ? ""
+                           : shelfEpcs.size() + " tag(s) so far. ")
+                        + "RESULTS when done; CLEAR starts over.");
             } else if (step == STEP_CHECK) {
                 status.setText(checkEntries.isEmpty()
                         ? "CHECK: nothing flagged ✓ — NEXT queues labels."
@@ -9834,6 +9893,13 @@ public class MainActivity extends Activity {
                 synchronized (tags) { n = tags.size(); }
                 status.setText("Sweeping the bin… " + n + " unique tag(s). "
                         + "Trigger again to stop, then CHECK BIN.");
+            } else if (inBatch() && step == STEP_SHELF && scanning) {
+                // Reads fold into the running pile as they arrive, so a
+                // trigger release or power change never loses them.
+                mergeShelfReads();
+                status.setText("Shelf sweep… " + shelfEpcs.size()
+                        + " unique tag(s) so far. Trigger again to stop, "
+                        + "RESULTS when the shelf is done.");
             }
         }
         locateTick();
