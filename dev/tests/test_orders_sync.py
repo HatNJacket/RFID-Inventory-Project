@@ -29,9 +29,15 @@ def check(l,c,x=""):
     print(("PASS  " if c else "FAIL  ")+l+("" if c else f"  <- {x}"))
     if not c: fails.append(l)
 
+from datetime import datetime, timezone
+
 def tag(s, epc, sku, title, bin_="A1-1", case=None):
+    # Tags predate the fixture's sales (Aug 17/18): the mismatch math is
+    # windowed to the tag pool's baseline, so a sale only counts when it
+    # was fulfilled AFTER tagging (the 2026-08-24 truth rework).
     s.add(RfidAssignment(rfid_id=epc, shopify_variant_id="t:1",
-        product_title=title, sku=sku, bin_location=bin_, case_units=case))
+        product_title=title, sku=sku, bin_location=bin_, case_units=case,
+        assigned_at=datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)))
 
 ORDERS = [
     {"order_id":"gid://shopify/Order/1","name":"#1001","fulfilled_at":"2026-08-17T14:00:00Z",

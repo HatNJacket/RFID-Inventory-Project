@@ -6609,6 +6609,54 @@ bEl.verifyReport.addEventListener("click", async (e) => {
   // Presumed-sold cleanup: retire the unheard tag records whose
   // shortfall matched sales/on-hand. Local records only — Shopify is
   // never touched — and every EPC is undoable from History.
+  // Manual retire from the expanded row (Nick, 2026-08-24): for tags
+  // the operator has PHYSICALLY confirmed gone, even when sales or
+  // on-hand don't fully back it. The confirmation makes them attest the
+  // boxes are really absent and the tags aren't just dead on present
+  // boxes (that's the replace-tag flow's job).
+  const manualBtn = e.target.closest(".bvx-retire-manual");
+  if (manualBtn && batch) {
+    const operator = operatorEl.value;
+    if (!operator) {
+      alert("Pick who's scanning (top right) first.");
+      return;
+    }
+    const epcs = (manualBtn.dataset.epcs || "").split(",").filter(Boolean);
+    if (!epcs.length) return;
+    if (
+      !confirm(
+        `Manually retire ${epcs.length} unheard tag record(s) for ` +
+          `${manualBtn.dataset.sku} as presumed sold?\n\n` +
+          `Only do this after physically checking the shelf:\n` +
+          `- the box(es) really are NOT there (sold, moved, gone), and\n` +
+          `- the tags aren't just dead or blocked on boxes still ` +
+          `present. A dead tag on a present box goes through the check ` +
+          `step's replace-tag flow instead.\n\n` +
+          `Local records only, Shopify is not touched. The records ` +
+          `stay as tombstones (a return is recognized and restorable), ` +
+          `and every EPC is undoable from History.`
+      )
+    )
+      return;
+    manualBtn.disabled = true;
+    try {
+      await postJson("/api/assignments/retire", {
+        epcs,
+        kind: "presumed-sold",
+        changed_by: operator,
+        note: `manual verify retire, bin ${batch.bin_name}`,
+      });
+      setBatchResult(
+        `${epcs.length} tag(s) manually retired ✓ (undo in History)`,
+        "ok"
+      );
+      await runVerifyCheck();
+    } catch (err) {
+      manualBtn.disabled = false;
+      setBatchResult(err.message, "err");
+    }
+    return;
+  }
   const retireBtn = e.target.closest(".bvx-retire");
   if (retireBtn && batch) {
     const operator = operatorEl.value;
@@ -6913,7 +6961,16 @@ async function runVerifyCheck() {
                     <input type="number" min="0" max="500" class="bvx-tb" value="${tb}"></label>
                   <input class="bvx__sum" type="text" readonly tabindex="-1">
                   <button class="reset bvx-save" type="button" data-item="${r.item_id}">Save counts</button>
-                </div>
+                </div>${
+                  r.shelf && (r.shelf.unheard_epcs || []).length
+                    ? `<div class="bvx__manual">
+                        <button class="reset bvx-retire-manual" type="button"
+                          data-epcs="${escapeHtml(r.shelf.unheard_epcs.join(","))}"
+                          data-sku="${escapeHtml(r.sku || "")}"
+                          title="For tags you have PHYSICALLY confirmed are gone, even when sales or on-hand don't fully account for them">Retire ${(r.shelf.unheard_epcs || []).length} unheard tag(s) manually…</button>
+                      </div>`
+                    : ""
+                }
               </div>
             </div>
           </td></tr>`

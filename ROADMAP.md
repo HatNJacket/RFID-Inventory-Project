@@ -41,6 +41,18 @@ the REAL prod numbers (dev/tests/test_ledger_flow.py, 41 checks).
   (`_units_on_shelf`) with the new/already-tagged split and the sweep's
   heard count ("counted 5" / "counted 4, sweep heard 5" instead of
   "counted 0 (expected 6)").
+- **Sold-ledger backfill (same evening)**: `dev/backfill_orders.py` ran
+  against prod for the full read_orders window (updated since Jun 26):
+  301 rows added back to Jun 29 fulfillments. Going deeper than ~60
+  days needs the `read_all_orders` scope (Nick declined for now).
+  The mismatch-task math (`refresh_mismatch_tasks`) is now WINDOWED to
+  each SKU's tag-pool baseline like everything else — the unwindowed
+  version false-flagged 106 SKUs with pre-tagging sales the moment the
+  backfill landed (windowed re-run: 102 closed, 9 real ones stand).
+- **Manual retire button**: verify's expanded flagged row offers
+  "Retire N unheard tag(s) manually..." for ANY unheard earlier tags,
+  behind an attestation confirm (physically checked, boxes really gone,
+  tags not just dead). Same retire endpoint, tombstones + History undo.
 
 ## 🧭 Tutorial rebuild + LINK presence + replace menu (2026-08-24)
 

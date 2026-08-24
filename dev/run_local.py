@@ -31,6 +31,12 @@ from sqlalchemy.orm import Session  # noqa: E402
 Base.metadata.create_all(get_engine())
 
 with Session(get_engine()) as s:
+    # A DONE prior batch on T1-1 makes the open batch a RE-TAG bin, so
+    # the shelf-reconcile payload (unheard tags, retire buttons, the
+    # manual-retire button in verify's expanded rows) renders locally.
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    s.add(Batch(bin_name="T1-1", status="done", created_by="Steve",
+                completed_at=_dt.now(_tz.utc) - _td(days=30)))
     b = Batch(bin_name="T1-1", status="awaiting-verify", ui_step="verify",
               created_by="Steve")
     s.add(b)
@@ -101,7 +107,10 @@ with Session(get_engine()) as s:
     # PRETAG-1's tags predate the batch (no batch_id, no barcode on the
     # tag rows — the SKU-only match must claim them, not call them
     # foreign) and the sweep heard both.
-    for epc in ("CCCC0000000000000000000A", "CCCC0000000000000000000B"):
+    # ...and a third earlier tag the sweep does NOT hear, so verify's
+    # expanded row offers the manual retire button locally.
+    for epc in ("CCCC0000000000000000000A", "CCCC0000000000000000000B",
+                "CCCC0000000000000000000C"):
         s.add(RfidAssignment(rfid_id=epc, shopify_variant_id="t:5",
                              product_title="Askar FMA180",
                              sku="pretag-1", bin_location="T1-1"))

@@ -34,6 +34,7 @@ from sqlalchemy.orm import Session
 from app import shopify
 from app.models import (
     AppSetting,
+    BarcodeChange,
     RefreshLog,
     ReviewTask,
     RfidAssignment,
@@ -239,13 +240,52 @@ def unretire_units(session: Session, sku: str, units: int) -> int:
     return restored
 
 
+def _sku_baselines(session: Session, skus) -> dict[str, object]:
+    """Upper SKU -> the tag pool's baseline: newest live pairing (any
+    bin), or a newer confirmed on-hand write, whichever is later. Sales
+    fulfilled before it cannot be expected to have tags."""
+    uppers = [s.strip().upper() for s in skus]
+    out: dict[str, object] = {}
+    if not uppers:
+        return out
+    for t in session.scalars(
+        select(RfidAssignment).where(
+            func.upper(RfidAssignment.sku).in_(uppers)
+        )
+    ):
+        k = t.sku.strip().upper()
+        ts = _as_utc(t.assigned_at)
+        if ts is not None and (k not in out or ts > out[k]):
+            out[k] = ts
+    for bc in session.scalars(
+        select(BarcodeChange).where(
+            func.upper(BarcodeChange.sku).in_(uppers),
+            BarcodeChange.changed_field.in_((
+                "on-hand", "on-hand-undo",
+                "on-hand-lower", "on-hand-lower-undo",
+            )),
+        )
+    ):
+        k = (bc.sku or "").strip().upper()
+        ts = _as_utc(bc.changed_at)
+        if ts is not None and (k not in out or ts > out[k]):
+            out[k] = ts
+    return out
+
+
 # ------------------------------------------------------- mismatch tasks -----
 def refresh_mismatch_tasks(session: Session) -> dict:
     """One open tag-onhand-mismatch task per SKU whose tags ≠ on-hand +
     sold-unretired; auto-closed when the numbers agree again. DISTINCT
     from inventory-check (a human counted the shelf and disagreed) — this
-    category is arithmetic, so the system may both open and close it."""
-    sold = sold_unretired_map(session)
+    category is arithmetic, so the system may both open and close it.
+
+    Sales are WINDOWED to each SKU's tag-pool baseline (same rule as the
+    shelf reconcile): a unit sold before tagging never had a tag, so it
+    belongs in neither side of the expectation. Without this, the 60-day
+    ledger backfill false-flagged every SKU with pre-tagging sales
+    (Nick, 2026-08-24)."""
+    sold_all = sold_unretired_map(session)
     open_tasks = {
         (t.sku or "").strip().upper(): t
         for t in session.scalars(
@@ -255,9 +295,11 @@ def refresh_mismatch_tasks(session: Session) -> dict:
             )
         ).all()
     }
-    skus = sorted(set(sold) | set(open_tasks))
+    skus = sorted(set(sold_all) | set(open_tasks))
     if not skus:
         return {"tasks_opened": 0, "tasks_closed": 0}
+    baselines = _sku_baselines(session, skus)
+    sold = sold_unretired_since_map(session, skus, baselines)
     try:
         on_hand = shopify.get_on_hand_by_skus(skus)
     except Exception as error:
@@ -276,11 +318,15 @@ def refresh_mismatch_tasks(session: Session) -> dict:
         expected = oh + sold.get(sku, 0)
         task = open_tasks.get(sku)
         if tags != expected:
+            base = baselines.get(sku)
+            since = (
+                base.strftime("%b %d") if base is not None else "ever"
+            )
             detail = (
                 f"RFID tags stand for {tags} unit(s) but the expected count "
                 f"is {expected} (Shopify on-hand {oh}"
                 + (
-                    f" + {sold[sku]} sold since the last audit"
+                    f" + {sold[sku]} sold since tagging ({since})"
                     if sold.get(sku)
                     else ""
                 )
