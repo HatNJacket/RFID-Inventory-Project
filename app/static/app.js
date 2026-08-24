@@ -2246,13 +2246,14 @@ el.printBtn.addEventListener("click", () =>
 
 // --- "How do I use Scan Station?" walkthrough -------------------------------
 // A slideshow of illustrated steps: image up top, arrows on the sides
-// (greyed at the ends), explanation at the bottom. The SVGs are stand-ins
-// drawn from real boxes (the ZWO double-barcode, the Svbony SKU label) —
-// warehouse photos can replace any file in /static/help/ later without
-// touching code.
+// (greyed at the ends), explanation at the bottom. Real material now
+// (Nick, 2026-08-24): screenshots of the site walking an actual product
+// (the ZWO Nikon-T2-II) plus Nick's warehouse photos of the ZWO
+// double-barcode box and the Svbony SKU label. The scanner slide stays
+// an illustration until someone photographs the right scanner.
 const HELP_SLIDES = [
   {
-    img: "/static/help/slide-link.svg",
+    img: "/static/help/slide-link.png",
     text:
       "Open the TC RFID app on the C72 gun and make sure it's on the LINK " +
       "tab (new versions start there). Then turn ON the C72 LINK toggle at " +
@@ -2266,7 +2267,7 @@ const HELP_SLIDES = [
       "its trigger at any barcode: if the C72 beeps, you're connected.",
   },
   {
-    img: "/static/help/slide-barcode.svg",
+    img: "/static/help/slide-barcode.jpg",
     text:
       "Scan the barcode on the box. Some boxes carry two codes — wholesale " +
       "labels often add a serial that our system doesn't know. If the " +
@@ -2274,7 +2275,7 @@ const HELP_SLIDES = [
       "quickly learn which one each brand wants.",
   },
   {
-    img: "/static/help/slide-sku.svg",
+    img: "/static/help/slide-sku.jpg",
     text:
       "No barcode at all (Svbony boxes, damaged labels)? Type the SKU " +
       "printed on the box into the scan field and press Enter. The ↑ and " +
@@ -2282,7 +2283,7 @@ const HELP_SLIDES = [
       "boxes.",
   },
   {
-    img: "/static/help/slide-print.svg",
+    img: "/static/help/slide-print.png",
     text:
       "Type how many labels you need and press Print — or turn on " +
       "auto-print (⚙ Settings) to get one label per scan with no button " +
@@ -2290,7 +2291,7 @@ const HELP_SLIDES = [
       "you to shorten it first.",
   },
   {
-    img: "/static/help/slide-tag.svg",
+    img: "/static/help/slide-tag.png",
     text:
       "Stick the label on the box, then read it with the RFID gun (a " +
       "trigger pull on LINK). The tag pairs to the product and the box " +
