@@ -56,7 +56,7 @@ _help_dir = os.path.join(ROOT, "app", "static", "help")
 if os.path.isdir(_help_dir):
     FILES += sorted(
         f"app/static/help/{name}" for name in os.listdir(_help_dir)
-        if name.endswith(".svg")
+        if name.lower().endswith((".svg", ".png", ".jpg", ".jpeg"))
     )
 
 missing = [f for f in FILES if not os.path.isfile(os.path.join(ROOT, f))]
