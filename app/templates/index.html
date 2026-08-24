@@ -289,34 +289,33 @@
           </div>
         </div>
 
-        <!-- Update the product's SKU in Shopify (outdated store SKUs) -->
-        <div class="linkbox__extra" id="sku-section" hidden>
-          <span class="linkbox__extra-label">Update this product's SKU in Shopify (e.g. to the manufacturer's current item number):</span>
-          <input id="newsku-input" class="linkbox__input" type="text" maxlength="100" placeholder="New SKU…" autocomplete="off" spellcheck="false" />
+        <!-- Replace the product's barcode OR SKU in Shopify. One input,
+             toggled between the two; the label, ack text and button all
+             follow the mode. The mode is auto-detected from the code the
+             operator originally scanned (13-digit numeric reads as a
+             barcode; letters read as a SKU; barcode otherwise, since most
+             failed lookups are barcodes that were set to the SKU). -->
+        <div class="linkbox__extra" id="replace-section" hidden>
+          <div class="replace__head">
+            <span class="linkbox__extra-label" id="replace-label"></span>
+            <div class="replace__modes" role="group" aria-label="What to replace">
+              <button class="replace__mode" id="replace-mode-barcode" type="button">Barcode</button>
+              <button class="replace__mode" id="replace-mode-sku" type="button">SKU</button>
+            </div>
+          </div>
+          <input id="replace-input" class="linkbox__input" type="text" maxlength="100" autocomplete="off" spellcheck="false" />
           <label class="overwrite__ack">
-            <input type="checkbox" id="sku-ack" />
-            I understand this permanently replaces the product's SKU in Shopify.
+            <input type="checkbox" id="replace-ack" />
+            <span id="replace-ack-text"></span>
           </label>
-          <button class="overwrite__btn" id="sku-save" type="button" disabled>Update SKU</button>
+          <button class="overwrite__btn" id="replace-go" type="button" disabled></button>
         </div>
 
         <div class="linkbox__actions">
           <button class="print__btn" id="alias-accept" type="button" hidden>Link barcode &amp; continue</button>
-          <button class="reset" id="alias-overwrite" type="button" hidden
-                  title="Adopt the scanned barcode as this product's real barcode in Shopify, instead of keeping it as a separate linked barcode.">Replace product barcode…</button>
           <button class="reset" id="alias-unlink" type="button" hidden>Unlink this barcode</button>
           <button class="reset" id="alias-case" type="button" title="This barcode is a case holding several of one product">It's a box of multiple products</button>
           <button class="reset" id="alias-cancel" type="button">Cancel</button>
-        </div>
-
-        <!-- Barcode replacement: destructive, so double-confirmed -->
-        <div class="overwrite" id="overwrite-confirm" hidden>
-          <p class="overwrite__text" id="overwrite-text"></p>
-          <label class="overwrite__ack">
-            <input type="checkbox" id="overwrite-ack" />
-            I understand this permanently replaces the product's barcode in Shopify.
-          </label>
-          <button class="overwrite__btn" id="overwrite-go" type="button" disabled>Replace barcode</button>
         </div>
       </section>
 

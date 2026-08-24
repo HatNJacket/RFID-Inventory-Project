@@ -2046,6 +2046,16 @@ def overwrite_barcode(
         changed_by=payload.changed_by,
     )
     session.add(change)
+    # The bin map answers lookups FIRST; leaving the old barcode in it
+    # would keep serving stale data until the nightly rebuild (Nick hit
+    # this in the field, 2026-08-24). Update the live rows now.
+    crit = [BinMapEntry.shopify_variant_id
+            == product.get("shopify_variant_id")]
+    if (product.get("sku") or "").strip():
+        crit.append(func.upper(BinMapEntry.sku)
+                    == product["sku"].strip().upper())
+    for bm in session.scalars(select(BinMapEntry).where(or_(*crit))):
+        bm.barcode = payload.new_barcode
     # If this code was previously linked as an alias, the link is now
     # redundant (and would shadow nothing, but keep the table honest).
     stale_alias = session.scalar(
@@ -2776,6 +2786,23 @@ def overwrite_sku(
             select(SerialPrefix).where(SerialPrefix.sku == old_sku)
         ):
             row.sku = payload.new_sku
+    # Same staleness rule as the barcode overwrite: the bin map serves
+    # lookups first, and paired tags carry the SKU too. Both follow the
+    # product now, not at the next rebuild.
+    crit = [BinMapEntry.shopify_variant_id
+            == product.get("shopify_variant_id")]
+    if (old_sku or "").strip():
+        crit.append(func.upper(BinMapEntry.sku)
+                    == old_sku.strip().upper())
+    for bm in session.scalars(select(BinMapEntry).where(or_(*crit))):
+        bm.sku = payload.new_sku
+    if old_sku:
+        for tag in session.scalars(
+            select(RfidAssignment).where(
+                func.upper(RfidAssignment.sku) == old_sku.strip().upper()
+            )
+        ):
+            tag.sku = payload.new_sku
     session.commit()
 
     product["sku"] = payload.new_sku

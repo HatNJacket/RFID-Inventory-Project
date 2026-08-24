@@ -45,13 +45,16 @@ const el = {
   aliasPbarcode: document.getElementById("alias-pbarcode"),
   aliasPbin: document.getElementById("alias-pbin"),
   aliasAccept: document.getElementById("alias-accept"),
-  aliasOverwrite: document.getElementById("alias-overwrite"),
   aliasUnlink: document.getElementById("alias-unlink"),
   aliasCancel: document.getElementById("alias-cancel"),
-  overwriteConfirm: document.getElementById("overwrite-confirm"),
-  overwriteText: document.getElementById("overwrite-text"),
-  overwriteAck: document.getElementById("overwrite-ack"),
-  overwriteGo: document.getElementById("overwrite-go"),
+  replaceSection: document.getElementById("replace-section"),
+  replaceLabel: document.getElementById("replace-label"),
+  replaceModeBarcode: document.getElementById("replace-mode-barcode"),
+  replaceModeSku: document.getElementById("replace-mode-sku"),
+  replaceInput: document.getElementById("replace-input"),
+  replaceAck: document.getElementById("replace-ack"),
+  replaceAckText: document.getElementById("replace-ack-text"),
+  replaceGo: document.getElementById("replace-go"),
   serialPanel: document.getElementById("serial-panel"),
   serialNote: document.getElementById("serial-note"),
   serialSheetName: document.getElementById("serial-sheet-name"),
@@ -70,10 +73,6 @@ const el = {
   prefixSection: document.getElementById("prefix-section"),
   prefixInput: document.getElementById("prefix-input"),
   prefixSave: document.getElementById("prefix-save"),
-  skuSection: document.getElementById("sku-section"),
-  newSkuInput: document.getElementById("newsku-input"),
-  skuAck: document.getElementById("sku-ack"),
-  skuSave: document.getElementById("sku-save"),
   binInput: document.getElementById("bin-input"),
   productEdit: document.getElementById("product-edit"),
   setbox: document.getElementById("setbox"),
@@ -1159,9 +1158,9 @@ let linkboxInfo = null; // structured 404 detail (e.g. known-prefix, bad SKU)
 
 function hideLinkboxExtras() {
   el.prefixSection.hidden = true;
-  el.skuSection.hidden = true;
-  el.skuAck.checked = false;
-  el.skuSave.disabled = true;
+  el.replaceSection.hidden = true;
+  el.replaceAck.checked = false;
+  el.replaceGo.disabled = true;
   el.prefixNote.value = "";
   el.prefixReco.hidden = true;
   // Edit-mode body: hidden for the unknown-barcode flows, and the old
@@ -1208,9 +1207,9 @@ el.prefixRecoApply.addEventListener("click", () => {
   const text = el.prefixRecoText.textContent;
   const match = text.match(/SKU (\S+)/);
   if (!match) return;
-  el.newSkuInput.value = match[1];
-  el.skuSection.hidden = false;
-  el.newSkuInput.focus();
+  setReplaceMode("sku", match[1]);
+  el.replaceSection.hidden = false;
+  el.replaceInput.focus();
 });
 
 // Re-run the original scan after a fix (new prefix, updated SKU) so the
@@ -1268,9 +1267,7 @@ function openLinkbox(scannedCode, info = null) {
   el.aliasPreview.hidden = true;
   el.aliasAccept.hidden = true;
   el.aliasAccept.textContent = "Link barcode & continue";
-  el.aliasOverwrite.hidden = true;
   el.aliasUnlink.hidden = true;
-  hideOverwrite();
   el.linkbox.hidden = false;
   setResult("No product found for that barcode or SKU.", "err");
   el.aliasTarget.focus();
@@ -1287,9 +1284,7 @@ function openConfirmBox(product) {
   renderAliasPreview(product);
   el.aliasAccept.hidden = false;
   el.aliasAccept.textContent = "Confirm item";
-  el.aliasOverwrite.hidden = true;
   el.aliasUnlink.hidden = false;
-  hideOverwrite();
   hideLinkboxExtras();
   el.linkbox.hidden = false;
   setResult("", null);
@@ -1298,7 +1293,6 @@ function openConfirmBox(product) {
 function closeLinkbox() {
   el.linkbox.hidden = true;
   el.flow.classList.remove("flow--side");
-  hideOverwrite();
   hideLinkboxExtras();
   aliasCandidate = null;
   aliasPreviewProduct = null;
@@ -1497,11 +1491,9 @@ function openEditbox() {
   el.aliasTarget.value = pendingProduct.barcode || pendingProduct.sku || "";
   renderAliasPreview(pendingProduct);
   el.aliasAccept.hidden = true;
-  el.aliasOverwrite.hidden = true;
   el.aliasUnlink.hidden = true;
   // The old actions-row case button is replaced by the edit body's own.
   document.getElementById("alias-case").hidden = true;
-  hideOverwrite();
   // Edit rows, prefilled from the saved values.
   editDefaults = {
     sku: (pendingProduct.sku || "").trim(),
@@ -1518,7 +1510,7 @@ function openEditbox() {
   el.prefixInput.value = pendingProduct.serial_prefix || "";
   el.prefixNote.value = pendingProduct.serial_note || "";
   el.prefixSection.hidden = true;
-  el.skuSection.hidden = true;
+  el.replaceSection.hidden = true;
   el.linkbox.hidden = false;
 }
 
@@ -1744,12 +1736,6 @@ function phistOpenEdit() {
   el.flow.classList.remove("flow--side");
 }
 
-function hideOverwrite() {
-  el.overwriteConfirm.hidden = true;
-  el.overwriteAck.checked = false;
-  el.overwriteGo.disabled = true;
-}
-
 async function checkAliasTarget() {
   const term = el.aliasTarget.value.trim();
   if (!term) return;
@@ -1772,16 +1758,14 @@ async function checkAliasTarget() {
     }
     renderAliasPreview(await res.json());
     el.aliasAccept.hidden = false;
-    el.aliasOverwrite.hidden = false;
-    hideOverwrite();
     // Extra tools once a product is in view: register an Astronomik serial
-    // prefix (when the scan looks like a serial), and update an outdated SKU.
+    // prefix (when the scan looks like a serial), and replace a wrong
+    // barcode or outdated SKU.
     if (/^\d{5,12}$/.test(aliasCandidate || "")) {
       el.prefixInput.value = aliasCandidate.slice(0, 4);
       el.prefixSection.hidden = false;
     }
-    el.newSkuInput.value = (linkboxInfo && linkboxInfo.suggested_sku) || "";
-    el.skuSection.hidden = false;
+    showReplaceSection();
     setResult("Check the product, then link.", null);
   } catch (err) {
     setResult("Network error during lookup.", "err");
@@ -1801,8 +1785,6 @@ el.aliasTarget.addEventListener("input", () => {
   aliasPreviewProduct = null;
   el.aliasPreview.hidden = true;
   el.aliasAccept.hidden = true;
-  el.aliasOverwrite.hidden = true;
-  hideOverwrite();
   hideLinkboxExtras();
 });
 
@@ -1907,103 +1889,134 @@ el.prefixSave.addEventListener("click", async () => {
   }
 });
 
-// Replace the previewed product's SKU in Shopify.
-el.skuAck.addEventListener("change", () => {
-  el.skuSave.disabled = !el.skuAck.checked;
+// --- Replace barcode / SKU (one input, mode-toggled, ack-gated) ------------
+// Both replacements are destructive Shopify writes; the mode decides the
+// label, the ack wording, the button, and which endpoint the save hits.
+let replaceMode = "barcode";
+
+function detectReplaceMode() {
+  // The serial/outdated-SKU flow arrives with a suggested SKU: that IS
+  // the SKU-repair path, whatever the scanned string looks like.
+  if (linkboxInfo && linkboxInfo.suggested_sku) return "sku";
+  const code = (aliasCandidate || "").trim();
+  if (/^\d{12,14}$/.test(code)) return "barcode"; // EAN/UPC shaped
+  if (/[A-Za-z]/.test(code)) return "sku";
+  // Unsure: barcode. Most failed lookups are products whose barcode was
+  // set to the SKU because the box never carried one.
+  return "barcode";
+}
+
+function replaceModePrefill(mode) {
+  if (mode === "sku") {
+    return (linkboxInfo && linkboxInfo.suggested_sku) || aliasCandidate || "";
+  }
+  return aliasCandidate || "";
+}
+
+function setReplaceMode(mode, prefill) {
+  replaceMode = mode;
+  const bc = mode === "barcode";
+  el.replaceModeBarcode.classList.toggle("replace__mode--on", bc);
+  el.replaceModeSku.classList.toggle("replace__mode--on", !bc);
+  el.replaceLabel.textContent = bc
+    ? "Replace this product's barcode in Shopify (the scanned code " +
+      "becomes its real barcode):"
+    : "Replace this product's SKU in Shopify (e.g. the manufacturer's " +
+      "current item number):";
+  el.replaceInput.placeholder = bc ? "New barcode…" : "New SKU…";
+  el.replaceAckText.textContent = bc
+    ? "I understand this permanently replaces the product's barcode " +
+      "in Shopify."
+    : "I understand this permanently replaces the product's SKU " +
+      "in Shopify.";
+  el.replaceGo.textContent = bc ? "Update barcode" : "Update SKU";
+  if (prefill !== undefined) el.replaceInput.value = prefill;
+  el.replaceAck.checked = false;
+  el.replaceGo.disabled = true;
+}
+
+function showReplaceSection() {
+  const mode = detectReplaceMode();
+  setReplaceMode(mode, replaceModePrefill(mode));
+  el.replaceSection.hidden = false;
+}
+
+el.replaceModeBarcode.addEventListener("click", () =>
+  setReplaceMode("barcode", replaceModePrefill("barcode"))
+);
+el.replaceModeSku.addEventListener("click", () =>
+  setReplaceMode("sku", replaceModePrefill("sku"))
+);
+
+el.replaceAck.addEventListener("change", () => {
+  el.replaceGo.disabled = !el.replaceAck.checked;
+});
+// Editing the value voids the ack: what was acknowledged has changed.
+el.replaceInput.addEventListener("input", () => {
+  el.replaceAck.checked = false;
+  el.replaceGo.disabled = true;
 });
 
-el.skuSave.addEventListener("click", async () => {
-  if (!aliasPreviewProduct || !el.skuAck.checked) return;
+el.replaceGo.addEventListener("click", async () => {
+  if (!aliasPreviewProduct || !el.replaceAck.checked) return;
   const operator = requireOperator();
   if (!operator) return;
-  const newSku = el.newSkuInput.value.trim();
-  if (!newSku) {
-    setResult("Enter the new SKU first.", "err");
+  const isBc = replaceMode === "barcode";
+  const value = el.replaceInput.value.trim();
+  if (!value) {
+    setResult(
+      isBc ? "Enter the new barcode first." : "Enter the new SKU first.",
+      "err"
+    );
     return;
   }
-  el.skuSave.disabled = true;
+  el.replaceGo.disabled = true;
   try {
-    const res = await apiFetch("/api/sku-overwrites", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        new_sku: newSku,
-        target: el.aliasTarget.value.trim(),
-        changed_by: operator,
-        confirmed: true,
-      }),
-    });
+    const res = await apiFetch(
+      isBc ? "/api/barcode-overwrites" : "/api/sku-overwrites",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...(isBc ? { new_barcode: value } : { new_sku: value }),
+          target: el.aliasTarget.value.trim(),
+          changed_by: operator,
+          confirmed: true,
+        }),
+      }
+    );
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      setResult(body.detail || "SKU update failed.", "err");
-      el.skuSave.disabled = false;
+      setResult(
+        body.detail ||
+          (isBc ? "Barcode replacement failed." : "SKU update failed."),
+        "err"
+      );
+      el.replaceGo.disabled = false;
       return;
     }
-    if (aliasCandidate) {
-      setResult(`SKU updated to ${newSku} — rescanning…`, "ok");
+    const { product } = await res.json();
+    if (isBc) {
+      acceptProduct(
+        product,
+        "Barcode replaced in Shopify. Scan the RFID tag."
+      );
+    } else if (aliasCandidate) {
+      setResult(`SKU updated to ${value}. Rescanning…`, "ok");
       retryLookup(aliasCandidate);
     } else {
       // Edit mode: update the card in place.
       if (pendingProduct) {
-        pendingProduct.sku = newSku;
-        el.pSku.textContent = newSku;
+        pendingProduct.sku = value;
+        el.pSku.textContent = value;
       }
-      setResult(`SKU updated to ${newSku} in Shopify.`, "ok");
+      setResult(`SKU updated to ${value} in Shopify.`, "ok");
       closeLinkbox();
       el.rfid.focus();
     }
   } catch (err) {
-    setResult("Network error during the SKU update.", "err");
-    el.skuSave.disabled = false;
-  }
-});
-
-// --- Barcode replacement (adopt the scanned code as the real barcode) ------
-el.aliasOverwrite.addEventListener("click", () => {
-  if (!aliasPreviewProduct) return;
-  el.overwriteText.textContent =
-    `Replace the barcode on "${aliasPreviewProduct.product_title}"` +
-    (aliasPreviewProduct.variant_title
-      ? ` (${aliasPreviewProduct.variant_title})`
-      : "") +
-    `: "${aliasPreviewProduct.barcode || "(none)"}" → "${aliasCandidate}". ` +
-    `This changes the product in Shopify itself.`;
-  el.overwriteConfirm.hidden = false;
-  el.overwriteAck.checked = false;
-  el.overwriteGo.disabled = true;
-});
-
-el.overwriteAck.addEventListener("change", () => {
-  el.overwriteGo.disabled = !el.overwriteAck.checked;
-});
-
-el.overwriteGo.addEventListener("click", async () => {
-  if (!aliasPreviewProduct || !el.overwriteAck.checked) return;
-  const operator = requireOperator();
-  if (!operator) return;
-  el.overwriteGo.disabled = true;
-  try {
-    const res = await apiFetch("/api/barcode-overwrites", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        new_barcode: aliasCandidate,
-        target: el.aliasTarget.value.trim(),
-        changed_by: operator,
-        confirmed: true,
-      }),
-    });
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}));
-      setResult(body.detail || "Barcode replacement failed.", "err");
-      el.overwriteGo.disabled = false;
-      return;
-    }
-    const { product } = await res.json();
-    acceptProduct(product, "Barcode replaced in Shopify. Scan the RFID tag.");
-  } catch (err) {
-    setResult("Network error during barcode replacement.", "err");
-    el.overwriteGo.disabled = false;
+    setResult("Network error during the update.", "err");
+    el.replaceGo.disabled = false;
   }
 });
 

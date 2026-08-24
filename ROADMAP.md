@@ -1,7 +1,39 @@
 # RFID Inventory System — Roadmap
 
 Source of truth for project status. Updated by Claude each working session.
-Last updated: 2026-08-18.
+Last updated: 2026-08-24.
+
+## 🧭 Tutorial rebuild + LINK presence + replace menu (2026-08-24)
+
+- **Unified barcode/SKU replace menu — ✅ DEPLOYED**: the unknown-barcode
+  window's "Replace product barcode…" button and separate SKU section are
+  now ONE ack-gated section with a Barcode/SKU mode toggle (label, ack
+  text, and button follow the mode). Mode auto-detects from the code the
+  operator scanned (12-14 digit numeric = barcode; letters = SKU;
+  default barcode — most failed lookups are barcodes set to the SKU).
+  **Freshness fix**: both overwrite endpoints now update the live
+  `rfid_bin_map` rows (and SKU changes follow through to
+  `rfid_assignments`) in the same commit, so the change shows on the
+  very next scan instead of after the bin-map rebuild (Nick hit the
+  stale window in the field). Suite: `dev/tests/test_replacefresh.py`.
+- **C72 LINK presence + in-use check — ✅ DEPLOYED**: gun heartbeats via
+  the tuning poll (`?device=&tab=`) and every LINK scan POST; terminals
+  stamp a per-page-load tid through the scan poll; toggle-ON warns when
+  another terminal is already listening (double-print hazard), late
+  joiners get a non-blocking amber ⚠; hidden/backgrounded terminals stop
+  acting and NEVER burst-replay stale scans on resume (skipped + counted
+  instead). `GET /api/link/status` + release endpoint are the future
+  auto-on seam (auto-on itself deferred, needs its own test round).
+  Suite: `dev/tests/test_link_presence.py`.
+- **C72 3.55 (code 73) — ✅ DEPLOYED**: ActionBar titles the current tab
+  (Batch/Station/Sweep/Find Bin/Locate/Link); drawer keeps the app name.
+- **Help slideshow rebuild — 🔶 IN PROGRESS**: 6 new dark-mode slides
+  (screenshots + GIFs, per-slide preview approval with Nick). Mechanics
+  shipped (html captions, theme letterbox, mkdeploy `.gif`); slide
+  images land after Nick approves each preview.
+- **TODO next web-terminal build (Nick 2026-08-24): strip every em dash
+  ("—") from UI copy** — replace with a plain hyphen or reword. New
+  strings written this session already comply.
 
 ## 📦 Sold detection + Nick's big batch (2026-08-18, second session)
 

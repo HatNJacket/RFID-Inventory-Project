@@ -835,6 +835,34 @@ body {
 }
 .linkbox__short { flex: 0 0 90px; text-align: center; }
 
+/* Barcode/SKU replace: the mode toggle rides beside the label. */
+.replace__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1 1 100%;
+}
+.replace__head .linkbox__extra-label { flex: 1 1 auto; }
+.replace__modes {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  overflow: hidden;
+  flex: none;
+}
+.replace__mode {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 14px;
+  background: var(--card);
+  color: var(--ink-dim);
+  border: 0;
+  cursor: pointer;
+}
+.replace__mode + .replace__mode { border-left: 1px solid var(--line); }
+.replace__mode--on { background: var(--bad-ink); color: #fff; }
+
 /* serial label-name panel: informational, not warning */
 .serialbox { border-left-color: var(--accent); }
 .serial-note {
