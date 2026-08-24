@@ -5136,11 +5136,24 @@ def _shelf_reconcile(
         else:
             expected = on_file
             basis = "records"
+        # State ladder, the single source of truth for BOTH the web
+        # check list and the C72 shelf rows (they only render `state`).
+        # With sales in the window, green means "sales fully explain
+        # every silent record" (the verify tri-state's rule, so the gun
+        # and the web can never disagree). With no windowed sales the
+        # judgment falls to the on-hand-capped expected, as before. A
+        # sweep that hears EVERY in-bin record is green regardless
+        # (over-hearing a neighbor is the over_heard note's job, not a
+        # yellow).
         if key in noscan:
             state = "noscan"
         elif on_file == 0 and heard == 0:
             state = "none"
-        elif heard == expected:
+        elif (
+            silent == 0
+            or (sales_since > 0 and unexplained == 0)
+            or (sales_since == 0 and heard == expected)
+        ):
             state = "match"
         elif heard == 0:
             state = "silent"

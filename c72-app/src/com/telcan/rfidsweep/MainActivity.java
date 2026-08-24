@@ -4760,18 +4760,36 @@ public class MainActivity extends Activity {
             "pow_tab_find", "pow_tab_locate", "pow_tab_link"};
     private static final String[] TAB_POWER_NAMES = {
             "Batch", "Station", "Sweep", "Find bin", "Locate", "Link"};
+    // Display order for the settings list only. Power RESOLUTION goes
+    // through stepPowerKey()'s explicit switch, never a step-indexed
+    // array: inserting STEP_SHELF shifted every index once and Verify
+    // silently fell off the old 4-entry array (Nick's power-1 bug,
+    // 2026-08-24). A new step added without a case here simply has no
+    // per-step default instead of stealing a neighbor's.
     private static final String[] STEP_POWER_KEYS = {
-            "pow_step_collect", "pow_step_check", "pow_step_pair",
-            "pow_step_verify"};
+            "pow_step_collect", "pow_step_shelf", "pow_step_check",
+            "pow_step_pair", "pow_step_verify"};
     private static final String[] STEP_POWER_NAMES = {
-            "Collect", "Check", "Pair", "Verify"};
+            "Collect", "Shelf sweep", "Check", "Pair", "Verify"};
+
+    private String stepPowerKey(int st) {
+        switch (st) {
+            case STEP_COLLECT: return "pow_step_collect";
+            case STEP_SHELF:   return "pow_step_shelf";
+            case STEP_CHECK:   return "pow_step_check";
+            case STEP_PAIR:    return "pow_step_pair";
+            case STEP_VERIFY:  return "pow_step_verify";
+            default:           return null;
+        }
+    }
 
     private void applyContextPower() {
         int want = 0;
+        String stepKey = stepPowerKey(step);
         if (activeTab == TAB_BATCH && inBatch()
                 && prefs.getBoolean("pow_steps_on", false)
-                && step >= 0 && step < STEP_POWER_KEYS.length) {
-            want = prefs.getInt(STEP_POWER_KEYS[step], 0);
+                && stepKey != null) {
+            want = prefs.getInt(stepKey, 0);
         }
         if (want <= 0 && activeTab >= 0
                 && activeTab < TAB_POWER_KEYS.length) {
@@ -5494,8 +5512,12 @@ public class MainActivity extends Activity {
 
     private void updateShelfStatusLine() {
         if (shelfStatusLine == null) return;
+        // Raw reads, said as such: this counts EVERY tag the gun heard
+        // (strays and other shelves included), while each row shows the
+        // per-product match, so the two totals legitimately differ.
         shelfStatusLine.setText(shelfEpcs.size()
-                + " tag(s) heard — tap a yellow/red row to resolve it.");
+                + " tag read(s), strays included; rows show this bin's "
+                + "products. Tap a yellow/red row to resolve it.");
     }
 
     private void shelfBurst(Button btn, Runnable after) {
@@ -5620,9 +5642,12 @@ public class MainActivity extends Activity {
             int onFile = r.optInt("on_file");
             int expected = r.optInt("expected");
             int sold = r.optInt("presumed_sold");
+            int explained = r.optInt("explained");
+            int unexplained = r.optInt("unexplained");
+            int silentN = explained + unexplained;
             String basis = r.optString("basis");
             int boxes = r.optInt("boxes");
-            int labels = Math.max(0, boxes - heard);
+            int labels = Math.max(0, boxes - Math.min(heard, boxes));
 
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
@@ -5654,8 +5679,9 @@ public class MainActivity extends Activity {
             line.setTextSize(12);
             if ("match".equals(state)) {
                 line.setTextColor(C_OK);
-                line.setText("✓ " + heard + " heard · " + expected
-                        + " expected — " + heard + " of " + boxes
+                line.setText("✓ " + heard + " of " + onFile
+                        + " on record answered · "
+                        + Math.min(heard, boxes) + " of " + boxes
                         + " boxes tagged, " + labels + " get labels"
                         + (sold > 0
                         ? " · " + sold + " presumed sold ("
@@ -5663,15 +5689,27 @@ public class MainActivity extends Activity {
                           + ")"
                         : ""));
             } else if ("unheard".equals(state)) {
+                // Same decomposition as the web's reasons: how many
+                // records are silent, how many sales explain, how many
+                // are unaccounted for. The old "heard vs expected" pair
+                // could legitimately read "2 heard · expected 1" and
+                // looked like a broken count.
                 line.setTextColor(C_WARN);
-                line.setText("⚠ " + heard + " heard · " + onFile
-                        + " on record · expected " + expected + " · "
-                        + labels + " of " + boxes + " boxes get labels "
-                        + "— tap to resolve");
+                line.setText("⚠ " + heard + " of " + onFile
+                        + " on record answered · " + silentN
+                        + " silent"
+                        + (explained > 0
+                           ? ", sales explain " + explained : "")
+                        + " · " + unexplained
+                        + " unaccounted — tap to resolve");
             } else if ("silent".equals(state)) {
                 line.setTextColor(C_OVER);
-                line.setText("✗ " + expected
-                        + " expected · NONE heard — tap to resolve");
+                line.setText("✗ NONE of " + onFile
+                        + " on record answered"
+                        + (explained > 0
+                           ? " · sales explain " + explained + " of "
+                             + silentN : "")
+                        + " — tap to resolve");
             } else if ("noscan".equals(state)) {
                 line.setTextColor(C_MUTED);
                 line.setText("⊘ won't RFID scan — sweeps can't count "

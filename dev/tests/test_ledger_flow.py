@@ -198,6 +198,16 @@ with patch("app.shopify.lookup_barcode", side_effect=fake_lookup), \
     check("C: sales (2 windowed) never explain more than the 1 silent",
           c["explained"] == 1 and c["unexplained"] == 0, c)
 
+    # ---- state ladder agrees with the verify tri-state -----------------
+    check("state: A green (sales fully explain)",
+          st["CASE-A"]["state"] == "match", st.get("CASE-A"))
+    check("state: B yellow (3 unexplained)",
+          st["CASE-B"]["state"] == "unheard", st.get("CASE-B"))
+    check("state: C green despite heard != expected (all explained)",
+          st["CASE-C"]["state"] == "match", st.get("CASE-C"))
+    check("state: D green with over_heard noted, never yellow",
+          st["CASE-D"]["state"] == "match", st.get("CASE-D"))
+
     # ---- CASE D: sweep hears MORE than collected -----------------------
     d = st["CASE-D"]
     check("D: over_heard reported (collected 1, heard 2)",

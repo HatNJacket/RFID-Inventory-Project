@@ -53,6 +53,19 @@ the REAL prod numbers (dev/tests/test_ledger_flow.py, 41 checks).
   "Retire N unheard tag(s) manually..." for ANY unheard earlier tags,
   behind an attestation confirm (physically checked, boxes really gone,
   tags not just dead). Same retire endpoint, tombstones + History undo.
+- **C72 3.57 (code 75) + state-ladder unification**: the shelf verdict
+  ladder in `_shelf_reconcile` is now the single source of truth both
+  UIs render: green = sales fully explain the silence OR (no windowed
+  sales) heard == on-hand-capped expected OR every in-bin record
+  answered (over-hearing a neighbor is the over_heard note, never a
+  yellow). Fixes gun-vs-web disagreements and "2 heard, expected 1"
+  confusion; C72 rows now show the same silent/explained/unaccounted
+  decomposition as the web reasons, and the raw sweep total is labeled
+  "strays included". **Step-power off-by-one fixed**: STEP_SHELF's
+  insertion had shifted the step->power array (Verify fell off the end
+  and dropped to power 1); resolution now goes through an explicit
+  per-step switch (a future step simply has no default instead of
+  stealing a neighbor's) and Shelf sweep gets its own settings row.
 
 ## 🧭 Tutorial rebuild + LINK presence + replace menu (2026-08-24)
 
