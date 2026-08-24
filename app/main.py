@@ -2292,7 +2292,17 @@ def _tuning_row(session: Session) -> C72Tuning:
 
 
 @app.get("/api/c72/tuning", dependencies=[Depends(require_user)])
-def get_c72_tuning(session: Session = Depends(get_session)):
+def get_c72_tuning(
+    device: str | None = None,
+    tab: str | None = None,
+    session: Session = Depends(get_session),
+):
+    # The gun's ~2s tuning poll doubles as its presence heartbeat: newer
+    # APKs identify themselves and their current tab here (see the LINK
+    # presence block). Old APKs send nothing and simply stay invisible
+    # until their first LINK scan.
+    if device:
+        _stamp_gun(device, tab)
     row = session.scalar(select(C72Tuning).limit(1))
     try:
         values = json.loads(row.values) if row else {}
@@ -4265,6 +4275,46 @@ def create_batch(payload: BatchIn, session: Session = Depends(get_session)):
 # the terminal polls with an id cursor and acts on each scan through its
 # normal input paths, then posts the outcome back so the gun can ding/buzz.
 # No Bluetooth to the PC, ever. Rows are plumbing, not history.
+#
+# Presence is in-memory only (single container, same rationale as the print
+# agent's _agent_last_seen): guns stamp themselves through the tuning poll
+# (new APKs, any tab) and through every LINK scan POST (old APKs too), and
+# each web terminal stamps a per-page-load tid through its scan poll. That
+# lets the LINK toggle warn when another terminal is already listening —
+# gun scans act on EVERY listening terminal, so two ON at once print twice.
+
+LINK_PRESENCE_TTL = 15.0  # s; rides out poll stalls during print bursts
+_link_guns: dict[str, dict] = {}       # device -> {"seen": monotonic, "tab"}
+_link_terminals: dict[str, dict] = {}  # tid -> {"seen": monotonic, "operator"}
+
+
+def _stamp_gun(device: str | None, tab: str | None) -> None:
+    device = (device or "").strip()[:100]
+    if device:
+        _link_guns[device] = {
+            "seen": time.monotonic(), "tab": (tab or "").strip()[:20]
+        }
+
+
+def _stamp_terminal(tid: str | None, operator: str | None) -> None:
+    tid = (tid or "").strip()[:40]
+    if tid:
+        _link_terminals[tid] = {
+            "seen": time.monotonic(), "operator": (operator or "").strip()[:100]
+        }
+
+
+def _live(entries: dict[str, dict], key_name: str) -> list[dict]:
+    """Prune expired entries in place and return the live ones with ages."""
+    now = time.monotonic()
+    for k in [k for k, v in entries.items()
+              if now - v["seen"] > LINK_PRESENCE_TTL]:
+        entries.pop(k, None)
+    return [
+        {key_name: k, "seen_seconds": int(now - v["seen"]),
+         **{f: v[f] for f in v if f != "seen"}}
+        for k, v in sorted(entries.items())
+    ]
 
 
 class LinkScanIn(BaseModel):
@@ -4299,6 +4349,8 @@ def link_scan_submit(
     session.add(row)
     session.commit()
     session.refresh(row)
+    # Any scan proves a gun is alive on its LINK tab — old APKs included.
+    _stamp_gun(payload.device or "C72", "link")
     return {"scan": row.as_dict()}
 
 
@@ -4307,14 +4359,33 @@ def link_scans_poll(
     after: int = -1,
     device: str | None = None,
     limit: int = 20,
+    tid: str | None = None,
+    op: str | None = None,
     session: Session = Depends(get_session),
 ):
     """Cursor poll for the web terminal. after=-1 returns just the current
     cursor (max id) with no rows — the terminal calls that when its LINK
-    toggle turns ON, so scans fired before the toggle never replay."""
+    toggle turns ON, so scans fired before the toggle never replay. The
+    seat call doubles as the in-use pre-check: the caller is stamped FIRST,
+    then everyone else is snapshotted, so of two terminals toggling at
+    once at least the later one sees the earlier."""
+    if tid:
+        _stamp_terminal(tid, op)
+    elif after >= 0:
+        # A polling terminal running pre-update app.js is still a listener;
+        # make it visible to updated terminals during the mixed-fleet window.
+        _stamp_terminal("legacy", "a pre-update terminal")
     if after < 0:
         latest = session.scalar(select(func.max(LinkScan.id))) or 0
-        return {"cursor": latest, "scans": []}
+        return {
+            "cursor": latest,
+            "scans": [],
+            "listeners": [
+                t for t in _live(_link_terminals, "tid")
+                if t["tid"] != (tid or "").strip()[:40]
+            ],
+            "guns": _live(_link_guns, "device"),
+        }
     stmt = (
         select(LinkScan)
         .where(LinkScan.id > after)
@@ -4323,10 +4394,37 @@ def link_scans_poll(
     if device:
         stmt = stmt.where(LinkScan.device == device.strip())
     rows = session.scalars(stmt.limit(min(max(limit, 1), 100))).all()
+    others = len([
+        t for t in _live(_link_terminals, "tid")
+        if t["tid"] != (tid or "").strip()[:40]
+    ])
     return {
         "cursor": rows[-1].id if rows else after,
         "scans": [r.as_dict() for r in rows],
+        "others": others,
     }
+
+
+@app.get("/api/link/status", dependencies=[Depends(require_user)])
+def link_status():
+    """Who's around: live guns (device, tab, age) and live listening
+    terminals (tid, operator, age). Diagnostics now, auto-on later."""
+    return {
+        "guns": _live(_link_guns, "device"),
+        "listeners": _live(_link_terminals, "tid"),
+    }
+
+
+class LinkReleaseIn(BaseModel):
+    tid: str = Field(min_length=1, max_length=40)
+
+
+@app.post("/api/link/presence/release", dependencies=[Depends(require_user)])
+def link_presence_release(payload: LinkReleaseIn):
+    """Toggle-OFF (and dialog-cancel, which has already stamped itself)
+    drops the terminal immediately instead of waiting out the TTL."""
+    _link_terminals.pop(payload.tid.strip()[:40], None)
+    return {"ok": True}
 
 
 @app.get("/api/link/scans/{scan_id}", dependencies=[Depends(require_user)])

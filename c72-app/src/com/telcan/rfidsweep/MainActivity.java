@@ -103,6 +103,12 @@ public class MainActivity extends Activity {
     private static final int TAB_LINK = 5;
     private static final String[] TAB_NAMES =
             {"BATCH", "STATION", "SWEEP", "FIND BIN", "LOCATE", "LINK"};
+    // ActionBar titles (title case) and the lowercase names the server's
+    // presence endpoint receives (tuning-poll heartbeat).
+    private static final String[] TAB_TITLES =
+            {"Batch", "Station", "Sweep", "Find Bin", "Locate", "Link"};
+    private static final String[] TAB_KEYS =
+            {"batch", "station", "sweep", "find", "locate", "link"};
     private static final int TAB_COUNT = 6;
 
     // ------------------------------------------------------------ colors ----
@@ -2777,9 +2783,22 @@ public class MainActivity extends Activity {
     private void tuningTick() {
         if (++tunPollCounter % 5 != 0 || tunPollBusy) return;
         tunPollBusy = true;
+        // The ~2s tuning poll doubles as the presence heartbeat: the
+        // server learns this gun's name and current tab, so the web
+        // terminal's LINK toggle can say whether a C72 is around.
+        final String presence;
+        String enc;
+        try {
+            enc = java.net.URLEncoder.encode(
+                    prefs.getString("device", "C72"), "UTF-8");
+        } catch (Exception e) {
+            enc = "C72";
+        }
+        presence = "?device=" + enc + "&tab=" + TAB_KEYS[activeTab];
         new Thread(() -> {
             try {
-                JSONObject resp = api("GET", "/api/c72/tuning", null);
+                JSONObject resp = api("GET", "/api/c72/tuning" + presence,
+                        null);
                 JSONObject v = resp.optJSONObject("values");
                 if (v == null) v = new JSONObject();
                 String raw = v.toString();
@@ -4312,6 +4331,9 @@ public class MainActivity extends Activity {
 
     private void selectTab(int tab) {
         activeTab = tab;
+        // The system ActionBar names the current tab; the drawer keeps
+        // the app name ("TC RFID Sweep").
+        setTitle(TAB_TITLES[tab]);
         for (int i = 0; i < TAB_COUNT; i++) {
             tabViews[i].setVisibility(i == tab ? View.VISIBLE : View.GONE);
         }

@@ -2307,7 +2307,11 @@ function renderHelp() {
   document.getElementById("help-img").src = s.img;
   document.getElementById("help-step").textContent =
     `Step ${helpIdx + 1} of ${n}`;
-  document.getElementById("help-text").textContent = s.text;
+  // A slide with `html` gets markup (formatted examples); `text` stays
+  // plain. html is authored in THIS file only — never user data.
+  const cap = document.getElementById("help-text");
+  if (s.html) cap.innerHTML = s.html;
+  else cap.textContent = s.text;
   const prev = document.getElementById("help-prev");
   const next = document.getElementById("help-next");
   prev.disabled = helpIdx === 0;
@@ -2664,8 +2668,59 @@ let linkOn = false;
 let linkCursor = -1;
 let linkTimer = null;
 let linkBusy = false;
+// Per-page-load identity for presence (NOT sessionStorage: Chrome's
+// "duplicate tab" copies sessionStorage and two tabs would share one id).
+const linkTid = (crypto.randomUUID && crypto.randomUUID()) ||
+  `t-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+let linkOthers = 0;
+let linkSuspended = false;
 const linkToggle = document.getElementById("link-toggle");
 const linkStatus = document.getElementById("link-status");
+
+function linkPresenceQS() {
+  const op = (operatorEl && operatorEl.value) || "";
+  return `tid=${encodeURIComponent(linkTid)}&op=${encodeURIComponent(op)}`;
+}
+
+// Gun scans act on EVERY listening terminal — the one warning that matters.
+function renderLinkWarn() {
+  if (!linkOn) return;
+  const warn = linkOthers > 0;
+  linkToggle.textContent = warn ? "C72 LINK: ON ⚠" : "C72 LINK: ON";
+  linkToggle.classList.toggle("linkbar__btn--warn", warn);
+  if (!warn) {
+    linkStatus.textContent =
+      linkStatus.textContent.replace(/ · ⚠ .*$/, "");
+  }
+  if (warn) {
+    const n = linkOthers + 1;
+    const note = ` · ⚠ ${n} terminals listening — labels can print twice.`;
+    if (!linkStatus.textContent.includes("terminals listening")) {
+      linkStatus.textContent =
+        (linkStatus.textContent + note).slice(0, 200);
+    }
+  }
+}
+
+function linkGunStatusText(guns) {
+  if (!guns.length) {
+    return "Listening — no C72 checking in right now. Scans will act " +
+      "here once a gun is on its LINK tab.";
+  }
+  const onLink = guns.filter((g) => g.tab === "link");
+  if (onLink.length) {
+    return `Listening — "${onLink[0].device}" is on its LINK tab. ` +
+      "Gun scans act here now.";
+  }
+  if (guns.length === 1) {
+    const tab = guns[0].tab ? ` (on the ${guns[0].tab} tab)` : "";
+    return `Listening — "${guns[0].device}" is online${tab}. ` +
+      "Open LINK on the gun.";
+  }
+  const names = guns.map((g) => `"${g.device}"`).join(", ");
+  return `Listening — ${guns.length} guns online (${names}). ` +
+    "Open LINK on one.";
+}
 
 function stationOutcome(where) {
   const target = where === "rfid" ? el.resultRfid : el.result;
@@ -2684,13 +2739,25 @@ function stationOutcome(where) {
   };
 }
 
+function linkRelease() {
+  // Fire-and-forget: the TTL is the backstop if this never lands.
+  apiFetch("/api/link/presence/release", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tid: linkTid }),
+  }).catch(() => {});
+}
+
 function stopLink(msg) {
   linkOn = false;
   if (linkTimer) clearInterval(linkTimer);
   linkTimer = null;
+  linkOthers = 0;
+  linkSuspended = false;
   linkToggle.textContent = "C72 LINK: OFF";
-  linkToggle.classList.remove("linkbar__btn--on");
+  linkToggle.classList.remove("linkbar__btn--on", "linkbar__btn--warn");
   if (msg) linkStatus.textContent = msg;
+  linkRelease();
 }
 
 async function actOnLinkScan(s) {
@@ -2725,17 +2792,48 @@ async function actOnLinkScan(s) {
 async function pollLink() {
   if (!linkOn || linkBusy) return;
   // Only act while the Scan station is actually on screen — relayed scans
-  // silently mutating a hidden tab would be spooky.
-  if (tabSections.scan[0].hidden) return;
+  // silently mutating a hidden browser tab or a backgrounded Scan tab
+  // would be spooky (and print with nobody watching). Skipping also stops
+  // presence stamping, so this terminal drops off other terminals'
+  // listener counts within the TTL.
+  if (document.hidden || tabSections.scan[0].hidden) {
+    linkSuspended = true;
+    return;
+  }
   linkBusy = true;
   try {
-    const res = await apiFetch(`/api/link/scans?after=${linkCursor}`);
+    if (linkSuspended) {
+      // Re-seat instead of polling forward: scans sent while nobody was
+      // watching must be SKIPPED, never burst-replayed. The gun already
+      // told the operator "delivered, no answer" for each of them.
+      const res = await apiFetch(
+        `/api/link/scans?after=-1&${linkPresenceQS()}`
+      );
+      if (!res.ok) return;
+      const body = await res.json();
+      const skipped = body.cursor - linkCursor;
+      linkCursor = body.cursor;
+      linkOthers = (body.listeners || []).length;
+      linkSuspended = false;
+      if (skipped > 0) {
+        linkStatus.textContent =
+          `Resumed — ${skipped} scan(s) sent while this screen was ` +
+          "away were skipped.";
+      }
+      renderLinkWarn();
+      return;
+    }
+    const res = await apiFetch(
+      `/api/link/scans?after=${linkCursor}&${linkPresenceQS()}`
+    );
     if (!res.ok) return;
     const body = await res.json();
     for (const s of body.scans) {
       await actOnLinkScan(s);
     }
     linkCursor = body.cursor;
+    linkOthers = body.others || 0;
+    renderLinkWarn();
   } catch (err) {
     // Poll again next tick.
   } finally {
@@ -2743,28 +2841,64 @@ async function pollLink() {
   }
 }
 
+// Turning ON runs the in-use pre-check. interactive=false (the future
+// auto-on seam) silently declines instead of asking.
+async function startLink({ interactive } = { interactive: true }) {
+  linkStatus.textContent = "Connecting…";
+  try {
+    // One request seats the cursor at "now" (pre-toggle scans never
+    // replay), stamps this terminal, and reports everyone else.
+    const res = await apiFetch(
+      `/api/link/scans?after=-1&${linkPresenceQS()}`
+    );
+    const body = await res.json();
+    const listeners = body.listeners || [];
+    if (listeners.length) {
+      const who = listeners
+        .map((t) => `${t.operator || "no operator set"} ` +
+          `(seen ${t.seen_seconds}s ago)`)
+        .join(", ");
+      const go = interactive && confirm(
+        `Another terminal is already listening to the C72: ${who}.\n\n` +
+        "Gun scans act on EVERY listening terminal — a label scan " +
+        "would print twice.\n\nTurn LINK ON here anyway?"
+      );
+      if (!go) {
+        linkRelease();
+        linkStatus.textContent = interactive
+          ? `Left OFF — ${listeners[0].operator || "another terminal"} ` +
+            "is already listening."
+          : "";
+        return false;
+      }
+    }
+    linkCursor = body.cursor;
+    linkOn = true;
+    linkToggle.textContent = "C72 LINK: ON";
+    linkToggle.classList.add("linkbar__btn--on");
+    linkStatus.textContent = linkGunStatusText(body.guns || []);
+    linkOthers = listeners.length;
+    renderLinkWarn();
+    linkTimer = setInterval(pollLink, 1000);
+    return true;
+  } catch (err) {
+    linkStatus.textContent = "Could not reach the server — try again.";
+    return false;
+  }
+}
+
 if (linkToggle) {
-  linkToggle.addEventListener("click", async () => {
+  linkToggle.addEventListener("click", () => {
     if (linkOn) {
       stopLink("Gun scans stay on the gun.");
       return;
     }
-    linkStatus.textContent = "Connecting…";
-    try {
-      // Seat the cursor at "now" so scans fired before the toggle never
-      // replay into the station.
-      const res = await apiFetch("/api/link/scans?after=-1");
-      const body = await res.json();
-      linkCursor = body.cursor;
-      linkOn = true;
-      linkToggle.textContent = "C72 LINK: ON";
-      linkToggle.classList.add("linkbar__btn--on");
-      linkStatus.textContent =
-        "Listening — scans from the gun's LINK tab act here now.";
-      linkTimer = setInterval(pollLink, 1000);
-    } catch (err) {
-      linkStatus.textContent = "Could not reach the server — try again.";
-    }
+    startLink({ interactive: true });
+  });
+  // Coming back to a suspended tab: poll immediately rather than waiting
+  // out the interval, so the "skipped N" note appears right away.
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && linkOn) pollLink();
   });
 }
 

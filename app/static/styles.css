@@ -243,7 +243,8 @@ body {
   aspect-ratio: 5 / 3;
   border: 1px solid var(--line);
   border-radius: 10px;
-  background: #fff;
+  /* Letterboxing must follow the theme — the slides are dark captures. */
+  background: var(--card-2);
   object-fit: contain;
 }
 .help-arrow {
@@ -1113,6 +1114,11 @@ body {
   color: #fff;
   background: #005bd3;
   border-color: #005bd3;
+}
+/* Another terminal is listening too — gun scans would act twice. */
+.linkbar__btn--warn {
+  background: #b98900;
+  border-color: #b98900;
 }
 .linkbar__status {
   font-size: 12px;
