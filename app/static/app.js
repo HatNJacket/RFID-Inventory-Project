@@ -1567,6 +1567,7 @@ document.getElementById("edit-sku-save").addEventListener("click", async () => {
     });
     editDefaults.sku = newSku;
     pendingProduct.sku = newSku;
+    el.pSku.textContent = newSku; // the card behind follows immediately
     if (res.product) renderAliasPreview({ ...pendingProduct, ...res.product });
     editMsg(`SKU updated to ${newSku} ✓ (History-logged)`);
   } catch (err) {
@@ -1598,6 +1599,7 @@ document
       });
       editDefaults.barcode = newBarcode;
       pendingProduct.barcode = newBarcode;
+      el.pBarcode.textContent = newBarcode; // the card behind follows
       if (res.product)
         renderAliasPreview({ ...pendingProduct, ...res.product });
       editMsg(`Barcode updated to ${newBarcode} ✓ (History-logged)`);
