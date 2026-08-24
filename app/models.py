@@ -117,6 +117,13 @@ class RetiredTag(Base):
     )
     retired_by: Mapped[str | None] = mapped_column(String(100))
     note: Mapped[str | None] = mapped_column(String(255))
+    # How many sold-ledger units this retirement consumed (presumed-sold
+    # only; replaced/dead never touch the ledger). Unretire hands exactly
+    # this many back, so undo round-trips conserve the ledger. Prod needs
+    # the one-off ALTER script dev/alter_add_retired_ledger.py.
+    ledger_consumed: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
 
     def as_dict(self) -> dict:
         return {

@@ -5683,6 +5683,19 @@ public class MainActivity extends Activity {
                         + " box(es) get labels");
             }
             col.addView(line);
+            int overHeard = r.optInt("over_heard");
+            if (overHeard > 0) {
+                // Collection is fact: hearing MORE tags than boxes were
+                // collected never raises the count; it gets said out
+                // loud instead (neighboring shelf, uncollected stock).
+                TextView over = new TextView(this);
+                over.setTextSize(11.5f);
+                over.setTextColor(C_WARN);
+                over.setText("⚠ heard " + overHeard + " more tag(s) "
+                        + "than boxes collected, check for a "
+                        + "neighboring shelf or uncollected stock");
+                col.addView(over);
+            }
             row.addView(col, weight());
 
             if ("unheard".equals(state) || "silent".equals(state)) {
@@ -7664,8 +7677,16 @@ public class MainActivity extends Activity {
      *  that un-counts the box in hand. Count 0 gets a heads-up first. */
     private void showAlreadyTaggedDialog(BItem it, boolean offerUncount) {
         final int n = it.priorTags > 0 ? it.priorTags : it.taggedBefore;
+        // Collection is fact (Nick, 2026-08-24): on a previously-done
+        // bin the record count is INFORMATION, never the default — it
+        // pre-seeded tagged_before with stale record totals (his batch
+        // 159 stored 5 when he collected 4). The shelf sweep splits the
+        // collected count; this dialog only ever confirms what the
+        // operator sees in front of them.
         final int[] count = {
-                it.taggedBefore > 0 ? it.taggedBefore : Math.max(1, n)
+                it.taggedBefore > 0 ? it.taggedBefore
+                        : batchPrevDoneAt != null ? 1
+                        : Math.max(1, n)
         };
 
         LinearLayout box = new LinearLayout(this);

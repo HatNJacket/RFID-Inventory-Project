@@ -353,6 +353,8 @@ const EVENT_META = {
   "rfid-flag-changed": ["RFID Flag", "#d72c0d"],
   "on-hand-updated": ["Raised On-hand", "#0c5132"],
   "on-hand-undone": ["Undid On-hand", "#6d7175"],
+  "on-hand-lowered": ["Lowered On-hand", "#8a4b0e"],
+  "on-hand-lower-undone": ["Undid Lowering", "#6d7175"],
   "label-queued": ["Queued Label", "#4a86d8"],
   "label-printing": ["Printing Label", "#005bd3"],
   "label-printed": ["Printed Label", "#005bd3"],
@@ -5122,7 +5124,10 @@ function renderCheckList() {
         entry.flags.map((f) => FLAG_TEXT[f] || f).join(" · ") +
         (sh && sh.on_file
           ? ` — sweep heard ${sh.heard} of ${sh.on_file} on file, expected ${sh.expected}` +
-            (sh.presumed_sold ? ` (${sh.presumed_sold} presumed sold)` : "")
+            (sh.presumed_sold ? ` (${sh.presumed_sold} presumed sold)` : "") +
+            (sh.over_heard
+              ? ` · heard ${sh.over_heard} more tag(s) than boxes collected, check for a neighboring shelf or uncollected stock`
+              : "")
           : "");
       li.querySelector(".bcell__info").append(flags);
     }
@@ -6732,6 +6737,49 @@ bEl.verifyReport.addEventListener("click", async (e) => {
   }
 });
 
+// Lowering: only rendered when the server's can_lower gate passed
+// (recorded sales fully back the drop). One confirmed click lowers
+// on-hand, retires the listed silent tags presumed-sold, and consumes
+// the sales; one History undo reverses all three.
+bEl.verifyReport.addEventListener("click", async (e) => {
+  const btn = e.target.closest(".onhand-lower");
+  if (!btn || !batch) return;
+  const sku = btn.dataset.sku;
+  const qty = parseInt(btn.dataset.qty, 10);
+  const epcs = (btn.dataset.epcs || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (
+    !confirm(
+      `Set Shopify ON-HAND for ${sku} DOWN to ${qty}?\n\n` +
+        `Recorded sales account for the missing unit(s). This lowers ` +
+        `the count, retires ${epcs.length} silent tag(s) as ` +
+        `presumed-sold, and consumes the matching sales.\n\n` +
+        `One Undo in History reverses all of it.`
+    )
+  )
+    return;
+  btn.disabled = true;
+  try {
+    const res = await postJson("/api/onhand-updates/lower", {
+      sku,
+      bin_name: batch.bin_name,
+      new_qty: qty,
+      epcs,
+      changed_by: operatorEl.value || null,
+      confirmed: true,
+      batch_id: batch.id,
+      item_id: parseInt(btn.dataset.item, 10) || null,
+    });
+    setBatchResult(res.message, "ok");
+    await runVerifyCheck();
+  } catch (err) {
+    btn.disabled = false;
+    setBatchResult(err.message, "err");
+  }
+});
+
 // --- Stage 5: verify --------------------------------------------------------
 bEl.verifyInput.addEventListener("keydown", (event) => {
   if (event.key !== "Enter") return;
@@ -6814,14 +6862,22 @@ async function runVerifyCheck() {
           (diff
             ? ` <span class="bexp--off">(${diff > 0 ? "+" : "−"}${Math.abs(diff)})</span>`
             : "");
-        // Correction offered ONLY upward: finding more boxes than Shopify
-        // knew about is physical proof; finding fewer proves nothing (the
-        // rest may sit mis-binned elsewhere). Confirmed, logged, undoable.
+        // Corrections ride as small icons in the cell. Upward: finding
+        // more boxes than Shopify knew is physical proof. Downward: only
+        // when the server says recorded sales fully back the drop
+        // (can_lower); the endpoint re-checks everything.
         if (diff > 0 && r.sku) {
-          expCell += `<div><button class="reset onhand-fix" type="button"
+          expCell += ` <button class="reset onhand-fix onhand-fix--icon" type="button"
             data-sku="${escapeHtml(r.sku)}" data-qty="${found}"
             data-exp="${r.expected_qty}" data-item="${r.item_id}"
-            title="Write the found count to Shopify on-hand — confirmed, logged, undoable from History">Set to ${found}</button></div>`;
+            title="Set product count to ${found} (writes Shopify on-hand; confirmed, logged, undoable from History)">⇪</button>`;
+        } else if (diff < 0 && r.sku && r.can_lower) {
+          const epcs = (r.shelf && r.shelf.unheard_epcs) || [];
+          expCell += ` <button class="reset onhand-lower onhand-fix--icon" type="button"
+            data-sku="${escapeHtml(r.sku)}" data-qty="${found}"
+            data-item="${r.item_id}"
+            data-epcs="${escapeHtml(epcs.slice(0, Math.max(0, -diff)).join(","))}"
+            title="Set product count to ${found} (recorded sales account for the ${-diff} missing; lowers Shopify on-hand, retires the silent tags presumed-sold, consumes the sales; one undo reverses all of it)">⇩</button>`;
         }
       }
       const flaggedRow = (red || yel || !paired) && !na;
@@ -6833,7 +6889,7 @@ async function runVerifyCheck() {
         .map((b) => `${escapeHtml(b.bin)} ×${b.count}`)
         .join(", ");
       const detail = flaggedRow
-        ? `<tr class="bvx-detail" data-for="${r.item_id}" data-exp="${r.expected_qty ?? ""}" hidden><td colspan="7">
+        ? `<tr class="bvx-detail" data-for="${r.item_id}" data-exp="${r.expected_qty ?? ""}" hidden><td colspan="6">
             <div class="bvx__wrap">
               ${r.image_url ? `<img class="bvx__img" src="${escapeHtml(r.image_url)}" alt="">` : ""}
               <div class="bvx__body">
@@ -6855,7 +6911,7 @@ async function runVerifyCheck() {
                     <input type="number" min="0" max="500" class="bvx-qty" value="${r.qty_scanned}"></label>
                   <label>Already RFID-tagged
                     <input type="number" min="0" max="500" class="bvx-tb" value="${tb}"></label>
-                  <span class="bvx__sum"></span>
+                  <input class="bvx__sum" type="text" readonly tabindex="-1">
                   <button class="reset bvx-save" type="button" data-item="${r.item_id}">Save counts</button>
                 </div>
               </div>
@@ -6870,10 +6926,6 @@ async function runVerifyCheck() {
         <td>${productLink(r.product_title, r.shopify_product_id, r.sku)}${
           na
             ? ' <span class="noscan-chip" title="tag won\'t scan when on box — sweeps don\'t expect it to answer">⊘</span>'
-            : ""
-        }${
-          tb
-            ? ` <span class="tagged-chip" title="${tb} box(es) on this shelf were already RFID tagged before this batch (side trip or earlier session) — no scans or pairs expected here, but the sweep must hear their tags">✓${tb} already tagged</span>`
             : ""
         }${
           // Presumed-sold cleanup: the shelf reconciliation matched the
@@ -6911,14 +6963,24 @@ async function runVerifyCheck() {
         }</td>
         <td class="mono">${escapeHtml(r.sku || "—")}</td>
         <td class="num">${boxes}${
-          tb ? ` <span class="bexp--note" title="${r.qty_scanned} scanned this batch + ${tb} already tagged">(${r.qty_scanned}+${tb})</span>` : ""
+          tb ? `<div class="bexp--note" title="${r.qty_scanned} scanned this batch + ${tb} already tagged">(${r.qty_scanned} + ${tb})</div>` : ""
         }</td>
         <td class="num">${expCell}</td>
-        <td class="num${paired ? "" : " bexp--off"}">${r.paired_count}${
-          tb ? ` <span class="bexp--note" title="the ${tb} already-tagged box(es) were paired in an earlier session, not here">+${tb} earlier</span>` : ""
-        }</td>
-        <td class="num${red ? " bexp--off" : yel ? " bexp--warn" : ""}">${
-          na ? (r.detected > 0 ? `${r.detected} ⊘` : "n/a") : r.detected
+        <td class="num${
+          red
+            ? " bexp--off"
+            : yel
+              ? " bexp--warn"
+              : !na && r.expected_qty != null && r.detected === r.expected_qty
+                ? " bexp--ok"
+                : ""
+        }">${
+          na
+            ? (r.detected > 0 ? `${r.detected} ⊘` : "n/a")
+            : !red && !yel && r.expected_qty != null &&
+                r.detected === r.expected_qty
+              ? `${r.detected} ✓`
+              : r.detected
         }</td>
         <td>${
           na && paired
@@ -7018,7 +7080,7 @@ async function runVerifyCheck() {
   bEl.verifyReport.innerHTML = `
     ${verdict}${yellowNote}${retiredNote}${naNote}${tbNote}${unresolvedNote}
     <div class="inventory__scroll"><table class="inventory__table">
-      <thead><tr><th>Product</th><th>SKU</th><th class="num">Boxes</th><th class="num" title="Shopify on-hand for this shelf; brackets show scanned-vs-expected">Expected</th><th class="num">Paired</th><th class="num">Detected</th><th></th></tr></thead>
+      <thead><tr><th>Product</th><th>SKU</th><th class="num" title="Boxes physically collected this batch (new + already tagged)">Counted</th><th class="num" title="Shopify on-hand for this shelf; brackets show counted-vs-expected">Expected</th><th class="num">Detected</th><th></th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div>${fixAll}
     ${
@@ -7093,7 +7155,7 @@ function updateBvxSum(detail) {
       diff ? ` (${diff > 0 ? "+" : "−"}${Math.abs(diff)})` : " ✓"
     }`;
   }
-  sum.textContent = text;
+  sum.value = text;
 }
 
 bEl.verifyReport.addEventListener("input", (e) => {
@@ -7590,6 +7652,7 @@ const RV_TIMELINE_TYPES = {
   ]),
   "inventory-check": new Set([
     "tag-assigned", "tag-unlinked", "on-hand-updated", "on-hand-undone",
+    "on-hand-lowered", "on-hand-lower-undone",
     "batch-counted", "already-tagged-set", "receiving-completed",
     "inventory-check", "oneleft", "order-sold",
   ]),
@@ -10853,10 +10916,16 @@ async function undoHistoryEvent(e, btn) {
   // with exactly what will happen — including the CURRENT live value, in
   // case something else moved the number since — and that text IS the
   // confirmation prompt.
-  if (e.undo.kind === "on-hand") {
+  if (e.undo.kind === "on-hand" || e.undo.kind === "on-hand-lower") {
+    // A lowering's undo also restores the retired tags and the consumed
+    // sales; the endpoint's 409 text describes exactly what will happen.
+    const path =
+      e.undo.kind === "on-hand-lower"
+        ? `/api/onhand-updates/${e.undo.change_id}/undo-lower`
+        : `/api/onhand-updates/${e.undo.change_id}/undo`;
     btn.disabled = true;
     try {
-      await postJson(`/api/onhand-updates/${e.undo.change_id}/undo`, {
+      await postJson(path, {
         changed_by: operatorEl.value || null,
       });
       await loadHistory();
@@ -10872,10 +10941,10 @@ async function undoHistoryEvent(e, btn) {
         return;
       }
       try {
-        const res = await postJson(
-          `/api/onhand-updates/${e.undo.change_id}/undo`,
-          { changed_by: operatorEl.value || null, confirmed: true }
-        );
+        const res = await postJson(path, {
+          changed_by: operatorEl.value || null,
+          confirmed: true,
+        });
         await loadHistory();
         alert(res.message);
       } catch (err2) {

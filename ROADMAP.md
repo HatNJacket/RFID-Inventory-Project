@@ -3,6 +3,45 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-08-24.
 
+## 📐 Batch-tagging truth rework (2026-08-24, evening session)
+
+Nick's field cases (batches 157/159, bin F1-2) drove a rework of how
+counts and sales are reasoned about. All server math is test-pinned to
+the REAL prod numbers (dev/tests/test_ledger_flow.py, 41 checks).
+
+- **Windowed sales**: silent earlier tags are judged only against
+  unretired sales fulfilled AFTER the tag pool's baseline (newest
+  pairing in the bin, or a newer confirmed on-hand write). His AIRPLUS
+  case now reads "2 tags silent, recorded sales account for all 2"
+  instead of the false "beyond what recorded sales explain" (deleted).
+  Reasons carry the decomposition: sales split, on-hand cross-check,
+  and a sales-history-coverage note, all independently.
+- **Ledger consumption**: presumed-sold retirements (verify, shelf
+  resolve, and the new lower flow) consume matching sold-ledger units,
+  windowed-first then oldest-first; `rfid_retired_tags.ledger_consumed`
+  records it per tag (**prod ALTER: dev/alter_add_retired_ledger.py —
+  run BEFORE deploying**); unretire/undo hands exactly that many back.
+- **Collection is fact**: the sweep split now CAPS tagged_before at the
+  collected box count (over-hearing reports `over_heard` on web + C72
+  instead of inflating counts), and the C72 already-tagged dialog on
+  re-tag bins defaults to 1, never the record count (3.56 / code 74).
+- **Lower on-hand**: `POST /api/onhand-updates/lower`, feature
+  `verify_onhand_lower` (**prod SHOPIFY_WRITE_MODE must gain it AFTER
+  the deploy**). Gate: drop fully backed by windowed unretired sales;
+  EPCs must be live, in-bin, unheard-if-swept. One confirmed click =
+  lower + retire silent tags + consume ledger; one History undo
+  reverses all three. Verify rows carry `can_lower`; the increase path
+  stays increase-only.
+- **Verify table rework**: Counted (renamed, split note on its own
+  line), Paired column dropped, numbers centered, Set-to buttons are
+  now small ⇪/⇩ icons in the Expected cell, Detected shows green ✓ on
+  match, already-tagged chip removed (Counted's note covers it), the
+  expanded row's sum is a read-only centered box.
+- **Timeline fix**: `batch-counted` events report the physical count
+  (`_units_on_shelf`) with the new/already-tagged split and the sweep's
+  heard count ("counted 5" / "counted 4, sweep heard 5" instead of
+  "counted 0 (expected 6)").
+
 ## 🧭 Tutorial rebuild + LINK presence + replace menu (2026-08-24)
 
 - **Unified barcode/SKU replace menu — ✅ DEPLOYED**: the unknown-barcode

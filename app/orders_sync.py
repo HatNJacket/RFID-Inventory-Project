@@ -119,17 +119,96 @@ def sold_unretired_map(
     return out
 
 
-def retire_units(session: Session, sku: str, units: int) -> int:
-    """An audit marked `units` tags of this SKU sold: retire them against
-    the OLDEST unretired sales first. Returns how many actually landed
-    (never more than the ledger holds)."""
+def _as_utc(dt):
+    """Timestamps arrive tz-aware from Azure SQL and naive from the
+    sqlite test databases; comparisons need one flavor."""
+    if dt is None:
+        return None
+    from datetime import timezone as _tz
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=_tz.utc)
+
+
+def sold_unretired_since_map(
+    session: Session,
+    skus: list[str],
+    since_by_sku: dict[str, object],
+) -> dict[str, int]:
+    """Upper SKU -> unretired units sold strictly AFTER that SKU's tag-
+    pool baseline. A sale fulfilled before a tag was paired cannot
+    explain that tag's later silence (Nick's AIRPLUS case: the 3 PM sale
+    predates the 8:56 PM pairing). A SKU with no baseline (no live tags)
+    falls back to the full unwindowed sum. Rows with no fulfilled_at are
+    excluded from windows; they surface through ledger_covers_from_map
+    instead of being silently blamed."""
+    uppers = [s.strip().upper() for s in skus]
+    out: dict[str, int] = {}
+    if not uppers:
+        return out
+    for row in session.scalars(
+        select(SoldRecord).where(func.upper(SoldRecord.sku).in_(uppers))
+    ).all():
+        left = max(0, (row.quantity or 0) - (row.retired or 0))
+        if not left:
+            continue
+        key = row.sku.strip().upper()
+        since = _as_utc(since_by_sku.get(key))
+        if since is not None:
+            f = _as_utc(row.fulfilled_at)
+            if f is None or f <= since:
+                continue
+        out[key] = out.get(key, 0) + left
+    return out
+
+
+def ledger_covers_from_map(
+    session: Session, skus: list[str]
+) -> dict[str, object]:
+    """Upper SKU -> earliest dated sale on record (None entries absent).
+    Lets callers say "sales history only starts <date>" instead of
+    claiming older disappearances are unexplained by sales."""
+    uppers = [s.strip().upper() for s in skus]
+    out: dict[str, object] = {}
+    if not uppers:
+        return out
+    for row in session.scalars(
+        select(SoldRecord).where(func.upper(SoldRecord.sku).in_(uppers))
+    ).all():
+        f = _as_utc(row.fulfilled_at)
+        if f is None:
+            continue
+        key = row.sku.strip().upper()
+        if key not in out or f < out[key]:
+            out[key] = f
+    return out
+
+
+def retire_units(
+    session: Session, sku: str, units: int, since=None
+) -> int:
+    """`units` tags of this SKU were resolved as sold: retire them
+    against the OLDEST unretired sales first. With `since`, sales inside
+    the window (fulfilled after it) are consumed first, then older rows
+    take any remainder, so totals stay conserved even when the window
+    guessed wrong. Returns how many actually landed (never more than the
+    ledger holds)."""
     landed = 0
     rows = session.scalars(
         select(SoldRecord)
         .where(func.upper(SoldRecord.sku) == sku.strip().upper())
         .order_by(SoldRecord.fulfilled_at, SoldRecord.id)
     ).all()
-    for row in rows:
+    since = _as_utc(since)
+
+    def _in_window(row):
+        f = _as_utc(row.fulfilled_at)
+        return since is not None and f is not None and f > since
+
+    ordered = (
+        [r for r in rows if _in_window(r)]
+        + [r for r in rows if not _in_window(r)]
+        if since is not None else rows
+    )
+    for row in ordered:
         if landed >= units:
             break
         room = max(0, (row.quantity or 0) - (row.retired or 0))
@@ -138,6 +217,26 @@ def retire_units(session: Session, sku: str, units: int) -> int:
             row.retired = (row.retired or 0) + take
             landed += take
     return landed
+
+
+def unretire_units(session: Session, sku: str, units: int) -> int:
+    """Inverse of retire_units for undo paths: hand `units` back to the
+    ledger, NEWEST retired sales first, never below zero. Returns how
+    many were actually restored."""
+    restored = 0
+    rows = session.scalars(
+        select(SoldRecord)
+        .where(func.upper(SoldRecord.sku) == sku.strip().upper())
+        .order_by(SoldRecord.fulfilled_at.desc(), SoldRecord.id.desc())
+    ).all()
+    for row in rows:
+        if restored >= units:
+            break
+        take = min(row.retired or 0, units - restored)
+        if take:
+            row.retired = (row.retired or 0) - take
+            restored += take
+    return restored
 
 
 # ------------------------------------------------------- mismatch tasks -----

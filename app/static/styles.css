@@ -1389,6 +1389,17 @@ body {
 }
 .inventory__table tr:last-child td { border-bottom: none; }
 .inventory__table .num { text-align: right; }
+/* Verify table: every number sits centered in its column (Nick,
+   2026-08-24); the (x + y) split note gets its own line under Counted. */
+#bverify-report .num { text-align: center; }
+#bverify-report .bexp--note { display: block; white-space: nowrap; }
+.bexp--ok { color: var(--ok-ink, #0c5132); font-weight: 600; }
+.onhand-fix--icon {
+  font-size: 15px;
+  line-height: 1;
+  padding: 2px 7px;
+  vertical-align: middle;
+}
 .inventory__table .mono { font-family: var(--mono); font-size: 12px; }
 .inventory__variant { color: var(--ink-dim); }
 .inventory__bin {
@@ -2215,8 +2226,22 @@ tr.bvx-detail td { background: var(--card-2); padding: 12px 14px; }
   width: 86px; padding: 6px 8px; font-size: 14px;
   border: 1px solid var(--line); border-radius: 6px;
   background: var(--card); color: var(--ink);
+  text-align: center;
 }
-.bvx__sum { font-size: 12.5px; font-weight: 600; padding-bottom: 8px; }
+/* The live "= N box(es) total vs expected" line is a read-only text box
+   sized to its content, numbers centered (Nick, 2026-08-24). */
+input.bvx__sum {
+  width: 260px;
+  font-size: 12.5px;
+  font-weight: 600;
+  text-align: center;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card-2);
+  color: var(--ink);
+  cursor: default;
+}
 .bvx-save { padding-bottom: 6px; }
 /* Bin-audit verdict chips: what a sweep says about a shelf, in the
    Check step's language. */

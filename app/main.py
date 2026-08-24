@@ -155,6 +155,16 @@ def require_shopify_write(feature: str = "scan_station") -> None:
     )
 
 
+def shopify_write_enabled(feature: str) -> bool:
+    """Non-raising twin of require_shopify_write, for read endpoints
+    that tell the client which buttons to draw."""
+    try:
+        require_shopify_write(feature)
+        return True
+    except HTTPException:
+        return False
+
+
 # ---------------------------------------------------------------- schemas ---
 class AssignmentIn(BaseModel):
     # max_length values mirror the column sizes in models.py so bad input
@@ -2618,9 +2628,10 @@ def update_on_hand(
     if payload.new_qty <= live:
         raise HTTPException(
             422,
-            f"Shopify already shows {live} on hand for {payload.sku} — "
+            f"Shopify already shows {live} on hand for {payload.sku}; "
             f"this button only RAISES a count to match boxes physically "
-            f"found. Lowering a count stays a Shopify-admin job.",
+            f"found. A count can be lowered from a bin audit or batch "
+            f"verify when recorded sales account for the missing units.",
         )
     try:
         before = shopify.set_on_hand(payload.sku, payload.new_qty)
@@ -2708,6 +2719,299 @@ def undo_on_hand(
         "before": before,
         "after": old,
         "message": f"Undone — {row.sku} on-hand back to {old}.",
+    }
+
+
+class OnHandLowerIn(BaseModel):
+    """Audit count correction DOWNWARD: allowed only when recorded sales
+    since the tag pool's baseline fully account for the drop (Nick,
+    2026-08-24). One confirmed click lowers on-hand, retires the listed
+    silent tags presumed-sold, and consumes the matching ledger units;
+    one undo reverses all three."""
+
+    sku: str = Field(max_length=100)
+    bin_name: str = Field(max_length=100)
+    new_qty: int = Field(ge=0, le=100000)
+    # Silent tags to retire with the write. May be SHORTER than the drop
+    # (untagged units sold too), never longer.
+    epcs: list[str] = Field(default_factory=list, max_length=1000)
+    changed_by: str | None = Field(default=None, max_length=100)
+    confirmed: bool = False
+    batch_id: int | None = None
+    item_id: int | None = None
+
+    @field_validator("sku", "bin_name")
+    @classmethod
+    def not_blank(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("must not be blank")
+        return v.strip()
+
+
+def _pool_baseline(session: Session, sku: str, bin_name: str):
+    """The sales-window anchor for a SKU's tag pool in a bin: newest
+    pairing among its live tags there, or a newer confirmed on-hand
+    write, whichever is later (same rule as _shelf_reconcile)."""
+    key = sku.strip().upper()
+    base = None
+    for t in session.scalars(
+        select(RfidAssignment).where(func.upper(RfidAssignment.sku) == key)
+    ):
+        if not bin_contains(t.bin_location, bin_name):
+            continue
+        ts = orders_sync._as_utc(t.assigned_at)
+        if ts is not None and (base is None or ts > base):
+            base = ts
+    for bc in session.scalars(
+        select(BarcodeChange).where(
+            func.upper(BarcodeChange.sku) == key,
+            BarcodeChange.changed_field.in_((
+                "on-hand", "on-hand-undo",
+                "on-hand-lower", "on-hand-lower-undo",
+            )),
+        )
+    ):
+        ts = orders_sync._as_utc(bc.changed_at)
+        if ts is not None and (base is None or ts > base):
+            base = ts
+    return base
+
+
+@app.post(
+    "/api/onhand-updates/lower",
+    status_code=201,
+    dependencies=[Depends(require_user)],
+)
+def lower_on_hand(
+    payload: OnHandLowerIn, session: Session = Depends(get_session)
+):
+    require_shopify_write("verify_onhand_lower")
+    if config.check_shopify_env():
+        raise HTTPException(500, "Shopify credentials are not configured.")
+    live = shopify.get_on_hand(payload.sku)
+    if live is None:
+        raise HTTPException(404, f"No Shopify product for SKU {payload.sku}.")
+    drop = live - payload.new_qty
+    if drop < 1:
+        raise HTTPException(
+            422,
+            f"Shopify shows {live} on hand for {payload.sku}; this path "
+            f"only LOWERS a count. Use the raise button for increases.",
+        )
+    key = payload.sku.strip().upper()
+    baseline = _pool_baseline(session, payload.sku, payload.bin_name)
+    allowed = orders_sync.sold_unretired_since_map(
+        session, [payload.sku], {key: baseline}
+    ).get(key, 0)
+    if drop > allowed:
+        wf = _short_date(baseline.isoformat()) if baseline else "ever"
+        raise HTTPException(
+            422,
+            f"Recorded sales since {wf} only account for {allowed} "
+            f"missing unit(s); lowering {payload.sku} by {drop} is not "
+            f"backed by orders. Recount, or fix it in Shopify admin.",
+        )
+    # Every EPC must be a live, unheard tag of THIS SKU in THIS bin.
+    tags: list[RfidAssignment] = []
+    for epc in payload.epcs:
+        t = session.scalar(
+            select(RfidAssignment).where(
+                func.upper(RfidAssignment.rfid_id) == epc.strip().upper()
+            )
+        )
+        if t is None or (t.sku or "").strip().upper() != key:
+            raise HTTPException(
+                422, f"{epc} is not a live tag of {payload.sku}."
+            )
+        if not bin_contains(t.bin_location, payload.bin_name):
+            raise HTTPException(
+                422, f"{epc} is not recorded in bin {payload.bin_name}."
+            )
+        tags.append(t)
+    if len(tags) > drop:
+        raise HTTPException(
+            422,
+            f"{len(tags)} tag(s) listed but the count only drops by "
+            f"{drop}.",
+        )
+    if payload.batch_id:
+        cap = _latest_shelf_sweep(session, payload.batch_id)
+        if cap is not None and cap.epcs:
+            heard = {e.strip().upper() for e in cap.epcs.split("\n")}
+            for t in tags:
+                if t.rfid_id.strip().upper() in heard:
+                    raise HTTPException(
+                        422,
+                        f"{t.rfid_id} answered the shelf sweep; a heard "
+                        f"tag is a box on the shelf, not a sale.",
+                    )
+    if not payload.confirmed:
+        raise HTTPException(
+            409,
+            f"This lowers Shopify on-hand for {payload.sku} from {live} "
+            f"to {payload.new_qty}, retires {len(tags)} silent tag(s) "
+            f"as presumed-sold, and consumes {drop} recorded sale(s). "
+            f"Undoable from History. Confirm to proceed.",
+        )
+    # Local rows first (uncommitted), the external write last: a Shopify
+    # failure aborts everything.
+    moved_rows: list[tuple[RetiredTag, RfidAssignment]] = []
+    for t in tags:
+        rt = RetiredTag(
+            rfid_id=t.rfid_id,
+            sku=t.sku,
+            product_title=t.product_title,
+            shopify_variant_id=t.shopify_variant_id,
+            bin_location=t.bin_location,
+            case_units=t.case_units,
+            kind="presumed-sold",
+            retired_by=payload.changed_by,
+        )
+        session.add(rt)
+        session.add(BarcodeChange(
+            sku=t.sku,
+            product_title=t.product_title,
+            shopify_variant_id=t.shopify_variant_id,
+            changed_field="tag-retired",
+            old_barcode=t.rfid_id,
+            new_barcode="presumed-sold",
+            changed_by=payload.changed_by,
+        ))
+        session.delete(t)
+        moved_rows.append((rt, t))
+    if moved_rows:
+        _consume_ledger_for_retirements(session, moved_rows)
+    # The drop may exceed the retired tags (untagged units sold): consume
+    # the remainder from the ledger too, so the books stay conserved.
+    tagged_units = sum((t.case_units or 1) for _, t in moved_rows)
+    if drop > tagged_units:
+        orders_sync.retire_units(
+            session, payload.sku, drop - tagged_units, since=baseline
+        )
+    try:
+        before = shopify.set_on_hand(payload.sku, payload.new_qty)
+    except RuntimeError as error:
+        raise HTTPException(502, f"Shopify on-hand write failed: {error}")
+    change = BarcodeChange(
+        sku=payload.sku,
+        changed_field="on-hand-lower",
+        old_barcode=str(before),
+        new_barcode=str(payload.new_qty),
+        changed_by=payload.changed_by,
+    )
+    session.add(change)
+    session.flush()
+    for rt, _ in moved_rows:
+        rt.note = f"onhand-lower #{change.id}"
+    if payload.batch_id and payload.item_id:
+        item = session.get(BatchItem, payload.item_id)
+        if item is not None and item.batch_id == payload.batch_id:
+            item.expected_qty = payload.new_qty
+    session.commit()
+    session.refresh(change)
+    return {
+        "sku": payload.sku,
+        "before": before,
+        "after": payload.new_qty,
+        "retired": [t.rfid_id for _, t in moved_rows],
+        "change_id": change.id,
+        "message": (
+            f"Shopify on-hand for {payload.sku}: {before} to "
+            f"{payload.new_qty}, {len(moved_rows)} tag(s) retired "
+            f"presumed-sold ✓ (undo from History)"
+        ),
+    }
+
+
+@app.post(
+    "/api/onhand-updates/{change_id}/undo-lower",
+    dependencies=[Depends(require_user)],
+)
+def undo_lower_on_hand(
+    change_id: int,
+    payload: OnHandUndoIn,
+    session: Session = Depends(get_session),
+):
+    """Reverses a lower_on_hand in full: on-hand back up, the retired
+    tags live again, the consumed ledger units restored."""
+    require_shopify_write("verify_onhand_lower")
+    row = session.get(BarcodeChange, change_id)
+    if row is None or row.changed_field != "on-hand-lower" or not row.sku:
+        raise HTTPException(404, "No on-hand lowering with that id.")
+    old = int(row.old_barcode or 0)
+    marker = f"onhand-lower #{change_id}"
+    retired_rows = session.scalars(
+        select(RetiredTag).where(RetiredTag.note == marker)
+    ).all()
+    if not payload.confirmed:
+        live = shopify.get_on_hand(row.sku)
+        raise HTTPException(
+            409,
+            f"Undo sets Shopify on-hand for {row.sku} back to {old} "
+            f"(currently {live}) and restores {len(retired_rows)} "
+            f"retired tag(s) and their consumed sales. Confirm to "
+            f"write it.",
+        )
+    try:
+        before = shopify.set_on_hand(row.sku, old)
+    except RuntimeError as error:
+        raise HTTPException(502, f"Shopify on-hand write failed: {error}")
+    restored = []
+    for r in retired_rows:
+        if session.scalar(
+            select(RfidAssignment).where(
+                func.upper(RfidAssignment.rfid_id)
+                == r.rfid_id.strip().upper()
+            )
+        ) is not None:
+            continue  # EPC re-used on a new box since; leave it alone
+        session.add(RfidAssignment(
+            rfid_id=r.rfid_id,
+            shopify_variant_id=r.shopify_variant_id or "",
+            product_title=r.product_title or r.sku or "(unknown)",
+            sku=r.sku,
+            bin_location=r.bin_location,
+            case_units=r.case_units,
+            assigned_by=payload.changed_by,
+        ))
+        session.add(BarcodeChange(
+            sku=r.sku,
+            product_title=r.product_title,
+            shopify_variant_id=r.shopify_variant_id,
+            changed_field="tag-unretired",
+            old_barcode=r.rfid_id,
+            new_barcode=r.kind,
+            changed_by=payload.changed_by,
+        ))
+        if r.sku and (r.ledger_consumed or 0) > 0:
+            orders_sync.unretire_units(session, r.sku, r.ledger_consumed)
+        session.delete(r)
+        restored.append(r.rfid_id)
+    # Units consumed beyond the tagged ones (untagged sales) come back
+    # too: the total drop minus what the tags stood for.
+    drop_units = old - int(row.new_barcode or 0)
+    untagged = drop_units - sum(
+        (r.case_units or 1) for r in retired_rows
+    )
+    if untagged > 0:
+        orders_sync.unretire_units(session, row.sku, untagged)
+    session.add(BarcodeChange(
+        sku=row.sku,
+        changed_field="on-hand-lower-undo",
+        old_barcode=str(before),
+        new_barcode=str(old),
+        changed_by=payload.changed_by,
+    ))
+    session.commit()
+    return {
+        "sku": row.sku,
+        "before": before,
+        "after": old,
+        "restored": restored,
+        "message": (
+            f"Undone. {row.sku} on-hand back to {old}, "
+            f"{len(restored)} tag(s) live again."
+        ),
     }
 
 
@@ -4703,7 +5007,6 @@ def _shelf_reconcile(
             by_epc[t.rfid_id.strip().upper()] = t
             per_sku.setdefault(t.sku.strip().upper(), []).append(t)
 
-    sold = orders_sync.sold_unretired_map(session)
     on_hand: dict[str, int] = {}
     try:
         raw = shopify.get_quantities_by_skus(sorted(skus_upper))
@@ -4738,7 +5041,32 @@ def _shelf_reconcile(
     # doubles for stickered-but-mute Astronomik boxes).
     noscan = _noscan_skus(session)
 
-    out_items = []
+    # First pass: per-item tag pools plus the sales-window baseline.
+    # A sale fulfilled BEFORE the pool was last established cannot
+    # explain a tag paired later (Nick's AIRPLUS case: the 3 PM sale
+    # predates the 8:56 PM pairing), so only sales after the baseline
+    # count. The baseline = newest pairing among the judged tags, or a
+    # newer confirmed on-hand write for the SKU, whichever is later.
+    onhand_marks: dict[str, object] = {}
+    if skus_upper:
+        for bc in session.scalars(
+            select(BarcodeChange).where(
+                func.upper(BarcodeChange.sku).in_(sorted(skus_upper)),
+                BarcodeChange.changed_field.in_((
+                    "on-hand", "on-hand-undo",
+                    "on-hand-lower", "on-hand-lower-undo",
+                )),
+            )
+        ):
+            k = (bc.sku or "").strip().upper()
+            t = orders_sync._as_utc(bc.changed_at)
+            if t is not None and (
+                k not in onhand_marks or t > onhand_marks[k]
+            ):
+                onhand_marks[k] = t
+
+    prelim = []
+    baselines: dict[str, object] = {}
     for item in items:
         key = item.sku.strip().upper()
         # Tags paired by THIS batch are not "earlier records" — they're
@@ -4748,20 +5076,56 @@ def _shelf_reconcile(
             t for t in per_sku.get(key, [])
             if t.batch_id != batch.id
         ]
-        in_bin = [
-            t for t in tags if bin_contains(t.bin_location, batch.bin_name)
-        ]
+        in_bin = sorted(
+            (t for t in tags
+             if bin_contains(t.bin_location, batch.bin_name)),
+            key=lambda t: (
+                orders_sync._as_utc(t.assigned_at)
+                or datetime.min.replace(tzinfo=timezone.utc)
+            ),
+        )
         heard_tags = [
             t for t in tags if t.rfid_id.strip().upper() in swept
         ]
         heard = len(heard_tags)
         on_file = len(in_bin)
+        # Oldest first, so retire offers consume the longest-silent
+        # records before newer ones.
         unheard_epcs = [
             t.rfid_id for t in in_bin
             if t.rfid_id.strip().upper() not in swept
         ]
-        if key in sold and sold[key] > 0:
-            expected = max(0, on_file - sold[key])
+        base = max(
+            (orders_sync._as_utc(t.assigned_at)
+             for t in in_bin if t.assigned_at),
+            default=None,
+        )
+        om = onhand_marks.get(key)
+        if om is not None and (base is None or om > base):
+            base = om
+        baselines[key] = base
+        prelim.append((item, key, heard, on_file, unheard_epcs))
+
+    sold_since = orders_sync.sold_unretired_since_map(
+        session, sorted(skus_upper), baselines
+    )
+    covers = orders_sync.ledger_covers_from_map(
+        session, sorted(skus_upper)
+    )
+
+    out_items = []
+    for item, key, heard, on_file, unheard_epcs in prelim:
+        silent = len(unheard_epcs)
+        sales_since = sold_since.get(key, 0)
+        # Sales can only explain tags that actually went silent, and
+        # never more of them than there were sales in the window.
+        explained = min(silent, sales_since)
+        unexplained = silent - explained
+        base = baselines.get(key)
+        lf = covers.get(key)
+        sales_gap = base is not None and (lf is None or lf > base)
+        if sales_since > 0:
+            expected = max(0, on_file - sales_since)
             basis = "sales"
         elif key in on_hand:
             expected = min(on_file, on_hand[key])
@@ -4782,6 +5146,18 @@ def _shelf_reconcile(
             state = "silent"
         else:
             state = "unheard"
+        # Presumption ladder: with a sales ledger, presume ONLY what
+        # windowed sales genuinely cover (the old max(0, on_file -
+        # expected) presumed every gap sold). With no ledger rows at all
+        # (pre-scope era, untracked product) the on-hand shortfall keeps
+        # carrying the presumption as before; raw records presume
+        # nothing.
+        if lf is not None:
+            presumed = explained
+        elif basis in ("on-hand", "snapshot"):
+            presumed = max(0, on_file - expected)
+        else:
+            presumed = 0
         out_items.append({
             "item_id": item.id,
             "sku": item.sku,
@@ -4789,12 +5165,31 @@ def _shelf_reconcile(
             "on_file": on_file,
             "expected": expected,
             "basis": basis,
-            "presumed_sold": max(0, on_file - expected),
+            "presumed_sold": presumed,
+            "sales_since": sales_since,
+            "explained": explained,
+            "unexplained": unexplained,
+            "sales_window_from": (
+                base.isoformat() if base is not None else None
+            ),
+            "sales_gap": sales_gap,
+            "ledger_from": lf.isoformat() if lf is not None else None,
+            "on_hand": on_hand.get(key),
             "state": state,
             "unheard_epcs": unheard_epcs,
             # Physical boxes counted at collect (qty + tagged survives
             # the apply split, so this is stable across re-applies).
             "boxes": (item.qty_scanned or 0) + (item.tagged_before or 0),
+            # The sweep heard more of this SKU's tags than boxes were
+            # collected: a neighboring shelf answering, or uncollected
+            # stock. The apply split never lets this raise the count
+            # (collection is fact; Nick, 2026-08-24).
+            "over_heard": max(
+                0,
+                heard - (
+                    (item.qty_scanned or 0) + (item.tagged_before or 0)
+                ),
+            ),
         })
 
     known = set(by_epc.keys())
@@ -4820,6 +5215,16 @@ def _shelf_reconcile(
         else:
             unknown += 1
     return {"items": out_items, "strays": strays, "unknown": unknown}
+
+
+def _short_date(iso) -> str:
+    """'2026-08-19T20:56:12+00:00' -> 'Aug 19' for reason strings."""
+    if not iso:
+        return ""
+    try:
+        return datetime.fromisoformat(str(iso)).strftime("%b %d")
+    except ValueError:
+        return str(iso)[:10]
 
 
 class ShelfSweepIn(BaseModel):
@@ -4871,8 +5276,14 @@ def batch_shelf_sweep(
                 baseline = (
                     (item.qty_scanned or 0) + (item.tagged_before or 0)
                 )
-                item.tagged_before = r["heard"]
-                item.qty_scanned = max(0, baseline - r["heard"])
+                # Collection is fact: the sweep SPLITS the collected
+                # count, it never raises it. Hearing more tags than
+                # boxes (a neighboring shelf, uncollected stock) is
+                # reported as over_heard instead of silently inflating
+                # tagged_before past what the operator counted (Nick's
+                # batch 159: collected 4, heard 5, stored 5).
+                item.tagged_before = min(r["heard"], baseline)
+                item.qty_scanned = baseline - item.tagged_before
         session.commit()
     result["applied"] = payload.apply
     return result
@@ -4923,6 +5334,7 @@ def retire_tags(
     row (tombstone) so a future sweep hearing it can say WHAT it is
     instead of reporting an unknown tag."""
     moved = []
+    moved_rows: list[tuple[RetiredTag, RfidAssignment]] = []
     for epc in payload.epcs:
         t = session.scalar(
             select(RfidAssignment).where(
@@ -4932,7 +5344,7 @@ def retire_tags(
         )
         if t is None:
             continue
-        session.add(RetiredTag(
+        rt = RetiredTag(
             rfid_id=t.rfid_id,
             sku=t.sku,
             product_title=t.product_title,
@@ -4942,7 +5354,8 @@ def retire_tags(
             kind=payload.kind,
             retired_by=payload.changed_by,
             note=payload.note,
-        ))
+        )
+        session.add(rt)
         session.add(BarcodeChange(
             sku=t.sku,
             product_title=t.product_title,
@@ -4954,10 +5367,52 @@ def retire_tags(
         ))
         session.delete(t)
         moved.append(t.rfid_id)
+        moved_rows.append((rt, t))
     if not moved:
         raise HTTPException(404, "None of those EPCs are active tags.")
+    if payload.kind == "presumed-sold":
+        _consume_ledger_for_retirements(session, moved_rows)
     session.commit()
     return {"retired": moved, "kind": payload.kind}
+
+
+def _consume_ledger_for_retirements(
+    session: Session,
+    moved_rows: list[tuple[RetiredTag, RfidAssignment]],
+) -> None:
+    """Presumed-sold retirements consume matching sold-ledger units so
+    'sold-unretired' keeps meaning 'sales with no physical resolution
+    yet' (Nick, 2026-08-24 — before this, sales stayed unconsumed
+    forever and every later reconcile re-blamed them). Windowed rows
+    (sold after the SKU's remaining tag pool baseline) go first, oldest
+    first; each RetiredTag records what it consumed so unretire can hand
+    exactly that many back."""
+    session.flush()  # deletes must be visible to the baseline query
+    by_sku: dict[str, list[tuple[RetiredTag, RfidAssignment]]] = {}
+    for rt, t in moved_rows:
+        if t.sku:
+            by_sku.setdefault(t.sku.strip().upper(), []).append((rt, t))
+    for key, rows in by_sku.items():
+        bin_name = rows[0][1].bin_location
+        remaining = session.scalars(
+            select(RfidAssignment).where(
+                func.upper(RfidAssignment.sku) == key
+            )
+        ).all()
+        since = max(
+            (orders_sync._as_utc(x.assigned_at) for x in remaining
+             if x.assigned_at
+             and bin_contains(x.bin_location, bin_name or "")),
+            default=None,
+        )
+        units = sum((t.case_units or 1) for _, t in rows)
+        landed = orders_sync.retire_units(
+            session, rows[0][1].sku, units, since=since
+        )
+        for rt, t in rows:
+            take = min(landed, t.case_units or 1)
+            rt.ledger_consumed = take
+            landed -= take
 
 
 class UnretireTagsIn(BaseModel):
@@ -5008,6 +5463,10 @@ def unretire_tags(
             new_barcode=r.kind,
             changed_by=payload.changed_by,
         ))
+        # Hand back exactly the ledger units this retirement consumed
+        # (newest-first inverse), so undo round-trips conserve the books.
+        if r.sku and (r.ledger_consumed or 0) > 0:
+            orders_sync.unretire_units(session, r.sku, r.ledger_consumed)
         session.delete(r)
         restored.append(r.rfid_id)
     if not restored:
@@ -7401,48 +7860,88 @@ def batch_verify(
         elif not na and do < prior_expected:
             gap = prior_expected - do
             r["state"] = "prior-silent"
-            # Say WHY it's yellow with the numbers, and be honest about
-            # whether sales can explain it: when on-hand still counts
-            # the unit, "probably sold" would be a lie (Nick's EAF-PRO:
-            # 5 of 6 heard, on-hand 6 — that's a missing box or a wrong
-            # count, not a sale).
-            if sh is not None and sh.get("basis") == "sales":
-                r["reason"] = (
-                    f"{gap} earlier tag(s) silent beyond what recorded "
-                    f"sales explain — sold-but-unsynced, misplaced, or "
-                    f"a weak tag ({do} of {prior_expected} answered)"
+            # Say WHY it's yellow with the numbers, built from the sweep
+            # decomposition (silent / sales-explained / unexplained),
+            # never from the basis label alone: the old wording blamed
+            # "beyond what recorded sales explain" whenever ANY sale
+            # existed, even when sales explained everything (Nick's
+            # AIRPLUS, 2026-08-24). On-hand and sales are both reported
+            # when they disagree.
+            if sh is not None and (sh.get("sales_since") or 0) > 0:
+                silent = (
+                    sh.get("explained", 0) + sh.get("unexplained", 0)
                 )
-            elif (
-                r["expected_qty"] is not None
-                and r["expected_qty"] > do + r["paired_count"]
-            ):
+                wf = _short_date(sh.get("sales_window_from")) or "tagging"
                 r["reason"] = (
-                    f"{gap} earlier tag(s) silent and Shopify on-hand "
-                    f"({r['expected_qty']}) still counts "
-                    f"{'it' if gap == 1 else 'them'} — a box is "
-                    f"missing, the count is off, or the tag is dead "
-                    f"({do} of {prior_expected} answered)"
+                    f"{silent} tag(s) silent, sales since {wf} "
+                    f"only account for {sh.get('explained', 0)}"
+                    if sh.get("unexplained", 0) > 0
+                    else f"{silent} tag(s) silent, recorded sales "
+                         f"account for {sh.get('explained', 0)}, but "
+                         f"the sweep still came up short"
+                )
+            elif sh is not None and sh.get("sales_gap"):
+                r["reason"] = (
+                    f"{gap} earlier tag(s) silent, no recorded sales "
+                    f"in the window"
                 )
             else:
                 r["reason"] = (
-                    f"{gap} earlier tag(s) silent — likely sold or "
-                    f"moved before this batch "
-                    f"({do} of {prior_expected} answered)"
-                    + (
-                        " · live count unavailable, comparing against "
-                        "raw records — re-send the sweep to re-check"
-                        if sh is not None
-                        and sh.get("basis") == "records"
-                        else ""
-                    )
+                    f"{gap} earlier tag(s) silent, likely sold or "
+                    f"moved before this batch"
                 )
+            oh = (
+                sh.get("on_hand") if sh is not None
+                else r["expected_qty"]
+            )
+            if oh is None:
+                oh = r["expected_qty"]
+            if oh is not None and oh > do + r["paired_count"]:
+                still = oh - do - r["paired_count"]
+                r["reason"] += (
+                    f"; on-hand {oh} still counts "
+                    f"{still} of them, count may be off"
+                )
+            if sh is not None and sh.get("sales_gap"):
+                lf = _short_date(sh.get("ledger_from"))
+                r["reason"] += (
+                    f"; sales history only starts {lf}, older sales "
+                    f"are invisible" if lf
+                    else "; no sales history exists for this product yet"
+                )
+            if sh is not None and sh.get("basis") == "records":
+                r["reason"] += (
+                    "; live count unavailable, comparing against raw "
+                    "records, re-send the sweep to re-check"
+                )
+            r["reason"] += f" ({do} of {prior_expected} answered)"
         else:
             r["state"] = "ok"
-            r["reason"] = (
-                f"{sh['presumed_sold']} recorded tag(s) presumed sold"
-                if sh is not None and sh.get("presumed_sold")
-                else ""
-            )
+            if sh is not None and sh.get("explained"):
+                s = sh["explained"]
+                r["reason"] = (
+                    f"{s} earlier tag(s) silent, recorded sales "
+                    f"account for all {s}"
+                )
+            elif sh is not None and sh.get("presumed_sold"):
+                # No sales history for this product: the on-hand
+                # shortfall carries the presumption, as before.
+                r["reason"] = (
+                    f"{sh['presumed_sold']} recorded tag(s) presumed sold"
+                )
+            else:
+                r["reason"] = ""
+        # Whether the count may be LOWERED from this row: only when the
+        # whole drop is backed by windowed unretired sales AND the
+        # feature is on. The endpoint re-checks everything; this flag
+        # just tells the client which button to draw.
+        found = r.get("units_total") or 0
+        r["can_lower"] = bool(
+            r["expected_qty"] is not None
+            and sh is not None
+            and 0 < (r["expected_qty"] - found) <= sh.get("sales_since", 0)
+            and shopify_write_enabled("verify_onhand_lower")
+        )
     ok = (
         not unknown
         and not foreign
@@ -9116,6 +9615,8 @@ def product_history(term: str, session: Session = Depends(get_session)):
         "bundle-contents": "bundle-contents-set",
         "rfid-scan": "rfid-flag-changed",
         "on-hand": "on-hand-updated", "on-hand-undo": "on-hand-undone",
+        "on-hand-lower": "on-hand-lowered",
+        "on-hand-lower-undo": "on-hand-lower-undone",
         "tagged-before": "already-tagged-set",
         "tag-unlinked": "tag-unlinked",
         "locate-list": "locate-list",
@@ -9264,20 +9765,56 @@ def product_history(term: str, session: Session = Depends(get_session)):
 
     # Count observations: what the shelf actually held, per batch. These
     # never change Shopify stock — they are the record a future (explicit)
-    # write-back would act on.
-    for item, batch in session.execute(
+    # write-back would act on. "Counted" is the PHYSICAL box count
+    # (scanned + already-tagged): re-tag batches used to render
+    # "counted 0" because only qty_scanned was reported (Nick's EAF PRO,
+    # 2026-08-24). The sweep's heard count rides along when one exists.
+    count_rows = session.execute(
         select(BatchItem, Batch)
         .join(Batch, Batch.id == BatchItem.batch_id)
         .where(BatchItem.sku == sku)
-    ):
-        detail = (
-            f"bin {batch.bin_name}: counted {item.qty_scanned}"
-            + (f" (expected {item.expected_qty})"
-               if item.expected_qty is not None else "")
-            + (f", {item.paired_count} tag(s) paired"
-               if item.paired_count else "")
-            + f" · batch #{batch.id} {batch.status}"
-        )
+    ).all()
+    heard_by_batch: dict[int, int] = {}
+    if count_rows:
+        sku_epcs = {
+            t.rfid_id.strip().upper()
+            for t in session.scalars(
+                select(RfidAssignment).where(
+                    func.upper(RfidAssignment.sku) == sku.upper()
+                )
+            )
+        } | {
+            t.rfid_id.strip().upper()
+            for t in session.scalars(
+                select(RetiredTag).where(
+                    func.upper(RetiredTag.sku) == sku.upper()
+                )
+            )
+        }
+        for _, batch in count_rows:
+            if batch.id in heard_by_batch:
+                continue
+            cap = _latest_shelf_sweep(session, batch.id)
+            if cap is None or not cap.epcs:
+                continue
+            heard_by_batch[batch.id] = sum(
+                1 for e in cap.epcs.split("\n")
+                if e.strip().upper() in sku_epcs
+            )
+    for item, batch in count_rows:
+        detail = f"bin {batch.bin_name}: counted {_units_on_shelf(item)}"
+        if item.tagged_before:
+            detail += (
+                f" ({item.qty_scanned or 0} new, "
+                f"{item.tagged_before} already tagged)"
+            )
+        if item.expected_qty is not None:
+            detail += f" (expected {item.expected_qty})"
+        if batch.id in heard_by_batch:
+            detail += f", sweep heard {heard_by_batch[batch.id]}"
+        if item.paired_count:
+            detail += f", {item.paired_count} tag(s) paired"
+        detail += f" · batch #{batch.id} {batch.status}"
         events.append({
             "at": iso(batch.completed_at or batch.created_at),
             "type": "batch-counted",
@@ -9442,6 +9979,8 @@ def history(
         "bundle-contents": "bundle-contents-set",
         "rfid-scan": "rfid-flag-changed",
         "on-hand": "on-hand-updated", "on-hand-undo": "on-hand-undone",
+        "on-hand-lower": "on-hand-lowered",
+        "on-hand-lower-undo": "on-hand-lower-undone",
         "tagged-before": "already-tagged-set",
         "tag-unlinked": "tag-unlinked",
         "locate-list": "locate-list",
@@ -9477,6 +10016,10 @@ def history(
         # back to what it was before the update (confirmed first).
         if c.changed_field == "on-hand":
             event["undo"] = {"kind": "on-hand", "change_id": c.id}
+        # A lowering's undo restores everything the one click did:
+        # on-hand back up, the retired tags live, the ledger units back.
+        elif c.changed_field == "on-hand-lower":
+            event["undo"] = {"kind": "on-hand-lower", "change_id": c.id}
         # Bin writes too (Nick, 2026-08-18): undo writes the OLD bin back
         # through the normal audited endpoint — a new History row, never
         # an erasure. Only offered when there was an old bin to go back to.

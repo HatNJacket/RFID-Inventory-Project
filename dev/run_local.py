@@ -13,7 +13,8 @@ os.environ["DATABASE_URL"] = "sqlite:///" + DB.replace("\\", "/")
 os.environ["SHOPIFY_STORE"] = "t.myshopify.com"
 os.environ["SHOPIFY_CLIENT_ID"] = "x"
 os.environ["SHOPIFY_CLIENT_SECRET"] = "x"
-os.environ["SHOPIFY_WRITE_MODE"] = "scan_station_only,verify_onhand"
+os.environ["SHOPIFY_WRITE_MODE"] = (
+    "scan_station_only,verify_onhand,verify_onhand_lower")
 os.environ["ONELEFT_MODE"] = "confirm"  # the bridge itself is faked below
 os.environ.pop("STATION_KEY", None)
 os.environ.pop("PRINT_AGENT_KEY", None)
