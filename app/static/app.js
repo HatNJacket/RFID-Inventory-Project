@@ -2266,51 +2266,62 @@ el.printBtn.addEventListener("click", () =>
 // (the ZWO Nikon-T2-II) plus Nick's warehouse photos of the ZWO
 // double-barcode box and the Svbony SKU label. The scanner slide stays
 // an illustration until someone photographs the right scanner.
+// Rebuilt 2026-08-24 (Nick's slide order): dark-mode captures + GIFs of
+// the real flows. The old slide-*.png/svg files stay on disk for
+// browsers still holding a cached app.js. No em dashes in captions.
 const HELP_SLIDES = [
   {
-    img: "/static/help/slide-link.png",
+    img: "/static/help/s1-link.png",
     text:
-      "Open the TC RFID app on the C72 gun and make sure it's on the LINK " +
-      "tab (new versions start there). Then turn ON the C72 LINK toggle at " +
-      "the top of this page — the gun's scans now land here.",
+      "To link RFID tags to products, open the TC RFID app on the C72 " +
+      "and make sure it's on its Link tab (it starts there). Then turn " +
+      "on C72 LINK at the top of this page. The status line confirms " +
+      "the gun is connected, and its scans act on this terminal.",
   },
   {
-    img: "/static/help/slide-scanner.svg",
-    text:
-      "Check the barcode scanner is connected to the C72. We have several " +
-      "— the right one is the scanner with NO label on its handle. Squeeze " +
-      "its trigger at any barcode: if the C72 beeps, you're connected.",
+    img: "/static/help/s2-labels.png",
+    html:
+      "Different vendors have different label conventions, some with " +
+      "invalid barcodes and some with no barcodes at all.<br>" +
+      "<b>Example 1 (ZWO):</b> often two barcodes. The TOP one is the " +
+      "product barcode; the lower one is a wholesale serial the system " +
+      "doesn't know.<br>" +
+      "<b>Example 2 (Svbony):</b> no barcode at all. Type the SKU " +
+      "printed on the label instead.",
   },
   {
-    img: "/static/help/slide-barcode.jpg",
+    img: "/static/help/s3-print.gif",
     text:
-      "Scan the barcode on the box. Some boxes carry two codes — wholesale " +
-      "labels often add a serial that our system doesn't know. If the " +
-      "first scan comes back unknown, try the other barcode; you'll " +
-      "quickly learn which one each brand wants.",
+      "Enter the product SKU by hand, or scan the barcode with a linked " +
+      "barcode scanner (a C72 on its Link tab passes barcodes here " +
+      "too). When the product appears, set how many labels you need, " +
+      "then click Print & encode RFID labels.",
   },
   {
-    img: "/static/help/slide-sku.jpg",
+    img: "/static/help/s4-sweep.gif",
     text:
-      "No barcode at all (Svbony boxes, damaged labels)? Type the SKU " +
-      "printed on the box into the scan field and press Enter. The ↑ and " +
-      "↓ arrows bring back recently typed SKUs for a shelf of identical " +
-      "boxes.",
+      "Stick the labels on the boxes and scan them with the RFID gun. " +
+      "By default the terminal resets for the next product once you " +
+      "scan as many tags as labels were printed. That can be changed " +
+      "in settings, and tag assignments can always be undone if a " +
+      "mistake is made.",
   },
   {
-    img: "/static/help/slide-print.png",
+    img: "/static/help/s5-edit.gif",
     text:
-      "Type how many labels you need and press Print — or turn on " +
-      "auto-print (⚙ Settings) to get one label per scan with no button " +
-      "press. If the label's text would print badly, a red warning asks " +
-      "you to shorten it first.",
+      "Wrong SKU or barcode on a product, or want to leave a scan " +
+      "note? Click Edit product under the product card, fix just the " +
+      "broken part (here a roman numeral becomes a plain II), and " +
+      "save. Changes write to Shopify and History keeps the record.",
   },
   {
-    img: "/static/help/slide-tag.png",
+    img: "/static/help/s6-fixbarcode.gif",
     text:
-      "Stick the label on the box, then read it with the RFID gun (a " +
-      "trigger pull on LINK). The tag pairs to the product and the box " +
-      "is in the system — repeat for the next box.",
+      "Barcode not found? Some products never had one set, so their " +
+      "barcode holds the SKU instead. Look the product up by its SKU " +
+      "with Check product, confirm it's the right item, and Update " +
+      "barcode adopts the code you scanned as its real barcode in " +
+      "Shopify.",
   },
 ];
 let helpIdx = 0;

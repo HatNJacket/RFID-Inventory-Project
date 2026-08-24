@@ -27,10 +27,15 @@ Last updated: 2026-08-24.
   Suite: `dev/tests/test_link_presence.py`.
 - **C72 3.55 (code 73) — ✅ DEPLOYED**: ActionBar titles the current tab
   (Batch/Station/Sweep/Find Bin/Locate/Link); drawer keeps the app name.
-- **Help slideshow rebuild — 🔶 IN PROGRESS**: 6 new dark-mode slides
-  (screenshots + GIFs, per-slide preview approval with Nick). Mechanics
-  shipped (html captions, theme letterbox, mkdeploy `.gif`); slide
-  images land after Nick approves each preview.
+- **Help slideshow rebuild — ✅ DEPLOYED**: 6 new dark-mode slides
+  (`help/s1-link.png` … `s6-fixbarcode.gif`), every preview approved by
+  Nick: link setup (gun mockup + highlighted toggle), label conventions
+  (rotated highlights on his photos), SKU-entry + print GIF, gun-sweep +
+  auto-reset GIF (drawn gun illustration, trigger/burst animation),
+  edit-product GIF (the real Ⅱ→II SKU fix), and the new replace-menu
+  barcode repair GIF. Old slide files stay on disk for cached clients;
+  the C72 Link-tab mockup swaps for a real gun screenshot whenever one
+  lands in `assets/`.
 - **TODO next web-terminal build (Nick 2026-08-24): strip every em dash
   ("—") from UI copy** — replace with a plain hyphen or reword. New
   strings written this session already comply.
