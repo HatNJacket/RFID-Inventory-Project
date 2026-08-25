@@ -101,6 +101,40 @@ with patch("app.shopify.lookup_barcode", side_effect=fake_lookup), \
         e["type"] == "batch-reprinted" for e in hist["events"]),
           [e["type"] for e in hist["events"]][:6])
 
+    # --- Selective reprint (out of labels mid-run / debris on the
+    # stock): print the fresh set, then reprint only two of the three.
+    claimed = cl.post("/api/print-jobs/claim?limit=10").json()["jobs"]
+    for j in claimed:
+        cl.post(f"/api/print-jobs/{j['id']}/complete"
+                "?create_assignment=true")
+    picked = [j["id"] for j in claimed[:2]]
+    kept_epc = claimed[2]["epc"]
+    r = cl.post(f"/api/batches/{bid}/reprint-jobs",
+                json={"job_ids": picked, "requested_by": "Nick"})
+    check("selective reprint refuses without confirmation",
+          r.status_code == 409, r.status_code)
+    r = cl.post(f"/api/batches/{bid}/reprint-jobs",
+                json={"job_ids": picked, "requested_by": "Nick",
+                      "confirmed": True})
+    check("selective reprint voids and requeues just the picked labels",
+          r.status_code == 200 and r.json()["voided"] == 2
+          and r.json()["queued"] == 2
+          and r.json()["tags_unlinked"] == 2, r.text[:300])
+    with Session(get_engine()) as s:
+        by_id = {j.id: j for j in s.scalars(select(PrintJob)).all()}
+        check("picked jobs voided, the third untouched",
+              all(by_id[i].status == "voided" for i in picked)
+              and by_id[claimed[2]["id"]].status == "done",
+              {i: by_id[i].status for i in [*picked, claimed[2]["id"]]})
+        live = {a.rfid_id for a in s.scalars(select(RfidAssignment))}
+        check("only the untouched label's tag record survives",
+              live == {kept_epc}, live)
+    r = cl.post(f"/api/batches/{bid}/reprint-jobs",
+                json={"job_ids": [999999], "requested_by": "Nick",
+                      "confirmed": True})
+    check("unknown or foreign job ids are refused",
+          r.status_code == 422, r.status_code)
+
     # Once pairing has started, the button refuses.
     with Session(get_engine()) as s:
         item = s.scalars(select(BatchItem).where(

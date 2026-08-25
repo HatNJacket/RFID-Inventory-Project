@@ -2486,6 +2486,38 @@ tr.binaudit-untagged td { opacity: 0.72; }
   white-space: nowrap;
 }
 .chip-status--done { background: var(--ok-bg); color: var(--ok-ink); }
+/* Print-run list (batch Print step): pick the labels to reprint */
+.bprint-run__list {
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 4px;
+}
+.bprint-run__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+.bprint-run__row:hover { background: var(--card-2); }
+.bprint-run__n {
+  min-width: 26px;
+  text-align: right;
+  color: var(--ink-dim, #6d7175);
+  font-size: 12px;
+}
+.bprint-run__name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
 .chip-status--error { background: var(--bad-bg); color: var(--bad-ink); }
 .chip-status--pending, .chip-status--printing {
   background: var(--warn-bg); color: var(--warn-ink);

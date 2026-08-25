@@ -6324,6 +6324,146 @@ bEl.queue.addEventListener("click", async () => {
 });
 
 // --- Stage 3: print ---------------------------------------------------------
+// The run list: every live label of this batch's print run, oldest
+// first, with a checkbox to pick the ones that printed wrong or never
+// came out (out of labels, debris on the stock). The poll NEVER stops
+// itself any more - it used to stop at "all done" and go blind to
+// requeued labels, which is why the step "didn't update" (Nick,
+// 2026-08-25). Voided/canceled jobs leave the math and the list.
+let bprintSelected = new Set();
+let bprintLastSig = "";
+let bprintLastClicked = null;
+
+function renderBatchPrintRun(all) {
+  const wrap = document.getElementById("bprint-run");
+  const list = document.getElementById("bprint-run-list");
+  const live = all
+    .filter((j) => !["canceled", "voided"].includes(j.status))
+    .sort((a, b) => a.id - b.id);
+  wrap.hidden = !live.length;
+  if (!live.length) return;
+  // Drop selections that no longer exist (e.g. just reprinted).
+  const ids = new Set(live.map((j) => j.id));
+  bprintSelected = new Set([...bprintSelected].filter((i) => ids.has(i)));
+  const sig =
+    live.map((j) => `${j.id}:${j.status}`).join(",") +
+    `|${[...bprintSelected].join(",")}`;
+  if (sig === bprintLastSig) return; // no re-render mid-click for nothing
+  bprintLastSig = sig;
+  const chip = (s) =>
+    s === "done"
+      ? '<span class="chip-status chip-status--done">printed</span>'
+      : s === "error"
+        ? '<span class="chip-status chip-status--error">FAILED</span>'
+        : `<span class="chip-status chip-status--pending">${s}</span>`;
+  list.innerHTML = live
+    .map(
+      (j, i) => `
+    <label class="bprint-run__row">
+      <input type="checkbox" data-job="${j.id}" data-idx="${i}"
+        ${bprintSelected.has(j.id) ? "checked" : ""} />
+      <span class="bprint-run__n">${i + 1}</span>
+      <span class="bprint-run__name">${escapeHtml(
+        j.product_title || j.sku || "?"
+      )}${j.case_units ? ` (case of ${j.case_units})` : ""}</span>
+      <span class="mono recent__meta">${escapeHtml(j.sku || "")}</span>
+      ${chip(j.status)}
+    </label>`
+    )
+    .join("");
+  const btn = document.getElementById("bprint-reprint-sel");
+  btn.disabled = !bprintSelected.size;
+  btn.textContent = bprintSelected.size
+    ? `Reprint selected (${bprintSelected.size})`
+    : "Reprint selected";
+}
+
+document
+  .getElementById("bprint-run-list")
+  .addEventListener("change", (ev) => {
+    const cb = ev.target.closest("input[type=checkbox]");
+    if (!cb) return;
+    const id = Number(cb.dataset.job);
+    const idx = Number(cb.dataset.idx);
+    const boxes = [
+      ...document.querySelectorAll("#bprint-run-list input[type=checkbox]"),
+    ];
+    // Shift-click selects the whole range since the last clicked row —
+    // "everything after the printer ran dry" is one click + one
+    // shift-click.
+    if (
+      bprintShift &&
+      bprintLastClicked != null &&
+      bprintLastClicked !== idx
+    ) {
+      const [a, b] = [
+        Math.min(bprintLastClicked, idx),
+        Math.max(bprintLastClicked, idx),
+      ];
+      boxes.slice(a, b + 1).forEach((box) => {
+        box.checked = cb.checked;
+        const jid = Number(box.dataset.job);
+        cb.checked ? bprintSelected.add(jid) : bprintSelected.delete(jid);
+      });
+    } else {
+      cb.checked ? bprintSelected.add(id) : bprintSelected.delete(id);
+    }
+    bprintLastClicked = idx;
+    const btn = document.getElementById("bprint-reprint-sel");
+    btn.disabled = !bprintSelected.size;
+    btn.textContent = bprintSelected.size
+      ? `Reprint selected (${bprintSelected.size})`
+      : "Reprint selected";
+    bprintLastSig = ""; // force the next poll to redraw with fresh state
+  });
+// Track shift through mousedown — the change event itself loses it on
+// some browsers when the label is what got clicked.
+let bprintShift = false;
+document
+  .getElementById("bprint-run-list")
+  .addEventListener("mousedown", (ev) => (bprintShift = ev.shiftKey), true);
+
+document.getElementById("bprint-sel-none").addEventListener("click", () => {
+  bprintSelected.clear();
+  bprintLastSig = "";
+  pollBatchPrint();
+});
+
+document
+  .getElementById("bprint-reprint-sel")
+  .addEventListener("click", async () => {
+    if (!batch || !bprintSelected.size) return;
+    const n = bprintSelected.size;
+    if (
+      !confirm(
+        `Reprint ${n} selected label(s)?\n\nThe old copies are voided ` +
+          `and their tag records unlinked - BIN THEM first (a voided ` +
+          `label on a box answers sweeps as an unknown tag). Fresh ` +
+          `replacements queue right away; the rest of the run is ` +
+          `untouched.`
+      )
+    )
+      return;
+    const btn = document.getElementById("bprint-reprint-sel");
+    btn.disabled = true;
+    try {
+      const res = await postJson(`/api/batches/${batch.id}/reprint-jobs`, {
+        job_ids: [...bprintSelected],
+        requested_by: operatorEl.value || null,
+        confirmed: true,
+      });
+      bprintSelected.clear();
+      bprintLastSig = "";
+      batchSound("ok");
+      setBatchResult(res.message, "ok");
+      pollBatchPrint();
+    } catch (err) {
+      batchSound("err");
+      setBatchResult(err.message, "err");
+      btn.disabled = false;
+    }
+  });
+
 async function pollBatchPrint() {
   if (!batch) return;
   try {
@@ -6334,20 +6474,24 @@ async function pollBatchPrint() {
     bEl.printAgent.textContent = agent.online
       ? "Printer agent: online ✓ (warehouse PC)"
       : "Printer agent: OFFLINE — is the warehouse PC on? Jobs stay queued.";
+    // Voided/canceled labels are HISTORY, not part of the run's math —
+    // counting them used to render nonsense like "Printed 2/4" after a
+    // reprint.
+    const live = jobs.jobs.filter(
+      (j) => !["canceled", "voided"].includes(j.status)
+    );
     const counts = { done: 0, error: 0, pending: 0, printing: 0 };
-    jobs.jobs.forEach((j) => {
+    live.forEach((j) => {
       counts[j.status] = (counts[j.status] || 0) + 1;
     });
-    const total = jobs.jobs.length;
+    const total = live.length;
     bEl.printStatus.textContent =
       `Printed ${counts.done}/${total}` +
-      (counts.error ? ` — ${counts.error} FAILED (see Print queue)` : "") +
+      (counts.error ? ` — ${counts.error} FAILED` : "") +
       (counts.pending + counts.printing
         ? ` — ${counts.pending + counts.printing} in the queue…`
-        : " ✓");
-    if (total && counts.done + counts.error + (counts.canceled || 0) >= total) {
-      stopBatchPrintPoll();
-    }
+        : " ✓ (tick any bad ones below to reprint them)");
+    renderBatchPrintRun(jobs.jobs);
   } catch (err) {
     /* transient; next tick retries */
   }

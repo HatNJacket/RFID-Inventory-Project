@@ -5,6 +5,18 @@ Last updated: 2026-08-25.
 
 ## 🖨 Print truth: saved labels, walking order, re-align (2026-08-25)
 
+- **Live print-run list + selective reprint (same day, out-of-labels
+  incident)**: the Print step's poll used to STOP once every job
+  reported done and went blind to requeues - "Printed 2/4" nonsense
+  after reprints, no way to see what actually printed. It now polls
+  for as long as the step is open, voided/canceled labels leave the
+  math, and a per-label run list shows every job in walking order with
+  its status. Tick the ones that printed wrong or never came out
+  (shift-click selects a range - "everything after the roll ran dry"
+  is two clicks) and "Reprint selected" voids just those (ghost tag
+  records unlinked), queuing fresh replacements while the rest of the
+  run is untouched. POST /api/batches/{id}/reprint-jobs, same guards
+  and History row as reprint-all. Suite: test_reprintall.py (15).
 - **Clear queue & reprint all (same day)**: the printer ran out of wax
   mid-run, printed 46 blanks, and marked every job done. New button in
   the Print step beside "Labels applied": POST

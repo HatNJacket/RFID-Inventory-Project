@@ -7250,12 +7250,24 @@ def batch_reprint_all(
     ).all()
     if not old_jobs:
         raise HTTPException(422, "No labels were ever queued for this batch.")
+    return _void_and_requeue(
+        session, batch, old_jobs, payload.requested_by
+    )
 
+
+def _void_and_requeue(
+    session: Session,
+    batch: Batch,
+    old_jobs: list[PrintJob],
+    requested_by: str | None,
+) -> dict:
+    """Void the given jobs (their blank labels' auto-created tag records
+    die with them) and queue fresh clones in the same order. Shared by
+    the whole-batch reprint and the pick-specific-labels reprint."""
     fresh: list[PrintJob] = []
     unlinked = 0
     for job in old_jobs:
         job.status = "canceled" if job.status == "pending" else "voided"
-        # The blank label's auto-created tag record dies with it.
         a = session.scalar(
             select(RfidAssignment).where(
                 func.upper(RfidAssignment.rfid_id)
@@ -7282,7 +7294,7 @@ def batch_reprint_all(
             label_sku=job.label_sku,
             case_units=job.case_units,
             printer=job.printer,
-            requested_by=payload.requested_by or job.requested_by,
+            requested_by=requested_by or job.requested_by,
         ))
     session.add_all(fresh)
     session.add(BarcodeChange(
@@ -7290,7 +7302,7 @@ def batch_reprint_all(
         changed_field="batch-reprint",
         old_barcode=f"{len(old_jobs)} label(s) voided"[:64],
         new_barcode=f"{len(fresh)} reprinted"[:64],
-        changed_by=payload.requested_by,
+        changed_by=requested_by,
     ))
     session.commit()
     return {
@@ -7302,9 +7314,66 @@ def batch_reprint_all(
             + (f", {unlinked} blank-label tag record(s) unlinked"
                if unlinked else "")
             + f" - {len(fresh)} fresh label(s) queued in the same order. "
-            "Bin the old strip."
+            "Bin the old copies."
         ),
     }
+
+
+class BatchReprintJobsIn(BaseModel):
+    job_ids: list[int] = Field(min_length=1, max_length=500)
+    requested_by: str | None = Field(default=None, max_length=100)
+    confirmed: bool = False
+
+
+@app.post(
+    "/api/batches/{batch_id}/reprint-jobs",
+    dependencies=[Depends(require_user)],
+)
+def batch_reprint_jobs(
+    batch_id: int,
+    payload: BatchReprintJobsIn,
+    session: Session = Depends(get_session),
+):
+    """Reprint SPECIFIC labels from this batch's run (Nick, 2026-08-25:
+    the printer ran out of labels mid-run, and separately debris on the
+    stock ruined a few prints - neither calls for voiding all 46). Same
+    void-and-requeue as reprint-all, but only for the picked jobs; the
+    rest of the run is untouched."""
+    batch = _get_batch(session, batch_id)
+    if batch.status != "printing":
+        raise HTTPException(
+            409,
+            f"This batch is at '{batch.status}', not the Print step - "
+            "reprint individual labels from the Print queue instead.",
+        )
+    if any(i.paired_count for i in _batch_items(session, batch_id)):
+        raise HTTPException(
+            409,
+            "Some tags are already paired - voiding their labels would "
+            "break the pairs. Reprint individual labels from the Print "
+            "queue instead.",
+        )
+    if not payload.confirmed:
+        raise HTTPException(
+            409,
+            "Confirm first: the picked labels must go in the bin - a "
+            "voided label applied to a box would answer sweeps as an "
+            "unknown tag.",
+        )
+    jobs = session.scalars(
+        select(PrintJob).where(
+            PrintJob.batch_id == batch.id,
+            PrintJob.id.in_(payload.job_ids),
+            PrintJob.status.in_(("pending", "printing", "done", "error")),
+        ).order_by(PrintJob.id)
+    ).all()
+    if not jobs:
+        raise HTTPException(
+            422,
+            "None of those labels belong to this batch (or they were "
+            "already voided).",
+        )
+    return _void_and_requeue(session, batch, jobs, payload.requested_by)
 
 
 def _build_label_jobs(

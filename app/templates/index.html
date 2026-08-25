@@ -914,6 +914,18 @@
             <div class="linkbox__title">Printing labels</div>
             <p class="linkbox__text" id="bprint-agent">Checking the printer agent…</p>
             <p class="linkbox__text" id="bprint-status">—</p>
+            <!-- Live per-label run list (Nick, 2026-08-25: out of labels
+                 mid-run + debris-ruined prints - he needs to SEE which
+                 jobs claim to be printed and reprint just the bad ones).
+                 Tick boxes (shift-click selects a range), then reprint. -->
+            <div id="bprint-run" hidden>
+              <div class="linkbox__actions" style="margin:6px 0">
+                <button class="reset" id="bprint-reprint-sel" type="button" disabled>Reprint selected</button>
+                <button class="reset" id="bprint-sel-none" type="button">Clear selection</button>
+                <span class="linkbox__text" id="bprint-sel-hint">Tick the labels that printed wrong or never came out (shift-click selects a range).</span>
+              </div>
+              <div class="bprint-run__list" id="bprint-run-list"></div>
+            </div>
             <p class="step__hint">Labels print on the warehouse PC in scan order. Damaged one? Reprint it from the Print queue tab. When the strip is printed and applied to the boxes, continue.</p>
             <div class="linkbox__actions">
               <button class="print__btn" id="batch-to-pair" type="button">Labels applied → start pairing</button>
