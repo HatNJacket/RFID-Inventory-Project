@@ -89,6 +89,18 @@ RFID_ZPL = "^RS8\n^RFW,H^FD{epc}^FS\n"
 # misprints plus a blank. Prints nothing and encodes nothing.
 FEED_ZPL = "~PH\n"
 
+# Backfeed BEFORE printing (Nick, 2026-08-25): ripping labels at the
+# tear bar drags the liner forward a random amount, and with the default
+# backfeed-after sequence the next two labels print off-center before
+# the printer finds itself. ~JSB moves the re-registration to PRINT
+# time: before each format the printer backfeeds and re-registers on the
+# gap sensor, so tear-bar pull is absorbed with NO wasted labels - a
+# clean rip costs nothing, a hard rip self-corrects. Sent once at
+# startup (it does not survive a printer power cycle, and writing the
+# printer's saved config unasked would be rude); --no-backfeed-fix
+# restores the old behavior if the printer dislikes it.
+BACKFEED_BEFORE_ZPL = "~JSB\n"
+
 # Alignment test: a border box + corner ticks, no job needed. If the box
 # edges don't sit just inside the sticker edges, the size flags (or the
 # printer's media calibration) are off.
@@ -358,6 +370,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--test-label", action="store_true",
         help="Print one alignment box (no job needed) and exit",
     )
+    parser.add_argument(
+        "--no-backfeed-fix", action="store_true",
+        help="Skip the startup ~JSB (backfeed before printing). By "
+             "default the agent sets it so tear-bar pull self-corrects "
+             "at print time without wasting labels.",
+    )
     parser.add_argument("--shift-down", type=int, default=SHIFT_DOWN_DOTS,
                         help="Move the whole image down N dots (203/inch; "
                              "default %(default)s)")
@@ -408,13 +426,27 @@ def main() -> None:
           f"{'RFID encode' if encode_rfid else 'barcode-only'}). "
           f"Ctrl+C to stop.")
 
+    if not args.no_backfeed_fix and not args.dry_run:
+        try:
+            print_label(BACKFEED_BEFORE_ZPL)
+            print("  ~JSB sent: backfeed happens BEFORE each print, so "
+                  "tear-bar pull re-registers itself - no wasted labels.")
+        except Exception as error:  # noqa: BLE001 — printing still works
+            print(f"! could not send the backfeed setting: {error}")
+
     while True:
         # Commands BEFORE jobs: a queued re-align must land ahead of the
         # labels it is meant to straighten.
         for cmd in client.claim_commands():
             if cmd.get("kind") == "feed":
                 try:
-                    print_label(FEED_ZPL)
+                    # Re-assert backfeed-before while at it: a printer
+                    # power cycle since agent startup would have dropped
+                    # it, and someone pressing re-align means drift is
+                    # happening again.
+                    zpl = ("" if args.no_backfeed_fix
+                           else BACKFEED_BEFORE_ZPL) + FEED_ZPL
+                    print_label(zpl)
                     print("  re-align: fed to the next label's home "
                           f"(asked by {cmd.get('requested_by') or '?'})")
                 except Exception as error:  # noqa: BLE001

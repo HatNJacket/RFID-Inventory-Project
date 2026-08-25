@@ -28,21 +28,20 @@ Last updated: 2026-08-25.
   zero; merges keep the earlier stamp; split rows inherit). Both label
   builders iterate first-scanned-first, and the agent already claims
   by job id - the printed stack now matches the shelf walk.
-- **Zebra re-align (inert until the agent restarts)**: a rip at the
-  tear bar drags the liner a random amount -> two off-center prints +
-  one blank re-orient label. New "Re-align labels (feed one)" button
-  in the Print queue header queues a one-shot command; the updated
-  print_agent sends ZPL `~PH` (slew to next label home via the gap
-  sensor) BEFORE any printing - cost: the one already-disturbed label
-  instead of three. Commands are in-memory, expire in 10 min, and old
-  agents never see the endpoint, so NOTHING moves until the warehouse
-  PC's agent task is restarted on the new code AND the button is
-  pressed. Also worth trying at the printer itself (one-time config,
-  no code): media tracking must be non-continuous/web sensing (^MNY),
-  run one manual gap calibration (FEED-hold), and try backfeed
-  "before printing" (~JSB) - with backfeed-before, the printer
-  re-registers each format itself and the rip drift may vanish
-  entirely.
+- **Zebra rip-drift, zero-waste fix (Nick picked option 2)**: the
+  updated print_agent now sends ZPL `~JSB` (backfeed BEFORE printing)
+  once at startup: the printer backfeeds and re-registers on its gap
+  sensor at PRINT time, so tear-bar pull self-corrects with NO wasted
+  labels - a clean rip costs nothing, a hard rip is absorbed before
+  the first label prints. `--no-backfeed-fix` opts out if the printer
+  dislikes it. The setting doesn't survive a printer power cycle
+  (deliberately not written to the printer's saved config), so the
+  manual "Re-align labels (feed one)" button stays as the fallback and
+  re-asserts `~JSB` whenever pressed. Everything is INERT until the
+  warehouse PC's agent scheduled task is restarted on the new code -
+  nothing prints, nothing feeds, no tags at risk until then. If drift
+  somehow persists after the restart, the remaining lever is a
+  one-time gap calibration at the printer (feeds 2-3 blanks, once).
 
 ## Ⅱ Broken-character rescue + keep-the-old-code-linked (2026-08-25)
 
