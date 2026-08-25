@@ -130,6 +130,16 @@ with patch("app.shopify.lookup_barcode", side_effect=fake_lookup), \
           r.status_code == 200 and b"AGENT_VERSION" in r.content,
           r.status_code)
 
+    # 5) Scan-station prints carry their per-product-load session so the
+    # queue can group "printed 1, then 9, then 4" as runs of one thing.
+    r = cl.post("/api/print-jobs", json={
+        "quantity": 2, "shopify_variant_id": "t:ALPHA",
+        "product_title": "Alpha Adapter", "sku": "ALPHA-1",
+        "print_session": "sess-abc123", "requested_by": "Nick"})
+    check("print jobs store their session token",
+          all(j["print_session"] == "sess-abc123"
+              for j in r.json()["jobs"]), r.json()["jobs"])
+
 print()
 print("FAILED: "+", ".join(fails) if fails else "ALL CHECKS PASSED")
 sys.exit(1 if fails else 0)

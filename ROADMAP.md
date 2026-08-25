@@ -30,6 +30,15 @@ Nick's direction: connect receiving to the RFID system. First slice:
   - so one bad barcode/SKU/label is handled alone without blocking the
   shipment. Loose jobs (Scan Station, single reprints) stay flat.
   Fold state survives refreshes; the listing carries a `batches` map.
+- **Loose-job grouping + ranges (same day, follow-up)**: Scan Station
+  prints stamp a `print_session` token per product LOAD
+  (rfid_print_jobs.print_session, ALTER run 2026-08-25), so everything
+  printed before the next barcode reset shares it. The Queue groups a
+  product's loose jobs into one main group ("Baader × 14 · #5 - #18")
+  with one sub-group per session run ("#15 - #18 · 4 label(s)");
+  pre-column jobs fall back to adjacency runs; single jobs stay flat.
+  Batch and receiving group headers show job-id ranges too, and bin
+  cells no longer wrap mid-name ("F2-\\n3").
 - **Receiving view rework (Batch tagging)**: for receiving batches the
   collect list reads tagged / labels printed per product (0/N until
   pairing; green when every printed label found its tag), the summary

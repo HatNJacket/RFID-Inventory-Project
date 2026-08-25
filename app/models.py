@@ -334,6 +334,14 @@ class PrintJob(Base):
     # the pre-selector behavior, and what legacy agents still expect.
     printer: Mapped[str | None] = mapped_column(String(100))
 
+    # Scan-station print session: one token per product LOAD, so every
+    # print pressed before the next barcode reset shares it. The Queue
+    # tab groups a product's loose jobs by this (Nick, 2026-08-25:
+    # 1 + 9 + 4 labels of one product were 14 flat rows). NULL on batch
+    # jobs and on jobs from before the column existed. Prod needs
+    # dev/alter_add_print_session.py once.
+    print_session: Mapped[str | None] = mapped_column(String(24))
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -361,6 +369,7 @@ class PrintJob(Base):
             "requested_by": self.requested_by,
             "error": self.error,
             "printer": self.printer,
+            "print_session": self.print_session,
             "created_at": (
                 self.created_at.isoformat() if self.created_at else None
             ),

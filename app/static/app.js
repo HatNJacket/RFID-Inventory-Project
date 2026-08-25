@@ -760,8 +760,21 @@ async function stationBarcodeScan(barcode) {
   }
 }
 
+// One print session per product LOAD: every print pressed before the
+// next barcode reset shares the token, so the Queue tab can group
+// "printed 1, then 9, then 4 of the same thing" as one run instead of
+// 14 flat rows (Nick, 2026-08-25).
+let printSession = null;
+function makePrintSession() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+function newPrintSession() {
+  printSession = makePrintSession();
+}
+
 function acceptProduct(product, message) {
   pendingProduct = product;
+  newPrintSession();
   autoPrintedThisScan = false;
   closeLinkbox();
   showProduct(product);
@@ -2384,6 +2397,7 @@ async function queueLabels(quantity, confirmedBig = false) {
         label_name: labelName,
         requested_by: operator,
         printer: selectedPrinter || null,
+        print_session: printSession,
       }),
     });
     if (!res.ok) {
@@ -7855,7 +7869,7 @@ function queueJobRow(j, child) {
             ? `<a href="#" class="queue-sku">${escapeHtml(j.sku)}</a>`
             : "—"
         }</td>
-        <td>${escapeHtml(j.bin_location || "—")}</td>
+        <td class="queue-bin">${escapeHtml(j.bin_location || "—")}</td>
         <td class="mono">${j.batch_id ? "#" + j.batch_id : "—"}</td>
         <td>${escapeHtml(j.requested_by || "—")}</td>
         <td><span class="chip-status chip-status--${escapeHtml(j.status)}">${escapeHtml(j.status)}</span>${
@@ -7938,6 +7952,13 @@ function queueGroupRow(key, label, summary, level) {
   return tr;
 }
 
+function queueIdRange(jobs) {
+  const ids = jobs.map((j) => j.id);
+  const lo = Math.min(...ids);
+  const hi = Math.max(...ids);
+  return lo === hi ? `#${lo}` : `#${lo} - #${hi}`;
+}
+
 function renderQueue() {
   const body = document.getElementById("queue-body");
   if (!queueData) return;
@@ -7949,27 +7970,91 @@ function renderQueue() {
   }
   body.innerHTML = "";
   const infos = data.batches || {};
-  const order = []; // flat jobs and batch groups, in listing order
+  // First pass: batch groups AND loose-job product groups, each placed
+  // at its first (newest) appearance. Loose jobs of one product carry a
+  // print_session token per barcode reset; jobs older than the token
+  // fall back to adjacency runs (uninterrupted stretches in the queue).
+  const order = [];
   const byBatch = new Map();
+  const byProduct = new Map();
+  let lastLoose = null; // {group, runKey} for the adjacency fallback
   for (const j of data.jobs) {
-    if (!j.batch_id) {
-      order.push({ job: j });
+    if (j.batch_id) {
+      let g = byBatch.get(j.batch_id);
+      if (!g) {
+        g = { id: j.batch_id, info: infos[j.batch_id] || {}, jobs: [] };
+        byBatch.set(j.batch_id, g);
+        order.push({ batch: g });
+      }
+      g.jobs.push(j);
+      lastLoose = null;
       continue;
     }
-    let g = byBatch.get(j.batch_id);
+    const pkey = (j.sku || j.product_title || "?").trim().toUpperCase();
+    let g = byProduct.get(pkey);
     if (!g) {
-      g = { id: j.batch_id, info: infos[j.batch_id] || {}, jobs: [] };
-      byBatch.set(j.batch_id, g);
-      order.push({ group: g });
+      g = { key: pkey, jobs: [], sessions: [], bySession: new Map() };
+      byProduct.set(pkey, g);
+      order.push({ product: g });
     }
     g.jobs.push(j);
+    let skey;
+    if (j.print_session) {
+      skey = `s:${j.print_session}`;
+    } else if (lastLoose && lastLoose.group === g) {
+      skey = lastLoose.runKey; // contiguous null-session run continues
+    } else {
+      skey = `r:${j.id}`;
+    }
+    if (!g.bySession.has(skey)) {
+      g.bySession.set(skey, []);
+      g.sessions.push({ key: skey, jobs: g.bySession.get(skey) });
+    }
+    g.bySession.get(skey).push(j);
+    lastLoose = { group: g, runKey: j.print_session ? null : skey };
+    if (j.print_session) lastLoose = null;
   }
+
   for (const entry of order) {
-    if (entry.job) {
-      body.append(queueJobRow(entry.job, false));
+    if (entry.product) {
+      const g = entry.product;
+      // A lone label needs no ceremony.
+      if (g.jobs.length === 1) {
+        body.append(queueJobRow(g.jobs[0], false));
+        continue;
+      }
+      const j0 = g.jobs[0];
+      const key = `p|${g.key}`;
+      body.append(
+        queueGroupRow(
+          key,
+          `${escapeHtml(j0.product_title || g.key)} <span class="mono recent__meta">${escapeHtml(j0.sku || "")}</span> × ${g.jobs.length} · <span class="mono">${queueIdRange(g.jobs)}</span>`,
+          queueStatusSummary(g.jobs),
+          0
+        )
+      );
+      if (!queueOpen.has(key)) continue;
+      if (g.sessions.length === 1) {
+        // One print run — no sub level, straight to the labels.
+        g.jobs.forEach((j) => body.append(queueJobRow(j, true)));
+        continue;
+      }
+      for (const s of g.sessions) {
+        const subKey = `${key}|${s.key}`;
+        body.append(
+          queueGroupRow(
+            subKey,
+            `<span class="mono">${queueIdRange(s.jobs)}</span> · ${s.jobs.length} label(s) <span class="recent__meta">${escapeHtml(fmtWhen(s.jobs[s.jobs.length - 1].created_at))}</span>`,
+            queueStatusSummary(s.jobs),
+            1
+          )
+        );
+        if (queueOpen.has(subKey))
+          s.jobs.forEach((j) => body.append(queueJobRow(j, true)));
+      }
       continue;
     }
-    const g = entry.group;
+    const g = entry.batch;
     const recv = g.info.kind === "receiving";
     const key = `b${g.id}`;
     // Receiving batches carry their planner reference in created_by
@@ -7988,7 +8073,7 @@ function renderQueue() {
     body.append(
       queueGroupRow(
         key,
-        label,
+        label + ` · <span class="mono">${queueIdRange(g.jobs)}</span>`,
         `${g.jobs.length} label(s): ${queueStatusSummary(g.jobs)}`,
         0
       )
@@ -8011,7 +8096,7 @@ function renderQueue() {
       body.append(
         queueGroupRow(
           subKey,
-          `${escapeHtml(jobs[0].product_title || sk)} <span class="mono recent__meta">${escapeHtml(sk)}</span> × ${jobs.length}`,
+          `${escapeHtml(jobs[0].product_title || sk)} <span class="mono recent__meta">${escapeHtml(sk)}</span> × ${jobs.length} · <span class="mono">${queueIdRange(jobs)}</span>`,
           queueStatusSummary(jobs),
           1
         )
@@ -10905,7 +10990,11 @@ function renderHistory() {
 // edit their preferred label name here, and any product can print labels.
 let phistData = null;
 
+// The product panel's prints get their own session per open.
+let phistPrintSession = null;
+
 async function openProductHistory(term) {
+  phistPrintSession = makePrintSession();
   const overlay = document.getElementById("phist-overlay");
   const body = document.getElementById("phist-body");
   const termBox = document.getElementById("phist-term");
@@ -11671,6 +11760,7 @@ document.getElementById("phist-print").addEventListener("click", async () => {
           : phistData.custom_sku_text || null,
         requested_by: operator,
         printer: selectedPrinter || null,
+        print_session: phistPrintSession,
       }),
     });
     if (!res.ok) {

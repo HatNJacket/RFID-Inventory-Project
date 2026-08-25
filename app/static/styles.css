@@ -2507,6 +2507,8 @@ tr.binaudit-untagged td { opacity: 0.72; }
 }
 .queue-group__arrow { display: inline-block; width: 14px; color: var(--accent, #29845a); }
 .queue-child > td:first-child { padding-left: 26px !important; }
+/* Bins are one token: "F2-3" must never wrap into "F2-" / "3" */
+.queue-bin { white-space: nowrap; }
 
 /* Print-run list (batch Print step): pick the labels to reprint */
 .bprint-run__list {

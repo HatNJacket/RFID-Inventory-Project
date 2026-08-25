@@ -1144,6 +1144,10 @@ class PrintJobIn(BaseModel):
     requested_by: str | None = Field(default=None, max_length=100)
     # Target printer (rfid_printers.name); omitted = any agent prints it.
     printer: str | None = Field(default=None, max_length=100)
+    # One token per product LOAD at the Scan Station: every print pressed
+    # before the next barcode reset shares it, and the Queue tab groups
+    # a product's loose jobs by it.
+    print_session: str | None = Field(default=None, max_length=24)
 
     @field_validator("shopify_variant_id", "product_title")
     @classmethod
