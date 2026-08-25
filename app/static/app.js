@@ -357,6 +357,7 @@ const EVENT_META = {
   "bin-updated": ["Updated Bin", "#0e7a8a"],
   "rfid-flag-changed": ["RFID Flag", "#d72c0d"],
   "non-taggable": ["Non-taggable", "#8a6116"],
+  "batch-reprinted": ["Batch Reprint", "#5c5f62"],
   "on-hand-updated": ["Raised On-hand", "#0c5132"],
   "on-hand-undone": ["Undid On-hand", "#6d7175"],
   "on-hand-lowered": ["Lowered On-hand", "#8a4b0e"],
@@ -6353,6 +6354,44 @@ async function pollBatchPrint() {
 }
 
 bEl.toPair.addEventListener("click", () => showBatchStage("pair"));
+
+// Clear queue & reprint all (Nick, 2026-08-25): the printer ran out of
+// wax mid-run, printed 46 blanks, and believed every job succeeded -
+// the per-label reprint would have meant 46 clicks. Voids the whole
+// batch's labels (auto-created tag records die with them) and queues a
+// fresh full set in the same walking order. Print step only, and only
+// before any pairing.
+document
+  .getElementById("batch-reprint-all")
+  .addEventListener("click", async () => {
+    if (!batch) return;
+    if (
+      !confirm(
+        `Void ALL of this batch's labels and reprint the full set?\n\n` +
+          `Every label queued for bin ${batch.bin_name} is voided - ` +
+          `including ones the printer thinks it printed - and their ` +
+          `tag records are unlinked. A fresh full set queues in the ` +
+          `same order.\n\nBIN THE OLD STRIP first: a voided label ` +
+          `applied to a box would answer sweeps as an unknown tag.`
+      )
+    )
+      return;
+    const btn = document.getElementById("batch-reprint-all");
+    btn.disabled = true;
+    try {
+      const res = await postJson(
+        `/api/batches/${batch.id}/reprint-all`,
+        { requested_by: operatorEl.value || null, confirmed: true }
+      );
+      batchSound("ok");
+      setBatchResult(res.message, "ok");
+    } catch (err) {
+      batchSound("err");
+      setBatchResult(err.message, "err");
+    } finally {
+      btn.disabled = false;
+    }
+  });
 
 // --- Stage 4: pair ----------------------------------------------------------
 function matchBatchItem(code) {

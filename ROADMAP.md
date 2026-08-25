@@ -5,6 +5,18 @@ Last updated: 2026-08-25.
 
 ## 🖨 Print truth: saved labels, walking order, re-align (2026-08-25)
 
+- **Clear queue & reprint all (same day)**: the printer ran out of wax
+  mid-run, printed 46 blanks, and marked every job done. New button in
+  the Print step beside "Labels applied": POST
+  /api/batches/{id}/reprint-all voids EVERY label queued for the batch
+  (done/pending/error alike), deletes the auto-created tag records for
+  the blank labels' EPCs (no ghost tags), and queues a fresh full set
+  in the same walking order. Confirmation required (the old strip must
+  be binned - a voided label on a box answers sweeps as an unknown
+  tag); refuses on receiving batches, off the Print step, or once any
+  pairing started. History logs "batch-reprinted".
+  Suite: test_reprintall.py.
+
 - **Scan Station prints now use the saved label lines** - the actual
   bug behind Nick's stale Softbag1 sticker: `/api/print-jobs` trusted
   whatever the client sent (nothing, for non-serials) while the batch

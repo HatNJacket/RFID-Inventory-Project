@@ -7191,6 +7191,122 @@ def _items_in_scan_order(
     ))
 
 
+class BatchReprintAllIn(BaseModel):
+    requested_by: str | None = Field(default=None, max_length=100)
+    # The operator confirmed the printed strip is binned - a voided
+    # label left on a box would answer sweeps as an unknown tag.
+    confirmed: bool = False
+
+
+@app.post(
+    "/api/batches/{batch_id}/reprint-all",
+    dependencies=[Depends(require_user)],
+)
+def batch_reprint_all(
+    batch_id: int,
+    payload: BatchReprintAllIn,
+    session: Session = Depends(get_session),
+):
+    """Void EVERY label queued for this batch and queue a fresh full set
+    in the same order (Nick, 2026-08-25: the printer ran out of wax
+    mid-run, printed 46 blanks, and believed all 46 succeeded - the
+    per-label reprint would have meant 46 clicks). Completed jobs auto-
+    created tag assignments for their EPCs; those die with the blank
+    labels, so no ghost tags stay on file. Only at the Print step and
+    only before any pairing - voiding a paired tag would break the pair."""
+    batch = _get_batch(session, batch_id)
+    if _is_receiving(batch):
+        raise HTTPException(
+            422,
+            "Receiving batches re-queue unlabelled boxes with the normal "
+            "PRINT button instead - it only prints what isn't labelled yet.",
+        )
+    if batch.status != "printing":
+        raise HTTPException(
+            409,
+            f"This batch is at '{batch.status}', not the Print step - "
+            "reprint individual labels from the Print queue instead.",
+        )
+    if any(i.paired_count for i in _batch_items(session, batch_id)):
+        raise HTTPException(
+            409,
+            "Some tags are already paired - voiding their labels would "
+            "break the pairs. Reprint individual labels from the Print "
+            "queue instead.",
+        )
+    if not payload.confirmed:
+        raise HTTPException(
+            409,
+            "Confirm first: the whole printed strip must go in the bin - "
+            "a voided label applied to a box would answer sweeps as an "
+            "unknown tag.",
+        )
+
+    old_jobs = session.scalars(
+        select(PrintJob).where(
+            PrintJob.batch_id == batch.id,
+            PrintJob.status.in_(("pending", "printing", "done", "error")),
+        ).order_by(PrintJob.id)
+    ).all()
+    if not old_jobs:
+        raise HTTPException(422, "No labels were ever queued for this batch.")
+
+    fresh: list[PrintJob] = []
+    unlinked = 0
+    for job in old_jobs:
+        job.status = "canceled" if job.status == "pending" else "voided"
+        # The blank label's auto-created tag record dies with it.
+        a = session.scalar(
+            select(RfidAssignment).where(
+                func.upper(RfidAssignment.rfid_id)
+                == (job.epc or "").strip().upper()
+            )
+        )
+        if a is not None:
+            session.delete(a)
+            unlinked += 1
+        fresh.append(PrintJob(
+            epc=_new_epc(),
+            status="pending",
+            batch_id=batch.id,
+            shopify_variant_id=job.shopify_variant_id,
+            shopify_product_id=job.shopify_product_id,
+            product_title=job.product_title,
+            variant_title=job.variant_title,
+            sku=job.sku,
+            barcode=job.barcode,
+            bin_location=job.bin_location,
+            other_bins=job.other_bins,
+            label_name=job.label_name,
+            label_placement=job.label_placement,
+            label_sku=job.label_sku,
+            case_units=job.case_units,
+            printer=job.printer,
+            requested_by=payload.requested_by or job.requested_by,
+        ))
+    session.add_all(fresh)
+    session.add(BarcodeChange(
+        product_title=f"Batch {batch.id} · bin {batch.bin_name}",
+        changed_field="batch-reprint",
+        old_barcode=f"{len(old_jobs)} label(s) voided"[:64],
+        new_barcode=f"{len(fresh)} reprinted"[:64],
+        changed_by=payload.requested_by,
+    ))
+    session.commit()
+    return {
+        "voided": len(old_jobs),
+        "queued": len(fresh),
+        "tags_unlinked": unlinked,
+        "message": (
+            f"{len(old_jobs)} label(s) voided"
+            + (f", {unlinked} blank-label tag record(s) unlinked"
+               if unlinked else "")
+            + f" - {len(fresh)} fresh label(s) queued in the same order. "
+            "Bin the old strip."
+        ),
+    }
+
+
 def _build_label_jobs(
     session: Session, batch: Batch, requested_by: str | None
 ) -> tuple[list[PrintJob], list[str]]:
@@ -10021,6 +10137,7 @@ def product_history(term: str, session: Session = Depends(get_session)):
         "bundle-contents": "bundle-contents-set",
         "rfid-scan": "rfid-flag-changed",
         "non-taggable": "non-taggable",
+        "batch-reprint": "batch-reprinted",
         "on-hand": "on-hand-updated", "on-hand-undo": "on-hand-undone",
         "on-hand-lower": "on-hand-lowered",
         "on-hand-lower-undo": "on-hand-lower-undone",
@@ -10415,6 +10532,7 @@ def history(
         "bundle-contents": "bundle-contents-set",
         "rfid-scan": "rfid-flag-changed",
         "non-taggable": "non-taggable",
+        "batch-reprint": "batch-reprinted",
         "on-hand": "on-hand-updated", "on-hand-undo": "on-hand-undone",
         "on-hand-lower": "on-hand-lowered",
         "on-hand-lower-undo": "on-hand-lower-undone",

@@ -917,6 +917,8 @@
             <p class="step__hint">Labels print on the warehouse PC in scan order. Damaged one? Reprint it from the Print queue tab. When the strip is printed and applied to the boxes, continue.</p>
             <div class="linkbox__actions">
               <button class="print__btn" id="batch-to-pair" type="button">Labels applied → start pairing</button>
+              <button class="reset" id="batch-reprint-all" type="button"
+                      title="The run printed wrong (out of wax, jammed)? Voids EVERY label queued for this batch - including ones the printer thinks succeeded - unlinks their tag records, and queues a fresh full set in the same order. Bin the old strip.">Clear queue &amp; reprint all…</button>
             </div>
           </div>
         </div>
