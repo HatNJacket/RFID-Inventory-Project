@@ -3431,6 +3431,7 @@ public class MainActivity extends Activity {
     private Button editDropBtn;
     private Button editFindBtn;
     private Button editRecommendBtn;
+    private Button editLinkBtn;
     private Button editSkipBtn;
     private Button editNoScanBtn;
     private Button editPriorBtn;
@@ -3618,6 +3619,15 @@ public class MainActivity extends Activity {
         editRecommendBtn = smallBtn("SHOW RECOMMENDED");
         editRecommendBtn.setOnClickListener(v -> loadOddCandidates(true));
         mid.addView(editRecommendBtn);
+
+        // The scanned code belongs to a product whose Shopify barcode is
+        // already CORRECT (an old label printed with a broken character,
+        // since fixed). Overwriting would break the fix - link the scan
+        // as an alias instead: it finds the product, Shopify untouched
+        // (Nick, 2026-08-25, ZWO Nikon-T2-II).
+        editLinkBtn = smallBtn("LINK TO A PRODUCT…");
+        editLinkBtn.setOnClickListener(v -> showLinkDialog());
+        mid.addView(editLinkBtn);
 
         // "I can't do this one." Keeps the row and the reason; prints no
         // label; changes no count anywhere.
@@ -3867,6 +3877,7 @@ public class MainActivity extends Activity {
         // Only an unresolved row has a barcode to give away.
         editFindBtn.setVisibility(it.resolved ? View.GONE : View.VISIBLE);
         editRecommendBtn.setVisibility(it.resolved ? View.GONE : View.VISIBLE);
+        editLinkBtn.setVisibility(it.resolved ? View.GONE : View.VISIBLE);
         editQty.setText(String.valueOf(it.qty)
                 + (it.expected != null ? " / " + it.expected : ""));
     }
@@ -3975,7 +3986,9 @@ public class MainActivity extends Activity {
         box.addView(bcIn);
         TextView note = new TextView(this);
         note.setText("Writes to Shopify with a History entry. Only the "
-                + "changed field is touched.");
+                + "changed field is touched. A replaced value with broken "
+                + "characters (?) stays LINKED automatically, so labels "
+                + "already printed with it keep scanning to this product.");
         note.setTextSize(11);
         note.setTextColor(C_MUTED);
         note.setPadding(0, dp(8), 0, 0);
@@ -9097,18 +9110,131 @@ public class MainActivity extends Activity {
     }
 
     private void confirmGiveBarcode(JSONObject p, String scanned) {
-        String title = p.optString("product_title", "?");
+        final String title = p.optString("product_title", "?");
         String old = p.isNull("barcode") ? "(none)" : p.optString("barcode");
+        final String target = p.isNull("sku")
+                ? p.optString("barcode") : p.optString("sku");
         dlg()
-                .setTitle("Give this product the barcode?")
+                .setTitle("Write it, or just link it?")
                 .setMessage(title + "\n\nbarcode " + old + "  ->  " + scanned
-                        + "\n\nThis changes the barcode in Shopify for real. "
-                        + "Only do this if the box in your hand IS this "
-                        + "product.")
-                .setPositiveButton("Write it", (d, w) ->
+                        + "\n\nWRITE replaces the barcode in Shopify for "
+                        + "real. Only do this if the box in your hand IS "
+                        + "this product and its Shopify barcode is wrong."
+                        + "\n\nLINK leaves Shopify alone: the scanned code "
+                        + "just finds this product from now on (old labels "
+                        + "with a broken or foreign code). The counted "
+                        + "boxes stay on this row.")
+                .setPositiveButton("WRITE", (d, w) ->
                         giveBarcode(p, scanned))
+                .setNeutralButton("LINK", (d, w) ->
+                        linkScannedToProduct(scanned, target, title))
                 .setNegativeButton("Cancel", null)
                 .show();
+    }
+
+    /** Case 2 of Nick's broken-character pair (2026-08-25): the scanned
+     *  code is an old label whose product's Shopify barcode was since
+     *  FIXED, so nothing resolves it and overwriting would undo the fix.
+     *  Name the real product (type or scan its SKU/barcode) and the
+     *  scanned code becomes a permanent alias - the row resolves in
+     *  place, counts intact, Shopify untouched. */
+    private void showLinkDialog() {
+        if (editEntry == null) return;
+        final String scanned = editEntry.item.scannedCode == null
+                ? "" : editEntry.item.scannedCode;
+        if (scanned.isEmpty()) {
+            editMsg.setText("This row has no scanned code to link.");
+            return;
+        }
+        final EditText in = themedEdit();
+        in.setSingleLine(true);
+        in.setHint("The product's REAL SKU or barcode");
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(20), dp(8), dp(20), 0);
+        TextView note = new TextView(this);
+        note.setText("Scanned: " + scanned + "\n\nType (or scan) the "
+                + "product this code should point to. The code becomes a "
+                + "lookup link - Shopify's own SKU and barcode stay "
+                + "unchanged, and History can unlink it.");
+        note.setTextSize(12);
+        note.setTextColor(C_MUTED);
+        note.setPadding(0, 0, 0, dp(8));
+        box.addView(note);
+        box.addView(in);
+        dlg()
+                .setTitle("Link " + scanned)
+                .setView(box)
+                .setPositiveButton("LOOK UP", (d, w) -> {
+                    String target = in.getText().toString().trim();
+                    if (!target.isEmpty()) lookupLinkTarget(scanned, target);
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void lookupLinkTarget(final String scanned, final String target) {
+        editMsg.setText("Looking up " + target + "…");
+        new Thread(() -> {
+            try {
+                JSONObject p = api("GET", "/api/products/by-barcode/"
+                        + URLEncoder.encode(target, "UTF-8"), null);
+                final String title = p.optString("product_title", "?");
+                final String sku = p.isNull("sku") ? target
+                        : p.optString("sku");
+                ui.post(() -> {
+                    editMsg.setText("");
+                    dlg()
+                            .setTitle("Link to this product?")
+                            .setMessage(title + "\nSKU " + sku
+                                    + "\n\n" + scanned + " will find this "
+                                    + "product from now on. Shopify is not "
+                                    + "touched; unlink any time in History.")
+                            .setPositiveButton("LINK IT", (d, w) ->
+                                    linkScannedToProduct(scanned, sku, title))
+                            .setNegativeButton("Cancel", null)
+                            .show();
+                });
+            } catch (Exception e) {
+                ui.post(() -> editMsg.setText("No product found for "
+                        + target + " (" + e.getMessage() + ")"));
+            }
+        }).start();
+    }
+
+    private void linkScannedToProduct(final String scanned,
+            final String target, final String title) {
+        final int itemId = editEntry == null ? -1 : editEntry.item.id;
+        editMsg.setText("Linking…");
+        new Thread(() -> {
+            try {
+                api("POST", "/api/barcode-aliases", new JSONObject()
+                        .put("alias_barcode", scanned)
+                        .put("target", target)
+                        .put("created_by", prefs.getString("device", "C72")));
+            } catch (Exception e) {
+                ui.post(() -> {
+                    beep(SOUND_ERR);
+                    editMsg.setText("Could not link it: " + e.getMessage());
+                });
+                return;
+            }
+            // The scanned code resolves through the alias now - turn the
+            // unresolved row into the real product IN PLACE (counts kept).
+            if (itemId > 0) {
+                try {
+                    api("POST", "/api/batches/" + batchId + "/items/"
+                            + itemId + "/resolve", new JSONObject());
+                } catch (Exception ignore) { }
+            }
+            ui.post(() -> {
+                beep(SOUND_OK);
+                closeItemEditor();
+                status.setText("Linked ✓ - " + scanned + " now finds "
+                        + title + "; Shopify untouched (unlink in History).");
+                reloadBatchAndReview();
+            });
+        }).start();
     }
 
     private void giveBarcode(JSONObject p, String scanned) {

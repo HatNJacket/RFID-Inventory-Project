@@ -3,6 +3,37 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-08-25.
 
+## Ⅱ Broken-character rescue + keep-the-old-code-linked (2026-08-25)
+
+Nick's two ZWO edge cases (the unicode 'Ⅱ' roman numeral). C72 **3.59
+(code 77)** on the update link.
+
+- **Lookup rescue (server, both UIs + gun)**: a miss now retries with
+  NFKC folding (a scan carrying the REAL 'Ⅱ' finds a record since fixed
+  to plain "II" - the Nikon-T2-II broken-labels case) and with
+  non-ASCII folded to '?' (finds a record the VARCHAR database mangled -
+  the FD-M42-? case). Full chain re-entry, aliases included; the
+  response carries `charfold_from` so a UI can say what the scan really
+  said (groundwork for a one-tap "Recommended fix", future).
+- **Overwrites keep broken values linked**: fixing a SKU/barcode whose
+  OLD value was mojibake ('?' or non-ASCII) auto-creates a `legacy`
+  alias for it, so already-printed labels keep scanning. Clean replaced
+  values are never auto-linked (they might belong elsewhere). History
+  shows "(old code kept after a fix)" with the normal unlink undo.
+  Also fixed in passing: aliases anchored to a SKU now FOLLOW a SKU
+  overwrite (they used to die quietly).
+- **C72 3.59**: the odd-barcode picker's confirm is now "WRITE or
+  LINK" (link = alias only, Shopify untouched, counts stay on the
+  row); unresolved rows get a direct "LINK TO A PRODUCT…" button
+  (type/scan the real SKU or barcode, confirm the product card, link +
+  resolve in place) for when the right product isn't in the odd list;
+  the CHANGE SKU / BARCODE note says broken replaced values stay
+  linked automatically. Suite: dev/tests/test_charfix.py.
+- **Future**: one-tap "Recommended fix" on bad-chars items - propose
+  NFKC(live value) as the clean SKU/barcode, write it, and keep the
+  broken original linked, all in one confirm (charfold_from is the
+  hook).
+
 ## 🏷️ Label-line aliases, non-taggable products, audit truth (2026-08-25)
 
 - **Label lines double as lookup aliases (ephemeral)**: saving a custom

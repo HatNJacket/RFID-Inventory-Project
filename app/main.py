@@ -11,6 +11,7 @@ import logging
 import re
 import secrets
 import time
+import unicodedata
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
@@ -570,6 +571,34 @@ def _product_lookup(barcode: str):
                         "brand": sp.brand,
                     },
                 )
+
+    # Broken-character rescue (Nick, 2026-08-25 - ZWO ships SKUs with the
+    # single unicode char 'Ⅱ' for II, which VARCHAR stores as '?'):
+    # 1) NFKC folds compatibility characters to plain ASCII (Ⅱ -> II), so
+    #    an old label carrying the REAL character finds a record that was
+    #    since fixed to the proper text.
+    # 2) Folding the scan's non-ASCII to '?' finds a record the database
+    #    mangled and still holds that way.
+    # Each fires only when the term actually contains such characters and
+    # re-enters the FULL chain (aliases included); the changed-term guard
+    # makes recursion terminate (both folds are idempotent).
+    for fixed in dict.fromkeys((
+        unicodedata.normalize("NFKC", barcode),
+        re.sub(r"[^\x00-\x7e]", "?", barcode),
+    )):
+        if fixed == barcode or not fixed.strip():
+            continue
+        try:
+            product = _product_lookup(fixed)
+        except HTTPException as error:
+            if error.status_code == 404:
+                continue
+            raise
+        if product is not None:
+            # The UI can tell the operator what the scan REALLY said —
+            # groundwork for a future one-tap "recommended fix".
+            product.setdefault("charfold_from", barcode)
+            return product
 
     if not db_ok and not api_ok:
         raise HTTPException(
@@ -2009,6 +2038,42 @@ class OverwriteIn(BaseModel):
         return v.strip()
 
 
+def _mojibake_value(v: str | None) -> bool:
+    """True when a SKU/barcode carries a literal '?' or a non-ASCII char
+    (ZWO's unicode 'Ⅱ') — the same heuristic the C72 uses. Such a value
+    can't be a real retail barcode, so keeping it linked never collides."""
+    return bool(v) and any(c == "?" or ord(c) > 126 for c in v)
+
+
+def _link_replaced_value(
+    session: Session, old: str | None, product: dict,
+    changed_by: str | None,
+) -> bool:
+    """When an overwrite replaces a BROKEN value (mojibake), keep the old
+    string linked as an alias so already-printed labels carrying it still
+    scan (Nick, 2026-08-25: fixing ZWO Nikon-T2-Ⅱ's barcode orphaned
+    every existing label). Only broken values are auto-linked - a clean
+    replaced barcode might legitimately belong elsewhere."""
+    old = (old or "").strip()
+    if not old or len(old) > 64 or not _mojibake_value(old):
+        return False
+    if session.scalar(
+        select(BarcodeAlias).where(
+            func.upper(BarcodeAlias.alias_barcode) == old.upper()
+        )
+    ) is not None:
+        return False
+    session.add(BarcodeAlias(
+        alias_barcode=old,
+        sku=product.get("sku"),
+        barcode=product.get("barcode"),
+        product_title=product.get("product_title"),
+        created_by=changed_by,
+        kind="legacy",
+    ))
+    return True
+
+
 @app.post(
     "/api/barcode-overwrites",
     status_code=201,
@@ -2098,11 +2163,21 @@ def overwrite_barcode(
     )
     if stale_alias is not None:
         session.delete(stale_alias)
+    # A broken old value (mojibake) stays linked: labels already printed
+    # with it keep scanning to this product.
+    legacy_linked = _link_replaced_value(
+        session, product.get("barcode"),
+        {**product, "barcode": payload.new_barcode}, payload.changed_by,
+    )
     session.commit()
     session.refresh(change)
 
     product["barcode"] = payload.new_barcode
-    return {"change": change.as_dict(), "product": product}
+    return {
+        "change": change.as_dict(),
+        "product": product,
+        "legacy_linked": legacy_linked,
+    }
 
 
 class BinUpdateIn(BaseModel):
@@ -3130,10 +3205,24 @@ def overwrite_sku(
             )
         ):
             tag.sku = payload.new_sku
+        # Aliases anchored to the old SKU resolve through it — they
+        # follow the product too, or every link would quietly die here.
+        for al in session.scalars(
+            select(BarcodeAlias).where(
+                func.upper(BarcodeAlias.sku) == old_sku.strip().upper()
+            )
+        ):
+            al.sku = payload.new_sku
+    # A broken old SKU (mojibake — ZWO's 'Ⅱ' stored as '?') stays linked:
+    # labels printed with it keep scanning to this product.
+    legacy_linked = _link_replaced_value(
+        session, old_sku,
+        {**product, "sku": payload.new_sku}, payload.changed_by,
+    )
     session.commit()
 
     product["sku"] = payload.new_sku
-    return {"product": product}
+    return {"product": product, "legacy_linked": legacy_linked}
 
 
 @app.get("/api/barcode-overwrites", dependencies=[Depends(require_user)])
@@ -9937,7 +10026,9 @@ def product_history(term: str, session: Session = Depends(get_session)):
             "type": "barcode-linked",
             "worker": al.created_by,
             "detail": f"{al.alias_barcode} → {al.barcode or al.sku}"
-                      + (" (label line)" if al.kind == "label" else ""),
+                      + (" (label line)" if al.kind == "label"
+                         else " (old code kept after a fix)"
+                         if al.kind == "legacy" else ""),
             "shopify": False,
         })
 
@@ -10319,7 +10410,9 @@ def history(
             "sku": al.sku,
             "title": al.product_title,
             "detail": f"{al.alias_barcode} → {al.barcode or al.sku}"
-                      + (" (label line)" if al.kind == "label" else ""),
+                      + (" (label line)" if al.kind == "label"
+                         else " (old code kept after a fix)"
+                         if al.kind == "legacy" else ""),
             # Alias rows are live (this event exists because the link still
             # does), so History can offer to undo it: DELETE the alias and
             # the scanned code stops resolving to this product.
