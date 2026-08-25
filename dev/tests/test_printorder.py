@@ -107,16 +107,28 @@ with patch("app.shopify.lookup_barcode", side_effect=fake_lookup), \
     check("jobs come out in the WALKING order (Charlie first)",
           seq == ["CHARLIE-1", "CHARLIE-1", "ALPHA-1"], seq)
 
-    # 4) Printer commands: queue once, claim once, then empty.
+    # 4) Printer commands: queue once, claim once, then empty. The
+    # command poll doubles as the re-align capability heartbeat.
+    st = cl.get("/api/print-agent/status").json()
+    check("before any command poll the agent reads not-capable",
+          st.get("realign_capable") is False, st)
     r = cl.post("/api/printer-commands", json={
         "kind": "feed", "requested_by": "Nick"})
     check("re-align command queues", r.status_code == 201, r.text)
-    r = cl.post("/api/printer-commands/claim")
+    r = cl.post("/api/printer-commands/claim?agent_version=2")
     check("agent claims the command",
           r.status_code == 200 and r.json()["count"] == 1
           and r.json()["commands"][0]["kind"] == "feed", r.text)
-    r = cl.post("/api/printer-commands/claim")
+    r = cl.post("/api/printer-commands/claim?agent_version=2")
     check("a claim clears the queue", r.json()["count"] == 0, r.text)
+    st = cl.get("/api/print-agent/status").json()
+    check("a polling agent reads re-align capable with its version",
+          st.get("realign_capable") is True
+          and st.get("agent_version") == "2", st)
+    r = cl.get("/api/print-agent/script")
+    check("the current agent script downloads from the app",
+          r.status_code == 200 and b"AGENT_VERSION" in r.content,
+          r.status_code)
 
 print()
 print("FAILED: "+", ".join(fails) if fails else "ALL CHECKS PASSED")

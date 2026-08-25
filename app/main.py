@@ -8,6 +8,7 @@ as it would type into Notepad, and JavaScript forwards each scan here.
 """
 import json
 import logging
+import os
 import re
 import secrets
 import time
@@ -19,7 +20,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import AliasChoices, BaseModel, Field, field_validator
@@ -1272,15 +1273,29 @@ def queue_printer_command(payload: PrinterCommandIn):
     return {"queued": payload.kind, "printer": name}
 
 
+# Only re-align-capable agents (print_agent v2+) poll the commands
+# endpoint, so a recent poll IS the capability proof — the UI can say
+# outright whether the warehouse PC has been restarted on the new code
+# instead of everyone guessing (Nick, 2026-08-25: "still not
+# re-aligning" and no way to tell why).
+_commands_last_polled: dict[str, float] = {}
+_agent_versions: dict[str, str] = {}
+
+
 @app.post(
     "/api/printer-commands/claim", dependencies=[Depends(require_agent_key)]
 )
-def claim_printer_commands(printer: str | None = None):
+def claim_printer_commands(
+    printer: str | None = None, agent_version: str | None = None
+):
     """Agent: take (and clear) any pending commands for this printer.
     Commands older than 10 minutes are dropped - a stale re-align from a
     forgotten press must not move media out of the blue."""
     name = (printer or DEFAULT_PRINTER).strip()
     now = time.time()
+    _commands_last_polled[name] = now
+    if agent_version:
+        _agent_versions[name] = agent_version.strip()[:20]
     cmds = [
         c for c in _printer_commands.pop(name, [])
         if now - c["at"] < 600
@@ -1291,12 +1306,40 @@ def claim_printer_commands(printer: str | None = None):
 @app.get("/api/print-agent/status", dependencies=[Depends(require_user)])
 def print_agent_status():
     seen = _agent_last_seen
+    cmd_seen = max(_commands_last_polled.values(), default=None)
     return {
         "online": seen is not None and time.time() - seen < 35,
         "last_seen_seconds": (
             None if seen is None else int(time.time() - seen)
         ),
+        # True only while an updated agent is actively polling for
+        # commands — the re-align button and the ~JSB backfeed fix do
+        # nothing until this is true.
+        "realign_capable": (
+            cmd_seen is not None and time.time() - cmd_seen < 35
+        ),
+        "agent_version": (
+            next(iter(_agent_versions.values()), None)
+            if _agent_versions else None
+        ),
     }
+
+
+@app.get("/api/print-agent/script", dependencies=[Depends(require_user)])
+def print_agent_script():
+    """The CURRENT print_agent.py, served by the app itself so updating
+    the warehouse PC never involves hunting for the repo: download this
+    (station link works in a browser), replace the file next to the
+    scheduled task, restart the task."""
+    path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "print_agent.py",
+    )
+    if not os.path.isfile(path):
+        raise HTTPException(404, "print_agent.py isn't in this deployment.")
+    return FileResponse(
+        path, media_type="text/x-python", filename="print_agent.py"
+    )
 
 
 @app.get("/api/printers", dependencies=[Depends(require_user)])

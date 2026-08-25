@@ -88,6 +88,20 @@ Nick's direction: connect receiving to the RFID system. First slice:
   zero; merges keep the earlier stamp; split rows inherit). Both label
   builders iterate first-scanned-first, and the agent already claims
   by job id - the printed stack now matches the shelf walk.
+- **Agent capability visibility (2026-08-25 evening, "still not
+  re-aligning")**: nothing could say whether the warehouse PC had been
+  restarted on the new agent code - the whole fix hinges on it. The
+  agent now reports AGENT_VERSION on its command polls (the poll
+  itself proves capability); /api/print-agent/status carries
+  `realign_capable` + `agent_version`; the Queue pill shows "online ·
+  v2" or "online · NEEDS UPDATE" (amber) and the Re-align button
+  disables itself with update instructions while the agent is old; the
+  batch Print step says it too. GET /api/print-agent/script serves the
+  CURRENT print_agent.py from the app (station link opens it in a
+  browser), so updating the warehouse PC is download -> replace ->
+  restart task, no repo hunting. The agent also re-asserts ~JSB at the
+  head of EVERY print burst now (a printer power cycle silently
+  dropped the startup-only setting).
 - **Zebra rip-drift, zero-waste fix (Nick picked option 2)**: the
   updated print_agent now sends ZPL `~JSB` (backfeed BEFORE printing)
   once at startup: the printer backfeeds and re-registers on its gap

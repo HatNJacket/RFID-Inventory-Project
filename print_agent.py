@@ -37,6 +37,10 @@ import time
 
 import requests
 
+# Reported to the app on every command poll; the web terminal's Queue
+# tab shows it and marks re-align capability. Bump on behavior changes.
+AGENT_VERSION = "2"
+
 # ---------------------------------------------------------------------------
 # Label geometry. Defaults match the warehouse RFID stickers (measured
 # 2.125 x 1.25 inch) at the ZD220's 203 dpi; override with --label-width /
@@ -296,11 +300,16 @@ class AppClient:
 
     def claim_commands(self) -> list[dict]:
         """One-shot printer nudges (re-align feed). Server clears them on
-        claim; an app too old to have the endpoint just yields none."""
+        claim; an app too old to have the endpoint just yields none. The
+        poll itself is this agent's capability heartbeat - the Queue tab
+        shows whether the warehouse PC runs re-align-capable code."""
         try:
+            params: dict = {"agent_version": AGENT_VERSION}
+            if self.printer_id:
+                params["printer"] = self.printer_id
             r = requests.post(
                 f"{self.base}/api/printer-commands/claim",
-                params={"printer": self.printer_id} if self.printer_id else {},
+                params=params,
                 headers=self.headers,
                 timeout=30,
             )
@@ -457,6 +466,15 @@ def main() -> None:
         except requests.RequestException as error:
             print(f"! can't reach app: {error}")
             jobs = []
+
+        # Re-assert backfeed-before at the head of every burst: it does
+        # not survive a printer power cycle, and a burst is exactly when
+        # registration matters. Five bytes, no motion, no waste.
+        if jobs and not args.no_backfeed_fix and not args.dry_run:
+            try:
+                print_label(BACKFEED_BEFORE_ZPL)
+            except Exception:  # noqa: BLE001 — jobs still get their shot
+                pass
 
         for job in jobs:
             label = f"job {job['id']} ({job.get('sku') or job.get('barcode')})"

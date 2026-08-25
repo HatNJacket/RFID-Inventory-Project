@@ -6538,7 +6538,11 @@ async function pollBatchPrint() {
       apiJson(`/api/print-jobs?batch_id=${batch.id}&limit=200`),
     ]);
     bEl.printAgent.textContent = agent.online
-      ? "Printer agent: online ✓ (warehouse PC)"
+      ? "Printer agent: online ✓ (warehouse PC)" +
+        (agent.realign_capable
+          ? ""
+          : " · running OLD code: the rip re-align fixes are inactive " +
+            "until print_agent.py is updated and its task restarted")
       : "Printer agent: OFFLINE — is the warehouse PC on? Jobs stay queued.";
     // Voided/canceled labels are HISTORY, not part of the run's math —
     // counting them used to render nonsense like "Printed 2/4" after a
@@ -8027,9 +8031,36 @@ async function loadQueue() {
       apiJson("/api/print-jobs?limit=200"),
     ]);
     pill.textContent = agent.online
-      ? "Printer agent: online ✓"
+      ? "Printer agent: online ✓" +
+        (agent.realign_capable
+          ? agent.agent_version
+            ? ` · v${agent.agent_version}`
+            : ""
+          : " · NEEDS UPDATE")
       : "Printer agent: offline";
-    pill.className = "pill " + (agent.online ? "pill--ok" : "pill--bad");
+    pill.className =
+      "pill " +
+      (agent.online
+        ? agent.realign_capable
+          ? "pill--ok"
+          : "pill--warn"
+        : "pill--bad");
+    // The re-align button is honest about whether pressing it can do
+    // anything: only an updated agent polls for commands.
+    const realign = document.getElementById("printer-realign");
+    realign.disabled = agent.online && !agent.realign_capable;
+    realign.title = agent.realign_capable
+      ? "Ripping labels can pull the liner forward, so the next prints " +
+        "land off the sticker. This feeds the media to the NEXT label's " +
+        "start (using the printer's gap sensor) before anything prints - " +
+        "it consumes the one already-disturbed label instead of two " +
+        "misprints and a blank. Nothing is printed or encoded."
+      : "The warehouse PC's print agent is running OLD code - re-align " +
+        "and the automatic backfeed fix do nothing until it's updated. " +
+        "On that PC: download the current script from " +
+        "/api/print-agent/script (open it with the station link), " +
+        "replace print_agent.py, and restart the print agent's " +
+        "scheduled task.";
     queueData = data;
     renderQueue();
   } catch (err) {
