@@ -1209,7 +1209,21 @@ def list_print_jobs(
             raise HTTPException(422, "ids must be comma-separated integers.")
         stmt = stmt.where(PrintJob.id.in_(id_list))
     rows = session.scalars(stmt.limit(min(limit, 200))).all()
-    return {"count": len(rows), "jobs": [j.as_dict() for j in rows]}
+    # The Queue tab groups jobs under their batch; the batch's bin, kind
+    # and status ride along so the group headers need no extra calls.
+    batch_ids = {j.batch_id for j in rows if j.batch_id}
+    batches = {
+        b.id: {"bin_name": b.bin_name, "kind": b.kind, "status": b.status,
+               "created_by": b.created_by}
+        for b in session.scalars(
+            select(Batch).where(Batch.id.in_(batch_ids))
+        )
+    } if batch_ids else {}
+    return {
+        "count": len(rows),
+        "jobs": [j.as_dict() for j in rows],
+        "batches": batches,
+    }
 
 
 # Print-agent heartbeat: the agent polls claim every ~10 s, so a recent
@@ -7498,6 +7512,128 @@ def _build_receiving_label_jobs(
                 )
             )
     return jobs, skipped_no_bin
+
+
+class ReceivingPrintItemIn(BaseModel):
+    sku: str = Field(max_length=100)
+    quantity: int = Field(ge=1, le=500)
+    barcode: str | None = Field(default=None, max_length=64)
+
+
+class ReceivingPrintsIn(BaseModel):
+    items: list[ReceivingPrintItemIn] = Field(min_length=1, max_length=200)
+    requested_by: str | None = Field(default=None, max_length=100)
+    # e.g. "SO 123" - shows on the batch and groups repeat saves of the
+    # same stock order into the same receiving batch.
+    reference: str | None = Field(default=None, max_length=60)
+
+
+@app.post(
+    "/api/receiving/prints",
+    status_code=201,
+    dependencies=[Depends(require_user)],
+)
+def receiving_prints(
+    payload: ReceivingPrintsIn, session: Session = Depends(get_session)
+):
+    """TC-Planner's "Print labels" button (Nick, 2026-08-25): the user
+    marks stock-order items received over there and sends them here to
+    print. Creates (or reuses, per reference) an open RECEIVING batch,
+    adds the received quantities to its rows, and queues labels exactly
+    like a receiving PRINT pass - only not-yet-labelled boxes, each label
+    carrying the item's home bin, items without a bin held out and named.
+    The warehouse then pairs tags in Batch tagging as usual. Nothing is
+    written to Shopify here."""
+    tag = ("TC-Planner"
+           + (f" · {payload.reference.strip()}"
+              if payload.reference and payload.reference.strip() else "")
+           )[:100]
+    batch = session.scalar(
+        select(Batch).where(
+            Batch.kind == "receiving",
+            Batch.status.notin_(("done", "abandoned")),
+            Batch.created_by == tag,
+        ).order_by(Batch.id.desc())
+    )
+    if batch is None:
+        batch = Batch(bin_name=RECEIVING_BIN, kind="receiving",
+                      created_by=tag)
+        session.add(batch)
+        session.flush()
+
+    no_tag = _non_taggable_skus(session)
+    items = _batch_items(session, batch.id)
+    added: list[dict] = []
+    skipped_unknown: list[str] = []
+    skipped_non_taggable: list[str] = []
+    for entry in payload.items:
+        product = None
+        for term in (entry.sku, entry.barcode):
+            if not (term or "").strip():
+                continue
+            try:
+                product = product_by_barcode(term.strip())
+                break
+            except HTTPException as error:
+                if error.status_code >= 500:
+                    raise
+        if product is None:
+            skipped_unknown.append(entry.sku)
+            continue
+        sku_ci = (product.get("sku") or entry.sku).strip().upper()
+        if sku_ci in no_tag:
+            skipped_non_taggable.append(product.get("sku") or entry.sku)
+            continue
+        item = next(
+            (i for i in items if i.resolved and i.sku
+             and i.sku.strip().upper() == sku_ci),
+            None,
+        )
+        if item is None:
+            item = BatchItem(
+                batch_id=batch.id,
+                scanned_code=(product.get("barcode")
+                              or product.get("sku") or "")[:64],
+                qty_scanned=0,
+            )
+            _apply_product_to_item(session, item, product, batch)
+            # Receiving labels use the standard store header + SKU.
+            item.label_name = None
+            session.add(item)
+            items.append(item)
+        item.qty_scanned += entry.quantity
+        if item.first_scanned_at is None:
+            item.first_scanned_at = datetime.now(timezone.utc)
+        added.append({
+            "sku": item.sku,
+            "quantity": entry.quantity,
+        })
+    session.flush()
+    jobs, skipped_no_bin = _build_receiving_label_jobs(
+        session, batch, payload.requested_by or tag
+    )
+    session.add_all(jobs)
+    session.commit()
+    session.refresh(batch)
+    return {
+        "batch": batch.as_dict(),
+        "added": added,
+        "queued": len(jobs),
+        "skipped_no_bin": skipped_no_bin,
+        "skipped_unknown": skipped_unknown,
+        "skipped_non_taggable": skipped_non_taggable,
+        "message": (
+            f"{len(jobs)} label(s) queued on receiving batch {batch.id}"
+            + (f" ({tag})" if payload.reference else "")
+            + (f"; {len(skipped_unknown)} unknown SKU(s) skipped"
+               if skipped_unknown else "")
+            + (f"; {len(skipped_non_taggable)} non-taggable skipped"
+               if skipped_non_taggable else "")
+            + (f"; held for a bin: {', '.join(skipped_no_bin)}"
+               if skipped_no_bin else "")
+            + "."
+        ),
+    }
 
 
 class DivertIn(BaseModel):

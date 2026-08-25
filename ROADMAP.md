@@ -3,6 +3,42 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-08-25.
 
+## 📦 Receiving ↔ TC-Planner bridge, phase 1 (2026-08-25)
+
+Nick's direction: connect receiving to the RFID system. First slice:
+
+- **Planner "Print labels" button** (TC-Planner repo, Stock Orders
+  order view, bottom-right after a receive is saved): sends the
+  just-received items to the RFID app server-to-server (the planner
+  backend holds the station key; POST /api/stock-orders/{id}/rfid-labels
+  → RFID POST /api/receiving/prints). Deliberately does NOT navigate
+  anywhere. Planner needs app settings RFID_STATION_KEY (+ optional
+  RFID_APP_URL); bridge reports 503 until set. The planner Dockerfile
+  is now multi-stage (frontend builds inside az acr build - no local
+  Node needed, stale local bundles can't ship).
+- **RFID /api/receiving/prints**: creates or reuses (per stock-order
+  reference, carried in created_by as "TC-Planner · SO 42 · Vendor")
+  an open receiving batch, adds received quantities to its rows, and
+  queues labels exactly like a receiving PRINT pass: only unlabelled
+  boxes, labels carry each item's HOME bin, no-bin items held out and
+  named, unknown SKUs and non-taggable SKUs skipped and named. Nothing
+  writes to Shopify - "Increase stock in Shopify" stays the planner's
+  separate explicit step. Suite: test_recvbridge.py (12).
+- **Print queue grouping**: jobs collapse under their batch. A batch-
+  tagging run expands to its flat rows; a receiving batch gets a
+  second level - one sub-group per product, then the individual labels
+  - so one bad barcode/SKU/label is handled alone without blocking the
+  shipment. Loose jobs (Scan Station, single reprints) stay flat.
+  Fold state survives refreshes; the listing carries a `batches` map.
+- **Receiving view rework (Batch tagging)**: for receiving batches the
+  collect list reads tagged / labels printed per product (0/N until
+  pairing; green when every printed label found its tag), the summary
+  says "N products · X labels printed · Y tagged", clicking a product
+  jumps straight to pairing it, the C72-shelf-baseline button is
+  hidden, and the hint explains the planner-fed flow. Scanning still
+  adds boxes the planner didn't know about; PRINT still queues only
+  unlabelled boxes; Finish still files per-bin inventory checks.
+
 ## 🖨 Print truth: saved labels, walking order, re-align (2026-08-25)
 
 - **Live print-run list + selective reprint (same day, out-of-labels

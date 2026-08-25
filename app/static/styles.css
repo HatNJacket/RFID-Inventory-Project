@@ -2486,6 +2486,28 @@ tr.binaudit-untagged td { opacity: 0.72; }
   white-space: nowrap;
 }
 .chip-status--done { background: var(--ok-bg); color: var(--ok-ink); }
+/* Receiving product list: cards are click-to-pair */
+.bcell--clickable { cursor: pointer; }
+.bcell--clickable:hover { border-color: var(--accent, #29845a); }
+
+/* Print queue: jobs grouped under their batch; receiving batches get a
+   per-product sub-level. */
+.queue-group > td {
+  cursor: pointer;
+  user-select: none;
+  font-weight: 600;
+  background: var(--card-2);
+  border-top: 2px solid var(--line);
+}
+.queue-group--sub > td {
+  padding-left: 34px !important;
+  font-weight: 550;
+  background: transparent;
+  border-top: 1px dashed var(--line);
+}
+.queue-group__arrow { display: inline-block; width: 14px; color: var(--accent, #29845a); }
+.queue-child > td:first-child { padding-left: 26px !important; }
+
 /* Print-run list (batch Print step): pick the labels to reprint */
 .bprint-run__list {
   max-height: 320px;

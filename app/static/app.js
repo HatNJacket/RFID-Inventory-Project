@@ -4576,6 +4576,21 @@ function showBatchStage(stage) {
   if (recvBar) recvBar.hidden = !isReceivingBatch();
   bEl.toLabels.hidden = isReceivingBatch();
   bEl.toVerify.hidden = isReceivingBatch();
+  // Receiving keeps only what receiving needs: the C72 shelf-baseline
+  // button is a bin-batch tool and just confused the desk (Nick,
+  // 2026-08-25). The hint flips to the receiving story too.
+  document.getElementById("batch-baseline").hidden = isReceivingBatch();
+  const collectHint = document.getElementById("bcollect-hint");
+  if (collectHint)
+    collectHint.textContent = isReceivingBatch()
+      ? "Each product shows tagged / labels printed (0 / N until you " +
+        "pair). Labels queued from the inventory planner are already " +
+        "here; scan a barcode to add boxes it didn't know about, fix a " +
+        "count with − / +, and click a product to pair its tags."
+      : "Everything Shopify expects in this bin is listed below as " +
+        "0 / N — each scan ticks its product up (going over is fine). " +
+        "Wrong scan? Fix the count with − / +. Products not on the " +
+        "list get added when scanned.";
   if (stage === "collect") {
     renderBatchItems();
     bEl.scan.focus();
@@ -4738,6 +4753,11 @@ function itemCard(item, mode) {
       item.labels_total != null ? item.labels_total : item.qty_scanned;
     if (labelGoal > 0 && item.paired_count >= labelGoal)
       li.classList.add("bcell--exact");
+  } else if (mode === "receiving") {
+    // Green when every printed label found its tag.
+    if ((item.printed_count || 0) > 0 &&
+        (item.paired_count || 0) >= item.printed_count)
+      li.classList.add("bcell--exact");
   } else if (item.expected_qty != null) {
     // Compare UNITS to Shopify's on-hand — a sealed case is one box but
     // several units, so boxes would read short.
@@ -4754,9 +4774,14 @@ function itemCard(item, mode) {
         // max(labels, paired) used to move the goalposts, so 5 tags on
         // 4 labels read "5/5" instead of an honest overshoot.
         `${item.paired_count}/${labels}`
-      : item.expected_qty != null
-        ? `${units}/${item.expected_qty}`
-        : `${units}`;
+      : mode === "receiving"
+        ? // Receiving reads tagged / labels printed (Nick, 2026-08-25):
+          // labels usually arrive pre-queued from the inventory planner,
+          // and pairing walks this list product by product.
+          `${item.paired_count || 0}/${item.printed_count ?? 0}`
+        : item.expected_qty != null
+          ? `${units}/${item.expected_qty}`
+          : `${units}`;
   const barcode = item.barcode || item.scanned_code;
   li.innerHTML = `
     ${
@@ -4902,6 +4927,47 @@ bEl.scan.addEventListener("keydown", async (event) => {
 
 function renderBatchItems() {
   const summary = document.getElementById("bcollect-summary");
+  if (isReceivingBatch()) {
+    // Receiving reads as a to-tag list: how many labels exist, how many
+    // found their tag. Clicking a product jumps straight to pairing it.
+    const printed = batchItems.reduce(
+      (n, i) => n + (i.printed_count || 0), 0
+    );
+    const tagged = batchItems.reduce(
+      (n, i) => n + (i.paired_count || 0), 0
+    );
+    summary.textContent = batchItems.length
+      ? `${batchItems.length} product(s) · ${printed} label(s) printed · ` +
+        `${tagged} tagged`
+      : "";
+    summary.hidden = !batchItems.length;
+    bEl.items.innerHTML = "";
+    batchItems.forEach((item) => {
+      const li = itemCard(item, "receiving");
+      const qty = document.createElement("span");
+      qty.className = "bqty";
+      qty.innerHTML = `
+        <button type="button" data-d="-1">−</button>
+        <span class="bqty__n">${item.qty_scanned}</span>
+        <button type="button" data-d="1">+</button>`;
+      qty.querySelectorAll("button").forEach((btn) =>
+        btn.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          adjustItemQty(item, item.qty_scanned + Number(btn.dataset.d));
+        })
+      );
+      li.append(qty);
+      if (item.resolved) {
+        li.addEventListener("click", () => {
+          pairActiveItemId = item.id;
+          showBatchStage("pair");
+        });
+        li.classList.add("bcell--clickable");
+      }
+      bEl.items.append(li);
+    });
+    return;
+  }
   const expected = batchItems.filter((i) => i.expected_qty != null);
   if (expected.length) {
     const started = expected.filter(
@@ -7757,29 +7823,21 @@ document
     }
   });
 
-async function loadQueue() {
-  const body = document.getElementById("queue-body");
-  const pill = document.getElementById("agent-pill");
-  try {
-    const [agent, data] = await Promise.all([
-      apiJson("/api/print-agent/status"),
-      apiJson("/api/print-jobs?limit=100"),
-    ]);
-    pill.textContent = agent.online
-      ? "Printer agent: online ✓"
-      : "Printer agent: offline";
-    pill.className = "pill " + (agent.online ? "pill--ok" : "pill--bad");
-    if (!data.jobs.length) {
-      body.innerHTML =
-        '<tr><td colspan="9" class="inventory__empty">No print jobs yet.</td></tr>';
-      return;
-    }
-    body.innerHTML = "";
-    data.jobs.forEach((j) => {
-      const tr = document.createElement("tr");
-      const canCancel = j.status === "pending";
-      const canReprint = ["done", "error", "canceled"].includes(j.status);
-      tr.innerHTML = `
+// Queue grouping (Nick, 2026-08-25): jobs collapse under their batch —
+// a batch-tagging run expands to its flat job rows; a RECEIVING batch
+// (TC-Planner "Print labels" or the desk flow) gets a second level, one
+// sub-group per product, so a bad barcode/SKU/label can be dealt with
+// one at a time without holding the rest of the shipment hostage.
+// Loose jobs (Scan Station prints, single reprints) stay flat rows.
+let queueData = null;
+const queueOpen = new Set();
+
+function queueJobRow(j, child) {
+  const tr = document.createElement("tr");
+  if (child) tr.className = "queue-child";
+  const canCancel = j.status === "pending";
+  const canReprint = ["done", "error", "canceled"].includes(j.status);
+  tr.innerHTML = `
         <td class="mono">#${j.id}</td>
         <td>${
           j.sku
@@ -7845,8 +7903,135 @@ async function loadQueue() {
             alert(err.message);
           }
         });
-      body.append(tr);
-    });
+  return tr;
+}
+
+function queueStatusSummary(jobs) {
+  const c = {};
+  jobs.forEach((j) => (c[j.status] = (c[j.status] || 0) + 1));
+  const parts = [];
+  if (c.done) parts.push(`${c.done} printed`);
+  if ((c.pending || 0) + (c.printing || 0))
+    parts.push(`${(c.pending || 0) + (c.printing || 0)} queued`);
+  if (c.error) parts.push(`${c.error} FAILED`);
+  if ((c.voided || 0) + (c.canceled || 0))
+    parts.push(`${(c.voided || 0) + (c.canceled || 0)} voided`);
+  return parts.join(" · ");
+}
+
+function queueGroupRow(key, label, summary, level) {
+  const open = queueOpen.has(key);
+  const tr = document.createElement("tr");
+  tr.className = "queue-group" + (level > 0 ? " queue-group--sub" : "");
+  tr.innerHTML = `<td colspan="9">
+    <span class="queue-group__arrow">${open ? "▾" : "▸"}</span>
+    ${label}
+    <span class="recent__meta"> — ${escapeHtml(summary)}</span></td>`;
+  tr.addEventListener("click", () => {
+    open ? queueOpen.delete(key) : queueOpen.add(key);
+    renderQueue();
+  });
+  return tr;
+}
+
+function renderQueue() {
+  const body = document.getElementById("queue-body");
+  if (!queueData) return;
+  const data = queueData;
+  if (!data.jobs.length) {
+    body.innerHTML =
+      '<tr><td colspan="9" class="inventory__empty">No print jobs yet.</td></tr>';
+    return;
+  }
+  body.innerHTML = "";
+  const infos = data.batches || {};
+  const order = []; // flat jobs and batch groups, in listing order
+  const byBatch = new Map();
+  for (const j of data.jobs) {
+    if (!j.batch_id) {
+      order.push({ job: j });
+      continue;
+    }
+    let g = byBatch.get(j.batch_id);
+    if (!g) {
+      g = { id: j.batch_id, info: infos[j.batch_id] || {}, jobs: [] };
+      byBatch.set(j.batch_id, g);
+      order.push({ group: g });
+    }
+    g.jobs.push(j);
+  }
+  for (const entry of order) {
+    if (entry.job) {
+      body.append(queueJobRow(entry.job, false));
+      continue;
+    }
+    const g = entry.group;
+    const recv = g.info.kind === "receiving";
+    const key = `b${g.id}`;
+    // Receiving batches carry their planner reference in created_by
+    // ("TC-Planner · SO 123"); batch runs show their bin.
+    const label = recv
+      ? `📦 Receiving #${g.id}${
+          g.info.created_by
+            ? ` <span class="recent__meta">${escapeHtml(g.info.created_by)}</span>`
+            : ""
+        }`
+      : `Batch #${g.id}${
+          g.info.bin_name
+            ? ` · bin <span class="mono">${escapeHtml(g.info.bin_name)}</span>`
+            : ""
+        }`;
+    body.append(
+      queueGroupRow(
+        key,
+        label,
+        `${g.jobs.length} label(s): ${queueStatusSummary(g.jobs)}`,
+        0
+      )
+    );
+    if (!queueOpen.has(key)) continue;
+    if (!recv) {
+      // Batch-tagging runs expand to the flat rows, exactly as before.
+      g.jobs.forEach((j) => body.append(queueJobRow(j, true)));
+      continue;
+    }
+    // Receiving: one sub-group per product, then the individual labels.
+    const bySku = new Map();
+    for (const j of g.jobs) {
+      const sk = (j.sku || j.product_title || "?").trim();
+      if (!bySku.has(sk)) bySku.set(sk, []);
+      bySku.get(sk).push(j);
+    }
+    for (const [sk, jobs] of bySku) {
+      const subKey = `${key}|${sk}`;
+      body.append(
+        queueGroupRow(
+          subKey,
+          `${escapeHtml(jobs[0].product_title || sk)} <span class="mono recent__meta">${escapeHtml(sk)}</span> × ${jobs.length}`,
+          queueStatusSummary(jobs),
+          1
+        )
+      );
+      if (queueOpen.has(subKey))
+        jobs.forEach((j) => body.append(queueJobRow(j, true)));
+    }
+  }
+}
+
+async function loadQueue() {
+  const body = document.getElementById("queue-body");
+  const pill = document.getElementById("agent-pill");
+  try {
+    const [agent, data] = await Promise.all([
+      apiJson("/api/print-agent/status"),
+      apiJson("/api/print-jobs?limit=200"),
+    ]);
+    pill.textContent = agent.online
+      ? "Printer agent: online ✓"
+      : "Printer agent: offline";
+    pill.className = "pill " + (agent.online ? "pill--ok" : "pill--bad");
+    queueData = data;
+    renderQueue();
   } catch (err) {
     body.innerHTML =
       '<tr><td colspan="9" class="inventory__empty">Could not load the queue.</td></tr>';
