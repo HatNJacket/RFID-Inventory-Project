@@ -142,6 +142,60 @@ class RetiredTag(Base):
         }
 
 
+class ReleasedTag(Base):
+    """A full snapshot of an RfidAssignment released from History's
+    Assigned Tag undo (Nick, 2026-08-25). Unlike a plain unlink (which
+    deletes the row and keeps only a History receipt), a release keeps
+    EVERY field so the release itself can be undone: re-apply recreates
+    the assignment exactly, original assigned_at/by included. The
+    release/re-apply pair can loop forever, each press logged — that's
+    by design, it's manual either way. Rows leave this table when
+    re-applied. New table needs dev/alter_add_released_tags.py on prod."""
+
+    __tablename__ = "rfid_released_tags"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    rfid_id: Mapped[str] = mapped_column(
+        String(128), unique=True, index=True, nullable=False
+    )
+    shopify_variant_id: Mapped[str] = mapped_column(
+        String(64), nullable=False
+    )
+    shopify_product_id: Mapped[str | None] = mapped_column(String(300))
+    product_title: Mapped[str] = mapped_column(String(255), nullable=False)
+    variant_title: Mapped[str | None] = mapped_column(String(255))
+    sku: Mapped[str | None] = mapped_column(String(100), index=True)
+    barcode: Mapped[str | None] = mapped_column(String(64))
+    bin_location: Mapped[str | None] = mapped_column(String(100))
+    case_units: Mapped[int | None] = mapped_column(Integer)
+    suspect: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
+    batch_id: Mapped[int | None] = mapped_column(Integer)
+    assigned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    assigned_by: Mapped[str | None] = mapped_column(String(100))
+    released_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    released_by: Mapped[str | None] = mapped_column(String(100))
+
+    def as_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "rfid_id": self.rfid_id,
+            "sku": self.sku,
+            "product_title": self.product_title,
+            "bin_location": self.bin_location,
+            "case_units": self.case_units,
+            "released_at": (
+                self.released_at.isoformat() if self.released_at else None
+            ),
+            "released_by": self.released_by,
+        }
+
+
 class BarcodeAlias(Base):
     """Maps a foreign ("fake") barcode — e.g. a manufacturer barcode on the
     box — to a known product, after an operator confirmed the link. Lives in

@@ -207,8 +207,66 @@ with Session(get_engine()) as s:
                                  shopify_variant_id="t:x",
                                  product_title=sku, sku=sku,
                                  bin_location=bin_))
+    # --- Receiving batch (the stepless planner-fed list) -----------------
+    # One healthy in-progress product, one fully tagged, one with an
+    # updated count (labels missing), one unknown-SKU problem row, one
+    # non-taggable problem row, one no-bin row.
+    rb = Batch(bin_name="RECEIVING", kind="receiving", status="collecting",
+               created_by="TC-Planner · SO 935 · ZWO")
+    s.add(rb)
+    s.flush()
+    now = datetime.now(timezone.utc)
+    r1 = BatchItem(batch_id=rb.id, scanned_code="801", resolved=True,
+                   sku="ZWO FL-HLDR-M54x15", barcode="801",
+                   product_title="ZWO Filter Holder M54x15",
+                   shopify_variant_id="t:R1", qty_scanned=14,
+                   expected_qty=14, paired_count=9, bin_location="G2-1",
+                   first_scanned_at=now)
+    r2 = BatchItem(batch_id=rb.id, scanned_code="802", resolved=True,
+                   sku="ZWO EAF-5V", barcode="802",
+                   product_title="ZWO EAF 5V Electronic Focuser",
+                   shopify_variant_id="t:R2", qty_scanned=3,
+                   expected_qty=3, paired_count=3, bin_location="G2-2",
+                   first_scanned_at=now)
+    r3 = BatchItem(batch_id=rb.id, scanned_code="803", resolved=True,
+                   sku="ZWO AM5-CW", barcode="803",
+                   product_title="ZWO AM5 Counterweight",
+                   shopify_variant_id="t:R3", qty_scanned=6,
+                   expected_qty=4, paired_count=0, bin_location="F2-3",
+                   first_scanned_at=now)
+    r4 = BatchItem(batch_id=rb.id, scanned_code="GHOST-42", resolved=False,
+                   qty_scanned=2, expected_qty=2, skipped=True,
+                   skip_reason="Not found: no product matches this SKU or "
+                               "barcode. Fix it in Shopify or link the "
+                               "code at the Scan Station, then reprint.")
+    r5 = BatchItem(batch_id=rb.id, scanned_code="SCREW-1", resolved=True,
+                   sku="SCREW-1", product_title="M4 Thumbscrew (bag of 50)",
+                   shopify_variant_id="t:R5", qty_scanned=50,
+                   expected_qty=50, skipped=True,
+                   skip_reason="Marked non-taggable: this product is kept "
+                               "out of the RFID system, so no labels "
+                               "print for it.")
+    r6 = BatchItem(batch_id=rb.id, scanned_code="805", resolved=True,
+                   sku="NEWPROD-1", barcode="805",
+                   product_title="Askar 71F (brand new, no bin yet)",
+                   shopify_variant_id="t:R6", qty_scanned=2,
+                   expected_qty=2, paired_count=0, bin_location="",
+                   first_scanned_at=now)
+    s.add_all([r1, r2, r3, r4, r5, r6])
+    rn = 0
+    for item, done_n, pend_n in ((r1, 9, 5), (r2, 3, 0), (r3, 4, 0)):
+        for st, cnt in (("done", done_n), ("pending", pend_n)):
+            for _ in range(cnt):
+                rn += 1
+                s.add(PrintJob(epc=f"F{rn:023d}", status=st,
+                               batch_id=rb.id, sku=item.sku,
+                               product_title=item.product_title,
+                               barcode=item.barcode,
+                               bin_location=item.bin_location,
+                               shopify_variant_id=item.shopify_variant_id))
     s.commit()
-    print(f"seeded batch {b.id} on T1-1 + audit data")
+    print(f"seeded batch {b.id} on T1-1 + receiving batch {rb.id} "
+          f"+ audit data")
 
 # Fake Shopify inventory so the on-hand button works end-to-end locally.
 from app import shopify as _sh  # noqa: E402

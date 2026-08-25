@@ -596,9 +596,10 @@
           <input id="batch-bin" class="linkbox__input linkbox__short" type="text" maxlength="100"
                  autocomplete="off" spellcheck="false" placeholder="Bin…" />
           <button class="print__btn" id="batch-create" type="button">Start batch</button>
-          <button class="reset" id="batch-create-receiving" type="button"
-                  title="Shipment mode — no bin. Loop collect → print → pair per pallet pass; labels print each product's home bin; finishing files an inventory check per touched bin.">📦 Start receiving</button>
         </div>
+        <!-- Receiving batches are created by the Inventory Planner's
+             "Print labels" button, never by hand (Nick, 2026-08-25) —
+             they appear in the resume list below when one is open. -->
         <div id="batch-resume-wrap" hidden>
           <p class="linkbox__extra-label">Unfinished batches — click to resume:</p>
           <ul class="setbox__list" id="batch-resume-list"></ul>
@@ -676,13 +677,62 @@
           <p class="linkbox__text" id="bcollect-summary" hidden></p>
           <ul class="batch__items" id="batch-items"></ul>
           <button class="print__btn" id="batch-to-labels" type="button">Next step →</button>
-          <!-- Receiving loop controls (shown only for kind=receiving) -->
-          <div class="recvbar" id="recv-bar" hidden>
-            <button class="print__btn" id="recv-print" type="button"
-                    title="Queues one label per box scanned but not yet labelled — in scan order, each printed with the product's home bin. Repeatable every pass.">🖨 Print new labels</button>
+        </div>
+
+        <!-- Receiving (stepless, Nick 2026-08-25): one list of the
+             products the Inventory Planner sent to receive. Labels are
+             already printed by the planner's save; here the warehouse
+             watches tagging progress, reprints labels, and fixes counts.
+             Problem rows (unknown product, no bin, non-taggable) are
+             flagged and explain themselves when selected. -->
+        <div id="bstage-receiving" hidden>
+          <p class="linkbox__text" id="recv-summary" hidden></p>
+          <ul class="batch__items recvlist" id="recv-list"></ul>
+          <p class="recvlist__empty" id="recv-empty" hidden>No products set to receive.</p>
+          <div class="linkbox__actions">
             <button class="reset" id="recv-finish" type="button"
                     title="Closes the shipment and files an inventory-check Review task for every bin that received stock.">✅ Finish receiving…</button>
           </div>
+        </div>
+
+        <!-- Receiving: reprint labels for one product (count only — the
+             received count is untouched) -->
+        <div class="phist-overlay" id="recv-reprint-overlay" hidden>
+          <section class="linkbox serialbox phist-modal" style="max-width:460px">
+            <div class="linkbox__title">Reprint labels</div>
+            <div class="recvmodal__product" id="recv-reprint-product"></div>
+            <label class="step__label" for="recv-reprint-count">How many labels?</label>
+            <div class="recvcounter">
+              <button class="reset recvcounter__btn" data-for="recv-reprint-count" data-d="-1" type="button">−</button>
+              <input class="linkbox__input recvcounter__num" id="recv-reprint-count" type="number" min="1" max="50" value="1" />
+              <button class="reset recvcounter__btn" data-for="recv-reprint-count" data-d="1" type="button">+</button>
+            </div>
+            <p class="linkbox__text">Fresh labels print with this product's home bin. The received count stays as it is.</p>
+            <div class="linkbox__actions">
+              <button class="print__btn" id="recv-reprint-go" type="button">🖨 Print</button>
+              <button class="reset" id="recv-reprint-cancel" type="button">Cancel</button>
+            </div>
+          </section>
+        </div>
+
+        <!-- Receiving: update the received count (the planner's number
+             stays on display so drift is visible) -->
+        <div class="phist-overlay" id="recv-count-overlay" hidden>
+          <section class="linkbox serialbox phist-modal" style="max-width:460px">
+            <div class="linkbox__title">Update count</div>
+            <div class="recvmodal__product" id="recv-count-product"></div>
+            <label class="step__label" for="recv-count-num">Products received</label>
+            <div class="recvcounter">
+              <button class="reset recvcounter__btn" data-for="recv-count-num" data-d="-1" type="button">−</button>
+              <input class="linkbox__input recvcounter__num" id="recv-count-num" type="number" min="0" max="500" value="0" />
+              <button class="reset recvcounter__btn" data-for="recv-count-num" data-d="1" type="button">+</button>
+            </div>
+            <p class="linkbox__text recvmodal__expected" id="recv-count-expected"></p>
+            <div class="linkbox__actions">
+              <button class="print__btn" id="recv-count-save" type="button">Save count</button>
+              <button class="reset" id="recv-count-cancel" type="button">Cancel</button>
+            </div>
+          </section>
         </div>
 
         <!-- Stage 2: check (only items needing a decision) -->

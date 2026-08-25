@@ -1221,14 +1221,6 @@ body {
   white-space: nowrap;
 }
 
-/* receiving loop controls on the batch collect stage */
-.recvbar {
-  display: flex;
-  gap: 10px;
-  margin-top: 10px;
-  flex-wrap: wrap;
-}
-
 /* Scan-RFID cell options: auto-reset + BULK chip + sweep pull */
 .rfidopts {
   display: flex;
@@ -1733,6 +1725,57 @@ body {
   box-shadow: 0 0 0 1px #d72c0d, 0 0 10px rgba(215, 44, 13, 0.4);
 }
 .bcell--warn { border-left: 3px solid var(--warn-ink); }
+
+/* Receiving list (stepless, Nick 2026-08-25): planner-fed cards with
+   tagging progress, per-card buttons and a focus body (progress bar or
+   the problem explanation). */
+.batch__items li.recvcard { display: block; cursor: pointer; }
+.recvcard__head { display: flex; align-items: flex-start; gap: 10px; padding-right: 64px; }
+.recvcard__head .bcell__info { padding-right: 0; }
+.recvcard__flag { color: var(--warn-ink); font-weight: 600; }
+.recvcard--focused { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.recvcard__btns { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.recvcard__btns .reset[disabled] { opacity: 0.5; cursor: default; }
+.recvcard__body { margin-top: 10px; }
+.recvcard__body--problem {
+  color: var(--warn-ink);
+  background: rgba(185, 137, 0, 0.08);
+  border: 1px solid var(--warn-ink);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+}
+.recvbar2 {
+  display: flex;
+  height: 12px;
+  border-radius: 6px;
+  background: var(--card-2);
+  border: 1px solid var(--line);
+  overflow: hidden;
+}
+.recvbar2__tag { background: var(--ok-ink); }
+.recvbar2__prt { background: var(--warn-ink); opacity: 0.7; }
+.recvcard__caption { font-size: 12px; color: var(--ink-dim); margin-top: 5px; }
+.recvcard__missing { color: var(--warn-ink); font-weight: 600; }
+.recvlist__empty { color: var(--muted); text-align: center; padding: 22px 8px; }
+
+/* The two small receiving windows: product preview + [−] number [+] */
+.recvmodal__product { display: flex; align-items: center; gap: 10px; margin: 10px 0 14px; }
+.recvmodal__expected { color: var(--ink-dim); }
+.recvcounter { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
+.recvcounter__btn {
+  width: 40px; height: 40px;
+  font-size: 20px;
+  font-weight: 700;
+  border-radius: 8px;
+}
+.recvcounter__num {
+  width: 96px;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 17px;
+  font-weight: 650;
+}
 
 /* Links follow the theme's accent — the browser-default blue is
    unreadable on the dark background. */

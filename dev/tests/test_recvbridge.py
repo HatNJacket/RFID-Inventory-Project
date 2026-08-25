@@ -121,6 +121,64 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
           hldr["qty_scanned"] == 5 and hldr["printed_count"] == 5
           and hldr["paired_count"] == 0, hldr)
 
+    # --- The stepless receiving list (Nick, 2026-08-25) -----------------
+    # expected_qty tracks the PLANNER's cumulative number, apart from the
+    # received count, so Update count can correct one while showing the
+    # other.
+    check("expected_qty is the planner's cumulative number",
+          hldr["expected_qty"] == 5, hldr)
+
+    # What couldn't print stays ON the batch as a flagged row that can
+    # explain itself, instead of only being named in a response.
+    ghost = next((i for i in items if i["scanned_code"] == "GHOST-1"), None)
+    check("an unknown SKU becomes a flagged row",
+          ghost is not None and not ghost["resolved"]
+          and ghost["qty_scanned"] == 4
+          and "Not found" in (ghost["skip_reason"] or ""), ghost)
+    screw = next((i for i in items if i["sku"] == "SCREW-1"), None)
+    check("a non-taggable SKU becomes a flagged row with its product",
+          screw is not None and screw["skipped"]
+          and "non-taggable" in (screw["skip_reason"] or ""), screw)
+
+    # A repeat save of the same unknown SKU reuses its flagged row.
+    cl.post("/api/receiving/prints", json={
+        "items": [{"sku": "GHOST-1", "quantity": 1}],
+        "requested_by": "Nick", "reference": "SO 42 · ZWO",
+    })
+    items = cl.get(f"/api/batches/{bid}").json()["items"]
+    ghost = next(i for i in items if i["scanned_code"] == "GHOST-1")
+    check("repeat saves reuse the flagged row",
+          ghost["qty_scanned"] == 5 and ghost["expected_qty"] == 5, ghost)
+
+    # Reprint labels: per-item, receiving labels carry the item's HOME
+    # bin (never the RECEIVING sentinel), count untouched.
+    r = cl.post(f"/api/batches/{bid}/items/{hldr['id']}/labels",
+                json={"quantity": 2, "requested_by": "Nick"})
+    check("per-item reprint queues", r.status_code == 201, r.text[:200])
+    with Session(get_engine()) as s:
+        newest = s.scalars(select(PrintJob).where(
+            PrintJob.batch_id == bid).order_by(PrintJob.id.desc())).all()[:2]
+        check("receiving reprints carry the item's home bin",
+              all(j.bin_location == "G2-1" for j in newest),
+              [j.bin_location for j in newest])
+    items = cl.get(f"/api/batches/{bid}").json()["items"]
+    hldr = next(i for i in items if i["sku"] == "ZWO FL-HLDR-M54x15")
+    check("reprinting does not change the received count",
+          hldr["qty_scanned"] == 5, hldr)
+
+    # Flagged rows never print.
+    r = cl.post(f"/api/batches/{bid}/items/{screw['id']}/labels",
+                json={"quantity": 1})
+    check("a flagged row refuses to print, naming its reason",
+          r.status_code == 422 and "flagged" in r.text, r.text[:200])
+
+    # Update count corrects the received number; the planner's stays.
+    r = cl.post(f"/api/batches/{bid}/items/{hldr['id']}/qty",
+                json={"qty": 7})
+    check("update count sets the received number",
+          r.status_code == 200 and r.json()["qty_scanned"] == 7
+          and r.json()["expected_qty"] == 5, r.text[:200])
+
 print()
 print("FAILED: "+", ".join(fails) if fails else "ALL CHECKS PASSED")
 sys.exit(1 if fails else 0)

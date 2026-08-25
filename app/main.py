@@ -65,6 +65,7 @@ from app.models import (
     PrintJob,
     ProductKind,
     RefreshLog,
+    ReleasedTag,
     RetiredTag,
     ReviewNote,
     ReviewTask,
@@ -934,6 +935,186 @@ def sweep_undo(payload: SweepUndoIn, session: Session = Depends(get_session)):
         session.delete(row)
     session.commit()
     return {"count": len(removed), "epcs": removed, "skipped": skipped}
+
+
+class TagChainIn(BaseModel):
+    """Release/re-apply from History's Assigned Tag undo chain."""
+
+    epcs: list[str] = Field(min_length=1, max_length=200)
+    # Safety rail: only touch tags that belong to THIS product.
+    sku: str | None = Field(default=None, max_length=100)
+    by: str | None = Field(default=None, max_length=100)
+
+
+@app.post("/api/tags/release", dependencies=[Depends(require_user)])
+def tags_release(payload: TagChainIn, session: Session = Depends(get_session)):
+    """History's Assigned Tag undo (Nick, 2026-08-25): release the tags,
+    keeping a FULL snapshot of each assignment so the release itself can
+    be undone (re-apply restores every field, original pairing date
+    included). Each press is logged; release and re-apply may loop
+    forever - both are manual, so there's no way to spin unattended."""
+    now = datetime.now(timezone.utc)
+    wanted = {(e or "").strip().upper() for e in payload.epcs if e}
+    guard = (payload.sku or "").strip().upper()
+    by = (payload.by or "").strip()[:100] or None
+    rows = session.scalars(
+        select(RfidAssignment).where(
+            func.upper(RfidAssignment.rfid_id).in_(sorted(wanted))
+        )
+    ).all()
+    released: list[str] = []
+    skipped: list[str] = []
+    for row in rows:
+        if guard and (row.sku or "").strip().upper() != guard:
+            skipped.append(row.rfid_id)
+            continue
+        # A stale snapshot for the same EPC (released, then re-paired by
+        # hand instead of re-applied) yields to the fresh one.
+        stale = session.scalar(
+            select(ReleasedTag).where(
+                func.upper(ReleasedTag.rfid_id)
+                == (row.rfid_id or "").strip().upper()
+            )
+        )
+        if stale is not None:
+            session.delete(stale)
+            session.flush()
+        session.add(ReleasedTag(
+            rfid_id=row.rfid_id,
+            shopify_variant_id=row.shopify_variant_id,
+            shopify_product_id=row.shopify_product_id,
+            product_title=row.product_title,
+            variant_title=row.variant_title,
+            sku=row.sku,
+            barcode=row.barcode,
+            bin_location=row.bin_location,
+            case_units=row.case_units,
+            suspect=row.suspect,
+            batch_id=row.batch_id,
+            assigned_at=row.assigned_at,
+            assigned_by=row.assigned_by,
+            released_at=now,
+            released_by=by,
+        ))
+        # One row per EPC, all sharing one timestamp - History folds them
+        # into a single expandable event, mirroring the sweep that paired
+        # them.
+        session.add(BarcodeChange(
+            sku=row.sku,
+            product_title=row.product_title,
+            shopify_variant_id=row.shopify_variant_id,
+            changed_field="tag-released",
+            old_barcode=(row.rfid_id or "")[:64] or None,
+            new_barcode=(row.bin_location or "")[:64] or None,
+            changed_by=by,
+            changed_at=now,
+        ))
+        released.append(row.rfid_id)
+        session.delete(row)
+    if not released:
+        raise HTTPException(
+            422,
+            "None of those tags are currently assigned"
+            + (" to that product" if guard else "")
+            + " - nothing to release.",
+        )
+    session.commit()
+    return {
+        "count": len(released),
+        "epcs": released,
+        "skipped": skipped,
+        "message": (
+            f"{len(released)} tag(s) released"
+            + (f" ({len(skipped)} skipped - they belong to another product)"
+               if skipped else "")
+            + ". Undo lives in History: Released Tag > Undo re-applies them."
+        ),
+    }
+
+
+@app.post("/api/tags/reapply", dependencies=[Depends(require_user)])
+def tags_reapply(payload: TagChainIn, session: Session = Depends(get_session)):
+    """Undo a release: re-create each assignment exactly from its stored
+    snapshot - product, bin, case units, suspect flag, batch and the
+    ORIGINAL pairing date/operator all come back, so counts and baselines
+    read as if the release never happened. Logged per EPC (shared
+    timestamp) as tag-reapplied, which History offers to undo again."""
+    now = datetime.now(timezone.utc)
+    wanted = {(e or "").strip().upper() for e in payload.epcs if e}
+    guard = (payload.sku or "").strip().upper()
+    by = (payload.by or "").strip()[:100] or None
+    rows = session.scalars(
+        select(ReleasedTag).where(
+            func.upper(ReleasedTag.rfid_id).in_(sorted(wanted))
+        )
+    ).all()
+    live = {
+        (r.rfid_id or "").strip().upper()
+        for r in session.scalars(
+            select(RfidAssignment).where(
+                func.upper(RfidAssignment.rfid_id).in_(sorted(wanted))
+            )
+        )
+    }
+    reapplied: list[str] = []
+    skipped: list[str] = []
+    for row in rows:
+        key = (row.rfid_id or "").strip().upper()
+        if guard and (row.sku or "").strip().upper() != guard:
+            skipped.append(row.rfid_id)
+            continue
+        # The physical tag was claimed by something else while released -
+        # never steal it back.
+        if key in live:
+            skipped.append(row.rfid_id)
+            continue
+        session.add(RfidAssignment(
+            rfid_id=row.rfid_id,
+            shopify_variant_id=row.shopify_variant_id,
+            shopify_product_id=row.shopify_product_id,
+            product_title=row.product_title,
+            variant_title=row.variant_title,
+            sku=row.sku,
+            barcode=row.barcode,
+            bin_location=row.bin_location,
+            case_units=row.case_units,
+            suspect=row.suspect,
+            batch_id=row.batch_id,
+            assigned_at=row.assigned_at or now,
+            assigned_by=row.assigned_by,
+        ))
+        session.add(BarcodeChange(
+            sku=row.sku,
+            product_title=row.product_title,
+            shopify_variant_id=row.shopify_variant_id,
+            changed_field="tag-reapplied",
+            old_barcode=(row.rfid_id or "")[:64] or None,
+            new_barcode=(row.bin_location or "")[:64] or None,
+            changed_by=by,
+            changed_at=now,
+        ))
+        reapplied.append(row.rfid_id)
+        session.delete(row)
+    if not reapplied:
+        raise HTTPException(
+            422,
+            "None of those tags are waiting to be re-applied - they were "
+            "already re-applied, or the tag was since paired to something "
+            "else.",
+        )
+    session.commit()
+    return {
+        "count": len(reapplied),
+        "epcs": reapplied,
+        "skipped": skipped,
+        "message": (
+            f"{len(reapplied)} tag(s) re-applied with their original "
+            "pairing dates"
+            + (f" ({len(skipped)} skipped - re-applied already or claimed "
+               "by another product)" if skipped else "")
+            + ". Undo lives in History: Assigned Tag > Undo releases them."
+        ),
+    }
 
 
 @app.get("/api/rfid-assignments", dependencies=[Depends(require_user)])
@@ -7139,6 +7320,26 @@ def batch_item_labels(
             "tag on. Print the label from one of its component products, or "
             "switch it to 'multi-box product' if that's wrong.",
         )
+    # Receiving labels are shelving instructions: they carry the ITEM's
+    # home bin, never the RECEIVING sentinel (same rule as the batch-wide
+    # receiving print pass). Flagged problem rows never print - the flag
+    # says why.
+    if _is_receiving(batch):
+        if item.skip_reason:
+            raise HTTPException(
+                422, f"This row is flagged, no labels print for it: "
+                     f"{item.skip_reason}",
+            )
+        label_bin = (item.bin_location or "").strip()
+        if not label_bin or label_bin.lower() == "no bin assigned":
+            raise HTTPException(
+                422,
+                "This product has no bin assigned yet, so its label can't "
+                "say where the box goes. Set a bin first (product preview "
+                "> bin chip), then print.",
+            )
+    else:
+        label_bin = batch.bin_name
     label_name, placement, label_sku = _label_name_for(session, item)
     jobs = [
         PrintJob(
@@ -7151,7 +7352,7 @@ def batch_item_labels(
             variant_title=item.variant_title,
             sku=item.sku,
             barcode=item.barcode,
-            bin_location=batch.bin_name,
+            bin_location=label_bin,
             other_bins=item.other_bins,
             label_name=label_name,
             label_placement=placement,
@@ -7613,48 +7814,115 @@ def receiving_prints(
     added: list[dict] = []
     skipped_unknown: list[str] = []
     skipped_non_taggable: list[str] = []
-    for entry in payload.items:
-        product = None
-        for term in (entry.sku, entry.barcode):
-            if not (term or "").strip():
-                continue
-            try:
-                product = product_by_barcode(term.strip())
-                break
-            except HTTPException as error:
-                if error.status_code >= 500:
-                    raise
-        if product is None:
-            skipped_unknown.append(entry.sku)
-            continue
-        sku_ci = (product.get("sku") or entry.sku).strip().upper()
-        if sku_ci in no_tag:
-            skipped_non_taggable.append(product.get("sku") or entry.sku)
-            continue
-        item = next(
-            (i for i in items if i.resolved and i.sku
-             and i.sku.strip().upper() == sku_ci),
+
+    def problem_row(code: str, qty: int, reason: str,
+                    product: dict | None = None) -> None:
+        """Keep the failure ON the batch as a flagged row instead of only
+        naming it in a response nobody re-reads (Nick, 2026-08-25: the
+        receiving list must show what could not print, expandable to say
+        why). Unknown items stay unresolved; known-but-unprintable ones
+        keep their product info. Repeat saves reuse the row."""
+        row = next(
+            (i for i in items
+             if (i.skip_reason or "")
+             and (i.scanned_code or "").strip().upper()
+             == (code or "").strip().upper()),
             None,
         )
-        if item is None:
-            item = BatchItem(
+        if row is None:
+            row = BatchItem(
                 batch_id=batch.id,
-                scanned_code=(product.get("barcode")
-                              or product.get("sku") or "")[:64],
+                scanned_code=(code or "?")[:64],
+                resolved=False,
                 qty_scanned=0,
             )
-            _apply_product_to_item(session, item, product, batch)
-            # Receiving labels use the standard store header + SKU.
-            item.label_name = None
-            session.add(item)
-            items.append(item)
-        item.qty_scanned += entry.quantity
-        if item.first_scanned_at is None:
-            item.first_scanned_at = datetime.now(timezone.utc)
-        added.append({
-            "sku": item.sku,
-            "quantity": entry.quantity,
-        })
+            if product is not None:
+                _apply_product_to_item(session, row, product, batch)
+                row.label_name = None
+            # expected_qty tracks the PLANNER's number here, not the
+            # Shopify on-hand snapshot _apply_product_to_item stores.
+            row.expected_qty = 0
+            session.add(row)
+            items.append(row)
+        row.qty_scanned += qty
+        row.expected_qty = (row.expected_qty or 0) + qty
+        row.skip_reason = reason[:120]
+        row.skipped = True
+
+    for entry in payload.items:
+        product = None
+        try:
+            for term in (entry.sku, entry.barcode):
+                if not (term or "").strip():
+                    continue
+                try:
+                    product = product_by_barcode(term.strip())
+                    break
+                except HTTPException as error:
+                    if error.status_code >= 500:
+                        raise
+            if product is None:
+                skipped_unknown.append(entry.sku)
+                problem_row(
+                    entry.sku or entry.barcode or "?", entry.quantity,
+                    "Not found: no product matches this SKU or barcode. "
+                    "Fix it in Shopify or link the code at the Scan "
+                    "Station, then reprint.",
+                )
+                continue
+            sku_ci = (product.get("sku") or entry.sku).strip().upper()
+            if sku_ci in no_tag:
+                skipped_non_taggable.append(product.get("sku") or entry.sku)
+                problem_row(
+                    product.get("sku") or entry.sku, entry.quantity,
+                    "Marked non-taggable: this product is kept out of the "
+                    "RFID system, so no labels print for it.",
+                    product,
+                )
+                continue
+            item = next(
+                (i for i in items if i.resolved and not i.skip_reason
+                 and i.sku and i.sku.strip().upper() == sku_ci),
+                None,
+            )
+            if item is None:
+                item = BatchItem(
+                    batch_id=batch.id,
+                    scanned_code=(product.get("barcode")
+                                  or product.get("sku") or "")[:64],
+                    qty_scanned=0,
+                )
+                _apply_product_to_item(session, item, product, batch)
+                # Receiving labels use the standard store header + SKU.
+                item.label_name = None
+                # The planner's number is the EXPECTED count, kept apart
+                # from the received count so "Update count" can correct
+                # the latter while the window still shows what the
+                # planner said (Nick, 2026-08-25).
+                item.expected_qty = 0
+                session.add(item)
+                items.append(item)
+            elif item.expected_qty is None:
+                item.expected_qty = 0
+            item.qty_scanned += entry.quantity
+            item.expected_qty += entry.quantity
+            if item.first_scanned_at is None:
+                item.first_scanned_at = datetime.now(timezone.utc)
+            added.append({
+                "sku": item.sku,
+                "quantity": entry.quantity,
+            })
+        except HTTPException:
+            raise
+        except Exception as error:  # noqa: BLE001 - the row must survive
+            # An unforeseen failure on ONE line must not eat the line (or
+            # the save): it becomes a flagged row the list can explain.
+            logger.exception("receiving item failed: %s", entry.sku)
+            skipped_unknown.append(entry.sku)
+            problem_row(
+                entry.sku or entry.barcode or "?", entry.quantity,
+                f"Could not process: {str(error)[:80]}",
+            )
     session.flush()
     jobs, skipped_no_bin = _build_receiving_label_jobs(
         session, batch, payload.requested_by or tag
@@ -10395,6 +10663,8 @@ def product_history(term: str, session: Session = Depends(get_session)):
         "on-hand-lower-undo": "on-hand-lower-undone",
         "tagged-before": "already-tagged-set",
         "tag-unlinked": "tag-unlinked",
+        "tag-released": "tag-released",
+        "tag-reapplied": "tag-reapplied",
         "locate-list": "locate-list",
         "oneleft": "oneleft",
         "tag-sold": "tag-sold",
@@ -10418,7 +10688,8 @@ def product_history(term: str, session: Session = Depends(get_session)):
             # locate list, tag-sold and scan notes are local markers only.
             "shopify": c.changed_field
             not in ("rfid-scan", "locate-list", "tag-sold", "scan-note",
-                    "tag-retired", "tag-unretired"),
+                    "tag-retired", "tag-unretired", "tag-released",
+                    "tag-reapplied"),
         })
 
     # What Shopify currently says the product's bin IS, and when we last
@@ -10752,6 +11023,10 @@ def history(
     for key in assign_order:
         group = assign_groups[key]
         a = group[0]
+        # These rows are LIVE, which is exactly what makes the undo valid:
+        # it releases the tags with a full snapshot kept, so the release
+        # can itself be undone (re-apply) from its own History row. The
+        # two can loop forever - both are manual (Nick, 2026-08-25).
         if len(group) == 1:
             events.append({
                 "at": iso(a.assigned_at),
@@ -10763,6 +11038,8 @@ def history(
                           + (" · SUSPECT read" if a.suspect else "")
                           + (f" · bin {a.bin_location}"
                              if a.bin_location else ""),
+                "undo": {"kind": "tag-assign", "sku": a.sku,
+                         "epcs": [a.rfid_id]},
             })
             continue
         suspects = sum(1 for x in group if x.suspect)
@@ -10776,6 +11053,8 @@ def history(
                       + (f" · {suspects} SUSPECT" if suspects else "")
                       + (f" · bin {a.bin_location}" if a.bin_location else ""),
             "epcs": [x.rfid_id for x in group],
+            "undo": {"kind": "tag-assign", "sku": a.sku,
+                     "epcs": [x.rfid_id for x in group]},
         })
 
     change_types = {
@@ -10790,6 +11069,8 @@ def history(
         "on-hand-lower-undo": "on-hand-lower-undone",
         "tagged-before": "already-tagged-set",
         "tag-unlinked": "tag-unlinked",
+        "tag-released": "tag-released",
+        "tag-reapplied": "tag-reapplied",
         "locate-list": "locate-list",
         "oneleft": "oneleft",
         "tag-sold": "tag-sold",
@@ -10798,14 +11079,18 @@ def history(
         "tag-unretired": "tag-unretired",
     }
     # A sweep undo unlinks its tags with one shared timestamp — fold
-    # those the same way sweep assigns fold.
+    # those the same way sweep assigns fold. Release/re-apply rows (the
+    # Assigned Tag undo chain) fold identically, keyed by their field so
+    # the three families never merge into one event.
     unlink_groups: dict = {}
     unlink_order: list = []
     for c in session.scalars(
         select(BarcodeChange).order_by(BarcodeChange.id.desc()).limit(limit)
     ):
-        if c.changed_field == "tag-unlinked":
-            key = (c.sku or "", c.changed_by or "", iso(c.changed_at))
+        if c.changed_field in ("tag-unlinked", "tag-released",
+                               "tag-reapplied"):
+            key = (c.changed_field, c.sku or "", c.changed_by or "",
+                   iso(c.changed_at))
             if key not in unlink_groups:
                 unlink_groups[key] = []
                 unlink_order.append(key)
@@ -10849,28 +11134,88 @@ def history(
                 f"EPC {c.old_barcode} restored (was {c.new_barcode})"
             )
         events.append(event)
+    # Whether a release/re-apply row can still offer its undo depends on
+    # where its tags sit NOW: a release is undoable while the snapshot
+    # waits in the released table, a re-apply while the tags are live.
+    chain_epcs = {
+        (x.old_barcode or "").strip().upper()
+        for k in unlink_order if k[0] != "tag-unlinked"
+        for x in unlink_groups[k] if x.old_barcode
+    }
+    released_now: set = set()
+    live_now: set = set()
+    if chain_epcs:
+        released_now = {
+            (e or "").strip().upper()
+            for e in session.scalars(
+                select(ReleasedTag.rfid_id).where(
+                    func.upper(ReleasedTag.rfid_id).in_(sorted(chain_epcs))
+                )
+            )
+        }
+        live_now = {
+            (e or "").strip().upper()
+            for e in session.scalars(
+                select(RfidAssignment.rfid_id).where(
+                    func.upper(RfidAssignment.rfid_id).in_(
+                        sorted(chain_epcs)
+                    )
+                )
+            )
+        }
+    chain_words = {
+        "tag-unlinked": "unlinked (sweep undo)",
+        "tag-released": "released",
+        "tag-reapplied": "re-applied",
+    }
     for key in unlink_order:
+        field = key[0]
         group = unlink_groups[key]
         c = group[0]
+        epcs = [x.old_barcode for x in group]
+        undo = None
+        if field == "tag-released":
+            still = [e for e in epcs
+                     if (e or "").strip().upper() in released_now]
+            if still:
+                undo = {"kind": "tag-release", "sku": c.sku, "epcs": still}
+        elif field == "tag-reapplied":
+            still = [e for e in epcs
+                     if (e or "").strip().upper() in live_now]
+            if still:
+                undo = {"kind": "tag-assign", "sku": c.sku, "epcs": still}
         if len(group) == 1:
-            events.append({
+            event = {
                 "at": iso(c.changed_at),
-                "type": "tag-unlinked",
+                "type": field,
                 "worker": c.changed_by,
                 "sku": c.sku,
                 "title": c.product_title,
-                "detail": f"{c.old_barcode or '(none)'} → {c.new_barcode}",
-            })
+                "detail": (
+                    f"{c.old_barcode or '(none)'} → {c.new_barcode}"
+                    if field == "tag-unlinked"
+                    else f"EPC {c.old_barcode or '?'} "
+                         f"{chain_words[field].split(' ')[0]}"
+                         + (f" · bin {c.new_barcode}"
+                            if c.new_barcode else "")
+                ),
+            }
+            if undo:
+                event["undo"] = undo
+            events.append(event)
             continue
-        events.append({
+        event = {
             "at": iso(c.changed_at),
-            "type": "tag-unlinked",
+            "type": field,
             "worker": c.changed_by,
             "sku": c.sku,
             "title": c.product_title,
-            "detail": f"{len(group)} × RFID tag unlinked (sweep undo)",
-            "epcs": [x.old_barcode for x in group],
-        })
+            "detail": f"{len(group)} × RFID tag {chain_words[field]}",
+            "epcs": epcs,
+        }
+        if undo:
+            event["undo"] = undo
+        events.append(event)
 
     job_types = {
         "done": "label-printed", "error": "label-failed",

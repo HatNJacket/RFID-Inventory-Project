@@ -351,6 +351,11 @@ async function loadRefreshStats() {
 const EVENT_META = {
   "tag-assigned": ["Assigned Tag", "#29845a"],
   "tag-unlinked": ["Unlinked Tag", "#d72c0d"],
+  // The Assigned Tag undo chain: release keeps a full snapshot, so its
+  // own Undo re-applies the tags exactly - and around it goes, manually,
+  // as many times as anyone cares to press (Nick, 2026-08-25).
+  "tag-released": ["Released Tag", "#8a4b0e"],
+  "tag-reapplied": ["Re-applied Tag", "#0c5132"],
   "barcode-linked": ["Linked Barcode", "#6f42c1"],
   "barcode-replaced": ["Replaced Barcode", "#b98900"],
   "sku-updated": ["Updated SKU", "#b98900"],
@@ -4190,57 +4195,9 @@ document.getElementById("batch-baseline").addEventListener("click", async () => 
 
 bEl.create.addEventListener("click", startBatch);
 
-// Start a receiving (shipment) batch: no bin, everything comes from scans.
-document
-  .getElementById("batch-create-receiving")
-  .addEventListener("click", async () => {
-    const operator = operatorEl.value;
-    if (!operator) {
-      setBatchResult("Pick who's scanning (top right) first.", "err");
-      operatorEl.focus();
-      return;
-    }
-    try {
-      batch = await postJson("/api/batches", {
-        kind: "receiving",
-        created_by: operator,
-      });
-      batchItems = batch.items || [];
-      openBatchView("collect");
-      setBatchResult(
-        "Receiving started — scan every box you can reach, then Print " +
-          "new labels. Labels come out in scan order, each with the " +
-          "product's home bin.",
-        "ok"
-      );
-    } catch (err) {
-      setBatchResult(err.message, "err");
-    }
-  });
-
-// PRINT for a receiving pass: only boxes not yet labelled queue.
-document.getElementById("recv-print").addEventListener("click", async () => {
-  if (!isReceivingBatch()) return;
-  try {
-    const res = await postJson(`/api/batches/${batch.id}/queue-labels`, {
-      requested_by: operatorEl.value || null,
-    });
-    let msg =
-      res.count > 0
-        ? `${res.count} label(s) queued — collect the stack and walk your ` +
-          `line of boxes, then pair.`
-        : "Nothing new to print.";
-    if (res.skipped_no_bin && res.skipped_no_bin.length) {
-      msg +=
-        ` HELD (no bin assigned): ${res.skipped_no_bin.join(", ")} — ` +
-        `assign bins and print again.`;
-    }
-    setBatchResult(msg, res.count > 0 ? "ok" : "err");
-    if (res.count > 0) showBatchStage("print");
-  } catch (err) {
-    setBatchResult(err.message, "err");
-  }
-});
+// Receiving batches are created by the Inventory Planner's "Print labels"
+// button only (Nick, 2026-08-25) — no manual start, no print pass: the
+// planner queues the labels, this side tags and corrects.
 
 // Finish receiving: close the shipment, file one bin-check per touched bin.
 document.getElementById("recv-finish").addEventListener("click", async () => {
@@ -4396,6 +4353,14 @@ async function pullBatch(announce) {
     const data = await apiJson(`/api/batches/${batch.id}`);
     batch = data.batch;
     batchItems = data.items;
+    // Receiving is stepless: never follow the C72's published step, just
+    // keep the list live.
+    if (isReceivingBatch()) {
+      if (batchStage !== "receiving") showBatchStage("receiving");
+      else renderReceivingList();
+      if (announce) setBatchResult("Refreshed from the server.", "ok");
+      return;
+    }
     // The C72 just sent the shelf sweep: clear the check-step banner and
     // pull the fresh verdicts once (the check list doesn't re-fetch on
     // the normal 3s poll — this transition is the exception).
@@ -4542,9 +4507,11 @@ async function resumeBatch(id) {
   }
 }
 
-// Receiving: a bin-less shipment batch that loops collect → print → pair.
-// Labels/verify don't exist for it; PRINT repeats per pass and finishing
-// files a bin-check Review task per touched bin.
+// Receiving: a bin-less shipment batch fed by the Inventory Planner.
+// It has NO steps (Nick, 2026-08-25): one list of the products sent to
+// receive, with tagging progress, per-product reprint and count fixes.
+// Pairing happens on the C72 as usual; finishing files a bin-check
+// Review task per touched bin.
 function isReceivingBatch() {
   return !!(batch && batch.kind === "receiving");
 }
@@ -4554,16 +4521,10 @@ function openBatchView(stage) {
   bEl.active.hidden = false;
   document.querySelector(".binboard").hidden = true;
   bEl.binChip.textContent = isReceivingBatch()
-    ? "Receiving"
+    ? "📦 Receiving"
     : `Bin ${batch.bin_name}`;
-  // Labels and verify aren't part of the receiving loop — hide their chips
-  // so the flow reads collect → print → pair.
-  bEl.stages.querySelectorAll(".stage").forEach((chip) => {
-    const gone =
-      isReceivingBatch() &&
-      (chip.dataset.stage === "labels" || chip.dataset.stage === "verify");
-    chip.style.display = gone ? "none" : "";
-  });
+  // Receiving has no steps at all — the chip bar goes away entirely.
+  bEl.stages.style.display = isReceivingBatch() ? "none" : "";
   setBatchResult("", null);
   showBatchStage(stage);
   startBatchLive();
@@ -4572,9 +4533,19 @@ function openBatchView(stage) {
 const BATCH_STAGES = ["collect", "labels", "print", "pair", "verify"];
 
 function showBatchStage(stage) {
-  if (isReceivingBatch() && (stage === "labels" || stage === "verify")) {
-    stage = "collect";
+  if (isReceivingBatch()) {
+    // One list, no stages: whatever step was asked for, receiving shows
+    // the receiving list.
+    batchStage = "receiving";
+    stopBatchPrintPoll();
+    BATCH_STAGES.forEach((s) => {
+      document.getElementById(`bstage-${s}`).hidden = true;
+    });
+    document.getElementById("bstage-receiving").hidden = false;
+    renderReceivingList();
+    return;
   }
+  document.getElementById("bstage-receiving").hidden = true;
   batchStage = stage;
   stopBatchPrintPoll();
   const idx = BATCH_STAGES.indexOf(stage);
@@ -4586,25 +4557,6 @@ function showBatchStage(stage) {
   BATCH_STAGES.forEach((s) => {
     document.getElementById(`bstage-${s}`).hidden = s !== stage;
   });
-  const recvBar = document.getElementById("recv-bar");
-  if (recvBar) recvBar.hidden = !isReceivingBatch();
-  bEl.toLabels.hidden = isReceivingBatch();
-  bEl.toVerify.hidden = isReceivingBatch();
-  // Receiving keeps only what receiving needs: the C72 shelf-baseline
-  // button is a bin-batch tool and just confused the desk (Nick,
-  // 2026-08-25). The hint flips to the receiving story too.
-  document.getElementById("batch-baseline").hidden = isReceivingBatch();
-  const collectHint = document.getElementById("bcollect-hint");
-  if (collectHint)
-    collectHint.textContent = isReceivingBatch()
-      ? "Each product shows tagged / labels printed (0 / N until you " +
-        "pair). Labels queued from the inventory planner are already " +
-        "here; scan a barcode to add boxes it didn't know about, fix a " +
-        "count with − / +, and click a product to pair its tags."
-      : "Everything Shopify expects in this bin is listed below as " +
-        "0 / N — each scan ticks its product up (going over is fine). " +
-        "Wrong scan? Fix the count with − / +. Products not on the " +
-        "list get added when scanned.";
   if (stage === "collect") {
     renderBatchItems();
     bEl.scan.focus();
@@ -4767,11 +4719,6 @@ function itemCard(item, mode) {
       item.labels_total != null ? item.labels_total : item.qty_scanned;
     if (labelGoal > 0 && item.paired_count >= labelGoal)
       li.classList.add("bcell--exact");
-  } else if (mode === "receiving") {
-    // Green when every printed label found its tag.
-    if ((item.printed_count || 0) > 0 &&
-        (item.paired_count || 0) >= item.printed_count)
-      li.classList.add("bcell--exact");
   } else if (item.expected_qty != null) {
     // Compare UNITS to Shopify's on-hand — a sealed case is one box but
     // several units, so boxes would read short.
@@ -4788,14 +4735,9 @@ function itemCard(item, mode) {
         // max(labels, paired) used to move the goalposts, so 5 tags on
         // 4 labels read "5/5" instead of an honest overshoot.
         `${item.paired_count}/${labels}`
-      : mode === "receiving"
-        ? // Receiving reads tagged / labels printed (Nick, 2026-08-25):
-          // labels usually arrive pre-queued from the inventory planner,
-          // and pairing walks this list product by product.
-          `${item.paired_count || 0}/${item.printed_count ?? 0}`
-        : item.expected_qty != null
-          ? `${units}/${item.expected_qty}`
-          : `${units}`;
+      : item.expected_qty != null
+        ? `${units}/${item.expected_qty}`
+        : `${units}`;
   const barcode = item.barcode || item.scanned_code;
   li.innerHTML = `
     ${
@@ -4942,44 +4884,7 @@ bEl.scan.addEventListener("keydown", async (event) => {
 function renderBatchItems() {
   const summary = document.getElementById("bcollect-summary");
   if (isReceivingBatch()) {
-    // Receiving reads as a to-tag list: how many labels exist, how many
-    // found their tag. Clicking a product jumps straight to pairing it.
-    const printed = batchItems.reduce(
-      (n, i) => n + (i.printed_count || 0), 0
-    );
-    const tagged = batchItems.reduce(
-      (n, i) => n + (i.paired_count || 0), 0
-    );
-    summary.textContent = batchItems.length
-      ? `${batchItems.length} product(s) · ${printed} label(s) printed · ` +
-        `${tagged} tagged`
-      : "";
-    summary.hidden = !batchItems.length;
-    bEl.items.innerHTML = "";
-    batchItems.forEach((item) => {
-      const li = itemCard(item, "receiving");
-      const qty = document.createElement("span");
-      qty.className = "bqty";
-      qty.innerHTML = `
-        <button type="button" data-d="-1">−</button>
-        <span class="bqty__n">${item.qty_scanned}</span>
-        <button type="button" data-d="1">+</button>`;
-      qty.querySelectorAll("button").forEach((btn) =>
-        btn.addEventListener("click", (ev) => {
-          ev.stopPropagation();
-          adjustItemQty(item, item.qty_scanned + Number(btn.dataset.d));
-        })
-      );
-      li.append(qty);
-      if (item.resolved) {
-        li.addEventListener("click", () => {
-          pairActiveItemId = item.id;
-          showBatchStage("pair");
-        });
-        li.classList.add("bcell--clickable");
-      }
-      bEl.items.append(li);
-    });
+    renderReceivingList();
     return;
   }
   const expected = batchItems.filter((i) => i.expected_qty != null);
@@ -5042,6 +4947,301 @@ function renderBatchItems() {
     bEl.items.append(li);
   });
 }
+
+// === Receiving list (stepless) =============================================
+// The planner's save already printed the labels; this list shows every
+// product sent to receive - preview card, expected count, tagged progress -
+// with per-card [Reprint labels] and [Update count], flagged rows that
+// explain their problem when selected, and a focus view with the printed /
+// left-to-scan bar (Nick, 2026-08-25). Pairing itself happens on the C72.
+let recvFocusId = null;
+
+function recvProblemText(item) {
+  if (item.skip_reason) return item.skip_reason;
+  if (!item.resolved)
+    return (
+      "Not found: no product matches this code, so no labels printed. " +
+      "Fix it in Shopify or link the code at the Scan Station."
+    );
+  const bin = (item.bin_location || "").trim();
+  if (!bin || bin.toLowerCase() === "no bin assigned")
+    return (
+      "No bin assigned: labels are held because they couldn't say where " +
+      "the box goes. Set a bin (product preview > bin chip), then use " +
+      "Reprint labels."
+    );
+  return null;
+}
+
+function renderReceivingList() {
+  const summary = document.getElementById("recv-summary");
+  const list = document.getElementById("recv-list");
+  const empty = document.getElementById("recv-empty");
+  const items = batchItems || [];
+  const printed = items.reduce((n, i) => n + (i.printed_count || 0), 0);
+  const tagged = items.reduce((n, i) => n + (i.paired_count || 0), 0);
+  const flagged = items.filter((i) => recvProblemText(i)).length;
+  summary.textContent = items.length
+    ? `${items.length} product(s) · ${printed} label(s) printed · ` +
+      `${tagged} tagged` +
+      (flagged ? ` · ⚠ ${flagged} flagged` : "")
+    : "";
+  summary.hidden = !items.length;
+  empty.hidden = !!items.length;
+  list.innerHTML = "";
+  items.forEach((item) => list.append(recvCard(item)));
+}
+
+function recvCard(item) {
+  const li = document.createElement("li");
+  li.className = "bcell bcell--stacked recvcard bcell--clickable";
+  const problem = recvProblemText(item);
+  const focused = item.id === recvFocusId;
+  const received = item.qty_scanned || 0;
+  const printedN = item.printed_count || 0;
+  const taggedN = item.paired_count || 0;
+  const planner = item.expected_qty;
+  if (problem) li.classList.add("bcell--warn");
+  else if (received > 0 && taggedN >= received)
+    li.classList.add("bcell--exact");
+  if (focused) li.classList.add("recvcard--focused");
+  // Labels the planner's save could not queue (count raised, or a bin
+  // arrived late) are a fixable gap, not a mystery.
+  const missing = !problem ? Math.max(0, received - printedN) : 0;
+  const bin = (item.bin_location || "").trim();
+  li.innerHTML = `
+    <div class="recvcard__head">
+      ${
+        item.image_url
+          ? `<img class="bcell__img" src="${escapeHtml(item.image_url)}" alt="" loading="lazy" />`
+          : `<span class="bcell__img bcell__img--empty"></span>`
+      }
+      <div class="bcell__info">
+        <div class="bcell__name">${escapeHtml(
+          item.resolved ? itemDisplayName(item) : item.scanned_code || "?"
+        )}</div>
+        <div class="bcell__meta">${
+          item.sku
+            ? "SKU: " + escapeHtml(item.sku)
+            : item.resolved
+              ? "no SKU"
+              : "⚠ unknown code"
+        }${bin && bin.toLowerCase() !== "no bin assigned" ? " · Bin: " + escapeHtml(bin) : ""}</div>
+        <div class="bcell__meta">Expected ${
+          planner != null ? planner : "?"
+        } from the planner${
+          planner != null && received !== planner
+            ? ` · count updated to ${received}`
+            : ""
+        }</div>
+        ${
+          problem
+            ? `<div class="bcell__meta recvcard__flag">⚠ Problem${focused ? "" : " · select to see why"}</div>`
+            : missing
+              ? `<div class="bcell__meta recvcard__flag">⚠ ${missing} label(s) not printed yet${focused ? "" : " · select for details"}</div>`
+              : ""
+        }
+      </div>
+      <span class="bcell__tracker" title="tags paired / products received">${taggedN}/${received}</span>
+    </div>
+    ${focused ? recvFocusBody(item, problem, received, printedN, taggedN, missing) : ""}
+    <div class="recvcard__btns">
+      ${
+        item.resolved && !item.skip_reason
+          ? `<button class="reset" type="button" data-act="reprint"
+              title="Print fresh labels for this product - the received count is not changed">🖨 Reprint labels</button>
+             <button class="reset" type="button" data-act="count"
+              title="Correct how many were actually received, in case the planner was off">✎ Update count</button>`
+          : ""
+      }
+      ${
+        focused
+          ? `<button class="reset" type="button" data-act="cancel">Cancel</button>`
+          : ""
+      }
+    </div>`;
+  li.querySelectorAll("[data-act]").forEach((btn) =>
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      if (btn.dataset.act === "cancel") {
+        recvFocusId = null;
+        renderReceivingList();
+      } else if (btn.dataset.act === "reprint") {
+        openRecvReprint(item);
+      } else if (btn.dataset.act === "count") {
+        openRecvCount(item);
+      } else if (btn.dataset.act === "missing") {
+        recvPrintMissing(item, missing);
+      }
+    })
+  );
+  li.addEventListener("click", () => {
+    recvFocusId = focused ? null : item.id;
+    renderReceivingList();
+  });
+  return li;
+}
+
+function recvFocusBody(item, problem, received, printedN, taggedN, missing) {
+  if (problem) {
+    return `<div class="recvcard__body recvcard__body--problem">${escapeHtml(problem)}</div>`;
+  }
+  const target = Math.max(received, printedN, taggedN, 1);
+  const tagPct = Math.round((taggedN / target) * 100);
+  const prtPct = Math.round((Math.max(printedN - taggedN, 0) / target) * 100);
+  const left = Math.max(0, received - taggedN);
+  return `
+    <div class="recvcard__body">
+      <div class="recvbar2" title="green = tagged, amber = printed but not yet tagged">
+        <span class="recvbar2__tag" style="width:${tagPct}%"></span>
+        <span class="recvbar2__prt" style="width:${prtPct}%"></span>
+      </div>
+      <div class="recvcard__caption">
+        ${printedN} label(s) printed · ${taggedN} tagged · ${left} left to scan
+        ${
+          missing
+            ? ` · <button class="reset recvcard__missing" type="button" data-act="missing">🖨 Print ${missing} missing label(s)</button>`
+            : ""
+        }
+      </div>
+    </div>`;
+}
+
+async function recvPrintMissing(item, missing) {
+  if (!missing) return;
+  try {
+    const res = await postJson(
+      `/api/batches/${batch.id}/items/${item.id}/labels`,
+      { quantity: missing, requested_by: operatorEl.value || null }
+    );
+    setBatchResult(
+      `${res.count} label(s) queued for ${itemDisplayName(item)} ✓ - ` +
+        `the Queue tab tracks them.`,
+      "ok"
+    );
+    await pullBatch(false);
+  } catch (err) {
+    setBatchResult(err.message, "err");
+  }
+}
+
+// --- the two small windows (reprint count / received count) ---------------
+let recvModalItemId = null;
+
+function recvModalProduct(host, item) {
+  document.getElementById(host).innerHTML = `
+    ${
+      item.image_url
+        ? `<img class="bcell__img" src="${escapeHtml(item.image_url)}" alt="" />`
+        : `<span class="bcell__img bcell__img--empty"></span>`
+    }
+    <div>
+      <div class="bcell__name">${escapeHtml(itemDisplayName(item))}</div>
+      <div class="bcell__meta">${item.sku ? "SKU: " + escapeHtml(item.sku) : ""}</div>
+    </div>`;
+}
+
+function openRecvReprint(item) {
+  recvModalItemId = item.id;
+  recvModalProduct("recv-reprint-product", item);
+  document.getElementById("recv-reprint-count").value = 1;
+  document.getElementById("recv-reprint-overlay").hidden = false;
+}
+
+function openRecvCount(item) {
+  recvModalItemId = item.id;
+  recvModalProduct("recv-count-product", item);
+  document.getElementById("recv-count-num").value = item.qty_scanned || 0;
+  document.getElementById("recv-count-expected").textContent =
+    `Inventory planner expected: ${
+      item.expected_qty != null ? item.expected_qty : "?"
+    }`;
+  document.getElementById("recv-count-overlay").hidden = false;
+}
+
+document.getElementById("recv-reprint-cancel").addEventListener("click", () => {
+  document.getElementById("recv-reprint-overlay").hidden = true;
+});
+document.getElementById("recv-count-cancel").addEventListener("click", () => {
+  document.getElementById("recv-count-overlay").hidden = true;
+});
+["recv-reprint-overlay", "recv-count-overlay"].forEach((id) => {
+  document.getElementById(id).addEventListener("click", (e) => {
+    if (e.target === e.currentTarget) e.currentTarget.hidden = true;
+  });
+});
+// The − / + steppers beside each number box.
+document.querySelectorAll(".recvcounter__btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const input = document.getElementById(btn.dataset.for);
+    const min = Number(input.min || 0);
+    const max = Number(input.max || 500);
+    const next = (Number(input.value) || 0) + Number(btn.dataset.d);
+    input.value = Math.min(max, Math.max(min, next));
+  });
+});
+
+document.getElementById("recv-reprint-go").addEventListener("click", async () => {
+  const item = (batchItems || []).find((i) => i.id === recvModalItemId);
+  if (!item || !batch) return;
+  const qty = Math.max(1, Math.min(50,
+    Number(document.getElementById("recv-reprint-count").value) || 1));
+  const btn = document.getElementById("recv-reprint-go");
+  btn.disabled = true;
+  try {
+    const res = await postJson(
+      `/api/batches/${batch.id}/items/${item.id}/labels`,
+      { quantity: qty, requested_by: operatorEl.value || null }
+    );
+    document.getElementById("recv-reprint-overlay").hidden = true;
+    setBatchResult(
+      `${res.count} label(s) queued for ${itemDisplayName(item)} ✓ - ` +
+        `the Queue tab tracks them. The received count is unchanged.`,
+      "ok"
+    );
+    await pullBatch(false);
+  } catch (err) {
+    setBatchResult(err.message, "err");
+    document.getElementById("recv-reprint-overlay").hidden = true;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById("recv-count-save").addEventListener("click", async () => {
+  const item = (batchItems || []).find((i) => i.id === recvModalItemId);
+  if (!item || !batch) return;
+  const qty = Math.max(0, Math.min(500,
+    Number(document.getElementById("recv-count-num").value) || 0));
+  const btn = document.getElementById("recv-count-save");
+  btn.disabled = true;
+  try {
+    const updated = await postJson(
+      `/api/batches/${batch.id}/items/${item.id}/qty`,
+      { qty }
+    );
+    Object.assign(item, updated);
+    document.getElementById("recv-count-overlay").hidden = true;
+    const planner = item.expected_qty;
+    setBatchResult(
+      `Received count set to ${qty}` +
+        (planner != null && planner !== qty
+          ? ` (planner said ${planner})`
+          : "") +
+        ` ✓` +
+        (qty > (item.printed_count || 0)
+          ? ` - ${qty - (item.printed_count || 0)} box(es) have no label ` +
+            `yet; the card offers to print them.`
+          : ""),
+      "ok"
+    );
+    renderReceivingList();
+  } catch (err) {
+    setBatchResult(err.message, "err");
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 function kindRow(item) {
   const bundle = item.kind === "bundle";
@@ -11953,6 +12153,74 @@ async function undoHistoryEvent(e, btn) {
         btn.disabled = false;
         alert(err2.message);
       }
+    }
+    return;
+  }
+  // Assigned Tag events: undo releases the tags, keeping a full snapshot
+  // so the release can itself be undone (re-apply). Manual both ways -
+  // the loop is endless by design and never spins on its own.
+  if (e.undo.kind === "tag-assign") {
+    const operator = operatorEl.value;
+    if (!operator) {
+      alert("Pick who's scanning (top right) first.");
+      return;
+    }
+    const n = (e.undo.epcs || []).length;
+    if (
+      !confirm(
+        `Release ${n} tag(s) from ${e.sku || e.title || "this product"}?\n\n` +
+          `The product stops being tied to ${n === 1 ? "that label" : "those labels"}. ` +
+          `Nothing in Shopify changes. Undo lives in History: the ` +
+          `Released Tag entry re-applies them exactly as they were, ` +
+          `original pairing date included.`
+      )
+    )
+      return;
+    btn.disabled = true;
+    try {
+      const res = await postJson("/api/tags/release", {
+        epcs: e.undo.epcs,
+        sku: e.undo.sku || null,
+        by: operator,
+      });
+      await loadHistory();
+      alert(res.message);
+    } catch (err) {
+      btn.disabled = false;
+      alert(err.message);
+    }
+    return;
+  }
+  // Released Tag events: undo re-applies the tags from their snapshots.
+  if (e.undo.kind === "tag-release") {
+    const operator = operatorEl.value;
+    if (!operator) {
+      alert("Pick who's scanning (top right) first.");
+      return;
+    }
+    const n = (e.undo.epcs || []).length;
+    if (
+      !confirm(
+        `Re-apply ${n} tag(s) to ${e.sku || e.title || "this product"}?\n\n` +
+          `Each assignment comes back exactly as it was before the ` +
+          `release - product, bin and original pairing date included. ` +
+          `Undo lives in History: the Assigned Tag entry releases them ` +
+          `again.`
+      )
+    )
+      return;
+    btn.disabled = true;
+    try {
+      const res = await postJson("/api/tags/reapply", {
+        epcs: e.undo.epcs,
+        sku: e.undo.sku || null,
+        by: operator,
+      });
+      await loadHistory();
+      alert(res.message);
+    } catch (err) {
+      btn.disabled = false;
+      alert(err.message);
     }
     return;
   }

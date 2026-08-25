@@ -3,6 +3,49 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-08-25.
 
+## 📦 Receiving phase 2: stepless list + Assigned Tag undo chain (2026-08-25, ⚠ BUILT, NOT DEPLOYED)
+
+Nick's evening direction. Coded, 41/41 suites, browser-verified on the
+seed server; **prod deploy + the rfid_released_tags migration
+(dev/alter_add_released_tags.py) are HELD until Nick reviews the
+previews** (artifact "Receiving Rework Preview").
+
+- **Receiving has no steps any more**: opening a receiving batch shows
+  ONE list (no stage chips) of every product the planner sent to
+  receive - preview card, "Expected N from the planner", tagged/received
+  tracker, and per-card buttons that need no expanding: [Reprint labels]
+  (small window asking only how many; count untouched; labels carry the
+  item's HOME bin), [Update count] (− / + around a number box, planner's
+  original number kept in view; drives how many labels the product
+  needs), [Cancel] (unfocus). Selecting a card shows the progress bar
+  (green tagged / amber printed-not-tagged) with "X printed · Y tagged ·
+  Z left to scan"; when the received count outruns printed labels the
+  card flags it and offers to print exactly the missing ones. Empty
+  list says "No products set to receive". The manual "Start receiving"
+  button is GONE - receiving batches come only from the planner's
+  "Print labels" save. Finish receiving (bin checks) stays.
+- **Problems live on the batch now**: /api/receiving/prints keeps
+  failures as flagged rows (skip_reason) instead of only naming them in
+  the response - unknown SKU/barcode, non-taggable, and a catch-all for
+  unforeseen per-item errors (one bad line can't eat the save). Flagged
+  cards show ⚠ and explain themselves when selected; they never print
+  (server-guarded). No-bin items flag client-side off the missing bin.
+  expected_qty on receiving rows = the planner's cumulative number
+  (kept apart from qty_scanned = received count).
+- **Assigned Tag undo chain (History)**: tag-assigned events (grouped
+  sweeps AND singles) now carry Undo → POST /api/tags/release moves the
+  assignments into the new rfid_released_tags snapshot table (every
+  field kept) and logs per-EPC "tag-released" rows (shared timestamp →
+  one foldable event). That event's Undo → /api/tags/reapply restores
+  each assignment EXACTLY (original assigned_at/by, case units, batch,
+  suspect flag - so counts and sold-window baselines don't move), logs
+  "tag-reapplied" (also undoable). Endless manual loop by design. A
+  consumed release / re-released re-apply drops its Undo (state-checked
+  per render). Guards: SKU scoping, never steals an EPC re-claimed by
+  another product. EVENT_META: Released Tag (#8a4b0e), Re-applied Tag
+  (#0c5132). Suites: test_tagchain.py (19), test_recvbridge.py grew to
+  21.
+
 ## 📦 Receiving ↔ TC-Planner bridge, phase 1 (2026-08-25)
 
 Nick's direction: connect receiving to the RFID system. First slice:
