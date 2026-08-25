@@ -680,11 +680,13 @@
         </div>
 
         <!-- Check-item editor (modal): candidates arrows + counts + name -->
-        <!-- Fix label & reprint (Pair step): correct the preferred name,
-             void the bad labels, print fresh ones, tracker back to 0/N. -->
+        <!-- Reprint label(s) (Pair step): correct the preferred name,
+             void the bad labels, print fresh ones. The label count here
+             only decides how many stickers come out; the pair target
+             stays the Collect step's count (Nick, 2026-08-25). -->
         <div class="phist-overlay" id="breprint-overlay" hidden>
           <section class="linkbox serialbox phist-modal" style="max-width:560px">
-            <div class="linkbox__title">Fix label &amp; reprint — <span id="breprint-title">—</span></div>
+            <div class="linkbox__title">Reprint label(s) - <span id="breprint-title">—</span></div>
             <p class="linkbox__text">Edit the two label lines. Corrections are saved for this product <b>store-wide</b>, so every future print uses them too.</p>
             <div class="labeledit">
               <div class="labeledit__fields">
@@ -893,7 +895,7 @@
             <p class="linkbox__text" id="bpair-progress">—</p>
             <div class="linkbox__actions">
               <button class="reset" id="bpair-undo" type="button">Undo last tag</button>
-              <button class="reset" id="bpair-reprint" type="button" title="The labels printed wrong — fix the name and print a fresh set">Fix label &amp; reprint…</button>
+              <button class="reset" id="bpair-reprint" type="button" title="Print a fresh set of labels (fix the name if needed). The count to pair stays what Collect counted">Reprint label(s)…</button>
               <button class="reset" id="bpair-norfid" type="button" title="The tag reads fine in hand but never once it's on the box — sweeps stop expecting an answer">⊘ Won't RFID scan</button>
             </div>
           </div>

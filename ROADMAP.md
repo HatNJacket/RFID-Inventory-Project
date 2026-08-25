@@ -1,7 +1,44 @@
 # RFID Inventory System — Roadmap
 
 Source of truth for project status. Updated by Claude each working session.
-Last updated: 2026-08-24.
+Last updated: 2026-08-25.
+
+## 📋 C72 3.58 list polish + collect-anchored pair target (2026-08-25)
+
+Nick's field notes after running 3.57. C72 **3.58 (code 76)** built and
+on the update link; web side deployed the same day.
+
+- **Worst-first lists on the gun**: the pair list groups over-paired
+  (red) rows on top, unfinished pairing in the middle by recency, green
+  done rows at the bottom; the shelf-sweep results sort silent (red) →
+  unheard (yellow) → noscan → match (green), and plain "N boxes get
+  labels" rows (no earlier tags, nothing to check) no longer appear in
+  that list at all. After SEND SWEEP on Verify, each report verdict is
+  remembered per SKU and the verify list behind the report sorts AND
+  tints the same way (red, yellow, no-verdict, green); the memory clears
+  on new sweep / batch change. The verify REPORT dialog already sorted
+  worst-first.
+- **USE THIS LISTING dead button found**: the editor opens focused on
+  the CURRENTLY selected listing and the button was disabled for it —
+  a primary button that silently did nothing, which is exactly the
+  "yes, keep this one" press that settles the several-listings flag.
+  Now always enabled; reads "KEEP THIS LISTING" on the current one,
+  posts the same reassign (server locks the choice), and the status
+  line says the flag is settled.
+- **One-letter loading overlay fixed**: the overlay text ("Checking
+  the batch…") was measured inside a wrap-content box whose width came
+  from the 64dp spinner only (match-parent children contribute just
+  margins to a wrap-content LinearLayout), rendering one letter ("C").
+  Explicit wrap-content params + full-width box.
+- **Pull-to-refresh on the batch picker**: dragging the open-batch list
+  down past the top (~100dp, at scroll top) refetches it — batches
+  started on the web terminal show up without leaving the tab.
+- **Web: "Fix label & reprint" → "Reprint label(s)"**, and the pair
+  target is now COLLECT-anchored everywhere (`labels_total`, matching
+  the C72): reprinting 3 of 5 labels reads 0/5 with "(3 label(s)
+  printed)" as a note, never 0/3. The tracker also stopped using
+  max(labels, paired) — 5 tags on 4 labels reads 5/4, not 5/5. If the
+  collected count itself is wrong, fix it at Collect.
 
 ## 📐 Batch-tagging truth rework (2026-08-24, evening session)
 

@@ -4578,7 +4578,9 @@ function itemCard(item, mode) {
   if (!item.resolved) li.classList.add("bcell--warn");
   if (mode === "pair") {
     if (item.id === pairActiveItemId) li.classList.add("bcell--active");
-    if (item.qty_scanned > 0 && item.paired_count >= item.qty_scanned)
+    const labelGoal =
+      item.labels_total != null ? item.labels_total : item.qty_scanned;
+    if (labelGoal > 0 && item.paired_count >= labelGoal)
       li.classList.add("bcell--exact");
   } else if (item.expected_qty != null) {
     // Compare UNITS to Shopify's on-hand — a sealed case is one box but
@@ -4592,7 +4594,10 @@ function itemCard(item, mode) {
   const labels = item.labels_total != null ? item.labels_total : item.qty_scanned;
   const tracker =
     mode === "pair"
-      ? `${item.paired_count}/${Math.max(labels, item.paired_count)}`
+      ? // The denominator is the Collect step's count — a fixed target.
+        // max(labels, paired) used to move the goalposts, so 5 tags on
+        // 4 labels read "5/5" instead of an honest overshoot.
+        `${item.paired_count}/${labels}`
       : item.expected_qty != null
         ? `${units}/${item.expected_qty}`
         : `${units}`;
@@ -6133,33 +6138,38 @@ function matchBatchItem(code) {
   );
 }
 
+// Pairing is measured against the COLLECT step's count (labels_total) —
+// collection is the source of truth for how many boxes are in the bin.
+// Reprinting fewer/more labels never moves this target: change the count
+// at Collect if the collected number itself was wrong (Nick, 2026-08-25).
+// Skipped rows and bundles carry no labels of their own.
+function pairLabelGoal(i) {
+  if (i.skipped || i.kind === "bundle") return 0;
+  return i.labels_total != null ? i.labels_total : i.qty_scanned;
+}
+
 function renderPairCard() {
-  // Pairing is measured against LABELS PRINTED, not boxes scanned — those
-  // differ whenever a count was corrected after queueing.
   const summary = document.getElementById("bpair-summary");
-  const target = batchItems.reduce(
-    (n, i) => n + (i.printed_count ?? i.qty_scanned),
-    0
-  );
+  const target = batchItems.reduce((n, i) => n + pairLabelGoal(i), 0);
   const paired = batchItems.reduce((n, i) => n + i.paired_count, 0);
-  summary.textContent = `${paired} of ${target} printed label(s) paired${
+  summary.textContent = `${paired} of ${target} label(s) paired${
     target - paired > 0 ? ` · ${target - paired} to go` : " ✓"
   }`;
 
   const item = batchItems.find((i) => i.id === pairActiveItemId);
   bEl.pairCard.hidden = !item;
   if (!item) return;
-  const goal = item.printed_count ?? item.qty_scanned;
+  const goal = pairLabelGoal(item);
   bEl.pairActive.textContent = itemDisplayName(item);
   document.getElementById("bpair-norfid").textContent =
     item.rfid_incompatible
       ? "⊘ RFID flag ON — remove"
       : "⊘ Won't RFID scan";
   bEl.pairProgress.textContent =
-    `${item.paired_count} of ${goal} printed label(s) paired · ` +
+    `${item.paired_count} of ${goal} label(s) paired · ` +
     `${Math.max(0, goal - item.paired_count)} remaining` +
-    (item.printed_count != null && item.printed_count !== item.qty_scanned
-      ? ` (${item.qty_scanned} box(es) scanned)`
+    (item.printed_count != null && item.printed_count !== goal
+      ? ` (${item.printed_count} label(s) printed)`
       : "");
   bEl.pairUndo.disabled = !pairHistory.length;
 }
@@ -6170,10 +6180,6 @@ function renderPairItems() {
     .filter((i) => i.resolved && i.qty_scanned > 0)
     .forEach((item) => {
       const li = itemCard(item, "pair");
-      if (item.printed_count != null) {
-        const t = li.querySelector(".bcell__tracker");
-        if (t) t.textContent = `${item.paired_count}/${item.printed_count}`;
-      }
       li.addEventListener("click", () => {
         pairActiveItemId = item.id;
         renderPairItems();
@@ -6239,7 +6245,7 @@ bEl.pairInput.addEventListener("keydown", async (event) => {
         ? `Saved, but ${code} doesn't look like a normal 24-char EPC — ` +
             `probably a bad read. Re-scan it to be safe.`
         : `Tag paired → ${itemDisplayName(data.item)} ` +
-            `(${data.item.paired_count}/${data.item.qty_scanned}).`,
+            `(${data.item.paired_count}/${pairLabelGoal(data.item)}).`,
       data.assignment.suspect ? "err" : "ok"
     );
   } catch (err) {
@@ -6248,12 +6254,13 @@ bEl.pairInput.addEventListener("keydown", async (event) => {
   bEl.pairInput.focus();
 });
 
-// --- Fix label & reprint ----------------------------------------------------
+// --- Reprint label(s) -------------------------------------------------------
 // The labels printed wrong — usually a preferred name saved onto the wrong
 // line ("Telescopes Canada" fixed but the SKU line clobbered). Correct the
 // saved name store-wide, void this product's labels in the batch, release
-// any tags tied to them, and print a fresh set: the tracker returns to 0/N
-// with N the fresh count, never old-plus-new.
+// any tags tied to them, and print a fresh set. The count entered here only
+// decides how many stickers come out — the pair target stays the Collect
+// step's count (pairLabelGoal), so printing 3 of 5 reads 0/5, not 0/3.
 const STORE_HEADER = "Telescopes Canada";
 // Defaults for the two boxes, captured when the dialog opens. Cancelling
 // discards edits: every open re-reads the SAVED state, so the boxes show
@@ -6343,8 +6350,10 @@ document.getElementById("bpair-reprint").addEventListener("click", async () => {
   if (!item || !batch) return;
   document.getElementById("breprint-title").textContent =
     itemDisplayName(item);
+  // Default to the Collect count — how many labels the bin actually
+  // needs. Printing a different number never moves the pair target.
   document.getElementById("breprint-count").value =
-    item.printed_count ?? item.qty_scanned;
+    item.labels_total ?? item.qty_scanned;
   document.getElementById("breprint-warn").textContent = item.paired_count
     ? `⚠ ${item.paired_count} tag(s) are already paired to the old labels. ` +
       `PEEL THOSE STICKERS OFF the boxes before printing — a leftover ` +

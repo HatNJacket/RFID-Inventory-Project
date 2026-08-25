@@ -40,6 +40,7 @@ import android.text.InputType;
 import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
@@ -716,9 +717,16 @@ public class MainActivity extends Activity {
         loadingText.setTypeface(null, Typeface.BOLD);
         loadingText.setGravity(Gravity.CENTER_HORIZONTAL);
         loadingText.setPadding(dp(24), dp(10), dp(24), 0);
-        loadBox.addView(loadingText);
+        // WRAP_CONTENT here, explicitly: LinearLayout's default child
+        // params are MATCH_PARENT, and a match-parent child inside a
+        // wrap-content box only contributes its MARGINS to the measured
+        // width — the box shrank to the 64dp spinner and "Checking the
+        // batch…" rendered one letter wide ("C").
+        loadBox.addView(loadingText, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
         loadingOverlay.addView(loadBox, new FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER));
         loadingOverlay.setVisibility(View.GONE);
         outer.addView(loadingOverlay, new FrameLayout.LayoutParams(
@@ -774,8 +782,47 @@ public class MainActivity extends Activity {
 
         // No PICK button any more (Nick, v3.36): with no batch loaded the
         // list area below IS the picker — open batches as tappable cards,
-        // plus the scan-a-BIN path spelled out.
-        batchPickerScroll = new ScrollView(this);
+        // plus the scan-a-BIN path spelled out. Pulling the list DOWN past
+        // the top refreshes it: batches started on the web terminal appear
+        // without leaving the tab (Nick, 2026-08-25).
+        batchPickerScroll = new ScrollView(this) {
+            private float pullFromY = -1f;
+            private boolean pullArmed = false;
+
+            @Override
+            public boolean onTouchEvent(MotionEvent ev) {
+                switch (ev.getActionMasked()) {
+                    case MotionEvent.ACTION_DOWN:
+                        pullArmed = getScrollY() == 0;
+                        pullFromY = ev.getY();
+                        break;
+                    case MotionEvent.ACTION_MOVE:
+                        if (getScrollY() != 0) {
+                            pullArmed = false;
+                        } else if (pullFromY < 0) {
+                            // The first event a ScrollView sees after
+                            // intercepting a drag is a MOVE, never a
+                            // DOWN — arm from here.
+                            pullFromY = ev.getY();
+                            pullArmed = true;
+                        }
+                        break;
+                    case MotionEvent.ACTION_UP:
+                        if (pullArmed && getScrollY() == 0 && pullFromY >= 0
+                                && ev.getY() - pullFromY > dp(100)) {
+                            pickerPullRefresh();
+                        }
+                        pullFromY = -1f;
+                        pullArmed = false;
+                        break;
+                    case MotionEvent.ACTION_CANCEL:
+                        pullFromY = -1f;
+                        pullArmed = false;
+                        break;
+                }
+                return super.onTouchEvent(ev);
+            }
+        };
         batchPickerPane = new LinearLayout(this);
         batchPickerPane.setOrientation(LinearLayout.VERTICAL);
         batchPickerScroll.addView(batchPickerPane);
@@ -3760,7 +3807,13 @@ public class MainActivity extends Activity {
                     + editEntry.candidates.size() + " sharing this barcode"
                     + (current ? "  — currently selected" : ""));
             editUse.setVisibility(View.VISIBLE);
-            editUse.setEnabled(!current);
+            // Never disabled: confirming the listing ALREADY selected is
+            // the usual move ("yes, this one") and settles the several-
+            // listings flag server-side. The old disabled state was a
+            // primary button that silently did nothing (Nick, 2026-08-25).
+            editUse.setEnabled(true);
+            editUse.setText(current ? "KEEP THIS LISTING"
+                    : "USE THIS LISTING");
             // Splitting needs at least two boxes to divide and no tags
             // yet — the server refuses both anyway, but a button that can
             // only fail is worse than no button.
@@ -4095,7 +4148,13 @@ public class MainActivity extends Activity {
         if (editEntry == null || editEntry.candidates.isEmpty()) return;
         final JSONObject cand = editEntry.candidates.get(editIdx);
         final int itemId = editEntry.item.id;
-        editMsg.setText("Reassigning…");
+        // Same endpoint either way — reassigning to the CURRENT listing
+        // is how "yes, keep this one" gets recorded (listing_locked),
+        // which settles the several-listings flag.
+        final boolean keeping = cand.optString("shopify_variant_id")
+                .equals(entryVariantId(editEntry));
+        editMsg.setText(keeping ? "Confirming this listing…"
+                : "Reassigning…");
         new Thread(() -> {
             try {
                 JSONObject body = new JSONObject().put("shopify_variant_id",
@@ -4105,7 +4164,10 @@ public class MainActivity extends Activity {
                 ui.post(() -> {
                     beep(SOUND_OK);
                     closeItemEditor();
-                    status.setText("Reassigned ✓ — refreshing…");
+                    status.setText(keeping
+                            ? "Listing confirmed ✓ - the several-listings "
+                              + "flag is settled for this row."
+                            : "Reassigned ✓ - refreshing…");
                     reloadBatchAndReview();
                 });
             } catch (Exception e) {
@@ -5372,8 +5434,24 @@ public class MainActivity extends Activity {
         previewItem = null;
     }
 
+    // Last verify-sweep verdict per SKU (red / yellow / ok): orders and
+    // tints the verify list until the sweep is cleared or the batch
+    // changes, so the list behind the report reads worst-first too.
+    private final java.util.HashMap<String, String> verifySkuState =
+            new java.util.HashMap<>();
+
+    private int verifyRank(BItem b) {
+        String s = b.sku == null ? null
+                : verifySkuState.get(b.sku.toUpperCase(java.util.Locale.US));
+        if ("red".equals(s)) return 0;
+        if ("yellow".equals(s)) return 1;
+        if ("ok".equals(s)) return 3;
+        return 2; // no verdict yet — above the settled green rows
+    }
+
     private void clearVerifySweep() {
         synchronized (tags) { tags.clear(); }
+        verifySkuState.clear();
         beep(SOUND_OTHER);
         status.setText("Sweep cleared — pull the trigger to scan the bin "
                 + "again.");
@@ -5629,13 +5707,36 @@ public class MainActivity extends Activity {
         });
     }
 
+    /** Worst first: silent (red) 0, unheard (yellow) 1, muted noscan 2,
+     *  match (green) last — green rows need no attention (Nick,
+     *  2026-08-25). */
+    private static int shelfRank(String st) {
+        return "silent".equals(st) ? 0 : "unheard".equals(st) ? 1
+                : "match".equals(st) ? 3 : 2;
+    }
+
     private void renderShelfRows() {
         if (shelfRowsBox == null) return;
         shelfRowsBox.removeAllViews();
         if (shelfItems == null) return;
+        List<JSONObject> shelfRows = new ArrayList<>();
         for (int i = 0; i < shelfItems.length(); i++) {
-            final JSONObject r = shelfItems.optJSONObject(i);
+            JSONObject r = shelfItems.optJSONObject(i);
             if (r == null) continue;
+            String st = r.optString("state");
+            // Plain no-earlier-tags rows ("N boxes get labels") have
+            // nothing to check here — they only crowd the sweep list
+            // (Nick, 2026-08-25). They still print their labels.
+            if (!"match".equals(st) && !"unheard".equals(st)
+                    && !"silent".equals(st) && !"noscan".equals(st)) {
+                continue;
+            }
+            shelfRows.add(r);
+        }
+        java.util.Collections.sort(shelfRows, (a, b2) ->
+                shelfRank(a.optString("state"))
+                - shelfRank(b2.optString("state")));
+        for (final JSONObject r : shelfRows) {
             final String state = r.optString("state");
             final BItem it = bItemById(r.optInt("item_id"));
             int heard = r.optInt("heard");
@@ -6196,6 +6297,15 @@ public class MainActivity extends Activity {
             int rb = b2.red() ? 0 : b2.yellow() ? 1 : 2;
             return ra - rb;
         });
+        // Remember each verdict so the verify LIST behind this report
+        // sorts and tints the same way (red, yellow, then green).
+        verifySkuState.clear();
+        for (VRow r : rows) {
+            if (r.sku == null || r.sku.isEmpty()) continue;
+            verifySkuState.put(r.sku.toUpperCase(java.util.Locale.US),
+                    r.red() ? "red" : r.yellow() ? "yellow" : "ok");
+        }
+        refreshBatchList();
 
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
@@ -7201,6 +7311,15 @@ public class MainActivity extends Activity {
         return box;
     }
 
+    /** Pull-to-refresh landed on the picker: clear the pane so the
+     *  "Loading open batches…" line shows, then refetch. */
+    private void pickerPullRefresh() {
+        if (inBatch() || batchPickerLoading) return;
+        beep(SOUND_OTHER);
+        batchPickerPane.removeAllViews();
+        loadBatchPickerInline();
+    }
+
     /** Fill the batch tab's lower pane with the open batches. Runs on
      *  every no-batch applyBatchUi; the loading flag stops a fetch storm
      *  when several UI paths land here at once. */
@@ -7447,6 +7566,7 @@ public class MainActivity extends Activity {
                     pairHistory.clear();
                     checkEntries.clear();
                     checkFlagText.clear();
+                    verifySkuState.clear();
                     applyBatchUi();
                 });
             } catch (Exception e) {
@@ -8020,14 +8140,20 @@ public class MainActivity extends Activity {
             // Only flagged items — a clean bin shows an empty list.
             for (CheckEntry e : checkEntries) displayItems.add(e.item);
         } else if (inBatch() && step == STEP_VERIFY) {
-            // Everything that got tagged, most recently scanned first.
+            // Everything that got tagged. After SEND SWEEP the verdicts
+            // order the list worst-first (red, yellow, no-verdict, then
+            // green); before one lands there are no verdicts and recency
+            // decides alone (Nick, 2026-08-25).
             for (BItem b : bItems) {
                 if (b.resolved && (b.paired > 0 || b.qty > 0)) {
                     displayItems.add(b);
                 }
             }
-            java.util.Collections.sort(displayItems,
-                    (a, b2) -> scanSeqOf(b2) - scanSeqOf(a));
+            java.util.Collections.sort(displayItems, (a, b2) -> {
+                int ra = verifyRank(a), rb = verifyRank(b2);
+                if (ra != rb) return ra - rb;
+                return scanSeqOf(b2) - scanSeqOf(a);
+            });
         } else {
             // A row holding only a sealed case has qty 0 but is very much
             // "touched", so count cases too.
@@ -8049,8 +8175,29 @@ public class MainActivity extends Activity {
             java.util.Collections.sort(waiting, (a, b2) ->
                     (b2.expected == null ? -1 : b2.expected)
                     - (a.expected == null ? -1 : a.expected));
-            displayItems.addAll(touched);
-            displayItems.addAll(waiting);
+            if (inBatch() && step == STEP_PAIR) {
+                // Trouble first, work next, finished last: over-paired
+                // (red) rows on top, unfinished pairing in the middle
+                // by recency, green done rows at the very bottom with
+                // untouched rows just above them (Nick, 2026-08-25).
+                List<BItem> red = new ArrayList<>();
+                List<BItem> work = new ArrayList<>();
+                List<BItem> done = new ArrayList<>();
+                for (BItem b : touched) {
+                    if (b.resolved && b.labelsTotal > 0
+                            && b.paired > b.labelsTotal) red.add(b);
+                    else if (b.resolved && b.labelsTotal > 0
+                            && b.paired == b.labelsTotal) done.add(b);
+                    else work.add(b);
+                }
+                displayItems.addAll(red);
+                displayItems.addAll(work);
+                displayItems.addAll(waiting);
+                displayItems.addAll(done);
+            } else {
+                displayItems.addAll(touched);
+                displayItems.addAll(waiting);
+            }
         }
         batchAdapter.notifyDataSetChanged();
     }
@@ -8164,6 +8311,20 @@ public class MainActivity extends Activity {
             // that, so "which am I pairing into" and "is it finished" are
             // two separate signals instead of one fighting the other.
             int fill = C_CARD, stroke = C_LINE, trk = C_BLUE;
+            if (inBatch() && step == STEP_VERIFY && b.resolved
+                    && b.sku != null) {
+                // After SEND SWEEP each row wears its verdict, matching
+                // the report card it came from.
+                String vs = verifySkuState.get(
+                        b.sku.toUpperCase(java.util.Locale.US));
+                if ("red".equals(vs)) {
+                    fill = C_OVER_BG; stroke = C_OVER; trk = C_OVER;
+                } else if ("yellow".equals(vs)) {
+                    fill = C_WARN_BG; stroke = C_WARN; trk = C_WARN;
+                } else if ("ok".equals(vs)) {
+                    fill = C_OK_BG; stroke = C_OK; trk = C_OK;
+                }
+            }
             if (inBatch() && step == STEP_PAIR && b.resolved
                     && b.labelsTotal > 0) {
                 if (b.paired > b.labelsTotal) {
@@ -8648,6 +8809,7 @@ public class MainActivity extends Activity {
         step = STEP_COLLECT;
         checkEntries.clear();
         checkFlagText.clear();
+        verifySkuState.clear();
         applyBatchUi();
         if (!completed) {
             status.setText("Left the batch (still open — resume any time).");
@@ -9702,6 +9864,7 @@ public class MainActivity extends Activity {
                     bItems.clear();
                     checkEntries.clear();
                     checkFlagText.clear();
+                    verifySkuState.clear();
                     previewItem = null;
                     pairActive = null;
                     step = STEP_PAIR;
@@ -9760,6 +9923,7 @@ public class MainActivity extends Activity {
                     bItems.clear();
                     checkEntries.clear();
                     checkFlagText.clear();
+                    verifySkuState.clear();
                     previewItem = null;
                     pairActive = null;
                     step = STEP_CHECK;
