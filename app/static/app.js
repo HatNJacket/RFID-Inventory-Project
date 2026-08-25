@@ -14,11 +14,10 @@ const el = {
   stepRfid: document.getElementById("step-rfid"),
   productCard: document.getElementById("product-card"),
   pTitle: document.getElementById("p-title"),
-  pVariant: document.getElementById("p-variant"),
   pSku: document.getElementById("p-sku"),
   pBarcode: document.getElementById("p-barcode"),
   pBin: document.getElementById("p-bin"),
-  pSource: document.getElementById("p-source"),
+  pOnhand: document.getElementById("p-onhand"),
   pTagCount: document.getElementById("p-tagcount"),
   tagsPanel: document.getElementById("tags-panel"),
   tagsList: document.getElementById("tags-list"),
@@ -66,6 +65,7 @@ const el = {
   prefixRecoApply: document.getElementById("prefix-reco-apply"),
   autoPrint: document.getElementById("auto-print"),
   autoPrintSerial: document.getElementById("auto-print-serial"),
+  showLabelPreview: document.getElementById("show-label-preview"),
   autoReset: document.getElementById("auto-reset"),
   requireBin: document.getElementById("require-bin"),
   warnNobin: document.getElementById("warn-nobin"),
@@ -170,6 +170,11 @@ bindSetting(el.requireBin, "requireBinForAutoPrint");
 bindSetting(el.warnNobin, "warnNoBinOnPrint", true);
 el.warnNobin.addEventListener("change", () => {
   if (lastShownProduct) updateNoBinWarn(lastShownProduct);
+});
+// Label preview on the product card — re-renders live when toggled.
+bindSetting(el.showLabelPreview, "showLabelPreview");
+el.showLabelPreview.addEventListener("change", () => {
+  renderCardLabelPreview(pendingProduct, lastTagData);
 });
 // (Print-related items are hidden after printingEnabled is computed below.)
 
@@ -2102,13 +2107,14 @@ el.replaceGo.addEventListener("click", async () => {
 });
 
 function showProduct(p) {
-  el.pTitle.textContent = p.product_title || "—";
-  // Variant only earns a spot in the meta line when it says something.
+  // Variant folds into the title (the meta lines are fixed-shape now);
+  // the title itself clamps to two lines in CSS.
   const hasVariant = !!(
     p.variant_title && p.variant_title !== "Default Title"
   );
-  document.getElementById("p-variant-wrap").hidden = !hasVariant;
-  el.pVariant.textContent = hasVariant ? p.variant_title : "";
+  el.pTitle.textContent =
+    (p.product_title || "—") + (hasVariant ? ` (${p.variant_title})` : "");
+  el.pTitle.title = el.pTitle.textContent;
   const pImg = document.getElementById("p-img");
   if (p.image_url) {
     pImg.src = p.image_url;
@@ -2121,22 +2127,11 @@ function showProduct(p) {
   el.pBarcode.textContent = p.barcode || "—";
   closeBinEditor();
   el.pBin.textContent = p.bin_location || "—";
-  el.pSource.textContent =
-    (p.source === "binmap"
-      ? "Live catalog"
-      : p.source === "shopify"
-        ? "Shopify"
-        : "—") +
-    (p.serial_brand ? ` · ${p.serial_brand} serial` : "");
-  el.pSource.title =
-    p.source === "binmap"
-      ? "Live information taken from Shopify"
-      : p.source === "shopify"
-        ? "Looked up directly from the Shopify API just now"
-        : "";
+  el.pOnhand.textContent = "…";
   // Every fresh barcode starts back at one label — yesterday's big print
   // run must never silently ride into the next product.
   el.printQty.value = 1;
+  renderCardLabelPreview(p, null);
   el.productCard.hidden = false;
   el.printPanel.hidden = !printingEnabled;
   updateNoBinWarn(p);
@@ -2228,6 +2223,65 @@ document.getElementById("product-label").addEventListener("click", () => {
   if (term) openProductHistory(term);
 });
 
+// --- Label preview on the product card (⚙ setting) --------------------------
+// A miniature of what the NEXT print will say, using the same saved
+// label lines the server now applies to Scan Station prints — so a
+// freshly edited SKU line is visible before a single sticker comes out
+// (Nick, 2026-08-25: the Softbag1 line printed stale with no way to see
+// it coming). Serial products preview the name box's current text live.
+let lastTagData = null;
+function renderCardLabelPreview(p, data) {
+  const box = document.getElementById("p-labelprev");
+  if (!p || !el.showLabelPreview.checked) {
+    box.hidden = true;
+    return;
+  }
+  let top = STORE_HEADER;
+  let skuLine = p.sku || "";
+  if (p.serial_prefix) {
+    top =
+      el.serialLabelInput.value.trim() ||
+      p.serial_label ||
+      STORE_HEADER;
+  } else if (data && data.label_name) {
+    const placement = data.label_placement || "header";
+    if (placement === "header" || placement === "both")
+      top = data.label_name;
+    skuLine =
+      data.label_sku_text ||
+      (placement === "sku" || placement === "both"
+        ? data.label_name
+        : skuLine);
+  } else if (data && data.label_sku_text) {
+    skuLine = data.label_sku_text;
+  }
+  const head = document.getElementById("p-prev-header");
+  head.textContent = top;
+  head.className =
+    "label-preview__header " +
+    (top === STORE_HEADER || top.length <= 26
+      ? "label-preview__header--lg"
+      : top.length <= 56
+        ? "label-preview__header--md"
+        : "label-preview__header--sm");
+  document.getElementById("p-prev-sku").textContent = skuLine || "—";
+  document.getElementById("p-prev-bc").textContent =
+    p.barcode || p.sku || "";
+  document.getElementById("p-prev-bin").textContent =
+    "BIN: " +
+    (p.bin_location && p.bin_location !== "No bin assigned"
+      ? p.bin_location
+      : "—");
+  box.hidden = false;
+}
+
+// The serial name box edits the label's top line — the preview follows
+// every keystroke.
+el.serialLabelInput.addEventListener("input", () => {
+  if (pendingProduct && pendingProduct.serial_prefix)
+    renderCardLabelPreview(pendingProduct, lastTagData);
+});
+
 // --- Tags on file for the scanned product ----------------------------------
 async function loadTags(p) {
   el.pTagCount.textContent = "…";
@@ -2240,16 +2294,22 @@ async function loadTags(p) {
   if (p.barcode) params.set("barcode", p.barcode);
   if (![...params].length) {
     el.pTagCount.textContent = "—";
+    el.pOnhand.textContent = "—";
     return;
   }
   try {
     const res = await apiFetch(`/api/products/tags?${params}`);
     if (!res.ok) {
       el.pTagCount.textContent = "—";
+      el.pOnhand.textContent = "—";
       return;
     }
     const data = await res.json();
     el.pTagCount.textContent = String(data.count);
+    el.pOnhand.textContent =
+      data.on_hand != null ? String(data.on_hand) : "—";
+    lastTagData = data;
+    renderCardLabelPreview(p, data);
     if (data.count) {
       data.assignments.forEach((a) => {
         const li = document.createElement("li");
@@ -2269,6 +2329,7 @@ async function loadTags(p) {
     }
   } catch (err) {
     el.pTagCount.textContent = "—";
+    el.pOnhand.textContent = "—";
   }
 }
 
@@ -7475,6 +7536,44 @@ bEl.complete.addEventListener("click", async () => {
 });
 
 // === Print queue tab ========================================================
+// Re-align (Nick, 2026-08-25): a rip at the tear bar drags the liner
+// forward a random amount, so the next two labels print off-center and a
+// third feeds blank while the printer finds itself again. This queues a
+// single feed-to-next-home (~PH) that the print agent sends BEFORE any
+// printing - the media re-registers on the gap sensor at the cost of the
+// one label the rip already disturbed. Inert until the warehouse PC's
+// agent is restarted on the updated print_agent.py.
+document
+  .getElementById("printer-realign")
+  .addEventListener("click", async () => {
+    if (
+      !confirm(
+        `Feed the printer to the next label's start?\n\n` +
+          `Use this right after ripping off labels, before the next ` +
+          `print. The one label the rip already pulled comes out blank ` +
+          `and re-aligned - instead of two off-center prints and a ` +
+          `blank. Nothing is printed or encoded.\n\n` +
+          `Needs the updated print agent running on the warehouse PC ` +
+          `(restart its scheduled task once after this deploy).`
+      )
+    )
+      return;
+    try {
+      await postJson("/api/printer-commands", {
+        printer: selectedPrinter || null,
+        kind: "feed",
+        requested_by: operatorEl.value || null,
+      });
+      setResult(
+        "Re-align queued ✓ - the printer feeds to the next label on " +
+          "the agent's next poll (about 3 seconds).",
+        "ok"
+      );
+    } catch (err) {
+      alert(`Could not queue the re-align: ${err.message}`);
+    }
+  });
+
 async function loadQueue() {
   const body = document.getElementById("queue-body");
   const pill = document.getElementById("agent-pill");
@@ -7553,6 +7652,8 @@ async function loadQueue() {
               barcode: j.barcode,
               bin_location: j.bin_location,
               label_name: j.label_name,
+              label_placement: j.label_placement || null,
+              label_sku: j.label_sku || null,
               requested_by: operatorEl.value || j.requested_by,
               printer: selectedPrinter || null,
             });
@@ -11164,6 +11265,11 @@ document.getElementById("phist-print").addEventListener("click", async () => {
             ? "header"
             : phistData.custom_placement || "header"
           : null,
+        // Two-line customs: the centre line rides along too, else a
+        // saved SKU line silently reverts to the plain SKU on print.
+        label_sku: phistData.serial_prefix
+          ? null
+          : phistData.custom_sku_text || null,
         requested_by: operator,
         printer: selectedPrinter || null,
       }),

@@ -1029,6 +1029,31 @@ body {
   font-weight: 650;
   line-height: 1.35;
   margin-bottom: 12px;
+  /* Two lines max, then ellipsis — long titles must never push the
+     meta lines or the label preview around (Nick, 2026-08-25). */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+/* Product card head: fixed two-column layout — info flexes, the label
+   preview column keeps its width, nothing reflows when a barcode is
+   missing (every line always renders with a "—" fallback). */
+.product__head { align-items: flex-start; }
+.product__info { flex: 1; min-width: 0; }
+.product__gap { display: inline-block; width: 16px; }
+.product__metaline + .product__metaline { margin-top: 2px; }
+.product__optrow--head { margin-top: 10px; }
+.product__labelprev { flex: 0 0 272px; }
+.product__labelprev .label-preview { margin: 0; }
+.product__divider {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 10px 0;
+}
+@media (max-width: 720px) {
+  .product__labelprev { display: none; }
 }
 .product__grid {
   display: grid;

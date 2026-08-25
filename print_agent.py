@@ -82,6 +82,13 @@ BARCODE_LINE = (
 # Prepended only for RFID-encoding printers: auto tag setup + write the EPC.
 RFID_ZPL = "^RS8\n^RFW,H^FD{epc}^FS\n"
 
+# Re-align (operator button in the web terminal's Print queue): ~PH slews
+# the media to the NEXT label's home position using the media sensor.
+# After a rip pulled the liner forward, this re-registers before any
+# printing, consuming only the already-disturbed label instead of two
+# misprints plus a blank. Prints nothing and encodes nothing.
+FEED_ZPL = "~PH\n"
+
 # Alignment test: a border box + corner ticks, no job needed. If the box
 # edges don't sit just inside the sticker edges, the size flags (or the
 # printer's media calibration) are off.
@@ -275,6 +282,23 @@ class AppClient:
         r.raise_for_status()
         return r.json()["jobs"]
 
+    def claim_commands(self) -> list[dict]:
+        """One-shot printer nudges (re-align feed). Server clears them on
+        claim; an app too old to have the endpoint just yields none."""
+        try:
+            r = requests.post(
+                f"{self.base}/api/printer-commands/claim",
+                params={"printer": self.printer_id} if self.printer_id else {},
+                headers=self.headers,
+                timeout=30,
+            )
+            if r.status_code == 404:
+                return []
+            r.raise_for_status()
+            return r.json().get("commands", [])
+        except requests.RequestException:
+            return []
+
     def complete(self, job_id: int, create_assignment: bool) -> None:
         requests.post(
             f"{self.base}/api/print-jobs/{job_id}/complete",
@@ -385,6 +409,17 @@ def main() -> None:
           f"Ctrl+C to stop.")
 
     while True:
+        # Commands BEFORE jobs: a queued re-align must land ahead of the
+        # labels it is meant to straighten.
+        for cmd in client.claim_commands():
+            if cmd.get("kind") == "feed":
+                try:
+                    print_label(FEED_ZPL)
+                    print("  re-align: fed to the next label's home "
+                          f"(asked by {cmd.get('requested_by') or '?'})")
+                except Exception as error:  # noqa: BLE001
+                    print(f"! re-align feed failed: {error}")
+
         try:
             jobs = client.claim()
         except requests.RequestException as error:

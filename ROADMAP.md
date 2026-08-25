@@ -3,6 +3,47 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-08-25.
 
+## 🖨 Print truth: saved labels, walking order, re-align (2026-08-25)
+
+- **Scan Station prints now use the saved label lines** - the actual
+  bug behind Nick's stale Softbag1 sticker: `/api/print-jobs` trusted
+  whatever the client sent (nothing, for non-serials) while the batch
+  flows consulted the store. The endpoint now fills label_name /
+  placement / label_sku from the saved store whenever no explicit
+  label_name arrives (serial confirms still win untouched); the product
+  panel's print sends its custom centre line; Queue reprints carry the
+  old job's placement + centre line. Suite: test_printorder.py.
+- **Product card rework + label preview (⚙ setting)**: fixed two-column
+  head - title (2-line clamp + ellipsis, variant folded in), "SKU /
+  Barcode" line, "Tags on file / Shopify onhand / Bin" line (on-hand
+  and saved label lines ride along on /api/products/tags), Edit
+  product + Edit label buttons (no ellipsis), divider, then the print
+  row. Every line renders with "—" fallbacks and the preview column is
+  fixed-width, so a missing barcode never reflows anything. The
+  preview shows exactly what the next print will say, including saved
+  lines and live serial-name edits. "Live catalog" chip retired.
+- **Labels queue in the operator's WALKING order**: new
+  `rfid_batch_items.first_scanned_at` (ALTER run 2026-08-25) stamps
+  each row's first physical scan (scan endpoint, manual qty bump from
+  zero; merges keep the earlier stamp; split rows inherit). Both label
+  builders iterate first-scanned-first, and the agent already claims
+  by job id - the printed stack now matches the shelf walk.
+- **Zebra re-align (inert until the agent restarts)**: a rip at the
+  tear bar drags the liner a random amount -> two off-center prints +
+  one blank re-orient label. New "Re-align labels (feed one)" button
+  in the Print queue header queues a one-shot command; the updated
+  print_agent sends ZPL `~PH` (slew to next label home via the gap
+  sensor) BEFORE any printing - cost: the one already-disturbed label
+  instead of three. Commands are in-memory, expire in 10 min, and old
+  agents never see the endpoint, so NOTHING moves until the warehouse
+  PC's agent task is restarted on the new code AND the button is
+  pressed. Also worth trying at the printer itself (one-time config,
+  no code): media tracking must be non-continuous/web sensing (^MNY),
+  run one manual gap calibration (FEED-hold), and try backfeed
+  "before printing" (~JSB) - with backfeed-before, the printer
+  re-registers each format itself and the rip drift may vanish
+  entirely.
+
 ## Ⅱ Broken-character rescue + keep-the-old-code-linked (2026-08-25)
 
 Nick's two ZWO edge cases (the unicode 'Ⅱ' roman numeral). C72 **3.59
@@ -1198,11 +1239,12 @@ alive: shopify-jobs → on-order-skus, the C72 API, Bundles.app metafields.
 Noted from Nick's field feedback. Not scoped; ask before starting the
 bigger ones (receiving in particular needs interviews).
 
-1. **Zebra printer label drift.** Ripping a line of labels pulls the
-   line slightly toward the user; the next 2 labels print off-center
-   (text sometimes falls off the sticker) and a third blank label seems
-   to re-orient the line. Look at calibration/backfeed settings
-   (ZPL ~JC / backfeed ~JS, label-top offset) or a rip-bar habit fix.
+1. ~~**Zebra printer label drift.**~~ ✅ Addressed 2026-08-25: manual
+   "Re-align labels (feed one)" button shipped (inert until the agent
+   task restarts; see the print-truth section above), plus printer-side
+   config suggestions (web sensing calibration, backfeed-before) that
+   could remove the drift entirely. Revisit only if drift persists
+   after Nick tries both.
 2. **Receiving, robustly, hooked to Inventory Planner.** An extremely
    robust receiving flow that needs little know-how. Use cases include
    at least: scanning each box one-by-one until all items are printed
@@ -1212,10 +1254,8 @@ bigger ones (receiving in particular needs interviews).
    interviewing the people who do receiving to map the real process.
    (Overlaps Steve's TODO #2; the 1-left dashboard bridge memory notes
    where Inventory Planner data lives.)
-3. **Print jobs in collect-scan order.** Labels should come out in the
-   order products were scanned during batch collect (A..H), not
-   arbitrary order (G, F, A, ...) - the operator walks the shelf in
-   scan order and hunting for the matching product wastes time.
+3. ~~**Print jobs in collect-scan order.**~~ ✅ Done 2026-08-25
+   (first_scanned_at stamps; see the print-truth section above).
 4. **Consolidate "tags != on hand" vs "inventory check" review tasks.**
    Decide whether both categories are really needed or whether they can
    be compacted into one (they answer the same question from different

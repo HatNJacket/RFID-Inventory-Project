@@ -642,6 +642,14 @@ class BatchItem(Base):
     listing_locked: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="0"
     )
+    # When this product was FIRST physically scanned in this batch - the
+    # operator's walking order. Labels queue in this order so the printed
+    # stack matches the shelf walk instead of coming out shuffled (Nick,
+    # 2026-08-25). NULL on rows never actually scanned (pre-seeded,
+    # record-only). Prod needs dev/alter_add_first_scanned.py.
+    first_scanned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
 
     def as_dict(self) -> dict:
         return {

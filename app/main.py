@@ -736,12 +736,30 @@ def tags_for_product(
     look = (sku or "").strip() or next(
         ((r.sku or "").strip() for r in rows if r.sku), ""
     )
+    # Saved label lines + on-hand ride along: the Scan Station card makes
+    # this call right after every lookup, so its label preview and the
+    # "Shopify onhand" line need no extra round trips.
+    custom = session.get(LabelName, look) if look else None
+    if custom is None and look:
+        custom = session.scalar(
+            select(LabelName).where(func.upper(LabelName.sku) == look.upper())
+        )
+    on_hand = None
+    if look:
+        try:
+            on_hand = _expected_qty(session, look)
+        except Exception:  # noqa: BLE001 — decoration, never blocks a scan
+            on_hand = None
     return {
         "count": len(rows),
         "assignments": [r.as_dict() for r in rows],
         "rfid_incompatible": bool(
             look and session.get(RfidIncompatible, look) is not None
         ),
+        "on_hand": on_hand,
+        "label_name": custom.label_name if custom else None,
+        "label_placement": (custom.placement or "header") if custom else None,
+        "label_sku_text": custom.sku_text if custom else None,
     }
 
 
@@ -1121,6 +1139,7 @@ class PrintJobIn(BaseModel):
     label_placement: str | None = Field(
         default=None, pattern="^(header|sku|both)$"
     )
+    label_sku: str | None = Field(default=None, max_length=56)
     requested_by: str | None = Field(default=None, max_length=100)
     # Target printer (rfid_printers.name); omitted = any agent prints it.
     printer: str | None = Field(default=None, max_length=100)
@@ -1139,8 +1158,26 @@ class PrintJobIn(BaseModel):
 def create_print_jobs(
     payload: PrintJobIn, session: Session = Depends(get_session)
 ):
-    """Queue N labels for one product; each gets its own EPC."""
+    """Queue N labels for one product; each gets its own EPC.
+
+    Label content: an explicit label_name in the payload wins (the serial
+    flow sends the operator-confirmed name). Otherwise the SAVED label
+    lines apply — the batch flows always consulted the store but this
+    endpoint trusted the client, so a Scan Station print quietly ignored
+    an updated SKU line (Nick, 2026-08-25, ZWO Softbag1)."""
     fields = payload.model_dump(exclude={"quantity"})
+    if not (fields.get("label_name") or "").strip() and (
+        payload.sku or ""
+    ).strip():
+        custom = session.get(LabelName, payload.sku.strip()) or session.scalar(
+            select(LabelName).where(
+                func.upper(LabelName.sku) == payload.sku.strip().upper()
+            )
+        )
+        if custom is not None:
+            fields["label_name"] = custom.label_name
+            fields["label_placement"] = custom.placement or "header"
+            fields["label_sku"] = custom.sku_text
     jobs = [
         PrintJob(epc=_new_epc(), status="pending", **fields)
         for _ in range(payload.quantity)
@@ -1184,6 +1221,57 @@ _agent_last_seen: float | None = None
 # Keeps the single-printer warehouse on the picker without touching it.
 DEFAULT_PRINTER = "warehouse-zebra"
 PRINTER_ONLINE_SECONDS = 120  # agent polls every ~3 s; be generous
+
+
+# --- printer commands (re-align etc.) ---------------------------------------
+# Transient, in-memory: a command is a one-shot nudge ("feed to the next
+# label's home") the NEXT agent poll picks up. Lost on app restart by
+# design — the operator just presses the button again. Old agents never
+# see this endpoint, so nothing changes until the agent is updated AND
+# someone presses the button (Nick, 2026-08-25: no tags may be wasted
+# without a human asking for it).
+_printer_commands: dict[str, list[dict]] = {}
+
+
+class PrinterCommandIn(BaseModel):
+    printer: str | None = Field(default=None, max_length=100)
+    kind: Literal["feed"] = "feed"
+    requested_by: str | None = Field(default=None, max_length=100)
+
+
+@app.post(
+    "/api/printer-commands",
+    status_code=201,
+    dependencies=[Depends(require_user)],
+)
+def queue_printer_command(payload: PrinterCommandIn):
+    """Queue a one-shot printer command. 'feed' = slew to the next
+    label's home position (ZPL ~PH): re-registers the media after a rip
+    pulled the liner forward, at the cost of the one already-disturbed
+    label instead of two misprints plus a blank."""
+    name = (payload.printer or DEFAULT_PRINTER).strip()
+    _printer_commands.setdefault(name, []).append({
+        "kind": payload.kind,
+        "requested_by": payload.requested_by,
+        "at": time.time(),
+    })
+    return {"queued": payload.kind, "printer": name}
+
+
+@app.post(
+    "/api/printer-commands/claim", dependencies=[Depends(require_agent_key)]
+)
+def claim_printer_commands(printer: str | None = None):
+    """Agent: take (and clear) any pending commands for this printer.
+    Commands older than 10 minutes are dropped - a stale re-align from a
+    forgotten press must not move media out of the blue."""
+    name = (printer or DEFAULT_PRINTER).strip()
+    now = time.time()
+    cmds = [
+        c for c in _printer_commands.pop(name, [])
+        if now - c["at"] < 600
+    ]
+    return {"count": len(cmds), "commands": cmds}
 
 
 @app.get("/api/print-agent/status", dependencies=[Depends(require_user)])
@@ -5885,6 +5973,10 @@ def batch_scan(
         # Sealed: ONE box, one label, one tag — but worth `units` of stock.
         item.case_count += 1
         item.case_units = case["units"]
+    # First physical contact stamps the walking order — labels queue in
+    # this order so the printed stack matches the shelf walk.
+    if item.first_scanned_at is None:
+        item.first_scanned_at = datetime.now(timezone.utc)
     session.commit()
     session.refresh(item)
 
@@ -6256,6 +6348,11 @@ def batch_item_reassign(
         existing.paired_count += item.paired_count
         # An explicit human choice: the ambiguous flag stops re-raising.
         existing.listing_locked = True
+        # The merged row keeps the EARLIER walking-order stamp.
+        stamps = [t for t in (existing.first_scanned_at,
+                              item.first_scanned_at) if t is not None]
+        if stamps:
+            existing.first_scanned_at = min(stamps)
         session.delete(item)
         session.commit()
         session.refresh(existing)
@@ -6338,6 +6435,10 @@ def batch_item_resolve(
         moved = item.qty_scanned
         existing.qty_scanned += item.qty_scanned
         existing.paired_count += item.paired_count
+        stamps = [t for t in (existing.first_scanned_at,
+                              item.first_scanned_at) if t is not None]
+        if stamps:
+            existing.first_scanned_at = min(stamps)
         session.delete(item)
         session.commit()
         session.refresh(existing)
@@ -6782,6 +6883,8 @@ def batch_item_split(
             image_url=(match.get("image_url") or "")[:500] or None,
             qty_scanned=p.qty,
             expected_qty=_expected_qty(session, match.get("sku")),
+            # Split rows share the original's walking-order slot.
+            first_scanned_at=item.first_scanned_at,
         )
         session.add(row)
         rows.append(row)
@@ -6870,6 +6973,9 @@ def set_item_qty(
     if item is None or item.batch_id != batch_id:
         raise HTTPException(404, "No such item in this batch.")
     item.qty_scanned = payload.qty
+    # A manual bump from zero counts as this row's first contact too.
+    if payload.qty > 0 and item.first_scanned_at is None:
+        item.first_scanned_at = datetime.now(timezone.utc)
     session.commit()
     return item.as_dict()
 
@@ -7068,6 +7174,23 @@ def batch_queue_labels(
     }
 
 
+def _items_in_scan_order(
+    session: Session, batch_id: int
+) -> list[BatchItem]:
+    """Batch items in the operator's WALKING order: first-scanned first,
+    never-scanned (pre-seeded, record-only) rows last in id order. The
+    printed label stack then matches the shelf walk instead of the seeded
+    alphabetical order (Nick, 2026-08-25: collect A..H, labels came out
+    G, F, A, B, D, H, C, E)."""
+    items = _batch_items(session, batch_id)
+    return sorted(items, key=lambda i: (
+        i.first_scanned_at is None,
+        orders_sync._as_utc(i.first_scanned_at) if i.first_scanned_at
+        else None,
+        i.id,
+    ))
+
+
 def _build_label_jobs(
     session: Session, batch: Batch, requested_by: str | None
 ) -> tuple[list[PrintJob], list[str]]:
@@ -7076,7 +7199,7 @@ def _build_label_jobs(
     exactly the label it would have got had it been found there."""
     jobs: list[PrintJob] = []
     skipped_bundles: list[str] = []
-    for item in _batch_items(session, batch.id):
+    for item in _items_in_scan_order(session, batch.id):
         if not item.resolved or not item.shopify_variant_id:
             continue
         # Couldn't be identified on this pass — there is nothing to put a
@@ -7139,7 +7262,7 @@ def _build_receiving_label_jobs(
     cancelled jobs free their box to be re-queued next pass."""
     jobs: list[PrintJob] = []
     skipped_no_bin: list[str] = []
-    for item in _batch_items(session, batch.id):
+    for item in _items_in_scan_order(session, batch.id):
         if not item.resolved or not item.shopify_variant_id:
             continue
         if item.skipped or item.kind == "bundle":

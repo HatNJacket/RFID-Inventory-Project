@@ -58,6 +58,12 @@
                 <span class="settings__hint">Shows a red warning beside the Print button when the looked-up product has no bin — its labels would print without a shelf on them.</span>
               </span>
             </label>
+            <label class="settings__item" id="label-preview-item">
+              <input type="checkbox" id="show-label-preview" />
+              <span>Label preview on the product card
+                <span class="settings__hint">Shows a miniature of the label about to print (saved name and SKU lines included) on the right side of the product card.</span>
+              </span>
+            </label>
             <button class="reset" id="evcolor-open" type="button" style="margin-top:8px">🎨 Event colours…</button>
           </div>
         </details>
@@ -333,21 +339,47 @@
            2026-08-18): image + info side by side, print right below, the
            occasional actions on one compact line. Ids unchanged. -->
       <section class="product" id="product-card" hidden>
-        <div class="phist-head" style="margin-bottom:8px">
+        <!-- Fixed two-column head (Nick, 2026-08-25): info left, label
+             preview right. Every meta line always renders (— fallbacks),
+             so a missing barcode never reflows the card. -->
+        <div class="phist-head product__head" style="margin-bottom:8px">
           <img class="phist-img" id="p-img" alt="" hidden />
-          <div>
+          <div class="product__info">
             <div class="product__title" id="p-title">—</div>
             <p class="linkbox__text product__metaline">
-              <span id="p-variant-wrap" hidden><span id="p-variant">—</span> · </span>
-              SKU <span class="mono" id="p-sku">—</span> ·
-              Barcode <span class="mono" id="p-barcode">—</span> ·
-              Bin <span id="p-bin" class="product__bin product__bin--edit" title="Click to set the bin (saves to Shopify)">—</span>
-              <input id="bin-input" class="product__bin-input" type="text" maxlength="100" autocomplete="off" spellcheck="false" placeholder="Bin…" hidden />
-              · <span id="p-source">—</span>
-              · Tags on file: <span id="p-tagcount">—</span>
+              SKU: <span class="mono" id="p-sku">—</span>
+              <span class="product__gap"></span>
+              Barcode: <span class="mono" id="p-barcode">—</span>
             </p>
+            <p class="linkbox__text product__metaline">
+              Tags on file: <span id="p-tagcount">—</span>
+              <span class="product__gap"></span>
+              Shopify onhand: <span id="p-onhand">—</span>
+              <span class="product__gap"></span>
+              Bin: <span id="p-bin" class="product__bin product__bin--edit" title="Click to set the bin (saves to Shopify)">—</span>
+              <input id="bin-input" class="product__bin-input" type="text" maxlength="100" autocomplete="off" spellcheck="false" placeholder="Bin…" hidden />
+            </p>
+            <div class="product__optrow product__optrow--head">
+              <button class="reset" id="product-edit" type="button" title="Register an Astronomik serial prefix or update the SKU in Shopify">Edit product</button>
+              <button class="reset" id="product-label" type="button" title="Change what prints on this product's labels (top line and SKU line) - saved store-wide">Edit label</button>
+              <details class="tags tags--right" id="tags-panel" hidden>
+                <summary class="tags__summary">Show tags</summary>
+              </details>
+            </div>
+          </div>
+          <!-- Label preview (⚙ setting): what the next print will say. -->
+          <div class="product__labelprev" id="p-labelprev" hidden>
+            <div class="label-preview">
+              <div class="label-preview__header" id="p-prev-header">Telescopes Canada</div>
+              <div class="label-preview__sku" id="p-prev-sku"></div>
+              <div class="label-preview__bc" id="p-prev-bc"></div>
+              <div class="label-preview__bin" id="p-prev-bin"></div>
+            </div>
           </div>
         </div>
+        <ul class="tags__list tags__list--below" id="tags-list" hidden></ul>
+
+        <hr class="product__divider" />
 
         <!-- Scan note: the product's standing warning, shown on every
              scan (set in Edit product). The C72 shows the same note. -->
@@ -371,18 +403,6 @@
           <span class="print__nobin" id="print-fitwarn" hidden></span>
           <span class="print__status" id="print-status"></span>
         </div>
-
-        <!-- One line: product maintenance left, tags toggle right. The
-             EPC list expands BELOW the row (full width) so opening it
-             never pushes the buttons or text around (Nick, 2026-08-25). -->
-        <div class="product__optrow">
-          <button class="reset" id="product-edit" type="button" title="Register an Astronomik serial prefix or update the SKU in Shopify">Edit product…</button>
-          <button class="reset" id="product-label" type="button" title="Change what prints on this product's labels (top line and SKU line) - saved store-wide">Edit label…</button>
-          <details class="tags tags--right" id="tags-panel" hidden>
-            <summary class="tags__summary">Show tags</summary>
-          </details>
-        </div>
-        <ul class="tags__list tags__list--below" id="tags-list" hidden></ul>
       </section>
 
       <!-- Printer picker: one card per detected printer. Rows appear on
@@ -955,6 +975,8 @@
       <div class="recent__head">
         <h2>Print queue <span class="recent__note">(shared — the warehouse PC prints, every device can watch)</span></h2>
         <span class="pill" id="agent-pill">Printer agent: checking…</span>
+        <button class="reset" id="printer-realign" type="button"
+                title="Ripping labels can pull the liner forward, so the next prints land off the sticker. This feeds the media to the NEXT label's start (using the printer's gap sensor) before anything prints - it consumes the one already-disturbed label instead of two misprints and a blank. Nothing is printed or encoded. Needs the updated print agent running on the warehouse PC.">Re-align labels (feed one)</button>
       </div>
       <div class="inventory__scroll">
         <table class="inventory__table">
