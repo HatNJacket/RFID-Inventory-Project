@@ -1188,6 +1188,14 @@
           </div>
         </div>
 
+        <!-- Live tags, on demand: each row offers a manual unpair for the
+             tag-fell-off/bad-tag case (retired as dead, tombstone kept,
+             undo in History). Shopify is never touched here. -->
+        <div id="phist-tagswrap" hidden style="margin:2px 0 8px">
+          <a href="#" class="phist-exp" id="phist-tags-toggle"></a>
+          <div id="phist-tags" class="phist-taglist" hidden></div>
+        </div>
+
         <!-- Print: right under the product, not below the edge cases -->
         <div class="linkbox__form" style="margin:10px 0">
           <input id="phist-qty" class="linkbox__input" type="number" min="1" max="50" value="1" style="max-width:90px" />

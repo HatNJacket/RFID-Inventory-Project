@@ -3,6 +3,20 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-08-25.
 
+## 🏷️ Manual tag unpair from the Inventory tab (2026-08-25)
+
+Nick's case: a tag fell off (and was bad anyway), the sticker is gone,
+and with one unit there's no audit to run. The Inventory tab's product
+panel (click a SKU) now shows "N live tag(s): view or unpair" - each
+row lists EPC, bin, paired date/by, and an Unpair… button. Behind a
+strong confirm (sticker physically gone/dead; a dead tag still ON a box
+belongs in the check step's replace-tag flow), it retires the record as
+`dead` via the existing retire endpoint: tombstone kept (future sweeps
+name the EPC), no ledger consumption, History `tag-retired` row with
+the one-click undo, Shopify untouched. `/api/product-history` now
+returns the `tags` array (case-insensitive SKU match, null-safe).
+Suite: dev/tests/test_unpair.py (12 checks).
+
 ## 📋 C72 3.58 list polish + collect-anchored pair target (2026-08-25)
 
 Nick's field notes after running 3.57. C72 **3.58 (code 76)** built and

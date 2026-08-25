@@ -10292,6 +10292,7 @@ async function openProductHistory(term) {
       (p ? ` · Bin: ${p.bin_location || "—"}` : "") +
       ` · ${data.tag_count} tag(s) on file` +
       (data.on_hand != null ? ` · on-hand ${data.on_hand}` : "");
+    renderPhistTags(data, term);
     const img = document.getElementById("phist-img");
     if (data.image_url) {
       img.src = data.image_url;
@@ -10352,6 +10353,82 @@ async function openProductHistory(term) {
   } catch (err) {
     body.innerHTML = `<tr><td colspan="5" class="inventory__empty">${escapeHtml(err.message)}</td></tr>`;
   }
+}
+
+// Live tag list with a manual unpair per row — for the tag that fell off
+// or never read and whose sticker is gone, so there's nothing to scan and
+// (with a single unit) no audit to run (Nick, 2026-08-25). Retires the
+// record as dead: tombstone kept, History row with one-click undo,
+// Shopify never touched.
+function renderPhistTags(data, term) {
+  const wrap = document.getElementById("phist-tagswrap");
+  const toggle = document.getElementById("phist-tags-toggle");
+  const list = document.getElementById("phist-tags");
+  const tags = data.tags || [];
+  wrap.hidden = !tags.length;
+  list.hidden = true;
+  if (!tags.length) return;
+  toggle.textContent = `▸ ${tags.length} live tag(s): view or unpair`;
+  toggle.onclick = (ev) => {
+    ev.preventDefault();
+    list.hidden = !list.hidden;
+    toggle.textContent =
+      (list.hidden ? "▸" : "▾") + toggle.textContent.slice(1);
+  };
+  list.innerHTML = tags
+    .map((t) => {
+      const when = t.assigned_at
+        ? tsDate(t.assigned_at).toLocaleDateString(undefined, {
+            dateStyle: "medium",
+          })
+        : "unknown date";
+      const meta =
+        `${t.bin || "no bin"} · paired ${when}` +
+        (t.assigned_by ? ` by ${t.assigned_by}` : "") +
+        (t.case_units ? ` · case of ${t.case_units}` : "");
+      return `<div class="phist-tagrow">
+        <span class="mono">${escapeHtml(t.epc)}</span>
+        <span class="recent__meta">${escapeHtml(meta)}</span>
+        <button class="reset phist-unpair" type="button"
+          data-epc="${escapeHtml(t.epc)}"
+          title="The sticker is gone or dead and can't be scanned. Retires this tag record (undo in History)">Unpair…</button>
+      </div>`;
+    })
+    .join("");
+  list.querySelectorAll(".phist-unpair").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const epc = btn.dataset.epc;
+      if (
+        !confirm(
+          `Unpair tag ${epc}?\n\n` +
+            `Only do this when the sticker is physically gone or dead - ` +
+            `it fell off, was damaged, or never reads - so there is ` +
+            `nothing left to scan. If a dead tag is still ON the box, ` +
+            `use the batch check step's replace-tag flow instead so the ` +
+            `box gets a fresh label.\n\n` +
+            `The record is retired with a permanent tombstone (a future ` +
+            `sweep hearing this EPC will name it). Shopify is not ` +
+            `touched; the box counts as an untagged unit until a future ` +
+            `batch re-tags it. Undo lives in History.`
+        )
+      )
+        return;
+      btn.disabled = true;
+      try {
+        await postJson("/api/assignments/retire", {
+          epcs: [epc],
+          kind: "dead",
+          changed_by: operatorEl.value || null,
+          note: "manual unpair, Inventory tab",
+        });
+        await openProductHistory(term);
+        loadInventory();
+      } catch (err) {
+        alert(`Unpair failed: ${err.message}`);
+        btn.disabled = false;
+      }
+    });
+  });
 }
 
 document.getElementById("phist-open").addEventListener("click", () => {

@@ -589,6 +589,25 @@ body {
   max-width: none;
 }
 
+/* Product panel: live tags with the manual unpair (Inventory tab) */
+.phist-taglist {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+}
+.phist-tagrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 5px 8px;
+  background: var(--card-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.phist-tagrow .phist-unpair { margin-left: auto; }
+
 /* EPC expander (product history, review timelines) */
 .epc-exp { display: inline-block; vertical-align: top; }
 .epc-exp summary {

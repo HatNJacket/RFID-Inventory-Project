@@ -9880,11 +9880,24 @@ def product_history(term: str, session: Session = Depends(get_session)):
 
     events.sort(key=lambda e: e["at"] or "", reverse=True)
 
-    tag_count = session.scalar(
-        select(func.count()).select_from(RfidAssignment).where(or_(
-            RfidAssignment.sku == sku, RfidAssignment.barcode == barcode
-        ))
+    # The live tags themselves ride along (not just the count): the panel
+    # lists them with a manual unpair for the tag-fell-off/bad-tag case
+    # where the sticker is gone and a one-unit product can't be audited
+    # (Nick, 2026-08-25). Null-safe: `sku == None` would match every
+    # NULL-sku row.
+    tag_conds = []
+    if sku:
+        tag_conds.append(func.upper(RfidAssignment.sku) == sku.upper())
+    if barcode:
+        tag_conds.append(RfidAssignment.barcode == barcode)
+    live_tags = (
+        session.scalars(
+            select(RfidAssignment).where(or_(*tag_conds))
+            .order_by(RfidAssignment.assigned_at)
+        ).all()
+        if tag_conds else []
     )
+    tag_count = len(live_tags)
     image_url = (product or {}).get("image_url")
     if not image_url:
         image_url = session.scalar(
@@ -9904,6 +9917,16 @@ def product_history(term: str, session: Session = Depends(get_session)):
         "barcode": barcode,
         "image_url": image_url,
         "tag_count": tag_count,
+        "tags": [
+            {
+                "epc": t.rfid_id,
+                "bin": t.bin_location,
+                "assigned_at": iso(t.assigned_at),
+                "assigned_by": t.assigned_by,
+                "case_units": t.case_units,
+            }
+            for t in live_tags
+        ],
         "on_hand": _expected_qty(session, sku),
         "serial_prefix": sp.prefix if sp else None,
         "serial_label": (
