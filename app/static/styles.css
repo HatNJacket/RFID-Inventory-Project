@@ -517,6 +517,17 @@ body {
   margin: 8px 0;
 }
 .editrow .phist-inputwrap { flex: 1; min-width: 0; }
+/* SKU/barcode rows: input on top, Save + Link side by side under it
+   (Nick, 2026-08-25). The inputwrap needs align-self to fill the row
+   now that the column axis owns the width. */
+.editrow--stack {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+.editrow--stack .phist-inputwrap { flex: none; }
+.editrow__pair { display: flex; gap: 8px; }
+.editrow__pair .reset { flex: 1; }
 /* Full-sized [?] button between the note box and Save note */
 .editrow__helpbtn {
   flex-shrink: 0;

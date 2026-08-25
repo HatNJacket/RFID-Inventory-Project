@@ -1478,6 +1478,14 @@ function editRowSync() {
     document.getElementById(saveId).disabled =
       value === def || (!emptyOk && !value);
   });
+  // The Link buttons follow the same rule: a value equal to the saved
+  // field needs no link (it already finds this product).
+  [["edit-sku", "edit-sku-link", editDefaults.sku],
+   ["edit-barcode", "edit-barcode-link", editDefaults.barcode],
+  ].forEach(([inputId, linkId, def]) => {
+    const value = document.getElementById(inputId).value.trim();
+    document.getElementById(linkId).disabled = value === def || !value;
+  });
 }
 
 function openEditbox() {
@@ -1636,6 +1644,56 @@ document.getElementById("edit-note-save").addEventListener("click", async () => 
   }
   editRowSync();
 });
+
+// Link SKU / Link Barcode: the typed value becomes a lookup ALIAS for
+// this product (the existing barcode-alias store) - scanning or searching
+// it finds the product, while the real Shopify fields stay untouched
+// (Nick, 2026-08-25). History logs the link with a one-click unlink.
+async function editLinkAlias(inputId, what) {
+  const operator = requireOperator();
+  if (!operator || !pendingProduct) return;
+  const value = document.getElementById(inputId).value.trim();
+  if (!value) return;
+  const title =
+    pendingProduct.product_title || pendingProduct.sku || "this product";
+  if (
+    !confirm(
+      `Link ${what} "${value}" to ${title}?\n\n` +
+        `Scanning or looking up ${value} will find this product from ` +
+        `now on. Its real Shopify SKU and barcode stay unchanged - ` +
+        `use Save instead if Shopify itself should be corrected.\n\n` +
+        `Undo lives in History (unlink).`
+    )
+  )
+    return;
+  const btn = document.getElementById(inputId + "-link");
+  btn.disabled = true;
+  try {
+    await postJson("/api/barcode-aliases", {
+      alias_barcode: value,
+      target: editDefaults.sku || editDefaults.barcode,
+      created_by: operator,
+    });
+    // Back to the saved value: leaving the typed alias in the box would
+    // keep Save armed and invite an accidental Shopify overwrite of the
+    // very thing the link just avoided.
+    document.getElementById(inputId).value =
+      inputId === "edit-sku" ? editDefaults.sku : editDefaults.barcode;
+    editMsg(
+      `${value} linked ✓ - it now finds this product; Shopify fields ` +
+        `unchanged (unlink in History).`
+    );
+  } catch (err) {
+    editMsg(err.message);
+  }
+  editRowSync();
+}
+document
+  .getElementById("edit-sku-link")
+  .addEventListener("click", () => editLinkAlias("edit-sku", "SKU"));
+document
+  .getElementById("edit-barcode-link")
+  .addEventListener("click", () => editLinkAlias("edit-barcode", "barcode"));
 
 // Astronomik: the serial-prefix cell folds out under the rows.
 document.getElementById("edit-astro").addEventListener("click", () => {

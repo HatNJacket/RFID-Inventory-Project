@@ -3,6 +3,21 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-08-25.
 
+## 🔗 Edit window: Save under the inputs + Link SKU / Link Barcode (2026-08-25)
+
+The edit product window (one window, both doors: Scan Station's Edit
+button and the Inventory/product panel's docked editor) restacked its
+SKU and barcode rows: each input now has its Save button underneath,
+with a new Link button beside it. Link records the typed value as a
+lookup ALIAS for the product through the existing barcode-alias store
+(POST /api/barcode-aliases) - scanning or searching that code finds the
+product everywhere (scan station, batch scans, the gun; the resolver
+chain already consults aliases) while the real Shopify SKU/barcode stay
+untouched. History logs the link with its existing one-click unlink.
+After a successful link the input snaps back to the saved value so the
+Save button doesn't stay armed with the alias. Both buttons grey out
+when the box still equals the saved value. No server changes needed.
+
 ## 🏷️ Manual tag unpair from the Inventory tab (2026-08-25)
 
 Nick's case: a tag fell off (and was bad anyway), the sticker is gone,

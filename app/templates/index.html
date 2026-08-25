@@ -245,19 +245,29 @@
              out at the saved value, then the occasional cells. -->
         <div id="editbox" hidden>
           <!-- No left labels — the save buttons name each row (Nick). -->
-          <div class="editrow">
+          <div class="editrow editrow--stack">
             <div class="phist-inputwrap">
               <input id="edit-sku" class="linkbox__input" type="text" maxlength="100" autocomplete="off" spellcheck="false" placeholder="Enter SKU" />
               <button class="phist-clear" id="edit-sku-reset" type="button" title="Back to the saved SKU">✕</button>
             </div>
-            <button class="reset" id="edit-sku-save" type="button" disabled>Save SKU</button>
+            <div class="editrow__pair">
+              <button class="reset" id="edit-sku-save" type="button" disabled
+                      title="Overwrite the product's SKU in Shopify (permanent, History-logged)">Save SKU</button>
+              <button class="reset" id="edit-sku-link" type="button" disabled
+                      title="Looking up this SKU will find this product, WITHOUT changing its real Shopify fields (undo in History)">Link SKU</button>
+            </div>
           </div>
-          <div class="editrow">
+          <div class="editrow editrow--stack">
             <div class="phist-inputwrap">
               <input id="edit-barcode" class="linkbox__input" type="text" maxlength="64" autocomplete="off" spellcheck="false" placeholder="Enter Barcode" />
               <button class="phist-clear" id="edit-barcode-reset" type="button" title="Back to the saved barcode">✕</button>
             </div>
-            <button class="reset" id="edit-barcode-save" type="button" disabled>Save barcode</button>
+            <div class="editrow__pair">
+              <button class="reset" id="edit-barcode-save" type="button" disabled
+                      title="Overwrite the product's barcode in Shopify (permanent, History-logged)">Save barcode</button>
+              <button class="reset" id="edit-barcode-link" type="button" disabled
+                      title="Scanning this barcode will find this product, WITHOUT changing its real Shopify fields (undo in History)">Link Barcode</button>
+            </div>
           </div>
           <div class="editrow">
             <div class="phist-inputwrap">
