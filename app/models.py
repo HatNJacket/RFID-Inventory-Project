@@ -170,6 +170,14 @@ class BarcodeAlias(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    # "manual" = an operator linked it deliberately (permanent until
+    # unlinked). "label" = derived from a saved custom label line and
+    # EPHEMERAL: replaced automatically when that line changes (Nick,
+    # 2026-08-25). New column needs dev/alter_add_alias_kind.py on prod.
+    kind: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="manual",
+        server_default="manual",
+    )
 
     def as_dict(self) -> dict:
         return {
@@ -179,6 +187,7 @@ class BarcodeAlias(Base):
             "barcode": self.barcode,
             "product_title": self.product_title,
             "created_by": self.created_by,
+            "kind": self.kind or "manual",
             "created_at": (
                 self.created_at.isoformat() if self.created_at else None
             ),
@@ -735,6 +744,26 @@ class RfidIncompatible(Base):
 
     sku: Mapped[str] = mapped_column(String(100), primary_key=True)
     set_by: Mapped[str | None] = mapped_column(String(100))
+    set_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class NonTaggable(Base):
+    """Products not worth individual tags at all — a big bin of
+    thumbscrews or dew-heater straps (Nick, 2026-08-25). Stronger than
+    RfidIncompatible (which still labels and counts): a non-taggable
+    product is never seeded into batches, never gets labels, and audits
+    skip it entirely. A single tag MAY still be paired to it by hand as
+    a bag/bin marker so Locate can find the container; that tag carries
+    no inventory meaning. New table needs dev/alter_add_non_taggable.py
+    on prod."""
+
+    __tablename__ = "rfid_non_taggable"
+
+    sku: Mapped[str] = mapped_column(String(100), primary_key=True)
+    set_by: Mapped[str | None] = mapped_column(String(100))
+    note: Mapped[str | None] = mapped_column(String(255))
     set_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

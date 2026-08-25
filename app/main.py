@@ -57,6 +57,7 @@ from app.models import (
     LinkScan,
     LocateQueueEntry,
     MismatchDismissal,
+    NonTaggable,
     OneLeftCheck,
     Printer,
     PrintJob,
@@ -514,9 +515,13 @@ def _product_lookup(barcode: str):
         from app.database import get_engine
 
         with Session(get_engine()) as session:
+            # Case-insensitive: label-line aliases are TYPED, not scanned
+            # ("zwo softbag small" should find the bag), and real
+            # identities were already tried above so nothing is shadowed.
             alias = session.scalar(
                 select(BarcodeAlias).where(
-                    BarcodeAlias.alias_barcode == barcode
+                    func.upper(BarcodeAlias.alias_barcode)
+                    == barcode.strip().upper()
                 )
             )
         if alias is not None:
@@ -1734,6 +1739,18 @@ def create_alias(payload: AliasIn, session: Session = Depends(get_session)):
     if product is None:
         raise HTTPException(404, "No product found for that barcode or SKU.")
 
+    # Alias resolution is case-insensitive, so a case-variant duplicate
+    # would be unreachable dead weight — refuse it like an exact one.
+    if session.scalar(
+        select(BarcodeAlias).where(
+            func.upper(BarcodeAlias.alias_barcode)
+            == payload.alias_barcode.upper()
+        )
+    ) is not None:
+        raise HTTPException(
+            409, "That scanned code is already linked to a product."
+        )
+
     alias = BarcodeAlias(
         alias_barcode=payload.alias_barcode,
         sku=product.get("sku"),
@@ -1959,11 +1976,17 @@ def set_serial_label(
     prefix: str, payload: SerialLabelIn, session: Session = Depends(get_session)
 ):
     """Save the operator's preferred label name for a serial prefix (what
-    prints at the top of that product's labels)."""
+    prints at the top of that product's labels). The name doubles as an
+    ephemeral lookup alias, like the two-line label editor's lines."""
     row = session.get(SerialPrefix, prefix.strip())
     if row is None:
         raise HTTPException(404, "No such serial prefix.")
     row.label_name = payload.label_name
+    name = (payload.label_name or "").strip()
+    _sync_label_aliases(
+        session, row.sku,
+        [name if name and name != STORE_HEADER else None], None,
+    )
     session.commit()
     return row.as_dict()
 
@@ -4096,23 +4119,50 @@ def audit_bins(session: Session = Depends(get_session)):
             continue
         units[key] = units.get(key, 0) + (t.case_units or 1)
 
+    entries = session.scalars(
+        select(BinMapEntry).where(BinMapEntry.sku.isnot(None))
+    ).all()
+
     # Sold-but-unretired units RAISE the expected tag count: a fulfilled
     # order's box left with its tag on file, so those tags aren't drift.
-    sold = orders_sync.sold_unretired_map(session)
+    # WINDOWED to each SKU's tag-pool baseline like everything else — the
+    # unwindowed sum blamed sales that predate tagging and rendered
+    # "3 in Shopify, 4 tags, difference of -19" (Nick, 2026-08-25). A SKU
+    # with no live tags gets no sold adjustment at all: with nothing on
+    # file, sales can't explain tags that don't exist.
+    all_skus = list({e.sku.strip().upper() for e in entries} | set(units))
+    baselines = orders_sync._sku_baselines(session, all_skus)
+    sold = orders_sync.sold_unretired_since_map(session, all_skus, baselines)
 
     noscan = _noscan_skus(session)
+    no_tag = _non_taggable_skus(session)
+    skipped_bundles = 0
+    skipped_non_taggable = 0
     seen_skus: set[str] = set()
     bins: dict[str, dict] = {}
 
     def _bucket(name: str) -> dict:
         return bins.setdefault(name, {"bin": name, "products": []})
 
-    for e in session.scalars(
-        select(BinMapEntry).where(BinMapEntry.sku.isnot(None))
-    ):
+    for e in entries:
         key = e.sku.strip().upper()
+        # Bundles have no boxes of their own (their components carry the
+        # tags) and dropped/non-taggable products aren't in the RFID
+        # system at all — comparing any of them is guaranteed phantom
+        # drift, so they leave the audit instead of scoring it.
+        if key in no_tag:
+            skipped_non_taggable += 1
+            seen_skus.add(key)
+            continue
+        kind, excluded = resolve_product_kind(
+            session, e.product_title, e.sku, e.bin
+        )
+        if kind == "bundle" or excluded:
+            skipped_bundles += 1
+            seen_skus.add(key)
+            continue
         on_hand = e.qty or 0
-        sold_n = sold.get(key, 0)
+        sold_n = sold.get(key, 0) if units.get(key, 0) > 0 else 0
         have = units.get(key, 0)
         seen_skus.add(key)
         _bucket((e.bin or "").strip() or "(no bin)")["products"].append({
@@ -4131,7 +4181,9 @@ def audit_bins(session: Session = Depends(get_session)):
     orphans: dict[tuple, dict] = {}
     for t in tags:
         key = (t.sku or "").strip().upper()
-        if not key or key in seen_skus:
+        # Non-taggable products' hand-paired bag markers are Locate
+        # helpers, not inventory — never orphan-flag them.
+        if not key or key in seen_skus or key in no_tag:
             continue
         o = orphans.setdefault(
             ((t.bin_location or "").strip() or "(no bin)", key),
@@ -4186,6 +4238,8 @@ def audit_bins(session: Session = Depends(get_session)):
         "bin_count": len(payload),
         "done_bin_count": sum(1 for b in payload if b["batch_done"]),
         "tagged_bin_count": sum(1 for b in payload if b["tagged"]),
+        "skipped_bundles": skipped_bundles,
+        "skipped_non_taggable": skipped_non_taggable,
         "onhand_age_minutes": None if age is None else int(age / 60),
         "refreshing": _bin_map_state["running"],
     }
@@ -4542,6 +4596,7 @@ def create_batch(payload: BatchIn, session: Session = Depends(get_session)):
     items = []
     dropped: list[str] = []
     covered: list[dict] = []
+    no_tag = _non_taggable_skus(session)
     for p in expected:
         sp = sp_by_sku.get(p.get("sku") or "")
         # The whole bin metafield, not just this shelf: counting box slots
@@ -4554,7 +4609,9 @@ def create_batch(payload: BatchIn, session: Session = Depends(get_session)):
         )
         # Bundles the operator dropped from the RFID system have no physical
         # box to tag — seeding them would just re-raise a settled question.
-        if excluded:
+        # Non-taggable products (bins of loose thumbscrews) likewise stay
+        # out: nobody labels those individually, by decision.
+        if excluded or (p.get("sku") or "").strip().upper() in no_tag:
             dropped.append(p.get("sku") or "")
             continue
         contents = bundle_map.get((p.get("sku") or "").upper())
@@ -7490,6 +7547,60 @@ def batch_pair_undo(
 STORE_HEADER = "Telescopes Canada"
 
 
+def _sync_label_aliases(
+    session: Session,
+    sku: str,
+    lines: list[str | None],
+    updated_by: str | None,
+) -> None:
+    """Custom label lines double as lookup aliases while they are saved
+    (Nick, 2026-08-25): typing what the sticker says finds the product.
+    EPHEMERAL by design - when a line changes, its old alias goes with
+    it, and the new line takes over. Safe by construction: the resolver
+    consults aliases only after direct resolution misses, so a line that
+    happens to equal a real SKU/barcode can never shadow that product.
+    A line already linked elsewhere (manual alias, or another product's
+    label line) is left alone - first come, first served."""
+    sku = (sku or "").strip()
+    if not sku:
+        return
+    want = {
+        v.strip() for v in lines
+        if v and v.strip() and len(v.strip()) <= 64
+    }
+    for row in session.scalars(
+        select(BarcodeAlias).where(
+            BarcodeAlias.kind == "label",
+            func.upper(BarcodeAlias.sku) == sku.upper(),
+        )
+    ):
+        if row.alias_barcode in want:
+            want.discard(row.alias_barcode)
+        else:
+            session.delete(row)
+    session.flush()
+    for line in want:
+        clash = session.scalar(
+            select(BarcodeAlias).where(
+                func.upper(BarcodeAlias.alias_barcode) == line.upper()
+            )
+        )
+        if clash is not None:
+            continue
+        title = session.scalar(
+            select(BinMapEntry.product_title).where(
+                func.upper(BinMapEntry.sku) == sku.upper()
+            )
+        )
+        session.add(BarcodeAlias(
+            alias_barcode=line,
+            sku=sku,
+            product_title=title,
+            created_by=updated_by,
+            kind="label",
+        ))
+
+
 def _save_two_line_label(
     session: Session,
     sku: str,
@@ -7499,7 +7610,8 @@ def _save_two_line_label(
 ) -> None:
     """Map the two edited label lines onto the saved preferred name. Text
     equal to the defaults (store header on top, the SKU in the centre)
-    means "standard"; both at default clears the saved name entirely."""
+    means "standard"; both at default clears the saved name entirely.
+    Custom lines double as ephemeral lookup aliases (_sync_label_aliases)."""
     sku = (sku or "").strip()
     if not sku:
         return
@@ -7507,6 +7619,7 @@ def _save_two_line_label(
     centre = (sku_line or "").strip()
     top_custom = top if top and top != STORE_HEADER else None
     centre_custom = centre if centre and centre != sku else None
+    _sync_label_aliases(session, sku, [top_custom, centre_custom], updated_by)
     row = session.get(LabelName, sku)
     if not top_custom and not centre_custom:
         if row is not None:
@@ -9503,6 +9616,67 @@ def get_rfid_incompatible(sku: str, session: Session = Depends(get_session)):
     }
 
 
+def _non_taggable_skus(session: Session) -> set[str]:
+    """Upper-cased SKUs marked non-taggable (a big bin of thumbscrews):
+    never seeded into batches, never labelled, skipped by audits and the
+    tags-vs-on-hand arithmetic. A hand-paired tag may still exist as a
+    bag marker for Locate."""
+    return {
+        (r.sku or "").strip().upper()
+        for r in session.scalars(select(NonTaggable))
+    }
+
+
+class NonTaggableIn(BaseModel):
+    non_taggable: bool = True
+    changed_by: str | None = Field(default=None, max_length=100)
+    note: str | None = Field(default=None, max_length=255)
+
+
+@app.put(
+    "/api/products/{sku}/non-taggable",
+    dependencies=[Depends(require_user)],
+)
+def set_non_taggable(
+    sku: str, payload: NonTaggableIn, session: Session = Depends(get_session)
+):
+    """Mark (or unmark) a product as not worth individual tags at all
+    (Nick, 2026-08-25: 500 loose thumbscrews in one bin). Stronger than
+    "won't RFID scan": the product is never seeded into batches, never
+    gets labels, and audits skip it. Pairing ONE tag to it by hand as a
+    bag marker still works, and Locate can find that marker; the tag
+    carries no inventory meaning. Every flip is History-logged."""
+    sku = sku.strip()
+    if not sku:
+        raise HTTPException(422, "SKU required.")
+    row = session.get(NonTaggable, sku)
+    changed = False
+    if payload.non_taggable and row is None:
+        session.add(NonTaggable(
+            sku=sku, set_by=payload.changed_by, note=payload.note,
+        ))
+        changed = True
+    elif not payload.non_taggable and row is not None:
+        session.delete(row)
+        changed = True
+    if changed:
+        session.add(BarcodeChange(
+            sku=sku,
+            changed_field="non-taggable",
+            old_barcode=(
+                "in the RFID system" if payload.non_taggable
+                else "non-taggable"
+            ),
+            new_barcode=(
+                "non-taggable" if payload.non_taggable
+                else "in the RFID system"
+            ),
+            changed_by=payload.changed_by,
+        ))
+    session.commit()
+    return {"sku": sku, "non_taggable": payload.non_taggable}
+
+
 class ScanNoteIn(BaseModel):
     note: str = Field(default="", max_length=255)
     changed_by: str | None = Field(default=None, max_length=100)
@@ -9634,6 +9808,7 @@ def product_history(term: str, session: Session = Depends(get_session)):
         "bin": "bin-updated", "bin-local": "tags-rebinned",
         "bundle-contents": "bundle-contents-set",
         "rfid-scan": "rfid-flag-changed",
+        "non-taggable": "non-taggable",
         "on-hand": "on-hand-updated", "on-hand-undo": "on-hand-undone",
         "on-hand-lower": "on-hand-lowered",
         "on-hand-lower-undo": "on-hand-lower-undone",
@@ -9761,7 +9936,8 @@ def product_history(term: str, session: Session = Depends(get_session)):
             "at": iso(al.created_at),
             "type": "barcode-linked",
             "worker": al.created_by,
-            "detail": f"{al.alias_barcode} → {al.barcode or al.sku}",
+            "detail": f"{al.alias_barcode} → {al.barcode or al.sku}"
+                      + (" (label line)" if al.kind == "label" else ""),
             "shopify": False,
         })
 
@@ -9942,6 +10118,9 @@ def product_history(term: str, session: Session = Depends(get_session)):
         "rfid_incompatible": (
             session.get(RfidIncompatible, sku) is not None if sku else False
         ),
+        "non_taggable": (
+            session.get(NonTaggable, sku) is not None if sku else False
+        ),
         # Current multi-box/bundle standing, so the panel can offer the undo.
         "product_kind": (
             {
@@ -10021,6 +10200,7 @@ def history(
         "bin": "bin-updated", "bin-local": "tags-rebinned",
         "bundle-contents": "bundle-contents-set",
         "rfid-scan": "rfid-flag-changed",
+        "non-taggable": "non-taggable",
         "on-hand": "on-hand-updated", "on-hand-undo": "on-hand-undone",
         "on-hand-lower": "on-hand-lowered",
         "on-hand-lower-undo": "on-hand-lower-undone",
@@ -10138,7 +10318,8 @@ def history(
             "worker": al.created_by,
             "sku": al.sku,
             "title": al.product_title,
-            "detail": f"{al.alias_barcode} → {al.barcode or al.sku}",
+            "detail": f"{al.alias_barcode} → {al.barcode or al.sku}"
+                      + (" (label line)" if al.kind == "label" else ""),
             # Alias rows are live (this event exists because the link still
             # does), so History can offer to undo it: DELETE the alias and
             # the scanned code stops resolving to this product.

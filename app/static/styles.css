@@ -549,6 +549,15 @@ body {
   margin-top: 10px;
 }
 .product__optrow .tags { margin: 0; }
+/* Tags toggle docks right; its list renders below the whole row instead
+   of inside the flex row (which used to shove Edit product sideways). */
+.product__optrow .tags--right {
+  margin-left: auto;
+  border-top: none;
+  padding-top: 0;
+  align-self: center;
+}
+.tags__list--below { margin-top: 8px; }
 .phist-options { margin: 10px 0; }
 /* One-line option row: outlined bundle group with a legend that breaks
    the border (native fieldset/legend), flag + locate beside it */

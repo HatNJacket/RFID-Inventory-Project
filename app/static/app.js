@@ -351,6 +351,7 @@ const EVENT_META = {
   "sku-updated": ["Updated SKU", "#b98900"],
   "bin-updated": ["Updated Bin", "#0e7a8a"],
   "rfid-flag-changed": ["RFID Flag", "#d72c0d"],
+  "non-taggable": ["Non-taggable", "#8a6116"],
   "on-hand-updated": ["Raised On-hand", "#0c5132"],
   "on-hand-undone": ["Undid On-hand", "#6d7175"],
   "on-hand-lowered": ["Lowered On-hand", "#8a4b0e"],
@@ -628,6 +629,7 @@ function resetStation() {
   el.productCard.hidden = true;
   el.tagsPanel.hidden = true;
   el.tagsPanel.open = false;
+  el.tagsList.hidden = true;
   el.printPanel.hidden = true;
   el.printStatus.textContent = "";
   el.serialPanel.hidden = true;
@@ -2194,11 +2196,28 @@ function loadPlannerHint(p) {
   showPlannerHint(p && p.sku, "planner-hint");
 }
 
+// The tags list lives OUTSIDE the details element (full width, below the
+// option row) so opening it never pushes the buttons around — the details
+// toggle drives its visibility instead.
+el.tagsPanel.addEventListener("toggle", () => {
+  el.tagsList.hidden = !el.tagsPanel.open;
+});
+
+// Edit label…: the product panel already carries the two-line label
+// editor with live sticker preview — open it on the loaded product.
+document.getElementById("product-label").addEventListener("click", () => {
+  if (!pendingProduct) return;
+  const term = pendingProduct.sku || pendingProduct.barcode;
+  if (term) openProductHistory(term);
+});
+
 // --- Tags on file for the scanned product ----------------------------------
 async function loadTags(p) {
   el.pTagCount.textContent = "…";
   el.tagsList.innerHTML = "";
   el.tagsPanel.hidden = true;
+  el.tagsPanel.open = false;
+  el.tagsList.hidden = true;
   const params = new URLSearchParams();
   if (p.sku) params.set("sku", p.sku);
   if (p.barcode) params.set("barcode", p.barcode);
@@ -8921,6 +8940,8 @@ function renderAuditBins() {
     .getElementById("audit-filter")
     .value.trim()
     .toLowerCase();
+  const skipped =
+    (auditData.skipped_bundles || 0) + (auditData.skipped_non_taggable || 0);
   meta.textContent =
     `(on-hand from Shopify ` +
     (auditData.onhand_age_minutes == null
@@ -8928,7 +8949,21 @@ function renderAuditBins() {
       : auditData.onhand_age_minutes < 60
         ? `${auditData.onhand_age_minutes} min ago`
         : `${Math.round(auditData.onhand_age_minutes / 60)} h ago`) +
-    `${auditData.refreshing ? " · refreshing now…" : ""})`;
+    `${auditData.refreshing ? " · refreshing now…" : ""}` +
+    (skipped
+      ? ` · ${skipped} product(s) left out: ` +
+        [
+          auditData.skipped_bundles
+            ? `${auditData.skipped_bundles} bundle(s)`
+            : "",
+          auditData.skipped_non_taggable
+            ? `${auditData.skipped_non_taggable} non-taggable`
+            : "",
+        ]
+          .filter(Boolean)
+          .join(", ")
+      : "") +
+    `)`;
   // Default = bins that went through batch tagging to completion. A lone
   // Scan-Station tag or a carried-in stray must not promote a bin whose
   // score would be almost all never-tagged noise (the E6-1 lesson).
@@ -10320,6 +10355,7 @@ async function openProductHistory(term) {
       updateLabelPreview();
     }
     renderNoScan(!!data.rfid_incompatible);
+    renderNonTaggable(!!data.non_taggable);
     renderBundleRow();
     renderLocateRow();
     // Multi-box/bundle standing. Only shown when an answer was actually
@@ -10724,6 +10760,71 @@ document
       msg.textContent = want
         ? "Flagged ⊘ — logged; sweeps stop expecting this product to answer."
         : "Flag removed ✓ — logged; sweeps expect it again.";
+    } catch (err) {
+      msg.textContent = err.message;
+    }
+  });
+
+// Non-taggable: the thumbscrew bin. Stronger than the won't-scan flag -
+// the product leaves the RFID system entirely (never seeded into
+// batches, never labelled, skipped by audits). One hand-paired tag can
+// still act as a bag marker so Locate finds the container.
+function renderNonTaggable(flagged) {
+  const row = document.getElementById("phist-notag");
+  if (!phistData || !phistData.sku) {
+    row.hidden = true;
+    return;
+  }
+  row.hidden = false;
+  phistData.non_taggable = flagged;
+  const btn = document.getElementById("phist-notag-btn");
+  btn.textContent = flagged
+    ? "🚫 Put back in the RFID system"
+    : "Mark: non-taggable";
+  btn.title = flagged
+    ? "Marked non-taggable: not seeded into batches, no labels, audits " +
+      "skip it. Click to bring it back into the RFID system."
+    : "For products not worth individual tags (a bin of 500 loose " +
+      "thumbscrews): drops it from batches, labels and audits. You can " +
+      "still pair ONE tag by hand as a bag marker and find it with " +
+      "Locate.";
+}
+
+document
+  .getElementById("phist-notag-btn")
+  .addEventListener("click", async () => {
+    if (!phistData || !phistData.sku) return;
+    const want = !phistData.non_taggable;
+    const msg = document.getElementById("phist-msg");
+    if (
+      want &&
+      !confirm(
+        `Mark ${phistData.sku} as non-taggable?\n\n` +
+          `It leaves the RFID system: never seeded into batch tagging, ` +
+          `no labels print for it, and the audit tab skips it. ` +
+          `Optionally pair ONE tag to it by hand as a bag marker - ` +
+          `Locate can find the container, and the marker counts as ` +
+          `nothing.\n\nUndo any time with this same button (History ` +
+          `keeps the record).`
+      )
+    )
+      return;
+    try {
+      await apiJson(
+        `/api/products/${encodeURIComponent(phistData.sku)}/non-taggable`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            non_taggable: want,
+            changed_by: operatorEl.value || null,
+          }),
+        }
+      );
+      renderNonTaggable(want);
+      msg.textContent = want
+        ? "Marked non-taggable 🚫 - logged; batches and audits skip it now."
+        : "Back in the RFID system ✓ - logged; batches and audits count it again.";
     } catch (err) {
       msg.textContent = err.message;
     }

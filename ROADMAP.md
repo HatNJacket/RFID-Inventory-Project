@@ -3,6 +3,39 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-08-25.
 
+## 🏷️ Label-line aliases, non-taggable products, audit truth (2026-08-25)
+
+- **Label lines double as lookup aliases (ephemeral)**: saving a custom
+  top line or SKU line through any label editor (product panel, reprint
+  dialog, serial-prefix names) links that string to the product via the
+  barcode-alias store (`kind='label'`; prod ALTER
+  `dev/alter_add_alias_kind.py` run 2026-08-25). Typing what the
+  sticker says finds the product, case-insensitively. Replaced lines
+  lose their alias automatically (Nick's ZWO Softbag example is
+  test-pinned); manual links are never touched; duplicate lines don't
+  steal an existing link; real SKUs/barcodes always win because the
+  resolver tries them first. History shows label links with
+  "(label line)".
+- **Scan Station product card**: new "Edit label…" button beside Edit
+  product (opens the product panel's label editor), and Show tags moved
+  to the right with its EPC list expanding BELOW the card instead of
+  shoving Edit product sideways.
+- **Non-taggable products**: new per-SKU flag (`rfid_non_taggable`
+  table, ALTER run 2026-08-25; PUT /api/products/{sku}/non-taggable;
+  toggle in the product panel options). For thumbscrew-bin products not
+  worth individual tags: never seeded into batches, no labels, audits
+  and mismatch tasks skip them (open mismatch tasks auto-close with a
+  note). ONE hand-paired tag still works as a bag marker and Locate
+  finds it; the marker never counts or orphan-flags. History-logged
+  both ways.
+- **Audit "Shopify vs RFID by bin" truth**: the sold-unretired
+  adjustment is now WINDOWED to each SKU's tag-pool baseline (the
+  unwindowed sum produced "3 in Shopify, 4 tags, difference of -19"
+  from pre-tagging sales); SKUs with no live tags get no sold
+  adjustment; bundles and dropped products leave the audit instead of
+  scoring phantom drift; skip counts shown in the header note.
+  Suites: test_labelalias.py, test_auditbins.py.
+
 ## 🔗 Edit window: Save under the inputs + Link SKU / Link Barcode (2026-08-25)
 
 The edit product window (one window, both doors: Scan Station's Edit
@@ -1117,6 +1150,43 @@ plan is A) planner receive filing + read-only 1-left panel + source
 recovery/auth, B) shared identity + 1-left queue into TELCAN, C) mount
 planner into this app, retire the Function App last. Contracts to keep
 alive: shopify-jobs → on-order-skus, the C72 API, Bundles.app metafields.
+
+## 📥 Nick's TODO list (captured 2026-08-25, not yet designed)
+
+Noted from Nick's field feedback. Not scoped; ask before starting the
+bigger ones (receiving in particular needs interviews).
+
+1. **Zebra printer label drift.** Ripping a line of labels pulls the
+   line slightly toward the user; the next 2 labels print off-center
+   (text sometimes falls off the sticker) and a third blank label seems
+   to re-orient the line. Look at calibration/backfeed settings
+   (ZPL ~JC / backfeed ~JS, label-top offset) or a rip-bar habit fix.
+2. **Receiving, robustly, hooked to Inventory Planner.** An extremely
+   robust receiving flow that needs little know-how. Use cases include
+   at least: scanning each box one-by-one until all items are printed
+   and tagged; pulling the actual manifest of what was sent (or was
+   supposed to be sent) and printing from that list, with per-product
+   check-off of what did and didn't arrive before printing. Requires
+   interviewing the people who do receiving to map the real process.
+   (Overlaps Steve's TODO #2; the 1-left dashboard bridge memory notes
+   where Inventory Planner data lives.)
+3. **Print jobs in collect-scan order.** Labels should come out in the
+   order products were scanned during batch collect (A..H), not
+   arbitrary order (G, F, A, ...) - the operator walks the shelf in
+   scan order and hunting for the matching product wastes time.
+4. **Consolidate "tags != on hand" vs "inventory check" review tasks.**
+   Decide whether both categories are really needed or whether they can
+   be compacted into one (they answer the same question from different
+   triggers: arithmetic vs a human count).
+5. **RFID-scanning at shipping-out.** Deliberately LAST: knowing where
+   inventory is, and tracking/confirming/locating it, comes first.
+6. **Locator marker tags for non-taggable products.** The non-taggable
+   flag (shipped 2026-08-25) already keeps thumbscrew-style bins out of
+   batches/audits, and a hand-paired tag works as a bag marker findable
+   via Locate. Design a first-class "marker tag" type on top: pair it
+   with an explicit marker role from the UI, show it as a marker
+   everywhere (never a unit), and keep it out of every count by type
+   rather than by SKU flag.
 
 ## 📥 Steve's TODO list (captured 2026-07-28, not yet designed)
 

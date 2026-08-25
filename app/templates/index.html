@@ -372,14 +372,17 @@
           <span class="print__status" id="print-status"></span>
         </div>
 
-        <!-- One line: existing tags + product maintenance -->
+        <!-- One line: product maintenance left, tags toggle right. The
+             EPC list expands BELOW the row (full width) so opening it
+             never pushes the buttons or text around (Nick, 2026-08-25). -->
         <div class="product__optrow">
-          <details class="tags" id="tags-panel" hidden>
-            <summary class="tags__summary">Show tags</summary>
-            <ul class="tags__list" id="tags-list"></ul>
-          </details>
           <button class="reset" id="product-edit" type="button" title="Register an Astronomik serial prefix or update the SKU in Shopify">Edit product…</button>
+          <button class="reset" id="product-label" type="button" title="Change what prints on this product's labels (top line and SKU line) - saved store-wide">Edit label…</button>
+          <details class="tags tags--right" id="tags-panel" hidden>
+            <summary class="tags__summary">Show tags</summary>
+          </details>
         </div>
+        <ul class="tags__list tags__list--below" id="tags-list" hidden></ul>
       </section>
 
       <!-- Printer picker: one card per detected printer. Rows appear on
@@ -1270,6 +1273,10 @@
             <div class="optitem" id="phist-norfid" hidden>
               <span id="phist-norfid-what" hidden></span>
               <button class="reset" id="phist-norfid-btn" type="button"></button>
+            </div>
+            <div class="optitem" id="phist-notag" hidden>
+              <span id="phist-notag-what" hidden></span>
+              <button class="reset" id="phist-notag-btn" type="button"></button>
             </div>
             <div class="optitem" id="phist-locate" hidden>
               <span id="phist-locate-what" hidden></span>

@@ -309,8 +309,30 @@ def refresh_mismatch_tasks(session: Session) -> dict:
         (k or "").strip().upper(): v for k, v in (on_hand or {}).items()
     }
 
+    # Non-taggable products (bins of loose thumbscrews) are outside the
+    # RFID system by decision — their arithmetic is meaningless. Any open
+    # task for one is auto-closed by the tags != expected branch never
+    # firing... which it would keep doing, so skip AND close explicitly.
+    from app.models import NonTaggable
+    no_tag = {
+        (r.sku or "").strip().upper()
+        for r in session.scalars(select(NonTaggable))
+    }
+
     opened = closed = 0
     for sku in skus:
+        if sku in no_tag:
+            task = open_tasks.get(sku)
+            if task is not None:
+                task.status = "resolved"
+                task.resolved_by = "orders-sync"
+                task.resolved_at = datetime.utcnow()
+                task.resolution_note = (
+                    "Product marked non-taggable — it sits outside the "
+                    "RFID system, so the tag arithmetic no longer applies."
+                )
+                closed += 1
+            continue
         oh = on_hand_ci.get(sku)
         if oh is None:
             continue
