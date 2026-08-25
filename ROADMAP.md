@@ -53,6 +53,15 @@ the REAL prod numbers (dev/tests/test_ledger_flow.py, 41 checks).
   "Retire N unheard tag(s) manually..." for ANY unheard earlier tags,
   behind an attestation confirm (physically checked, boxes really gone,
   tags not just dead). Same retire endpoint, tombstones + History undo.
+- **USE THIS LISTING settles the ambiguous flag**: the flag was
+  re-derived from candidate counts every review, so picking a listing
+  could never clear it (the twins keep existing). The reassign endpoint
+  now records the choice (`rfid_batch_items.listing_locked`, one-off
+  ALTER `dev/alter_add_listing_locked.py`, run 2026-08-25) and review
+  stops re-raising; candidates stay listed for a change of mind. Both
+  UIs follow (server-driven flag). Suite: test_listingpick.py.
+  Note: the per-step Shelf-sweep power default Nick asked for shipped
+  in 3.57 (pow_step_shelf + its settings row); update the gun.
 - **C72 3.57 (code 75) + state-ladder unification**: the shelf verdict
   ladder in `_shelf_reconcile` is now the single source of truth both
   UIs render: green = sales fully explain the silence OR (no windowed

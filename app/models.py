@@ -625,6 +625,14 @@ class BatchItem(Base):
         Boolean, nullable=False, default=False, server_default="0"
     )
     skip_reason: Mapped[str | None] = mapped_column(String(120))
+    # The operator explicitly picked a listing (USE THIS LISTING /
+    # reassign): the "ambiguous" flag stops re-raising for this row —
+    # candidate count alone can never clear it, since the other listings
+    # keep existing (Nick, 2026-08-25). Prod needs the one-off ALTER
+    # script dev/alter_add_listing_locked.py.
+    listing_locked: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
 
     def as_dict(self) -> dict:
         return {
@@ -652,6 +660,7 @@ class BatchItem(Base):
             "tagged_before": self.tagged_before,
             "skipped": self.skipped,
             "skip_reason": self.skip_reason,
+            "listing_locked": self.listing_locked,
             # Precomputed so every client shows the same two numbers rather
             # than each reinventing the arithmetic. Baseline-tagged boxes
             # are units on the shelf (so old C72 builds show the combined

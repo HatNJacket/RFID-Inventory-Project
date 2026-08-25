@@ -5933,9 +5933,13 @@ def batch_review(batch_id: int, session: Session = Depends(get_session)):
                 candidates = _merge_siblings(
                     session, item, candidates, bin_rows=rows_once
                 )
-                if len(candidates) > 1:
+                # An explicit USE THIS LISTING choice (listing_locked)
+                # settles the row: the twin listings keep existing, so
+                # the candidate count alone could never clear the flag.
+                # Candidates stay listed for a change of mind.
+                if len(candidates) > 1 and not item.listing_locked:
                     flags.append("ambiguous")
-                else:
+                elif len(candidates) <= 1:
                     candidates = []
             # Receiving compares against nothing: expected_qty is the
             # SHELF count, and a shipment legitimately adds to it.
@@ -6104,12 +6108,15 @@ def batch_item_reassign(
     if existing is not None:
         existing.qty_scanned += item.qty_scanned
         existing.paired_count += item.paired_count
+        # An explicit human choice: the ambiguous flag stops re-raising.
+        existing.listing_locked = True
         session.delete(item)
         session.commit()
         session.refresh(existing)
         return {"item": existing.as_dict(), "merged": True}
 
     item.resolved = True
+    item.listing_locked = True
     item.shopify_variant_id = match.get("shopify_variant_id")
     item.shopify_product_id = match.get("shopify_product_id")
     item.product_title = match.get("product_title")
