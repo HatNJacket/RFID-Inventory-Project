@@ -29,6 +29,17 @@ Nick's two ZWO edge cases (the unicode 'Ⅱ' roman numeral). C72 **3.59
   resolve in place) for when the right product isn't in the odd list;
   the CHANGE SKU / BARCODE note says broken replaced values stay
   linked automatically. Suite: dev/tests/test_charfix.py.
+- **Web terminal parity (same day)**: the Check window's unresolved
+  rescue offers "Link only - Shopify untouched" beside the overwrite in
+  the odd-barcodes picker, plus a direct "Link scan to it" input (name
+  the real SKU/barcode when the product isn't in the odd list); links
+  resolve the row IN PLACE, counts kept. Overwrite flows (Check ident
+  editor, edit window, unknown-barcode replace) say when the old broken
+  value was kept linked; the Scan Station card says "Matched via
+  broken-character fix (scan said ...)" on a folded hit. Also fixed the
+  web's own dead "Use this listing" button (disabled on the current
+  listing - it now reads "Keep this listing" and settles the flag, same
+  as the C72 fix).
 - **Future**: one-tap "Recommended fix" on bad-chars items - propose
   NFKC(live value) as the clean SKU/barcode, write it, and keep the
   broken original linked, all in one confirm (charfold_from is the

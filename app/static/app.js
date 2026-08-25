@@ -744,7 +744,10 @@ async function stationBarcodeScan(barcode) {
       product.serial_brand
         ? `${product.serial_brand} serial number recognized — the first ` +
           `digits identify the product. Scan the RFID tag.`
-        : "Product found. Scan the RFID tag."
+        : product.charfold_from
+          ? `Matched via broken-character fix (scan said ` +
+            `"${product.charfold_from}"). Scan the RFID tag.`
+          : "Product found. Scan the RFID tag."
     );
   } catch (err) {
     setResult("Network error during lookup.", "err");
@@ -1581,7 +1584,12 @@ document.getElementById("edit-sku-save").addEventListener("click", async () => {
     pendingProduct.sku = newSku;
     el.pSku.textContent = newSku; // the card behind follows immediately
     if (res.product) renderAliasPreview({ ...pendingProduct, ...res.product });
-    editMsg(`SKU updated to ${newSku} ✓ (History-logged)`);
+    editMsg(
+      `SKU updated to ${newSku} ✓ (History-logged)` +
+        (res.legacy_linked
+          ? " - the old broken value stays linked, old labels still scan"
+          : "")
+    );
   } catch (err) {
     editMsg(err.message);
   }
@@ -1614,7 +1622,12 @@ document
       el.pBarcode.textContent = newBarcode; // the card behind follows
       if (res.product)
         renderAliasPreview({ ...pendingProduct, ...res.product });
-      editMsg(`Barcode updated to ${newBarcode} ✓ (History-logged)`);
+      editMsg(
+        `Barcode updated to ${newBarcode} ✓ (History-logged)` +
+          (res.legacy_linked
+            ? " - the old broken value stays linked, old labels still scan"
+            : "")
+      );
     } catch (err) {
       editMsg(err.message);
     }
@@ -2059,11 +2072,15 @@ el.replaceGo.addEventListener("click", async () => {
       el.replaceGo.disabled = false;
       return;
     }
-    const { product } = await res.json();
+    const body = await res.json();
+    const product = body.product;
+    const legacyNote = body.legacy_linked
+      ? " The old broken value stays linked - old labels still scan."
+      : "";
     if (isBc) {
       acceptProduct(
         product,
-        "Barcode replaced in Shopify. Scan the RFID tag."
+        `Barcode replaced in Shopify.${legacyNote} Scan the RFID tag.`
       );
     } else if (aliasCandidate) {
       setResult(`SKU updated to ${value}. Rescanning…`, "ok");
@@ -5273,7 +5290,12 @@ function renderBitem() {
       (current ? " — currently selected" : "");
     const useWrap = document.getElementById("bitem-usewrap");
     useWrap.hidden = false;
-    document.getElementById("bitem-use").disabled = current;
+    // Never disabled: confirming the CURRENT listing is the usual move
+    // ("yes, this one") and settles the several-listings flag server-side
+    // — the same dead-primary-button fix the C72 got (Nick, 2026-08-25).
+    const useBtn = document.getElementById("bitem-use");
+    useBtn.disabled = false;
+    useBtn.textContent = current ? "Keep this listing" : "Use this listing";
     // Splitting needs at least two boxes to divide and no tags yet — the
     // server refuses both anyway, but a button that can only fail is worse
     // than no button.
@@ -5443,7 +5465,7 @@ document.getElementById("bitem-skusave").addEventListener("click", async () => {
   btn.disabled = true;
   msg.textContent = "Writing the SKU to Shopify…";
   try {
-    await postJson("/api/sku-overwrites", {
+    const ow = await postJson("/api/sku-overwrites", {
       target: bitemIdentTarget(),
       new_sku: newSku,
       changed_by: operator,
@@ -5467,7 +5489,11 @@ document.getElementById("bitem-skusave").addEventListener("click", async () => {
     bitemEntry.flags = bitemEntry.flags.filter((f) => f !== "bad-chars");
     renderBitem();
     renderCheckList();
-    msg.textContent = `SKU saved ✓ — now ${newSku}${note}.`;
+    msg.textContent =
+      `SKU saved ✓ — now ${newSku}${note}.` +
+      (ow.legacy_linked
+        ? " The old broken value stays linked, so old labels still scan."
+        : "");
   } catch (err) {
     msg.textContent = err.message;
     updateBitemIdentButtons();
@@ -5488,7 +5514,7 @@ document.getElementById("bitem-bcsave").addEventListener("click", async () => {
   btn.disabled = true;
   msg.textContent = "Writing the barcode to Shopify…";
   try {
-    await postJson("/api/barcode-overwrites", {
+    const ow = await postJson("/api/barcode-overwrites", {
       target: bitemIdentTarget(),
       new_barcode: newBc,
       changed_by: operator,
@@ -5500,7 +5526,11 @@ document.getElementById("bitem-bcsave").addEventListener("click", async () => {
     bitemEntry.flags = bitemEntry.flags.filter((f) => f !== "bad-chars");
     renderBitem();
     renderCheckList();
-    msg.textContent = `Barcode saved ✓ — now ${newBc}.`;
+    msg.textContent =
+      `Barcode saved ✓ — now ${newBc}.` +
+      (ow.legacy_linked
+        ? " The old broken value stays linked, so old labels still scan."
+        : "");
   } catch (err) {
     msg.textContent = err.message;
     updateBitemIdentButtons();
@@ -5801,6 +5831,81 @@ document.getElementById("bitem-oddnext").addEventListener("click", () => {
     oddIdx++;
     renderOdd();
   }
+});
+
+// Link an unresolved scan to a product WITHOUT touching Shopify - the
+// C72 3.59 flow, web edition (Nick, 2026-08-25): the code becomes a
+// lookup alias and the row resolves IN PLACE, counts intact. For old
+// labels printed with a broken or foreign code whose product's real
+// barcode is already correct.
+async function bitemLinkScan(targetTerm, title) {
+  const it = bitemEntry.item;
+  const msg = document.getElementById("bitem-msg");
+  try {
+    await postJson("/api/barcode-aliases", {
+      alias_barcode: it.scanned_code,
+      target: targetTerm,
+      created_by: operatorEl.value || null,
+    });
+    try {
+      await postJson(`/api/batches/${batch.id}/items/${it.id}/resolve`, {});
+    } catch {
+      /* the row catches up on the next re-check */
+    }
+    document.getElementById("bitem-overlay").hidden = true;
+    await pullBatch(false);
+    loadBatchReview();
+    setBatchResult(
+      `Linked ✓ - ${it.scanned_code} now finds ${title}; Shopify ` +
+        `untouched (unlink in History).`,
+      "ok"
+    );
+  } catch (err) {
+    msg.textContent = err.message;
+  }
+}
+
+document.getElementById("bitem-oddlink").addEventListener("click", () => {
+  const p = oddList[oddIdx];
+  const it = bitemEntry && bitemEntry.item;
+  if (!p || !it) return;
+  if (
+    !confirm(
+      `Link ${it.scanned_code} to "${p.product_title}"?\n\n` +
+        `The scanned code will find this product from now on. Shopify's ` +
+        `own SKU and barcode stay unchanged - use "Give this product the ` +
+        `scanned barcode" instead if Shopify itself is wrong. The counted ` +
+        `boxes stay on this row. Unlink any time in History.`
+    )
+  )
+    return;
+  bitemLinkScan(p.sku || p.barcode, p.product_title);
+});
+
+document.getElementById("bitem-linkgo").addEventListener("click", async () => {
+  const term = document.getElementById("bitem-linktarget").value.trim();
+  const msg = document.getElementById("bitem-msg");
+  if (!term || !bitemEntry) return;
+  msg.textContent = `Looking up ${term}…`;
+  let p;
+  try {
+    p = await apiJson(`/api/products/by-barcode/${encodeURIComponent(term)}`);
+  } catch (err) {
+    msg.textContent = `No product found for ${term} (${err.message}).`;
+    return;
+  }
+  msg.textContent = "";
+  const title = p.product_title || p.sku || term;
+  if (
+    !confirm(
+      `Link ${bitemEntry.item.scanned_code} to "${title}"` +
+        (p.sku ? ` (SKU ${p.sku})` : "") +
+        `?\n\nThe scanned code will find this product from now on; ` +
+        `Shopify is not touched. Unlink any time in History.`
+    )
+  )
+    return;
+  bitemLinkScan(p.sku || term, title);
 });
 
 // Give the chosen product the barcode that wouldn't resolve. This is a real

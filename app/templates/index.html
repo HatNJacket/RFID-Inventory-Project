@@ -810,12 +810,18 @@
 
                 <!-- Unresolved barcode rescue -->
                 <div id="bitem-unresolved" hidden>
-                  <p class="linkbox__extra-label">This barcode isn't on any product. Usually the product's Shopify barcode was left as its SKU or a placeholder. Already fixed it in Shopify? Hit re-check. Otherwise find the product below and give it the scanned barcode:</p>
+                  <p class="linkbox__extra-label">This barcode isn't on any product. If the product's Shopify barcode is WRONG, find it below and give it the scanned barcode. If Shopify is already CORRECT (an old label printed with a broken or foreign code), link the scan to the product instead - Shopify stays untouched. Already fixed it in Shopify? Hit re-check.</p>
                   <div class="linkbox__actions">
                     <button class="print__btn" id="bitem-recheck" type="button" title="Look this barcode up in Shopify again — use it after setting the barcode there">↻ Re-check Shopify for this barcode</button>
                     <button class="reset" id="bitem-odd" type="button">Show products in this bin with odd barcodes</button>
                     <button class="reset" id="bitem-recommend" type="button">Show recommended product</button>
                     <button class="reset" id="bitem-drop" type="button">Remove this scan from the list</button>
+                  </div>
+                  <div class="linkbox__form" style="margin-top:6px">
+                    <span class="phist-inputwrap">
+                      <input id="bitem-linktarget" class="linkbox__input" type="text" maxlength="100" autocomplete="off" spellcheck="false" placeholder="Real SKU or barcode of the product it should point to" />
+                    </span>
+                    <button class="reset" id="bitem-linkgo" type="button" title="The scanned code becomes a lookup link to that product. Shopify's own SKU and barcode stay unchanged; unlink any time in History">Link scan to it</button>
                   </div>
                   <div id="bitem-oddwrap" hidden>
                     <div class="bitem-nav">
@@ -829,7 +835,10 @@
                           </div>
                         </div>
                         <p class="linkbox__text" id="bitem-oddpos"></p>
-                        <button class="print__btn" id="bitem-oddapply" type="button">Give this product the scanned barcode</button>
+                        <div class="linkbox__actions">
+                          <button class="print__btn" id="bitem-oddapply" type="button">Give this product the scanned barcode</button>
+                          <button class="reset" id="bitem-oddlink" type="button" title="Keep Shopify as is - the scanned code just finds this product from now on, and the counted boxes stay on this row">Link only - Shopify untouched</button>
+                        </div>
                       </div>
                       <button class="reset bitem-arrow" id="bitem-oddnext" type="button">&rarr;</button>
                     </div>
