@@ -74,6 +74,30 @@ with TestClient(app) as cl:
     check("right-name agent picks it up", r["count"]==1
           and r["jobs"][0]["printer"]=="zebra-desk", r)
 
+    # Azure SQL hands last_seen back tz-AWARE; the 45s throttle's naive
+    # subtraction 500'd every claim after the first stamp (printer
+    # "offline" while the agent ran fine - Nick, 2026-08-26). sqlite
+    # reads are naive, so pin it against an aware value still sitting
+    # in the session's identity map.
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+    from sqlalchemy.orm import Session
+    from app.database import get_engine
+    from app.models import Printer
+    from app.main import _touch_printer
+    with Session(get_engine()) as s:
+        row = s.scalar(select(Printer).where(Printer.name=="zebra-desk"))
+        row.last_seen = datetime.now(timezone.utc)  # aware, like prod
+        s.flush()
+        try:
+            _touch_printer(s, "zebra-desk", None)
+            ok, err = True, None
+        except TypeError as e:
+            ok, err = False, str(e)
+        check("a tz-aware last_seen never crashes the claim throttle",
+              ok, err)
+        s.rollback()
+
 print()
 print("FAILED: "+", ".join(fails) if fails else "ALL CHECKS PASSED")
 sys.exit(1 if fails else 0)

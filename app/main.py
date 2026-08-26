@@ -1572,7 +1572,14 @@ def _touch_printer(session: Session, name: str, kind: str | None) -> None:
     if kind and row.kind != kind[:100]:
         row.kind = kind[:100]
     now = datetime.utcnow()
-    if row.last_seen is None or (now - row.last_seen).total_seconds() > 45:
+    # Azure SQL hands last_seen back tz-AWARE; naive-minus-aware raises
+    # and 500'd every claim after the first stamp (the printer showed
+    # offline while the agent ran fine - Nick, 2026-08-26). Same
+    # normalization list_printers uses. sqlite (tests) stays naive.
+    seen = row.last_seen
+    if seen is not None and seen.tzinfo is not None:
+        seen = seen.astimezone(timezone.utc).replace(tzinfo=None)
+    if seen is None or (now - seen).total_seconds() > 45:
         row.last_seen = now
 
 

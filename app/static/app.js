@@ -2698,10 +2698,18 @@ document
     const printers = await fetchPrinters(true);
     renderPrinterCards(printers);
     const fresh = printers.filter((p) => !before.has(p.name));
+    // The full working command - the bare "--printer-id" hint sent Nick
+    // into argparse/401 errors (2026-08-26). The agent key is a secret
+    // the page can't print; the warehouse PC's print_agent_loop.cmd has
+    // it.
     document.getElementById("printer-msg").textContent = fresh.length
       ? `Detected: ${fresh.map((p) => p.name).join(", ")} ✓`
-      : "No new printers found. Run print_agent.py --printer-id <name> " +
-        "next to the new printer — it appears here on its next check-in.";
+      : "No new printers found. On the PC beside the new printer run: " +
+        `py print_agent.py --app ${location.origin} --agent-key ` +
+        `<PRINT_AGENT_KEY - copy it from print_agent_loop.cmd on the ` +
+        `warehouse PC> --printer-name "<its Windows printer name>" ` +
+        "--printer-id <name for this picker> (add --no-rfid if it has " +
+        "no RFID encoder). It appears here on its next check-in.";
   });
 printerBtnRender();
 
