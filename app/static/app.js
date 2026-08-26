@@ -9168,6 +9168,10 @@ function openResolveWindow(t) {
       </div>
       <div class="recent__meta" id="rvw-liveline" style="margin-bottom:8px">Checking the live count…</div>
       <div id="rvw-actions"></div>
+      <button class="reset rvw-wide rvw-choice rvw-choice--amber" id="rvw-userfid" type="button">
+        Shopify is wrong → use the RFID count${counted != null ? ` (${counted})` : ""}
+        <span class="rvw-choice__sub">Writes the counted number to Shopify on-hand. Raises are the normal audited write; a lower must be fully covered by recorded sales. Undoable from History.</span>
+      </button>
       ${binFromDetail ? `<button class="reset rvw-wide" id="rvw-audit" type="button">Jump to ${escapeHtml(binFromDetail)}'s bin audit</button>` : ""}
       <button class="reset rvw-wide rvw-recount" id="rvw-recount" type="button"
         title="You KNOW what's on the shelf: build the correction with - and +, then press the middle to apply. The RFID side updates and logs always; Shopify on-hand is only raised when its number differs (audited, undoable). Lowering Shopify stays a bin-audit job.">
@@ -9385,6 +9389,103 @@ function openResolveWindow(t) {
     });
   }
 
+  // "Shopify is wrong → use the RFID count" (Nick, 2026-08-26): the
+  // bin-mismatch-style one-click for count disagreements. Reads the
+  // CURRENT counted number (a recount in this window counts) and the
+  // live Shopify figure, then writes counted to on-hand: raises ride
+  // the normal audited write; lowers ride the bin-audit lowering path,
+  // whose guard refuses any drop recorded sales don't fully cover.
+  const useRfid = document.getElementById("rvw-userfid");
+  if (useRfid)
+    useRfid.addEventListener("click", async () => {
+      const operator = operatorEl.value;
+      if (!operator) {
+        alert("Pick who's scanning (top right) first.");
+        return;
+      }
+      const countedNow = Number(
+        document.getElementById("rvw-counted")?.textContent
+      );
+      if (!Number.isFinite(countedNow)) {
+        alert("This task carries no counted number to write.");
+        return;
+      }
+      const liveTxt = document.getElementById("rvw-live").textContent;
+      const live = /^\d+$/.test(liveTxt) ? Number(liveTxt) : null;
+      if (live == null) {
+        alert("Shopify's live number couldn't be read - try again in a moment.");
+        return;
+      }
+      if (live === countedNow) {
+        await commitResolve(t, `Shopify already says ${live} - counts agree.`);
+        return;
+      }
+      useRfid.disabled = true;
+      try {
+        if (countedNow > live) {
+          if (
+            !confirm(
+              `Write on-hand ${live} → ${countedNow} to Shopify for ${t.sku}?\n\nConfirmed, logged, undoable from History.`
+            )
+          ) {
+            useRfid.disabled = false;
+            return;
+          }
+          const r = await postJson("/api/onhand-updates", {
+            sku: t.sku,
+            new_qty: countedNow,
+            confirmed: true,
+            changed_by: operator,
+          });
+          await commitResolve(t, r.message || `On-hand set to ${countedNow}.`);
+        } else {
+          if (!binFromDetail) {
+            alert(
+              "This task names no bin, and lowering a count runs through " +
+                "the bin-audit path - run the bin audit instead."
+            );
+            useRfid.disabled = false;
+            return;
+          }
+          // Two-phase like the other lowering flows: the unconfirmed
+          // call answers with exactly what will happen (including the
+          // sales-coverage arithmetic), and that text IS the prompt.
+          let ask = null;
+          try {
+            await postJson("/api/onhand-updates/lower", {
+              sku: t.sku,
+              bin_name: binFromDetail,
+              new_qty: countedNow,
+              epcs: [],
+              changed_by: operator,
+            });
+          } catch (err) {
+            if (!/Confirm to proceed/.test(err.message)) throw err;
+            ask = err.message;
+          }
+          if (ask && !confirm(ask)) {
+            useRfid.disabled = false;
+            return;
+          }
+          const r = await postJson("/api/onhand-updates/lower", {
+            sku: t.sku,
+            bin_name: binFromDetail,
+            new_qty: countedNow,
+            epcs: [],
+            changed_by: operator,
+            confirmed: true,
+          });
+          await commitResolve(
+            t,
+            r.message || `On-hand lowered to ${countedNow}.`
+          );
+        }
+      } catch (err) {
+        useRfid.disabled = false;
+        alert(err.message);
+      }
+    });
+
   const stationBtn = document.getElementById("rvw-station");
   if (stationBtn)
     stationBtn.addEventListener("click", () => {
@@ -9529,34 +9630,10 @@ async function loadResolveContext(t, counted) {
           commitResolve(t, `Live on-hand now matches the count (${counted}).`)
         );
       } else if (live != null && counted != null && counted > live) {
+        // The write itself is the "Shopify is wrong" choice button.
         line.textContent = `Shelf count (${counted}) is HIGHER than live on-hand (${live}) — physical proof the boxes exist.`;
-        actions.innerHTML = `<button class="reset rvw-wide rvw-ok" id="rvw-seton" type="button">Set Shopify on-hand to ${counted}</button>`;
-        document.getElementById("rvw-seton").addEventListener("click", async () => {
-          const operator = operatorEl.value;
-          if (!operator) {
-            alert("Pick who's scanning (top right) first.");
-            return;
-          }
-          if (
-            !confirm(
-              `Write on-hand ${live} → ${counted} to Shopify for ${t.sku}?\n\nConfirmed, logged, undoable from History.`
-            )
-          )
-            return;
-          try {
-            const r = await postJson("/api/onhand-updates", {
-              sku: t.sku,
-              new_qty: counted,
-              confirmed: true,
-              changed_by: operator,
-            });
-            await commitResolve(t, r.message || `On-hand set to ${counted}.`);
-          } catch (err) {
-            alert(err.message);
-          }
-        });
       } else if (live != null) {
-        line.textContent = `Live on-hand is ${live} — still above the count. Lowering a number stays a Shopify-admin job (nothing here writes down), so recount or resolve with a note.`;
+        line.textContent = `Live on-hand is ${live} — above the count. "Use the RFID count" can lower it when recorded sales fully cover the drop; otherwise recount or resolve with a note.`;
       } else {
         line.textContent = "Live on-hand unavailable right now.";
       }
