@@ -3,6 +3,28 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-08-26.
 
+## 🖨 Printer offline (claim 500) + Resume printing — ✅ DEPLOYED 2026-08-26
+
+Two same-day field reports from Nick:
+
+- **Claim 500 / printer "offline"**: the morning's DTU write-trim added
+  a 45s throttle to `_touch_printer` that subtracted Azure SQL's
+  tz-AWARE last_seen from a naive utcnow() — TypeError, so every agent
+  claim after the first stamp returned 500 while the agent itself ran
+  fine. sqlite (tests) reads naive, which is why suites stayed green.
+  Fixed with the same normalization list_printers uses; regression
+  check pins an aware value through the session identity map. The
+  "Add a printer" hint now gives the FULL working command (app URL
+  filled in; agent key lives in print_agent_loop.cmd).
+- **Resume printing** (Queue tab, green ▶ next to Stop): a stopped
+  label never printed and its EPC was never used, so
+  POST /api/print-jobs/resume returns the SAME jobs to pending —
+  original ids keep the original print order, ahead of anything queued
+  since. Enabled from a server-side `resumable_stopped` count; skips
+  batches that have since finished; History "Resumed Printing"; Stop ⇄
+  Resume can loop forever. Nick's stopped F2-5 run (82 labels) resumed
+  with it minutes after the deploy. test_printorder +6.
+
 ## 📦 Backorders vs the tag arithmetic + sold-out shortcut — ✅ DEPLOYED 2026-08-26
 
 Nick's AirGradient I-9PSL-DE-KIT: Shopify on-hand sat at **-1** (one
