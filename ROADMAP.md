@@ -3,6 +3,23 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-08-25.
 
+## 🔎 Show Recommended: near-miss folds — ✅ DEPLOYED 2026-08-26
+
+Nick's ZWO T2-Tilter-II case: the product's SKU is "ZWO T2-Tilter-Ⅱ"
+(Roman numeral) and its barcode "ZWO-T2-Tilter-II" (hyphen for the
+space), so the printed code matched neither and Show Recommended found
+nothing. /api/bins/{bin}/odd-barcodes `recommended` now matches in
+tiers: exact (as before), then NFKC lookalike-folding (Ⅱ -> II,
+fullwidth chars), then separator-folding on top (space/hyphen/
+underscore/dot/slash runs are interchangeable; keys under 3 chars
+never fold-match). Lower tier wins, SKU beats barcode, the WHOLE bin
+is searched (not just odd-barcode rows), and the `reason` string says
+which fold matched - both the web terminal and the C72 render that
+server string verbatim, so NO APK build was needed. Deliberately NOT
+edit distance (Nick's explicit rule: one character off is how genuine
+neighboring SKUs differ - test pins that a Tilter-I neighbor never
+folds into Tilter-II). test_charfix.py grows to 15.
+
 ## 🔍 1-left checks on receiving: cold-start gap closed — ✅ DONE 2026-08-26
 
 Receiving the iOptron order raised 8 one-left checks (detected 14:29-

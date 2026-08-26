@@ -129,6 +129,49 @@ with patch("app.shopify.lookup_barcode", side_effect=fake_lookup), \
           r.status_code == 200 and r.json()["sku"] == "OK-2",
           r.text[:200])
 
+    # 6) SHOW RECOMMENDED catches the specific near-miss folds (Nick,
+    # 2026-08-26, the ZWO T2-Tilter-II shape): SKU carries a Roman
+    # numeral, barcode swapped its space for a hyphen. Explicitly NOT
+    # edit distance - a genuinely different neighboring SKU must never
+    # be recommended.
+    from app.database import get_engine
+    from app.models import BinMapEntry
+    from sqlalchemy.orm import Session
+    with Session(get_engine()) as s:
+        s.add(BinMapEntry(sku=f"ZWO T2-Tilter-{ROMAN2}",
+                          barcode="ZWO-T2-Tilter-II",
+                          product_title="ZWO T2 Tilter II",
+                          bin="G5-1", qty=2,
+                          shopify_variant_id="t:TILT"))
+        # The one-character-off NEIGHBOR that must never be offered.
+        s.add(BinMapEntry(sku="ZWO T2-Tilter-I", barcode="333",
+                          product_title="ZWO T2 Tilter (mark one)",
+                          bin="G5-1", qty=1,
+                          shopify_variant_id="t:TILT1"))
+        s.commit()
+
+    def rec(scanned):
+        return cl.get("/api/bins/G5-1/odd-barcodes?scanned="
+                      + scanned.replace(" ", "%20")).json()["recommended"]
+
+    r = rec("ZWO T2-Tilter-II")
+    check("plain-ASCII scan of a Roman-numeral SKU is recommended",
+          r is not None and r["sku"] == f"ZWO T2-Tilter-{ROMAN2}"
+          and "lookalike" in r["reason"], r)
+    r = rec("ZWO T2 Tilter II")
+    check("separator swaps (space vs hyphen) are recommended",
+          r is not None and r["sku"] == f"ZWO T2-Tilter-{ROMAN2}"
+          and "treated the same" in r["reason"], r)
+    r = rec("ZWO_T2.Tilter II")
+    check("mixed underscore/dot/space separators still match",
+          r is not None and r["sku"] == f"ZWO T2-Tilter-{ROMAN2}", r)
+    r = rec("ZWO T2-Tilter-I")
+    check("a one-character-off neighbor recommends ITSELF, never folds",
+          r is not None and r["sku"] == "ZWO T2-Tilter-I"
+          and "exactly" in r["reason"], r)
+    r = rec("ZWO T2-Tilter-X")
+    check("a genuinely different code recommends nothing", r is None, r)
+
 print()
 print("FAILED: "+", ".join(fails) if fails else "ALL CHECKS PASSED")
 sys.exit(1 if fails else 0)

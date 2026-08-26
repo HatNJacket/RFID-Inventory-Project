@@ -4214,6 +4214,20 @@ def set_bin_flagged(
     return {"bin": name, "flagged": payload.flagged, "note": note}
 
 
+def _fold_plain(value: str | None) -> str:
+    """NFKC-fold and uppercase: lookalike unicode reads as its plain
+    counterpart (Roman numeral Ⅱ -> II, fullwidth digits, etc.)."""
+    return unicodedata.normalize("NFKC", value or "").strip().upper()
+
+
+def _fold_seps(value: str | None) -> str:
+    """On top of the plain fold, separator runs (space, hyphen,
+    underscore, dot, slash) vanish - "ZWO-T2-Tilter-II" and
+    "ZWO T2-Tilter II" become one key. Used for RECOMMENDING a match,
+    never for silently resolving one."""
+    return re.sub(r"[\s\-_./]+", "", _fold_plain(value))
+
+
 @app.get(
     "/api/bins/{bin_name}/odd-barcodes", dependencies=[Depends(require_user)]
 )
@@ -4228,7 +4242,13 @@ def bin_odd_barcodes(
     to the SKU, then blank, then other odd lengths.
 
     `scanned` (the code that wouldn't resolve) also returns `recommended`:
-    a product whose SKU matches it exactly."""
+    a product in this bin whose SKU or barcode matches it - exactly, or
+    after SPECIFIC folds (Nick, 2026-08-26, the ZWO T2-Tilter-II case:
+    SKU carried a Roman-numeral Ⅱ, barcode swapped its space for a
+    hyphen). Lookalike characters are read plainly (NFKC: Ⅱ -> II) and
+    separator runs (space/hyphen/underscore/dot/slash) are treated as
+    interchangeable. Deliberately NEVER edit distance: one character off
+    is how many GENUINE neighboring SKUs differ."""
     rows = session.scalars(
         select(BinMapEntry)
         .where(func.lower(BinMapEntry.bin) == bin_name.strip().lower())
@@ -4268,11 +4288,58 @@ def bin_odd_barcodes(
         for e in candidates
     ]
     recommended = None
-    if scanned:
-        term = scanned.strip().lower()
-        recommended = next(
-            (p for p in payload if (p["sku"] or "").lower() == term), None
-        )
+    if scanned and scanned.strip():
+        term = scanned.strip()
+        # Tier 0 is the old exact match; tier 1 reads lookalike unicode
+        # plainly; tier 2 additionally treats separator runs as one and
+        # the same. Lower tier wins, SKU beats barcode within a tier.
+        # The whole BIN's rows are searched (not just the odd-barcode
+        # candidates): a printed SKU label can miss a product whose real
+        # barcode is perfectly fine.
+        tiers = [
+            (lambda v: (v or "").strip().lower(),
+             "matches the scanned code exactly"),
+            (_fold_plain,
+             "matches the scan once lookalike characters are read "
+             "plainly (Roman numeral II and friends)"),
+            (_fold_seps,
+             "matches the scan once spaces, hyphens, underscores and "
+             "dots are treated the same"),
+        ]
+        keys = [fold(term) for fold, _why in tiers]
+
+        def match_rank(entry):
+            for t, (fold, why) in enumerate(tiers):
+                key = keys[t]
+                # A separator-only key ("A-1" -> "A1") is too little
+                # signal to hang a recommendation on.
+                if not key or (t == 2 and len(key) < 3):
+                    continue
+                for fp, (fname, value) in enumerate(
+                    (("SKU", entry.sku), ("barcode", entry.barcode))
+                ):
+                    if value and fold(value) == key:
+                        return (t, fp, fname, why)
+            return None
+
+        best = None
+        for e in rows:
+            r = match_rank(e)
+            if r is not None and (best is None or r[:2] < best[0][:2]):
+                best = (r, e)
+        if best is not None:
+            (_t, _fp, fname, why), e = best
+            recommended = {
+                "shopify_variant_id": e.shopify_variant_id,
+                "shopify_product_id": e.shopify_product_id,
+                "product_title": e.product_title,
+                "variant_title": e.variant_title,
+                "sku": e.sku,
+                "barcode": e.barcode,
+                "bin_location": e.bin,
+                "image_url": e.image_url,
+                "reason": f"{fname} {why}",
+            }
     return {
         "count": len(payload),
         "candidates": payload,
