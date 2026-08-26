@@ -397,6 +397,9 @@ const EVENT_META = {
   "review-opened": ["Opened Review", "#8a6116"],
   "review-resolved": ["Resolved Review", "#29845a"],
   "review-dismissed": ["Dismissed Review", "#6d7175"],
+  // System closures (a newer count agreed, the arithmetic caught up):
+  // never a person's click, so they wear their own tag.
+  "review-autoclosed": ["Auto-Resolved", "#57748c"],
   "inventory-check": ["Inventory Check", "#8a6116"],
   "pairing-incomplete": ["Pairing Incomplete", "#d72c0d"],
   "unresolved-barcode": ["Unresolved Barcode", "#d72c0d"],

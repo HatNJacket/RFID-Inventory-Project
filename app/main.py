@@ -9541,6 +9541,78 @@ class CompleteIn(BaseModel):
     finalize: bool = False
 
 
+# Resolver names that mean the SYSTEM closed a task — History wears a
+# distinct Auto-Resolved tag for these, never a person's click (Nick,
+# 2026-08-26).
+AUTO_CLOSERS = {"orders-sync", "dupe-check", "batch-count"}
+
+
+def _reconcile_inventory_checks(
+    session: Session,
+    batch: Batch,
+    item: BatchItem,
+    created_by: str | None,
+) -> bool:
+    """A fresh shelf count supersedes what an OPEN inventory check
+    remembers (Nick, 2026-08-26 — ZWO M54-M54-7.5: a stale "0 counted
+    vs 1" task outlived a newer batch that counted the 1). Every open
+    check for the SKU gets its counted/on-hand figures rewritten to the
+    new observation, with a note naming the batch; when the fresh
+    numbers AGREE the task closes itself, tagged automatic. Returns
+    True when an open task absorbed a new MISMATCH — the caller must
+    not file a duplicate then."""
+    if not item.sku or item.expected_qty is None:
+        return False
+    units = _units_on_shelf(item)
+    expected = item.expected_qty
+    open_tasks = session.scalars(
+        select(ReviewTask).where(
+            ReviewTask.category == "inventory-check",
+            ReviewTask.status == "open",
+            func.upper(ReviewTask.sku) == item.sku.strip().upper(),
+        )
+    ).all()
+    absorbed = False
+    for task in open_tasks:
+        old = re.search(r"(\d+) unit\(s\)", task.detail or "")
+        breakdown = _units_breakdown(item)
+        detail = re.sub(
+            r"\d+ unit\(s\)( \([^)]*\))? counted",
+            f"{units} unit(s) "
+            + (f"({breakdown}) " if breakdown else "")
+            + "counted",
+            task.detail or "",
+            count=1,
+        )
+        detail = re.sub(
+            r"on-hand is \d+", f"on-hand is {expected}", detail, count=1
+        )
+        if detail != task.detail:
+            task.detail = detail[:500]
+        session.add(ReviewNote(
+            task_key=str(task.id),
+            note=(
+                f"Bin {batch.bin_name} recounted: {units} unit(s)"
+                + (f" (task previously said {old.group(1)})"
+                   if old and old.group(1) != str(units) else "")
+                + f" — batch #{batch.id}."
+            )[:500],
+            created_by=created_by,
+        ))
+        if units == expected:
+            task.status = "resolved"
+            task.resolved_by = "batch-count"
+            task.resolved_at = datetime.now(timezone.utc)
+            task.resolution_note = (
+                f"A newer count in bin {batch.bin_name} matches Shopify "
+                f"({units}) — closed automatically."
+            )[:255]
+        else:
+            task.batch_id = batch.id
+            absorbed = True
+    return absorbed
+
+
 @app.post(
     "/api/batches/{batch_id}/complete", dependencies=[Depends(require_user)]
 )
@@ -9621,9 +9693,17 @@ def batch_complete(
             and not bin_contains(item.bin_location, batch.bin_name)
         ):
             continue
+        # This count is the NEWEST observation: older open checks for
+        # the SKU update to it (and close themselves when it agrees
+        # with Shopify); a still-standing mismatch lands on the
+        # existing task instead of stacking a duplicate.
+        absorbed = _reconcile_inventory_checks(
+            session, batch, item, payload.created_by
+        )
         if (
             item.expected_qty is not None
             and _units_on_shelf(item) != item.expected_qty
+            and not absorbed
         ):
             tasks.append(ReviewTask(
                 category="inventory-check",
@@ -12382,9 +12462,15 @@ def history(
             "detail": f"[{t.category}] {t.detail}",
         })
         if t.resolved_at:
+            # System closures wear their own tag so the record never
+            # reads as a person's click (Nick, 2026-08-26).
+            auto = (
+                t.status == "resolved"
+                and (t.resolved_by or "") in AUTO_CLOSERS
+            )
             events.append({
                 "at": iso(t.resolved_at),
-                "type": f"review-{t.status}",
+                "type": "review-autoclosed" if auto else f"review-{t.status}",
                 "worker": t.resolved_by,
                 "sku": t.sku,
                 "title": t.product_title,
