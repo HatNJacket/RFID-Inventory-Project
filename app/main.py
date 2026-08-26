@@ -3500,6 +3500,93 @@ def undo_lower_on_hand(
     }
 
 
+class VendorOverwriteIn(BaseModel):
+    """Replace a PRODUCT's vendor (brand) in Shopify - the product
+    options window's Change vendor button (Nick, 2026-08-26)."""
+
+    new_vendor: str = Field(max_length=150)
+    target: str = Field(max_length=100)  # current barcode or SKU
+    changed_by: str | None = Field(default=None, max_length=100)
+    confirmed: bool = False
+
+    @field_validator("new_vendor", "target")
+    @classmethod
+    def not_blank(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("must not be blank")
+        return v.strip()
+
+
+@app.post(
+    "/api/vendor-overwrites",
+    status_code=201,
+    dependencies=[Depends(require_user)],
+)
+def overwrite_vendor(
+    payload: VendorOverwriteIn, session: Session = Depends(get_session)
+):
+    """Write a new vendor to the product in Shopify - audited like the
+    SKU/barcode overwrites (History row, no undo endpoint: run it again
+    with the old name to reverse). Vendor is PRODUCT-level, so every
+    variant of the product changes brand together."""
+    if not payload.confirmed:
+        raise HTTPException(
+            422, "Confirmation is required for a vendor change."
+        )
+    require_shopify_write("scan_station")
+    if config.check_shopify_env():
+        raise HTTPException(500, "Shopify credentials are not configured.")
+    try:
+        product = _lookup_api(payload.target)
+    except RuntimeError as error:
+        raise HTTPException(502, f"Shopify lookup failed: {error}")
+    if product is None:
+        raise HTTPException(
+            404, "No product found in Shopify for that barcode or SKU."
+        )
+    pid = product.get("shopify_product_id") or ""
+    if not pid.startswith("gid://"):
+        raise HTTPException(
+            502, "The live lookup returned no usable product id."
+        )
+    old_vendor = None
+    rows = session.scalars(
+        select(BinMapEntry).where(
+            BinMapEntry.shopify_product_id == pid
+        )
+    ).all()
+    if rows:
+        old_vendor = rows[0].vendor
+    try:
+        shopify.update_product_vendor(pid, payload.new_vendor)
+    except RuntimeError as error:
+        raise HTTPException(502, f"Shopify vendor update failed: {error}")
+    # The bin map serves the site's vendor columns until its next full
+    # rebuild - follow the product now.
+    for row in rows:
+        row.vendor = payload.new_vendor
+    session.add(BarcodeChange(
+        sku=product.get("sku"),
+        product_title=product.get("product_title"),
+        shopify_variant_id=product.get("shopify_variant_id"),
+        changed_field="vendor",
+        old_barcode=(old_vendor or "")[:64] or None,
+        new_barcode=payload.new_vendor[:64],
+        changed_by=payload.changed_by,
+    ))
+    session.commit()
+    return {
+        "vendor": payload.new_vendor,
+        "old_vendor": old_vendor,
+        "message": (
+            f"Vendor set to {payload.new_vendor} in Shopify"
+            + (f" (was {old_vendor})" if old_vendor else "")
+            + " - every variant of the product follows. Logged to "
+            "History; run it again with the old name to reverse."
+        ),
+    }
+
+
 class SkuOverwriteIn(BaseModel):
     """Replace a product's SKU in Shopify (e.g. store SKU is outdated vs
     the manufacturer's current item number)."""
@@ -8844,7 +8931,18 @@ def batch_verify(
             "files a bin-check Review task for every bin that received "
             "stock instead.",
         )
-    items = [i for i in _batch_items(session, batch_id) if i.resolved]
+    # Scanned-then-zeroed wrong-bin strays are non-events: a vendor
+    # barcode that mis-resolved to a foreign product and was decremented
+    # to 0 must not surface as "counted 0" anywhere (Nick, 2026-08-26).
+    items = [
+        i for i in _batch_items(session, batch_id)
+        if i.resolved and not (
+            _units_on_shelf(i) == 0
+            and not i.paired_count
+            and (i.bin_location or "").strip()
+            and not bin_contains(i.bin_location, batch.bin_name)
+        )
+    ]
     epcs = {e.strip().upper() for e in payload.epcs if e and e.strip()}
     if epcs and batch.verified_at is None:
         batch.verified_at = datetime.now(timezone.utc)
@@ -9236,6 +9334,18 @@ def batch_complete(
         # of their own. Matters for batches seeded before the contents
         # were defined — those still carry the bundle as a 0-count row.
         if item.sku and _bundle_contents(session, item.sku):
+            continue
+        # A wrong-bin product scanned by accident and zeroed out asserts
+        # NOTHING (Nick, 2026-08-26: vendor barcodes mis-resolved to
+        # foreign products on F2-4, and the leftover 0-count rows filed
+        # "counted 0" inventory checks against OTHER bins' stock). Home
+        # bin elsewhere + zero units counted here = a non-event.
+        if (
+            _units_on_shelf(item) == 0
+            and not item.paired_count
+            and (item.bin_location or "").strip()
+            and not bin_contains(item.bin_location, batch.bin_name)
+        ):
             continue
         if (
             item.expected_qty is not None
@@ -9763,6 +9873,87 @@ class ResolveIn(BaseModel):
     resolved_by: str | None = Field(default=None, max_length=100)
     note: str | None = Field(default=None, max_length=255)
     dismissed: bool = False
+
+
+class RecountIn(BaseModel):
+    count: int = Field(ge=0, le=5000)
+    changed_by: str | None = Field(default=None, max_length=100)
+
+
+@app.post(
+    "/api/review-tasks/{task_id}/recount",
+    dependencies=[Depends(require_user)],
+)
+def recount_review_task(
+    task_id: int, payload: RecountIn, session: Session = Depends(get_session)
+):
+    """The Inventory Check window's manual -/+ recount (Nick, 2026-08-26):
+    the operator KNOWS what's on the shelf and corrects the counted
+    number without a walk. Rewrites the task's counted figure, corrects
+    the source batch row when there is one, and logs a History row - the
+    RFID side only. Any Shopify on-hand change rides the existing audited
+    on-hand endpoints (the client chains them), never this one."""
+    task = session.get(ReviewTask, task_id)
+    if task is None:
+        raise HTTPException(404, "No such review task.")
+    if task.category != "inventory-check":
+        raise HTTPException(422, "Manual recounts are for inventory checks.")
+    if task.status != "open":
+        raise HTTPException(409, f"Task is already {task.status}.")
+    m = re.search(r"(\d+) unit\(s\) counted", task.detail or "")
+    old_count = int(m.group(1)) if m else None
+    if m:
+        task.detail = (
+            task.detail[:m.start(1)] + str(payload.count)
+            + task.detail[m.end(1):]
+        )[:500]
+    by = (payload.changed_by or "").strip()[:100] or None
+    # Correct the batch row the count came from, so every later view of
+    # that batch tells the corrected story too.
+    item = None
+    if task.batch_id and task.sku:
+        item = session.scalar(
+            select(BatchItem).where(
+                BatchItem.batch_id == task.batch_id,
+                func.upper(BatchItem.sku) == task.sku.strip().upper(),
+            )
+        )
+    if item is not None:
+        delta = payload.count - _units_on_shelf(item)
+        if delta >= 0:
+            item.qty_scanned += delta
+        else:
+            take = min(item.qty_scanned, -delta)
+            item.qty_scanned -= take
+            item.tagged_before = max(0, item.tagged_before - (-delta - take))
+    session.add(BarcodeChange(
+        sku=task.sku,
+        product_title=task.product_title,
+        changed_field="recount",
+        old_barcode=(str(old_count) if old_count is not None else None),
+        new_barcode=str(payload.count),
+        changed_by=by,
+    ))
+    session.add(ReviewNote(
+        task_key=str(task.id),
+        note=(
+            f"Manual recount: "
+            f"{old_count if old_count is not None else '?'} -> "
+            f"{payload.count}."
+        )[:500],
+        created_by=by,
+    ))
+    session.commit()
+    return {
+        "task": task.as_dict(),
+        "old_count": old_count,
+        "count": payload.count,
+        "message": (
+            f"Counted set to {payload.count}"
+            + (f" (was {old_count})" if old_count is not None else "")
+            + " - logged. Shopify was not touched by this step."
+        ),
+    }
 
 
 @app.post(
@@ -10861,6 +11052,8 @@ def product_history(term: str, session: Session = Depends(get_session)):
     change_types = {
         "barcode": "barcode-replaced", "sku": "sku-updated",
         "bin": "bin-updated", "bin-local": "tags-rebinned",
+        "vendor": "vendor-updated",
+        "recount": "manual-recount",
         "bundle-contents": "bundle-contents-set",
         "rfid-scan": "rfid-flag-changed",
         "non-taggable": "non-taggable",
@@ -11164,6 +11357,30 @@ def product_history(term: str, session: Session = Depends(get_session)):
             }
             for t in live_tags
         ],
+        # Presumed-sold tombstones ride along too (Nick, 2026-08-26):
+        # the tag list tells the whole story - live tags to unpair, and
+        # the ones already judged sold with their retirement date.
+        "sold_tags": [
+            {
+                "epc": r.rfid_id,
+                "bin": r.bin_location,
+                "retired_at": iso(r.retired_at),
+                "retired_by": r.retired_by,
+                "case_units": r.case_units,
+            }
+            for r in session.scalars(
+                select(RetiredTag).where(
+                    RetiredTag.kind == "presumed-sold",
+                    func.upper(RetiredTag.sku) == (sku or "").upper(),
+                ).order_by(RetiredTag.retired_at)
+            )
+        ] if sku else [],
+        # The product's brand, for the Change vendor button.
+        "vendor": session.scalar(
+            select(BinMapEntry.vendor).where(
+                func.upper(BinMapEntry.sku) == (sku or "").upper()
+            )
+        ) if sku else None,
         "on_hand": _expected_qty(session, sku),
         "serial_prefix": sp.prefix if sp else None,
         "serial_label": (
@@ -11267,6 +11484,8 @@ def history(
     change_types = {
         "barcode": "barcode-replaced", "sku": "sku-updated",
         "bin": "bin-updated", "bin-local": "tags-rebinned",
+        "vendor": "vendor-updated",
+        "recount": "manual-recount",
         "bundle-contents": "bundle-contents-set",
         "rfid-scan": "rfid-flag-changed",
         "non-taggable": "non-taggable",

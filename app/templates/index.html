@@ -1313,15 +1313,11 @@
           <div>
             <div class="linkbox__ptitle" id="phist-title">—</div>
             <p class="linkbox__text" id="phist-meta"></p>
+            <!-- Active flags at a glance, right under SKU/Barcode
+                 (Nick, 2026-08-26) - filled by the same renderers that
+                 drive the Flags buttons below. -->
+            <div class="flagchips" id="phist-flagchips" hidden></div>
           </div>
-        </div>
-
-        <!-- Live tags, on demand: each row offers a manual unpair for the
-             tag-fell-off/bad-tag case (retired as dead, tombstone kept,
-             undo in History). Shopify is never touched here. -->
-        <div id="phist-tagswrap" hidden style="margin:2px 0 8px">
-          <a href="#" class="phist-exp" id="phist-tags-toggle"></a>
-          <div id="phist-tags" class="phist-taglist" hidden></div>
         </div>
 
         <!-- Print: right under the product, not below the edge cases -->
@@ -1385,13 +1381,22 @@
                       title="Reads the bundle's component list straight from Shopify (the Bundles app relationship) — no typing">⇣ Import from Shopify</button>
               <button class="reset" id="phist-bundle-btn" type="button"></button>
             </fieldset>
-            <div class="optitem" id="phist-norfid" hidden>
-              <span id="phist-norfid-what" hidden></span>
-              <button class="reset" id="phist-norfid-btn" type="button"></button>
-            </div>
-            <div class="optitem" id="phist-notag" hidden>
-              <span id="phist-notag-what" hidden></span>
-              <button class="reset" id="phist-notag-btn" type="button"></button>
+            <!-- Flags, outlined like Bundle options (Nick, 2026-08-26):
+                 active flags light their button AND the chips at the top
+                 of the window. -->
+            <fieldset class="optgroup" id="phist-flags">
+              <legend class="optgroup__legend">Flags</legend>
+              <div class="optitem" id="phist-norfid" hidden>
+                <span id="phist-norfid-what" hidden></span>
+                <button class="reset" id="phist-norfid-btn" type="button"></button>
+              </div>
+              <div class="optitem" id="phist-notag" hidden>
+                <span id="phist-notag-what" hidden></span>
+                <button class="reset" id="phist-notag-btn" type="button"></button>
+              </div>
+            </fieldset>
+            <div class="optitem" id="phist-vendor" hidden>
+              <button class="reset" id="phist-vendor-btn" type="button"></button>
             </div>
             <div class="optitem" id="phist-locate" hidden>
               <span id="phist-locate-what" hidden></span>
@@ -1399,6 +1404,15 @@
             </div>
           </div>
         </details>
+
+        <!-- Live tags, on demand, right under Product options (moved
+             2026-08-26): each row offers a manual unpair for the
+             tag-fell-off/bad-tag case; presumed-sold tombstones list
+             too, dated. Shopify is never touched here. -->
+        <div id="phist-tagswrap" hidden style="margin:8px 0">
+          <a href="#" class="phist-exp" id="phist-tags-toggle"></a>
+          <div id="phist-tags" class="phist-taglist" hidden></div>
+        </div>
 
         <div class="inventory__scroll">
           <table class="inventory__table">

@@ -110,8 +110,11 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
           rows["WRONG-1"]["bin_location"] == "A1-1", rows["WRONG-1"])
     check("verify: split-shelf agreement -> no offer",
           rows["OK-1"]["bin_differs"] is False, rows["OK-1"])
-    check("verify: an untouched pre-seed row proves nothing -> no offer",
-          rows["GHOST-1"]["bin_differs"] is False, rows["GHOST-1"])
+    # 2026-08-26: a 0-count row whose saved home is ANOTHER shelf is now
+    # dropped from the report entirely (an accidental wrong-bin scan or
+    # an irrelevant seed asserts nothing) - stronger than "no offer".
+    check("verify: an untouched foreign-bin row vanishes from the report",
+          "GHOST-1" not in rows, sorted(rows))
 
     inv = cl.get("/api/inventory/summary").json()
     prods = {p["sku"]: p for p in inv["products"]}

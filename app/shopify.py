@@ -195,6 +195,31 @@ def update_variant_sku(
     return result["productVariants"][0]
 
 
+_UPDATE_VENDOR_MUTATION = """
+mutation UpdateVendor($input: ProductInput!) {
+  productUpdate(input: $input) {
+    product { id vendor }
+    userErrors { field message }
+  }
+}
+"""
+
+
+def update_product_vendor(product_gid: str, vendor: str) -> dict:
+    """Replace a PRODUCT's vendor (the brand) in Shopify. Product-level,
+    unlike SKU/barcode which live on the variant. Requires write_products."""
+    data = query_shopify(
+        _UPDATE_VENDOR_MUTATION,
+        {"input": {"id": product_gid, "vendor": vendor}},
+    )
+    result = data["productUpdate"]
+    if result["userErrors"]:
+        raise RuntimeError(
+            "; ".join(e["message"] for e in result["userErrors"])
+        )
+    return result["product"]
+
+
 _QTY_QUERY = """
 query Quantities($search: String!) {
   productVariants(first: 50, query: $search) {

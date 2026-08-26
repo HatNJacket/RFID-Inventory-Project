@@ -360,6 +360,8 @@ const EVENT_META = {
   "barcode-replaced": ["Replaced Barcode", "#b98900"],
   "sku-updated": ["Updated SKU", "#b98900"],
   "bin-updated": ["Updated Bin", "#0e7a8a"],
+  "vendor-updated": ["Updated Vendor", "#b98900"],
+  "manual-recount": ["Manual Recount", "#8a6116"],
   "rfid-flag-changed": ["RFID Flag", "#d72c0d"],
   "non-taggable": ["Non-taggable", "#8a6116"],
   "batch-reprinted": ["Batch Reprint", "#5c5f62"],
@@ -9044,13 +9046,19 @@ function openResolveWindow(t) {
   if (t.category === "inventory-check") {
     middle = `
       <div class="rvw-stats">
-        <div class="rvw-stat"><div class="rvw-stat__l">Counted</div><div class="rvw-stat__n">${counted ?? "?"}</div></div>
+        <div class="rvw-stat"><div class="rvw-stat__l">Counted</div><div class="rvw-stat__n"><span id="rvw-counted">${counted ?? "?"}</span> <span id="rvw-delta" class="rvw-delta" hidden></span></div></div>
         <div class="rvw-stat"><div class="rvw-stat__l">Shopify then</div><div class="rvw-stat__n">${expectedThen ?? "?"}</div></div>
         <div class="rvw-stat rvw-stat--live"><div class="rvw-stat__l">Shopify NOW</div><div class="rvw-stat__n" id="rvw-live">…</div></div>
       </div>
       <div class="recent__meta" id="rvw-liveline" style="margin-bottom:8px">Checking the live count…</div>
       <div id="rvw-actions"></div>
-      ${binFromDetail ? `<button class="reset rvw-wide" id="rvw-audit" type="button">Jump to ${escapeHtml(binFromDetail)}'s bin audit</button>` : ""}`;
+      ${binFromDetail ? `<button class="reset rvw-wide" id="rvw-audit" type="button">Jump to ${escapeHtml(binFromDetail)}'s bin audit</button>` : ""}
+      <button class="reset rvw-wide rvw-recount" id="rvw-recount" type="button"
+        title="You KNOW what's on the shelf: build the correction with - and +, then press the middle to apply. The RFID side updates and logs always; Shopify on-hand is only raised when its number differs (audited, undoable). Lowering Shopify stays a bin-audit job.">
+        <span class="rvw-recount__pm" id="rvw-minus">−</span>
+        <span class="rvw-recount__label" id="rvw-recount-label">Manually set the counted number</span>
+        <span class="rvw-recount__pm" id="rvw-plus">+</span>
+      </button>`;
   } else if (t.category === "pairing-incomplete") {
     middle = `
       <div class="recent__meta" id="rvw-liveline" style="margin-bottom:8px">Checking the live pairing state…</div>
@@ -9149,6 +9157,109 @@ function openResolveWindow(t) {
       closeResolveWindow();
       jumpToBinAudit(binFromDetail);
     });
+
+  // Manual recount (Nick, 2026-08-26): − / + build a correction shown
+  // next to Counted as "(+1)" - yellow while it disagrees with Shopify,
+  // green the moment counted+delta equals the live number. The middle
+  // press applies it: the RFID side always (logged, source batch row
+  // corrected), Shopify only when its number differs - raises ride the
+  // audited on-hand endpoint, lowering stays a bin-audit job.
+  const recountBtn = document.getElementById("rvw-recount");
+  if (recountBtn) {
+    let rvwDelta = 0;
+    let rvwCounted = counted;
+    const deltaChip = document.getElementById("rvw-delta");
+    const readLive = () => {
+      const txt = document.getElementById("rvw-live").textContent;
+      return /^\d+$/.test(txt) ? Number(txt) : null;
+    };
+    const refreshRecount = () => {
+      const label = document.getElementById("rvw-recount-label");
+      if (rvwDelta === 0) {
+        deltaChip.hidden = true;
+        label.textContent = "Manually set the counted number";
+        return;
+      }
+      const target = (rvwCounted ?? 0) + rvwDelta;
+      deltaChip.hidden = false;
+      deltaChip.textContent = `(${rvwDelta > 0 ? "+" : ""}${rvwDelta})`;
+      const live = readLive();
+      deltaChip.classList.toggle(
+        "rvw-delta--green",
+        live != null && target === live
+      );
+      label.textContent = `Set counted to ${target}`;
+    };
+    document.getElementById("rvw-minus").addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      if ((rvwCounted ?? 0) + rvwDelta > 0) {
+        rvwDelta--;
+        refreshRecount();
+      }
+    });
+    document.getElementById("rvw-plus").addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      rvwDelta++;
+      refreshRecount();
+    });
+    recountBtn.addEventListener("click", async () => {
+      if (rvwDelta === 0) return;
+      const operator = operatorEl.value;
+      if (!operator) {
+        alert("Pick who's scanning (top right) first.");
+        return;
+      }
+      const target = (rvwCounted ?? 0) + rvwDelta;
+      const live = readLive();
+      const shopifyPart =
+        live == null
+          ? "Shopify's live number couldn't be read - it will NOT be touched."
+          : live === target
+            ? `Shopify already says ${live} - it will NOT be touched.`
+            : target > live
+              ? `Shopify says ${live} - on-hand will be RAISED to ${target} (confirmed, undoable in History).`
+              : `Shopify says ${live}, which is higher - lowering runs through the bin audit path, so Shopify will NOT be touched here.`;
+      if (
+        !confirm(
+          `Set the counted number to ${target} (was ${rvwCounted ?? "?"})?\n\n` +
+            `The RFID side updates and logs always. ${shopifyPart}`
+        )
+      )
+        return;
+      recountBtn.disabled = true;
+      try {
+        const res = await postJson(`/api/review-tasks/${t.id}/recount`, {
+          count: target,
+          changed_by: operator,
+        });
+        let msg = res.message;
+        if (live != null && target > live) {
+          try {
+            const r2 = await postJson("/api/onhand-updates", {
+              sku: t.sku,
+              new_qty: target,
+              confirmed: true,
+              changed_by: operator,
+            });
+            msg += ` ${r2.message || `On-hand raised to ${target}.`}`;
+            document.getElementById("rvw-live").textContent = String(target);
+          } catch (err2) {
+            msg += ` Shopify write FAILED: ${err2.message}`;
+          }
+        }
+        rvwCounted = target;
+        rvwDelta = 0;
+        if (res.task && res.task.detail) t.detail = res.task.detail;
+        document.getElementById("rvw-counted").textContent = String(target);
+        refreshRecount();
+        document.getElementById("rvw-liveline").textContent = msg;
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        recountBtn.disabled = false;
+      }
+    });
+  }
 
   const stationBtn = document.getElementById("rvw-station");
   if (stationBtn)
@@ -11351,6 +11462,7 @@ async function openProductHistory(term) {
     }
     renderNoScan(!!data.rfid_incompatible);
     renderNonTaggable(!!data.non_taggable);
+    renderVendorRow();
     renderBundleRow();
     renderLocateRow();
     // Multi-box/bundle standing. Only shown when an answer was actually
@@ -11454,25 +11566,28 @@ function renderPhistTags(data, term) {
   const toggle = document.getElementById("phist-tags-toggle");
   const list = document.getElementById("phist-tags");
   const tags = data.tags || [];
-  wrap.hidden = !tags.length;
+  const sold = data.sold_tags || [];
+  wrap.hidden = !tags.length && !sold.length;
   list.hidden = true;
-  if (!tags.length) return;
-  toggle.textContent = `▸ ${tags.length} live tag(s): view or unpair`;
+  if (!tags.length && !sold.length) return;
+  toggle.textContent =
+    `▸ ${tags.length} live tag(s)` +
+    (sold.length ? ` · ${sold.length} presumed sold` : "") +
+    ": view or unpair";
   toggle.onclick = (ev) => {
     ev.preventDefault();
     list.hidden = !list.hidden;
     toggle.textContent =
       (list.hidden ? "▸" : "▾") + toggle.textContent.slice(1);
   };
+  const fmtDay = (iso) =>
+    iso
+      ? tsDate(iso).toLocaleDateString(undefined, { dateStyle: "medium" })
+      : "unknown date";
   list.innerHTML = tags
     .map((t) => {
-      const when = t.assigned_at
-        ? tsDate(t.assigned_at).toLocaleDateString(undefined, {
-            dateStyle: "medium",
-          })
-        : "unknown date";
       const meta =
-        `${t.bin || "no bin"} · paired ${when}` +
+        `${t.bin || "no bin"} · paired ${fmtDay(t.assigned_at)}` +
         (t.assigned_by ? ` by ${t.assigned_by}` : "") +
         (t.case_units ? ` · case of ${t.case_units}` : "");
       return `<div class="phist-tagrow">
@@ -11483,7 +11598,20 @@ function renderPhistTags(data, term) {
           title="The sticker is gone or dead and can't be scanned. Retires this tag record (undo in History)">Unpair…</button>
       </div>`;
     })
-    .join("");
+    .join("")
+    // Presumed-sold tombstones close the timeline (Nick, 2026-08-26):
+    // nothing to unpair - the box left with the tag on it.
+    + sold
+      .map(
+        (t) => `<div class="phist-tagrow phist-tagrow--sold">
+        <span class="mono">${escapeHtml(t.epc)}</span>
+        <span class="recent__meta">${escapeHtml(
+          `${t.bin || "no bin"} · presumed sold ${fmtDay(t.retired_at)}` +
+            (t.retired_by ? ` by ${t.retired_by}` : "")
+        )}</span>
+      </div>`
+      )
+      .join("");
   list.querySelectorAll(".phist-unpair").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const epc = btn.dataset.epc;
@@ -11603,6 +11731,28 @@ document
     updateLabelPreview();
   });
 
+// The flag chips at the top of the window: any product preview built on
+// this panel shows its active flags right under SKU/Barcode (Nick,
+// 2026-08-26), matching the highlighted buttons in the Flags group.
+function renderFlagChips() {
+  const box = document.getElementById("phist-flagchips");
+  if (!phistData) {
+    box.hidden = true;
+    return;
+  }
+  const chips = [];
+  if (phistData.rfid_incompatible)
+    chips.push(
+      `<span class="flagchip" title="Sweeps don't expect this product's tags to answer while on the box">⊘ won't RFID scan</span>`
+    );
+  if (phistData.non_taggable)
+    chips.push(
+      `<span class="flagchip" title="Outside the RFID system: no batches, no labels, audits skip it">🚫 non-taggable</span>`
+    );
+  box.innerHTML = chips.join("");
+  box.hidden = !chips.length;
+}
+
 // Won't-RFID-scan flag: add OR remove, always offered for a cataloged
 // product. Labels still print and pairing still counts — sweeps just stop
 // expecting an answer. Every flip is logged.
@@ -11610,6 +11760,7 @@ function renderNoScan(flagged) {
   const row = document.getElementById("phist-norfid");
   if (!phistData || !phistData.product || !phistData.sku) {
     row.hidden = true;
+    renderFlagChips();
     return;
   }
   row.hidden = false;
@@ -11617,6 +11768,7 @@ function renderNoScan(flagged) {
   // State + explanation live in the button's hover text now — the row
   // itself stays one compact line (Nick, 2026-08-18).
   const btn = document.getElementById("phist-norfid-btn");
+  btn.classList.toggle("optflag--on", flagged);
   btn.textContent = flagged ? "⊘ Remove won't-scan flag" : "Flag: won't RFID scan";
   btn.title = flagged
     ? "Flagged: this product's tag won't scan while on the box, so " +
@@ -11625,6 +11777,10 @@ function renderNoScan(flagged) {
     : "Sweeps currently expect this product's tags to answer. If a tag " +
       "reads fine in hand but never on the box, flag it so sweeps stop " +
       "counting it as missing.";
+  document.getElementById("phist-flags").hidden =
+    document.getElementById("phist-norfid").hidden &&
+    document.getElementById("phist-notag").hidden;
+  renderFlagChips();
 }
 
 // Bundle contents on the product panel — the standing record behind
@@ -11768,14 +11924,16 @@ function renderNonTaggable(flagged) {
   const row = document.getElementById("phist-notag");
   if (!phistData || !phistData.sku) {
     row.hidden = true;
+    renderFlagChips();
     return;
   }
   row.hidden = false;
   phistData.non_taggable = flagged;
   const btn = document.getElementById("phist-notag-btn");
+  btn.classList.toggle("optflag--on", flagged);
   btn.textContent = flagged
     ? "🚫 Put back in the RFID system"
-    : "Mark: non-taggable";
+    : "Flag: non-taggable";
   btn.title = flagged
     ? "Marked non-taggable: not seeded into batches, no labels, audits " +
       "skip it. Click to bring it back into the RFID system."
@@ -11783,7 +11941,68 @@ function renderNonTaggable(flagged) {
       "thumbscrews): drops it from batches, labels and audits. You can " +
       "still pair ONE tag by hand as a bag marker and find it with " +
       "Locate.";
+  document.getElementById("phist-flags").hidden =
+    document.getElementById("phist-norfid").hidden &&
+    document.getElementById("phist-notag").hidden;
+  renderFlagChips();
 }
+
+// Change vendor (Nick, 2026-08-26): a PRODUCT-level Shopify write, so
+// every variant changes brand together. Audited like the SKU/barcode
+// overwrites; reverse by running it again with the old name.
+function renderVendorRow() {
+  const row = document.getElementById("phist-vendor");
+  if (!phistData || !phistData.product || !phistData.sku) {
+    row.hidden = true;
+    return;
+  }
+  row.hidden = false;
+  const btn = document.getElementById("phist-vendor-btn");
+  btn.textContent = phistData.vendor
+    ? `🏷 Vendor: ${phistData.vendor} — change…`
+    : "🏷 Set vendor…";
+  btn.title =
+    "Writes a new vendor (brand) to the product in Shopify - every " +
+    "variant follows. Logged to History.";
+}
+
+document
+  .getElementById("phist-vendor-btn")
+  .addEventListener("click", async () => {
+    if (!phistData || !phistData.sku) return;
+    const msg = document.getElementById("phist-msg");
+    const current = phistData.vendor || "";
+    const raw = prompt(
+      `Vendor for ${phistData.sku}\n\nThis writes to the product in ` +
+        `Shopify - every variant of the product changes brand together. ` +
+        `Logged to History; run it again with the old name to reverse.`,
+      current
+    );
+    if (raw === null) return;
+    const vendor = raw.trim();
+    if (!vendor || vendor === current) return;
+    if (
+      !confirm(
+        `Set the vendor of ${phistData.sku} to "${vendor}"` +
+          (current ? ` (currently "${current}")` : "") +
+          `?\n\nThis WRITES to Shopify.`
+      )
+    )
+      return;
+    try {
+      const res = await postJson("/api/vendor-overwrites", {
+        target: phistData.sku,
+        new_vendor: vendor,
+        changed_by: operatorEl.value || null,
+        confirmed: true,
+      });
+      phistData.vendor = vendor;
+      renderVendorRow();
+      msg.textContent = res.message;
+    } catch (err) {
+      msg.textContent = err.message;
+    }
+  });
 
 document
   .getElementById("phist-notag-btn")

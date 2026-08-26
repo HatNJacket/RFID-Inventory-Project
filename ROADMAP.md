@@ -3,6 +3,47 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-08-25.
 
+## 🧰 Six-pack: product window, review truth, wrong-bin strays — ✅ DEPLOYED 2026-08-26 (C72 3.61)
+
+Nick's afternoon batch, all six shipped (suite test_batch6.py, 15
+checks; 42/42):
+
+1. **Change vendor** in Product options: POST /api/vendor-overwrites
+   (product-LEVEL Shopify write - every variant follows; confirmed,
+   History "Updated Vendor", reverse by re-running with the old name;
+   bin-map vendor column follows immediately). Button shows the
+   current vendor (product-history payload now carries `vendor`).
+2. **Flags group**: won't-RFID-scan + non-taggable (renamed "Flag:
+   non-taggable") sit in an outlined "Flags" fieldset like Bundle
+   options; active flags light their button (optflag--on) AND render
+   as chips under SKU/Barcode at the top of EVERY preview built on
+   this panel. The live-tags expandable moved below Product options.
+3. **Tags ≠ On-hand zero-tag guard** (orders_sync): a SKU with ZERO
+   live tags files no mismatch task and auto-closes a stale one - the
+   ANTI-DEW "0 units but expected 1" came from old ledger rows with
+   nothing tagged (no tag pool to reconcile, and the task's own remedy
+   - a sweep - can't work).
+4. **Wrong-bin accidental scans assert nothing**: root cause found in
+   prod (F2-4 batch 171: vendor barcodes mis-resolved to ZWO EAF PRO/
+   F1-2 and 8h00ls/D2-2, decremented to 0, still filed "counted 0"
+   checks against other bins). Rows with 0 units + 0 paired + a home
+   bin foreign to the batch are now DROPPED from verify and file
+   nothing at complete. C72 3.61 (code 79): verify-report card of a
+   wrong-bin row gains "IGNORE IN THIS BATCH" (zeroes qty +
+   tagged_before; refuses while tags are paired). test_binfix updated
+   to the stronger contract (row absent, not merely no-offer).
+5. **Tag timeline**: the product window's tag list also shows
+   presumed-sold tombstones - "EPC · bin · presumed sold [date] by X"
+   (product-history `sold_tags`; dead/replaced don't list).
+6. **Review inventory-check manual recount**: below Jump-to-audit, a
+   [−  Set counted to N  +] composite; the pending correction rides
+   next to Counted as "(+1)" in yellow, green when counted+delta
+   equals live Shopify. Apply = POST /api/review-tasks/{id}/recount
+   (rewrites the task's counted figure, corrects the source batch row,
+   History "Manual Recount", ReviewNote) then - only if Shopify
+   differs upward - the existing audited on-hand raise. Lowering
+   Shopify stays a bin-audit job, said in the confirm.
+
 ## 🔫 C72 3.60: pair auto-advance + slowness + printer verdict (2026-08-26, afternoon)
 
 Three of Nick's field reports in one round:

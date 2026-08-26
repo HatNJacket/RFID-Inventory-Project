@@ -337,6 +337,24 @@ def refresh_mismatch_tasks(session: Session) -> dict:
         if oh is None:
             continue
         tags = tag_units(session, sku)
+        # No live tags = no RFID claim to check (Nick, 2026-08-26, the
+        # ZWO ANTI-DEW case: 0 tags, on-hand 0, one old ledger row filed
+        # "0 units but expected 1"). With nothing tagged, the sold-ledger
+        # arithmetic has no tag pool to reconcile against, and the task's
+        # own remedy - a sweep that hears the remaining tags - cannot
+        # work. Untagged-stock gaps are the Audit tab's job instead.
+        if tags == 0:
+            task = open_tasks.get(sku)
+            if task is not None:
+                task.status = "resolved"
+                task.resolved_by = "orders-sync"
+                task.resolved_at = datetime.utcnow()
+                task.resolution_note = (
+                    "No live tags on file - there is no tag arithmetic to "
+                    "check. Untagged stock shows in the Audit tab instead."
+                )
+                closed += 1
+            continue
         expected = oh + sold.get(sku, 0)
         task = open_tasks.get(sku)
         if tags != expected:

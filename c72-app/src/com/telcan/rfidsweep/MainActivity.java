@@ -6239,6 +6239,12 @@ public class MainActivity extends Activity {
         int printed, paired, detected, detectedBatch, detectedOther;
         int taggedBefore, priorExpected;
         boolean noScan;
+        // Wrong-bin context (Nick, 2026-08-26): a row whose saved home
+        // is another shelf can be IGNORED from the preview - it then
+        // asserts nothing in this batch.
+        int itemId;
+        String binLocation;
+        boolean binDiffers;
 
         String name() {
             return title == null || title.isEmpty() ? "(unknown)" : title;
@@ -6305,6 +6311,10 @@ public class MainActivity extends Activity {
             r.noScan = o.optBoolean("rfid_incompatible", false);
             r.state = o.optString("state", "ok");
             r.reason = o.isNull("reason") ? "" : o.optString("reason");
+            r.itemId = o.optInt("item_id", 0);
+            r.binLocation = o.isNull("bin_location") ? null
+                    : o.optString("bin_location");
+            r.binDiffers = o.optBoolean("bin_differs", false);
             // Untouched clean rows are collect/check business — only
             // lines with something to verify (or something wrong) show.
             if ("ok".equals(r.state) && r.printed == 0 && r.paired == 0
@@ -6596,11 +6606,76 @@ public class MainActivity extends Activity {
 
         ScrollView sc = new ScrollView(this);
         sc.addView(box);
-        dlg()
+        AlertDialog.Builder b = dlg()
                 .setTitle(r.name())
                 .setView(sc)
-                .setPositiveButton("CLOSE", null)
-                .show();
+                .setPositiveButton("CLOSE", null);
+        // Wrong-bin rows only (Nick, 2026-08-26): a product whose home
+        // is another shelf - usually a vendor barcode that mis-resolved,
+        // or a stray never carried over - can be dropped from this
+        // batch's accounting entirely. Zeroes its counts; it then files
+        // nothing at complete and stops showing here. Paired tags block
+        // it (undo the pairing first).
+        boolean realForeignBin = r.binDiffers && r.binLocation != null
+                && !r.binLocation.isEmpty()
+                && !"no bin assigned".equalsIgnoreCase(r.binLocation.trim());
+        if (realForeignBin && r.itemId > 0) {
+            b.setNeutralButton("IGNORE IN THIS BATCH", (d, w) -> {
+                if (r.paired > 0) {
+                    beep(SOUND_ERR);
+                    status.setText("It has " + r.paired + " tag(s) paired "
+                            + "in this batch - undo those pairs first, "
+                            + "then ignore it.");
+                    return;
+                }
+                dlg()
+                        .setTitle("Ignore " + r.name() + "?")
+                        .setMessage("Its home bin is " + r.binLocation
+                                + ", not " + batchBin + ". Ignoring zeroes "
+                                + "its counts here so this batch asserts "
+                                + "NOTHING about it - no inventory check, "
+                                + "no verify row. Its own bin's story is "
+                                + "untouched.")
+                        .setPositiveButton("Ignore it",
+                                (d2, w2) -> ignoreVerifyRow(r))
+                        .setNegativeButton("Cancel", null)
+                        .show();
+            });
+        }
+        b.show();
+    }
+
+    /** Zero a wrong-bin row's counts so the batch stops asserting
+     *  anything about it - the server then drops it from verify and
+     *  files nothing at complete. */
+    private void ignoreVerifyRow(VRow r) {
+        new Thread(() -> {
+            try {
+                api("POST", "/api/batches/" + batchId + "/items/"
+                        + r.itemId + "/qty",
+                        new JSONObject().put("qty", 0));
+                if (r.taggedBefore > 0) {
+                    api("PUT", "/api/batches/" + batchId + "/items/"
+                            + r.itemId + "/tagged-before",
+                            new JSONObject().put("count", 0).put(
+                                    "updated_by",
+                                    prefs.getString("device", "C72")));
+                }
+                ui.post(() -> {
+                    beep(SOUND_OK);
+                    status.setText(r.name() + " ignored - this batch "
+                            + "asserts nothing about it. SEND SWEEP "
+                            + "again to refresh the report.");
+                    reloadBatchOnly();
+                });
+            } catch (Exception e) {
+                ui.post(() -> {
+                    beep(SOUND_ERR);
+                    status.setText("Could not ignore it: "
+                            + e.getMessage());
+                });
+            }
+        }).start();
     }
 
     /** Confirm from the report: park the batch as awaiting-verify (the
