@@ -6994,6 +6994,17 @@ public class MainActivity extends Activity {
                 status.setText(done + " tag(s) assigned to "
                         + target.name()
                         + (problem != null ? " · " + problem : ""));
+                // Sweep pairs feed auto-advance too (Nick, 2026-08-26:
+                // most pairing IS sweeps, and the hop only fired on
+                // single trigger reads). Bump the local count by what
+                // the server accepted so the exactly-at-target check
+                // sees it; the reload right after trues everything up,
+                // and it re-points by id, so an advanced selection
+                // sticks. Overshooting sweeps still never advance.
+                if (done > 0) {
+                    target.paired += done;
+                    maybeAutoAdvance(target);
+                }
                 reloadBatchOnly();
             });
         }).start();
