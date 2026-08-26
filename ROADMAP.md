@@ -3,6 +3,20 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-08-26.
 
+## 🧷 SKUs containing a double-quote: searches escape, not strip — ✅ FIXED 2026-08-26
+
+Nick's three Antlia 2" filters (ANT-ULTRA-2.5nm-2"-Ha/-OIII/-SII)
+refused every bin-move path. All six Shopify search builders STRIPPED
+'"' from terms before embedding them in sku:"..." queries — the search
+ran for a SKU that doesn't exist, lookups 404'd before writing, and
+the same stripping silently blanked on-hand/stock-info fetches for
+those SKUs store-wide. Verified live: stripped term = 0 matches,
+backslash-escaped = hit. shopify._search_term() (backslashes doubled,
+quotes escaped) replaces every strip site; exact post-filters still
+compare the original string. The three filters were then moved to
+D1-1 through the fixed endpoint (Shopify + bin map + History). Suite
+test_quotesku.py (5); 46/46.
+
 ## 🔄 Inventory checks follow the newest count + Auto-Resolved tag — ✅ DEPLOYED 2026-08-26
 
 Nick's ZWO M54-M54-7.5: a stale "0 counted vs 1" task outlived a newer
