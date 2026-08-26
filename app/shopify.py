@@ -237,6 +237,16 @@ query Quantities($search: String!) {
 """
 
 
+def _search_term(term: str) -> str:
+    """A term embedded inside a search query's double quotes. SKUs can
+    CONTAIN '"' (Antlia's 2\" filters: ANT-ULTRA-2.5nm-2"-Ha), and the
+    old .replace('"', "") stripped it, so every SKU search for those
+    products silently missed — bin moves 404'd, on-hand read null
+    (Nick, 2026-08-26). Shopify's search syntax accepts backslash
+    escapes; verified live against the store."""
+    return term.replace("\\", "\\\\").replace('"', '\\"')
+
+
 def get_quantities_by_skus(skus: list[str]) -> dict[str, int]:
     """Live ON-HAND per SKU, batched ~25 per query — what's physically on
     the shelf, which is the only number worth comparing tag counts to.
@@ -247,7 +257,7 @@ def get_quantities_by_skus(skus: list[str]) -> dict[str, int]:
     products sitting right there on the shelf. Everything else in the app
     was migrated to on_hand back in July; this call was missed."""
     quantities: dict[str, int] = {}
-    cleaned = [s.replace('"', "") for s in skus if s]
+    cleaned = [_search_term(s) for s in skus if s]
     for i in range(0, len(cleaned), 25):
         chunk = cleaned[i:i + 25]
         search = " OR ".join(f'sku:"{s}"' for s in chunk)
@@ -447,7 +457,7 @@ _FIND_VARIANTS_ALL_QUERY = _FIND_VARIANT_QUERY.replace(
 def lookup_barcode_all(term: str) -> list[dict]:
     """Every store match for a barcode (or SKU when nothing matches the
     barcode) — for barcodes shared by several listings."""
-    quoted = term.replace('"', "")
+    quoted = _search_term(term)
     nodes = []
     for search in (f'barcode:"{quoted}"', f'sku:"{quoted}"'):
         data = query_shopify(_FIND_VARIANTS_ALL_QUERY, {"search": search})
@@ -526,7 +536,7 @@ def get_stock_info_by_skus(skus: list[str]) -> dict[str, dict]:
     value — verified — so finding products that moved INTO a bin still
     needs the full catalog walk.)"""
     result: dict[str, dict] = {}
-    cleaned = [s for s in {s.replace('"', "") for s in skus if s}]
+    cleaned = [s for s in {_search_term(s) for s in skus if s}]
     for i in range(0, len(cleaned), 25):
         chunk = cleaned[i:i + 25]
         search = " OR ".join(f'sku:"{s}"' for s in chunk)
@@ -574,7 +584,7 @@ def get_quantity_breakdown(sku: str) -> dict | None:
     """available / committed / on_hand / unavailable for ONE SKU, summed
     across locations. "Unavailable" is the admin's bucket: reserved +
     damaged + safety stock + quality control. Read-only."""
-    quoted = sku.replace('"', "")
+    quoted = _search_term(sku)
     data = query_shopify(
         _QTY_BREAKDOWN_QUERY, {"search": f'sku:"{quoted}"'}
     )
@@ -708,7 +718,7 @@ def set_on_hand(sku: str, qty: int) -> int:
     Deliberately narrow: exactly one stocked location (this store's
     reality) — a multi-location SKU is refused rather than guessed at.
     Requires the write_inventory scope on the app token."""
-    cleaned = sku.replace('"', "")
+    cleaned = _search_term(sku)
     data = query_shopify(_ITEM_LOC_QUERY, {"search": f'sku:"{cleaned}"'})
     node = next(
         (v for v in data["productVariants"]["nodes"] if v["sku"] == sku),
@@ -775,7 +785,7 @@ def get_on_hand(sku: str) -> int | None:
     """Live ON-HAND for one SKU (sum across locations); None if the SKU
     isn't found. Used for shelf expectations — never trust the mirror's
     quantities, its sync can silently stall."""
-    cleaned = sku.replace('"', "")
+    cleaned = _search_term(sku)
     data = query_shopify(_ON_HAND_QUERY, {"search": f'sku:"{cleaned}"'})
     for v in data["productVariants"]["nodes"]:
         if v["sku"] == sku:
@@ -792,7 +802,7 @@ def lookup_barcode(term: str) -> dict | None:
     The bin resolution order matches your terminal script exactly:
     variant stock.bin -> product my_fields.bin_location -> "No bin assigned".
     """
-    quoted = term.replace('"', "")  # SKUs can contain spaces; quote the query
+    quoted = _search_term(term)  # SKUs can contain spaces; quote the query
     nodes = None
     for search in (f'barcode:"{quoted}"', f'sku:"{quoted}"'):
         data = query_shopify(_FIND_VARIANT_QUERY, {"search": search})
