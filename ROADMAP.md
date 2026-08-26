@@ -3,6 +3,16 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-08-26.
 
+## 🔁 Sweep pairs feed the pair auto-advance — ✅ DEPLOYED 2026-08-26 (C72 3.65)
+
+The 3.60 auto-advance only hooked single trigger reads, but most of
+Nick's pairing is held sweeps — so the hop never fired for him.
+assignEpcs (the sweep's assign path) now bumps the local paired count
+by what the server accepted and runs maybeAutoAdvance before the
+reload; the reload re-points selection by id, so an advanced selection
+sticks. Exact-landing rule unchanged: an overshooting sweep never
+advances. Take the gun update (3.65, code 83).
+
 ## 🖨 Printer offline (claim 500) + Resume printing — ✅ DEPLOYED 2026-08-26
 
 Two same-day field reports from Nick:
