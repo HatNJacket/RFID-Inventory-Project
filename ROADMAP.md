@@ -3,6 +3,34 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-08-25.
 
+## 🔍 1-left checks on receiving: cold-start gap closed — ✅ DONE 2026-08-26
+
+Receiving the iOptron order raised 8 one-left checks (detected 14:29-
+14:32 UTC, the moment the planner's stock increase hit Shopify). Root
+cause: the 0→1 direction guard in THEIR func app (added 08-18) can only
+suppress a restock when its small-qty cache knows the previous value,
+and the cache only learns a value when stock MOVES while ≤2 - items
+dormant at 0 since before 08-18 fail open once. Nick's go, both fixes:
+
+- **Cache seeded store-wide** (dev/seed_oneleft_smallqty.py + az blob
+  upload): all 4,758 variants currently holding ≤2 available units now
+  have entries (4,506 added; real webhook-written entries always win).
+  Pre-seed blob backed up at inventory-verification/
+  backups/inventory_last_small_qty-2026-08-26.json.
+- **New-item guard** in inventory-verification-func: on a cache miss at
+  available==1, `inventory_item_created_recently()` (GraphQL createdAt,
+  30 days) skips the check - a brand-new item's first intake landing on
+  1 is receiving, not a sale. Old items with no entry still queue (that
+  only happens when big stock drops straight to 1 - a sale, the
+  dashboard's job). Fail-open like the other guards. Deployed via the
+  squashfs-extract → edit → forward-slash zip → config-zip recipe;
+  verified after: all 13 functions listed, both sync webhooks answer
+  401 to unsigned posts, /api/api/pending serves (NOTE the double
+  prefix: host.json keeps routePrefix "api" and their routes also
+  start "api/").
+- The 8 open iOptron checks were left in the queue on purpose - they
+  auto-clear with tag evidence once the shipment is tagged.
+
 ## 📦 Receiving phase 2: stepless list + Assigned Tag undo chain — ✅ DEPLOYED 2026-08-26
 
 Nick's evening direction, refined by his answers next morning and
