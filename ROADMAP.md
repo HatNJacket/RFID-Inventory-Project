@@ -3,6 +3,19 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-08-26.
 
+## ✅ Inventory Check: "Shopify is wrong → use the RFID count" — ✅ DEPLOYED 2026-08-26
+
+Bin-mismatch-style choice button in the resolve window (plus the −/+
+recount steppers grew to 48×42px anchored at 20%/80% of the button).
+Writes the CURRENT counted number (post-recount) to Shopify: raises via
+the audited /api/onhand-updates; lowers via the bin-audit
+/api/onhand-updates/lower with its sales-coverage guard (the server's
+unconfirmed description is the confirm prompt; uncovered drops are
+refused with the guard's message). Equal counts resolve with a note.
+Client-only; all three paths browser-verified. Note: prod
+SHOPIFY_WRITE_MODE already includes verify_onhand_lower (CLAUDE.md's
+two-mode list was stale).
+
 ## 🔁 Sweep pairs feed the pair auto-advance — ✅ DEPLOYED 2026-08-26 (C72 3.65)
 
 The 3.60 auto-advance only hooked single trigger reads, but most of
