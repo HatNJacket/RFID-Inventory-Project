@@ -196,6 +196,45 @@ class ReleasedTag(Base):
         }
 
 
+class BackorderDebt(Base):
+    """Units Shopify's on-hand runs BEHIND the shelf because stock went
+    negative before a delivery arrived (Nick, 2026-08-26, AirGradient:
+    on-hand sat at -1 for a customer backorder, 48 boxes arrived, so
+    Shopify counts 47 while 48 tagged boxes stand on the shelf — and the
+    daily tag arithmetic would flag that one unit forever). Noted
+    automatically when a receiving batch closes, capped at the committed
+    (promised-to-customers) units so a plain mistag can never hide here.
+    The expected-tag math adds uncleared rows; any operator on-hand
+    write supersedes them (that write IS the fresh shelf truth), and
+    History's Backorder Noted event can clear one by hand. New table
+    needs dev/alter_add_backorder_debt.py on prod."""
+
+    __tablename__ = "rfid_backorder_debt"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sku: Mapped[str] = mapped_column(String(100), index=True, nullable=False)
+    units: Mapped[int] = mapped_column(Integer, nullable=False)
+    noted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    source: Mapped[str | None] = mapped_column(String(120))
+    cleared_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cleared_by: Mapped[str | None] = mapped_column(String(100))
+
+    def as_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "sku": self.sku,
+            "units": self.units,
+            "noted_at": self.noted_at.isoformat() if self.noted_at else None,
+            "source": self.source,
+            "cleared_at": (
+                self.cleared_at.isoformat() if self.cleared_at else None
+            ),
+            "cleared_by": self.cleared_by,
+        }
+
+
 class BarcodeAlias(Base):
     """Maps a foreign ("fake") barcode — e.g. a manufacturer barcode on the
     box — to a known product, after an operator confirmed the link. Lives in

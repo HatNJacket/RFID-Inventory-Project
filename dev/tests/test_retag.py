@@ -370,8 +370,13 @@ with patch("app.shopify.lookup_barcode", side_effect=fake_lookup), \
           "return" in v["retired_heard"][0]["message"], v["retired_heard"])
     hist = cl.get("/api/history").json()
     kinds = [e for e in hist["events"] if e["type"] == "tag-retired"]
+    # One-click passes fold into one event with a grouped undo (Nick,
+    # 2026-08-26) — count EPCs, not events, and every event still
+    # carries a tag-retired undo.
+    epc_total = sum(len(e.get("epcs") or [e.get("undo", {}).get("epc")])
+                    for e in kinds)
     check("every retirement is History-logged with an undo",
-          len(kinds) >= 4 and all(
+          epc_total >= 4 and all(
               e.get("undo", {}).get("kind") == "tag-retired"
               for e in kinds), kinds[:2])
     r = cl.post("/api/assignments/unretire",

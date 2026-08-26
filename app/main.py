@@ -42,6 +42,7 @@ from app.models import (
     AppSetting,
     AuditSession,
     AuditSessionItem,
+    BackorderDebt,
     BarcodeAlias,
     BarcodeChange,
     Batch,
@@ -2437,6 +2438,50 @@ def _mojibake_value(v: str | None) -> bool:
     return bool(v) and any(c == "?" or ord(c) > 126 for c in v)
 
 
+def _refresh_item_idents(
+    session: Session,
+    product: dict,
+    sku: str | None = None,
+    barcode: str | None = None,
+) -> int:
+    """Push a just-written SKU/barcode into the rows of OPEN batches, so
+    the web Check list and the C72's next pull show the fix immediately
+    (Nick, 2026-08-26: a corrected barcode stayed invisible on both
+    until the nightly rebuild). The live tag records' barcode follows
+    too; finished batches keep telling their story as it was."""
+    vid = (product.get("shopify_variant_id") or "").strip()
+    if not vid:
+        return 0
+    touched = 0
+    open_ids = [
+        b.id for b in session.scalars(
+            select(Batch).where(
+                Batch.status.notin_(("done", "abandoned"))
+            )
+        )
+    ]
+    if open_ids:
+        for it in session.scalars(
+            select(BatchItem).where(
+                BatchItem.batch_id.in_(open_ids),
+                BatchItem.shopify_variant_id == vid,
+            )
+        ):
+            if sku is not None:
+                it.sku = sku
+            if barcode is not None:
+                it.barcode = barcode
+            touched += 1
+    if barcode is not None:
+        for t in session.scalars(
+            select(RfidAssignment).where(
+                RfidAssignment.shopify_variant_id == vid
+            )
+        ):
+            t.barcode = barcode
+    return touched
+
+
 def _link_replaced_value(
     session: Session, old: str | None, product: dict,
     changed_by: str | None,
@@ -2546,6 +2591,13 @@ def overwrite_barcode(
                     == product["sku"].strip().upper())
     for bm in session.scalars(select(BinMapEntry).where(or_(*crit))):
         bm.barcode = payload.new_barcode
+    # Rows of OPEN batches and the live tag records show the barcode
+    # too - without this, the Check list and the C72 kept displaying the
+    # old value after a fix (Nick, 2026-08-26). Finished batches keep
+    # telling their story as it was.
+    _refresh_item_idents(
+        session, product, barcode=payload.new_barcode
+    )
     # If this code was previously linked as an alias, the link is now
     # redundant (and would shadow nothing, but keep the table honest).
     stale_alias = session.scalar(
@@ -3677,6 +3729,10 @@ def overwrite_sku(
                     == old_sku.strip().upper())
     for bm in session.scalars(select(BinMapEntry).where(or_(*crit))):
         bm.sku = payload.new_sku
+    # Rows of OPEN batches follow too - the Check list and the C72 pull
+    # display values from them, and both kept showing the stale SKU
+    # after a fix (Nick, 2026-08-26).
+    _refresh_item_idents(session, product, sku=payload.new_sku)
     if old_sku:
         for tag in session.scalars(
             select(RfidAssignment).where(
@@ -5126,7 +5182,80 @@ def _maybe_close_receiving(session: Session, batch: Batch) -> bool:
         return False
     batch.status = "done"
     batch.completed_at = datetime.now(timezone.utc)
+    try:
+        _note_backorder_debt(session, batch)
+    except Exception:  # noqa: BLE001 — bookkeeping must never block a close
+        logger.exception("backorder-debt check failed (batch %s)", batch.id)
     return True
+
+
+def _note_backorder_debt(session: Session, batch: Batch) -> None:
+    """A delivery that lands on NEGATIVE Shopify on-hand loses units to
+    the oversell hole: the stock write brings on-hand to (negative + N)
+    while N tagged boxes hit the shelf, and the daily tag arithmetic
+    would flag the difference forever (Nick, 2026-08-26 — AirGradient:
+    on-hand -1 met 48 received boxes, so Shopify counts 47 against 48
+    tags). When a receiving batch closes, note that gap per SKU, capped
+    at the units Shopify still shows COMMITTED to customers — the cap is
+    what keeps a plain mistag from hiding in here. The expected-tag math
+    carries uncleared notes; an operator on-hand write supersedes them."""
+    skus = sorted({
+        (i.sku or "").strip()
+        for i in _batch_items(session, batch.id)
+        if i.sku and i.sku.strip() and not i.skip_reason and not i.skipped
+        and i.kind != "bundle" and (i.qty_scanned + i.case_count) > 0
+    })
+    if not skus:
+        return
+    # One batched call finds the (rare) SKUs worth a closer look; the
+    # per-SKU breakdown call runs only for those.
+    on_hand_ci = {
+        (k or "").strip().upper(): v
+        for k, v in (shopify.get_on_hand_by_skus(skus) or {}).items()
+    }
+    baselines = orders_sync._sku_baselines(session, skus)
+    sold = orders_sync.sold_unretired_since_map(session, skus, baselines)
+    existing = orders_sync.backorder_debt_map(session, skus)
+    for sku in skus:
+        key = sku.upper()
+        oh = on_hand_ci.get(key)
+        if oh is None:
+            continue
+        tags = orders_sync.tag_units(session, sku)
+        gap = tags - oh - sold.get(key, 0) - existing.get(key, 0)
+        if gap <= 0:
+            continue
+        try:
+            live = shopify.get_quantity_breakdown(sku)
+        except Exception:  # noqa: BLE001 — skip quietly, next receive retries
+            continue
+        debt = min(gap, (live or {}).get("committed") or 0)
+        if debt <= 0:
+            continue
+        row = BackorderDebt(
+            sku=sku,
+            units=debt,
+            source=(f"receiving · {batch.created_by}"
+                    if batch.created_by else f"receiving batch #{batch.id}"
+                    )[:120],
+        )
+        session.add(row)
+        session.flush()
+        title = next(
+            (i.product_title for i in _batch_items(session, batch.id)
+             if (i.sku or "").strip().upper() == key and i.product_title),
+            None,
+        )
+        # old_barcode carries the row id so History can offer "clear
+        # this note"; new_barcode carries the unit count for display.
+        session.add(BarcodeChange(
+            sku=sku,
+            product_title=title,
+            changed_field="backorder-debt",
+            old_barcode=str(row.id),
+            new_barcode=str(debt),
+            changed_by=batch.created_by,
+        ))
 
 
 @app.post(
@@ -6513,6 +6642,66 @@ def _mojibake(*vals: str | None) -> bool:
     )
 
 
+def _bad_char_fields(item: BatchItem) -> dict:
+    """WHICH field broke, with the offending character wrapped in [ ] so
+    the operator can see it (Nick, 2026-08-26: the ZWO HA7nm1.25 flag
+    just said "shows as ?", which names nothing). The real character
+    only exists in live Shopify - our VARCHAR stored it as '?' - so one
+    live fetch recovers it; if that fails, the stored '?' is bracketed
+    as the honest fallback. Returns e.g. {"sku": 'ZWO-HA 7nm 1.25["]'}
+    with only the broken field(s) present."""
+    live = None
+    vid = (item.shopify_variant_id or "").strip()
+    if vid.startswith("gid://"):
+        try:
+            live = shopify.get_variant_idents(vid)
+        except Exception:  # noqa: BLE001 — the fallback still names the spot
+            live = None
+
+    def _mark(v: str) -> str:
+        return "".join(
+            f"[{ch}]" if ch == "?" or ord(ch) > 126 else ch for ch in v
+        )
+
+    out: dict = {}
+    for field in ("sku", "barcode"):
+        stored = getattr(item, field)
+        if not _mojibake_value(stored):
+            continue
+        live_v = (live or {}).get(field)
+        use = live_v if live_v and _mojibake_value(live_v) else stored
+        out[field] = _mark(use)
+    return out
+
+
+# Check-step list ordering (Nick, 2026-08-26): the biggest problems
+# first. count-mismatch is explicitly the LEAST important - a count
+# nudge should never bury a broken record or a wrong-shelf box. Shared
+# by web and C72 (both render the server's order); stable sort keeps
+# shelf order inside each tier.
+_FLAG_RANK = {
+    "unresolved": 9,
+    "bad-chars": 8,
+    "ambiguous": 7,
+    "tags-silent": 6,
+    "wrong-bin": 5,
+    "tags-unheard": 4,
+    "double-count": 3,
+    "tagged-not-detected": 3,
+    "skipped": 2,
+    "bundle": 2,
+    "unconfirmed-name": 2,
+    "not-on-shelf": 1,
+    "count-mismatch": 0,
+}
+
+
+def _flag_rank(entry: dict) -> int:
+    return max(
+        (_FLAG_RANK.get(f, 1) for f in entry.get("flags") or []), default=0
+    )
+
+
 @app.get(
     "/api/batches/{batch_id}/review", dependencies=[Depends(require_user)]
 )
@@ -6634,6 +6823,7 @@ def batch_review(batch_id: int, session: Session = Depends(get_session)):
             continue
         flags = []
         candidates: list[dict] = []
+        bad_chars = None
         if not item.resolved:
             flags.append("unresolved")
         else:
@@ -6717,18 +6907,22 @@ def batch_review(batch_id: int, session: Session = Depends(get_session)):
             # fix the SKU/barcode on the spot.
             if _mojibake(item.sku, item.barcode):
                 flags.append("bad-chars")
+                bad_chars = _bad_char_fields(item)
             sh = shelf_by_item.get(item.id)
             if sh is not None and sh["state"] == "unheard":
                 flags.append("tags-unheard")
             elif sh is not None and sh["state"] == "silent":
                 flags.append("tags-silent")
         if flags:
-            flagged.append({
+            entry = {
                 "item": item.as_dict(),
                 "flags": flags,
                 "candidates": candidates,
                 "shelf": shelf_by_item.get(item.id),
-            })
+            }
+            if bad_chars:
+                entry["bad_chars"] = bad_chars
+            flagged.append(entry)
     # Strays gathered by the shelf they actually belong on, so the Check step
     # can offer one trip per bin rather than one per product.
     strays: dict = {}
@@ -6771,6 +6965,9 @@ def batch_review(batch_id: int, session: Session = Depends(get_session)):
         entry["item"]["rfid_incompatible"] = (
             (entry["item"].get("sku") or "").strip().upper() in noscan
         )
+    # Biggest problems first; count-mismatch-only rows sink to the
+    # bottom (Nick, 2026-08-26). Stable: shelf order holds within a tier.
+    flagged.sort(key=lambda e: -_flag_rank(e))
     return {
         "count": len(flagged),
         "items": flagged,
@@ -9961,6 +10158,153 @@ def recount_review_task(
     }
 
 
+class SoldOutRetireIn(BaseModel):
+    changed_by: str | None = Field(default=None, max_length=100)
+    confirmed: bool = False
+
+
+@app.post(
+    "/api/review-tasks/{task_id}/retire-all-sold",
+    dependencies=[Depends(require_user)],
+)
+def retire_all_sold(
+    task_id: int,
+    payload: SoldOutRetireIn,
+    session: Session = Depends(get_session),
+):
+    """The Tags vs On-hand window's sold-out shortcut (Nick, 2026-08-26):
+    when Shopify's live on-hand is 0, every remaining box has sold, so
+    ALL the SKU's live tags retire presumed-sold in one click, the sold
+    ledger absorbs them, and the task resolves itself. The on-hand==0
+    guard re-checks LIVE here - a stale window can't fire this after
+    stock came back. Local records only; Shopify is never written."""
+    task = session.get(ReviewTask, task_id)
+    if task is None:
+        raise HTTPException(404, "No such review task.")
+    if task.category != "tag-onhand-mismatch":
+        raise HTTPException(
+            422, "The sold-out shortcut is for Tags vs On-hand tasks."
+        )
+    if task.status != "open":
+        raise HTTPException(409, f"Task is already {task.status}.")
+    sku = (task.sku or "").strip()
+    if not sku:
+        raise HTTPException(422, "This task has no SKU.")
+    try:
+        live = shopify.get_on_hand(sku)
+    except Exception as error:  # noqa: BLE001 — surfaced, not swallowed
+        raise HTTPException(
+            502, f"Couldn't read the live on-hand: {str(error)[:200]}"
+        )
+    if live is None:
+        raise HTTPException(404, f"No Shopify product for SKU {sku}.")
+    if live != 0:
+        raise HTTPException(
+            422,
+            f"Shopify shows {live} on hand for {sku} - boxes are still "
+            f"expected on the shelf, so a blanket presumed-sold is not "
+            f"safe. Run the bin audit instead.",
+        )
+    tags = session.scalars(
+        select(RfidAssignment).where(
+            func.upper(RfidAssignment.sku) == sku.upper()
+        ).order_by(RfidAssignment.id)
+    ).all()
+    if not tags:
+        raise HTTPException(404, f"No live tags on file for {sku}.")
+    units = sum((t.case_units or 1) for t in tags)
+    by = (payload.changed_by or "").strip()[:100] or None
+    if not payload.confirmed:
+        raise HTTPException(
+            409,
+            f"Shopify on-hand is 0 for {sku}: this retires all "
+            f"{len(tags)} tag(s) ({units} unit(s)) as presumed-sold and "
+            f"resolves the task. Each tag is restorable from History. "
+            f"Confirm to proceed.",
+        )
+    moved_rows: list[tuple[RetiredTag, RfidAssignment]] = []
+    for t in tags:
+        rt = RetiredTag(
+            rfid_id=t.rfid_id,
+            sku=t.sku,
+            product_title=t.product_title,
+            shopify_variant_id=t.shopify_variant_id,
+            bin_location=t.bin_location,
+            case_units=t.case_units,
+            kind="presumed-sold",
+            retired_by=by,
+            note=f"review task #{task.id} · on-hand 0",
+        )
+        session.add(rt)
+        session.add(BarcodeChange(
+            sku=t.sku,
+            product_title=t.product_title,
+            shopify_variant_id=t.shopify_variant_id,
+            changed_field="tag-retired",
+            old_barcode=t.rfid_id,
+            new_barcode="presumed-sold",
+            changed_by=by,
+        ))
+        session.delete(t)
+        moved_rows.append((rt, t))
+    _consume_ledger_for_retirements(session, moved_rows)
+    task.status = "resolved"
+    task.resolved_by = by
+    task.resolved_at = datetime.now(timezone.utc)
+    task.resolution_note = (
+        f"All {len(tags)} tag(s) marked presumed sold "
+        f"(Shopify on-hand 0)."
+    )[:255]
+    session.commit()
+    return {
+        "retired": [t.rfid_id for t in tags],
+        "units": units,
+        "message": (
+            f"{len(tags)} tag(s) retired presumed-sold and the task "
+            f"resolved. Each is restorable from History."
+        ),
+    }
+
+
+@app.post(
+    "/api/backorder-debts/{debt_id}/clear",
+    dependencies=[Depends(require_user)],
+)
+def clear_backorder_debt(
+    debt_id: int,
+    payload: SoldOutRetireIn,
+    session: Session = Depends(get_session),
+):
+    """History's undo for a Backorder Noted event: the note was wrong
+    (or the books got fixed another way), so stop carrying it. The
+    expected-tag check may re-flag the SKU on its next run - that's the
+    point of clearing a bad note."""
+    row = session.get(BackorderDebt, debt_id)
+    if row is None:
+        raise HTTPException(404, "No such backorder note.")
+    if row.cleared_at is not None:
+        raise HTTPException(409, "That note is already cleared.")
+    by = (payload.changed_by or "").strip()[:100] or None
+    row.cleared_at = datetime.now(timezone.utc)
+    row.cleared_by = by or "manual"
+    session.add(BarcodeChange(
+        sku=row.sku,
+        changed_field="backorder-debt-clear",
+        old_barcode=str(row.id),
+        new_barcode=str(row.units),
+        changed_by=by,
+    ))
+    session.commit()
+    return {
+        "cleared": row.as_dict(),
+        "message": (
+            f"Backorder note cleared - the expected count for {row.sku} "
+            f"drops by {row.units} unit(s) and the daily check may "
+            f"flag it again."
+        ),
+    }
+
+
 @app.post(
     "/api/review-tasks/{task_id}/resolve",
     dependencies=[Depends(require_user)],
@@ -10108,6 +10452,20 @@ def review_task_context(
         except Exception:  # noqa: BLE001 — live extras fail soft
             ctx["live_on_hand"] = None
         ctx["units_on_file"] = _tag_units_for_sku(session, sku)
+    elif task.category == "tag-onhand-mismatch" and sku:
+        # The sold-out shortcut (Nick, 2026-08-26): live on-hand at 0
+        # means every remaining box has sold, so the window can offer
+        # retiring ALL tags presumed-sold in one click.
+        try:
+            ctx["live_on_hand"] = shopify.get_on_hand(sku)
+        except Exception:  # noqa: BLE001 — live extras fail soft
+            ctx["live_on_hand"] = None
+        ctx["units_on_file"] = _tag_units_for_sku(session, sku)
+        ctx["tag_count"] = len(session.scalars(
+            select(RfidAssignment).where(
+                func.upper(RfidAssignment.sku) == sku.upper()
+            )
+        ).all())
     elif task.category == "pairing-incomplete" and task.batch_id and sku:
         item = session.scalar(
             select(BatchItem).where(
@@ -10969,6 +11327,19 @@ def put_scan_note(
 
 
 # -------------------------------------------------------- product history ---
+def _admin_product_url(pid: str | None) -> str | None:
+    """The Shopify-admin page for a product gid. Built on the store's
+    .myshopify.com domain - its /admin path redirects to the right
+    admin.shopify.com handle without us knowing it."""
+    m = re.search(r"/Product/(\d+)$", pid or "")
+    if not m or not (config.SHOPIFY_STORE or "").strip():
+        return None
+    return (
+        f"https://{config.SHOPIFY_STORE.strip()}"
+        f"/admin/products/{m.group(1)}"
+    )
+
+
 @app.get("/api/product-history", dependencies=[Depends(require_user)])
 def product_history(term: str, session: Session = Depends(get_session)):
     """One product's complete paper trail, newest first. Every event says
@@ -10985,6 +11356,11 @@ def product_history(term: str, session: Session = Depends(get_session)):
     except HTTPException as error:
         if error.status_code != 404:
             raise
+    # The preview window's title links here (Nick, 2026-08-26).
+    if product is not None:
+        product["admin_url"] = _admin_product_url(
+            product.get("shopify_product_id")
+        )
     sku = (product.get("sku") if product else None) or term
     barcode = (product.get("barcode") if product else None) or term
 
@@ -11509,13 +11885,19 @@ def history(
         "scan-note": "scan-note",
         "tag-retired": "tag-retired",
         "tag-unretired": "tag-unretired",
+        "backorder-debt": "backorder-noted",
+        "backorder-debt-clear": "backorder-cleared",
     }
     # A sweep undo unlinks its tags with one shared timestamp — fold
     # those the same way sweep assigns fold. Release/re-apply rows (the
     # Assigned Tag undo chain) fold identically, keyed by their field so
-    # the three families never merge into one event.
+    # the three families never merge into one event. Retirements fold
+    # too (by kind as well — a presumed-sold pass and a dead-tag drop
+    # stay separate events even in the same second).
     unlink_groups: dict = {}
     unlink_order: list = []
+    retire_groups: dict = {}
+    retire_order: list = []
     for c in session.scalars(
         select(BarcodeChange).order_by(BarcodeChange.id.desc()).limit(limit)
     ):
@@ -11527,6 +11909,14 @@ def history(
                 unlink_groups[key] = []
                 unlink_order.append(key)
             unlink_groups[key].append(c)
+            continue
+        if c.changed_field == "tag-retired" and c.old_barcode:
+            key = (c.sku or "", c.changed_by or "", iso(c.changed_at),
+                   c.new_barcode or "")
+            if key not in retire_groups:
+                retire_groups[key] = []
+                retire_order.append(key)
+            retire_groups[key].append(c)
             continue
         event = {
             "at": iso(c.changed_at),
@@ -11554,13 +11944,35 @@ def history(
                 "old_bin": c.old_barcode,
                 "new_bin": c.new_barcode,
             }
-        # Retired tags come back with one click: the row moves from the
-        # retired table to the active one (returns, mis-clicks).
-        elif c.changed_field == "tag-retired" and c.old_barcode:
+        # Backorder debt noted at a receiving close: Shopify's on-hand
+        # runs N units behind the shelf until an operator write catches
+        # it up. Undo clears the note by hand (the check may re-flag).
+        elif c.changed_field == "backorder-debt":
             event["detail"] = (
-                f"EPC {c.old_barcode} retired ({c.new_barcode})"
+                f"Shopify on-hand runs {c.new_barcode} unit(s) behind "
+                f"the shelf (customer backorder filled by this delivery); "
+                f"the expected-tag count carries the difference"
             )
-            event["undo"] = {"kind": "tag-retired", "epc": c.old_barcode}
+            try:
+                debt_id = int(c.old_barcode or "")
+            except ValueError:
+                debt_id = None
+            if debt_id is not None and session.scalar(
+                select(BackorderDebt).where(
+                    BackorderDebt.id == debt_id,
+                    BackorderDebt.cleared_at.is_(None),
+                )
+            ) is not None:
+                event["undo"] = {
+                    "kind": "backorder-debt",
+                    "debt_id": debt_id,
+                    "sku": c.sku,
+                    "units": c.new_barcode,
+                }
+        elif c.changed_field == "backorder-debt-clear":
+            event["detail"] = (
+                f"backorder note cleared ({c.new_barcode} unit(s))"
+            )
         elif c.changed_field == "tag-unretired" and c.old_barcode:
             event["detail"] = (
                 f"EPC {c.old_barcode} restored (was {c.new_barcode})"
@@ -11648,6 +12060,37 @@ def history(
         if undo:
             event["undo"] = undo
         events.append(event)
+
+    # Retirements: singles keep the classic per-EPC row; a one-click
+    # pass (a sweep cleanup, the sold-out button) folds into one event
+    # whose undo restores the whole group. Unretire skips any EPC
+    # re-used on a new box since, so the grouped undo stays safe.
+    for key in retire_order:
+        group = retire_groups[key]
+        c = group[0]
+        kind = c.new_barcode or "?"
+        if len(group) == 1:
+            events.append({
+                "at": iso(c.changed_at),
+                "type": "tag-retired",
+                "worker": c.changed_by,
+                "sku": c.sku,
+                "title": c.product_title,
+                "detail": f"EPC {c.old_barcode} retired ({kind})",
+                "undo": {"kind": "tag-retired", "epc": c.old_barcode},
+            })
+            continue
+        epcs = [x.old_barcode for x in group]
+        events.append({
+            "at": iso(c.changed_at),
+            "type": "tag-retired",
+            "worker": c.changed_by,
+            "sku": c.sku,
+            "title": c.product_title,
+            "detail": f"{len(group)} × RFID tag retired ({kind})",
+            "epcs": epcs,
+            "undo": {"kind": "tag-retired", "epcs": epcs},
+        })
 
     job_types = {
         "done": "label-printed", "error": "label-failed",

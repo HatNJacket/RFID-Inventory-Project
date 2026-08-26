@@ -34,6 +34,7 @@ from sqlalchemy.orm import Session
 from app import shopify
 from app.models import (
     AppSetting,
+    BackorderDebt,
     BarcodeChange,
     RefreshLog,
     ReviewTask,
@@ -240,6 +241,65 @@ def unretire_units(session: Session, sku: str, units: int) -> int:
     return restored
 
 
+def backorder_debt_map(
+    session: Session, skus: list[str] | None = None
+) -> dict[str, int]:
+    """Upper SKU -> units Shopify's on-hand runs behind the shelf
+    (uncleared backorder-debt rows, noted at receiving close). These
+    boxes are physically present and tagged, but Shopify absorbed them
+    into a pre-delivery negative — expected-tag math must add them or
+    every such SKU false-flags forever (Nick, 2026-08-26)."""
+    stmt = select(BackorderDebt).where(BackorderDebt.cleared_at.is_(None))
+    if skus is not None:
+        uppers = [s.strip().upper() for s in skus]
+        stmt = stmt.where(func.upper(BackorderDebt.sku).in_(uppers))
+    out: dict[str, int] = {}
+    for row in session.scalars(stmt).all():
+        if row.units:
+            key = row.sku.strip().upper()
+            out[key] = out.get(key, 0) + row.units
+    return out
+
+
+def _clear_superseded_debts(session: Session, skus: list[str]) -> int:
+    """An operator on-hand write is fresh shelf truth: any backorder
+    debt noted BEFORE it is stale (the write already counted those
+    boxes). Clears such rows and returns how many."""
+    uppers = [s.strip().upper() for s in skus]
+    if not uppers:
+        return 0
+    write_ts: dict[str, object] = {}
+    for bc in session.scalars(
+        select(BarcodeChange).where(
+            func.upper(BarcodeChange.sku).in_(uppers),
+            BarcodeChange.changed_field.in_((
+                "on-hand", "on-hand-undo",
+                "on-hand-lower", "on-hand-lower-undo",
+            )),
+        )
+    ):
+        k = (bc.sku or "").strip().upper()
+        ts = _as_utc(bc.changed_at)
+        if ts is not None and (k not in write_ts or ts > write_ts[k]):
+            write_ts[k] = ts
+    if not write_ts:
+        return 0
+    cleared = 0
+    for row in session.scalars(
+        select(BackorderDebt).where(
+            BackorderDebt.cleared_at.is_(None),
+            func.upper(BackorderDebt.sku).in_(sorted(write_ts)),
+        )
+    ).all():
+        ts = write_ts.get(row.sku.strip().upper())
+        noted = _as_utc(row.noted_at)
+        if ts is not None and noted is not None and ts > noted:
+            row.cleared_at = datetime.utcnow()
+            row.cleared_by = "on-hand write"
+            cleared += 1
+    return cleared
+
+
 def _sku_baselines(session: Session, skus) -> dict[str, object]:
     """Upper SKU -> the tag pool's baseline: newest live pairing (any
     bin), or a newer confirmed on-hand write, whichever is later. Sales
@@ -295,9 +355,12 @@ def refresh_mismatch_tasks(session: Session) -> dict:
             )
         ).all()
     }
-    skus = sorted(set(sold_all) | set(open_tasks))
+    debt_all = backorder_debt_map(session)
+    skus = sorted(set(sold_all) | set(open_tasks) | set(debt_all))
     if not skus:
         return {"tasks_opened": 0, "tasks_closed": 0}
+    _clear_superseded_debts(session, skus)
+    debts = backorder_debt_map(session, skus)
     baselines = _sku_baselines(session, skus)
     sold = sold_unretired_since_map(session, skus, baselines)
     try:
@@ -355,7 +418,11 @@ def refresh_mismatch_tasks(session: Session) -> dict:
                 )
                 closed += 1
             continue
-        expected = oh + sold.get(sku, 0)
+        # Backordered units absorbed at receiving (Shopify on-hand went
+        # negative before the delivery landed) are real tagged boxes
+        # Shopify's number doesn't count — expected must carry them or
+        # the SKU false-flags forever (Nick, 2026-08-26, AirGradient).
+        expected = oh + sold.get(sku, 0) + debts.get(sku, 0)
         task = open_tasks.get(sku)
         if tags != expected:
             base = baselines.get(sku)
@@ -368,6 +435,11 @@ def refresh_mismatch_tasks(session: Session) -> dict:
                 + (
                     f" + {sold[sku]} sold since tagging ({since})"
                     if sold.get(sku)
+                    else ""
+                )
+                + (
+                    f" + {debts[sku]} on customer backorder when received"
+                    if debts.get(sku)
                     else ""
                 )
                 + "). Recommend a bin audit — a sweep that hears the "

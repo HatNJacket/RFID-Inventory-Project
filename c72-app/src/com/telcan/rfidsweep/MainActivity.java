@@ -417,6 +417,10 @@ public class MainActivity extends Activity {
         // keep-or-move question reads differently when the recommended
         // shelf provably holds stock.
         int recordBinTags;
+        // bad-chars detail: the broken field's value with the offending
+        // character bracketed, e.g. ZWO-HA 7nm 1.25["] (server fetches
+        // the REAL character from live Shopify). Null = field is fine.
+        String badSku, badBarcode;
     }
 
     private int batchId = -1;
@@ -3979,7 +3983,25 @@ public class MainActivity extends Activity {
         box.setPadding(dp(20), dp(8), dp(20), 0);
         if (editEntry.flags.contains("bad-chars")) {
             TextView warn = new TextView(this);
-            warn.setText("⚠ The SKU or barcode has a character the "
+            // Name WHICH field broke and SHOW the character, bracketed
+            // (server recovers the real one from live Shopify). Older
+            // servers send no detail - keep the generic line for them.
+            StringBuilder w = new StringBuilder();
+            if (editEntry.badSku != null && !editEntry.badSku.isEmpty()) {
+                w.append("⚠ The SKU contains a character the database "
+                        + "can't store: ").append(editEntry.badSku)
+                        .append(". Recommend updating the SKU.");
+            }
+            if (editEntry.badBarcode != null
+                    && !editEntry.badBarcode.isEmpty()) {
+                if (w.length() > 0) w.append("\n");
+                w.append("⚠ The barcode contains a character the "
+                        + "database can't store: ")
+                        .append(editEntry.badBarcode)
+                        .append(". Recommend updating the barcode.");
+            }
+            warn.setText(w.length() > 0 ? w.toString()
+                    : "⚠ The SKU or barcode has a character the "
                     + "database can't store (it shows as ?) — records "
                     + "won't match until it's replaced.");
             warn.setTextColor(C_WARN);
@@ -7014,6 +7036,11 @@ public class MainActivity extends Activity {
                         e.flags.add(flag);
                     }
                     if (e.flags.isEmpty()) continue;
+                    JSONObject bad = o.optJSONObject("bad_chars");
+                    if (bad != null) {
+                        e.badSku = bad.optString("sku", null);
+                        e.badBarcode = bad.optString("barcode", null);
+                    }
                     JSONArray cs = o.getJSONArray("candidates");
                     for (int j = 0; j < cs.length(); j++) {
                         e.candidates.add(cs.getJSONObject(j));

@@ -98,6 +98,13 @@ with Session(get_engine()) as s:
                    product_title="Middle mismatch",
                    detail="Bin C3-3: 8 unit(s) counted but Shopify "
                           "on-hand is 5. Recommend a product check."),
+        # Sold-out shortcut demo (Nick, 2026-08-26): fake on-hand 0 with
+        # 2 live tags -> the resolve window offers Mark-all-presumed-sold.
+        ReviewTask(category="tag-onhand-mismatch", sku="SOLDOUT-1",
+                   product_title="Askar 71F (sold-out demo)",
+                   detail="RFID tags stand for 2 unit(s) but the "
+                          "expected count is 0 (Shopify on-hand 0). "
+                          "Recommend a bin audit."),
     ])
     s.add(RfidIncompatible(sku="OPTO-LPRO", set_by="Steve"))
     epcs = {
@@ -264,6 +271,45 @@ with Session(get_engine()) as s:
                                barcode=item.barcode,
                                bin_location=item.bin_location,
                                shopify_variant_id=item.shopify_variant_id))
+    # --- Sold-out shortcut demo tags (fake on-hand for SOLDOUT-1 is 0) --
+    for epc in ("50FD0000000000000000000A", "50FD0000000000000000000B"):
+        s.add(RfidAssignment(rfid_id=epc, shopify_variant_id="t:SO",
+                             product_title="Askar 71F (sold-out demo)",
+                             sku="SOLDOUT-1", bin_location="T1-1"))
+    # --- Check-step polish demos (Nick, 2026-08-26): a batch whose list
+    # must order bad-chars > wrong-bin > count-mismatch, with the broken
+    # character named per field.
+    cb = Batch(bin_name="T3-1", status="collecting", created_by="Nick")
+    s.add(cb)
+    s.flush()
+    s.add_all([
+        BatchItem(batch_id=cb.id, scanned_code="906", resolved=True,
+                  sku="COUNT-DEMO", barcode="906",
+                  product_title="Baader Click-Lock (count nudge demo)",
+                  shopify_variant_id="t:CN", qty_scanned=1,
+                  expected_qty=5, bin_location="T3-1"),
+        BatchItem(batch_id=cb.id, scanned_code="905", resolved=True,
+                  sku="ZWO-HA 7nm 1.25?", barcode="905",
+                  product_title="ZWO Ha 7nm Filter (broken-SKU demo)",
+                  shopify_variant_id="gid://shopify/ProductVariant/77",
+                  qty_scanned=1, expected_qty=1, bin_location="T3-1"),
+        BatchItem(batch_id=cb.id, scanned_code="907", resolved=True,
+                  sku="STRAY-DEMO", barcode="907",
+                  product_title="Antlia 3nm (wrong shelf demo)",
+                  shopify_variant_id="t:SD", qty_scanned=1,
+                  expected_qty=1, bin_location="Z8-8"),
+    ])
+    # --- Backorder Noted history demo (undo = clear the note) -----------
+    from app.models import BackorderDebt
+    bd = BackorderDebt(sku="ZWO FL-HLDR-M54x15", units=1,
+                       source="receiving · TC-Planner · SO 935 · ZWO")
+    s.add(bd)
+    s.flush()
+    s.add(BarcodeChange(sku="ZWO FL-HLDR-M54x15",
+                        product_title="ZWO Filter Holder M54x15",
+                        changed_field="backorder-debt",
+                        old_barcode=str(bd.id), new_barcode="1",
+                        changed_by="TC-Planner · SO 935 · ZWO"))
     s.commit()
     print(f"seeded batch {b.id} on T1-1 + receiving batch {rb.id} "
           f"+ audit data")
@@ -274,7 +320,9 @@ from app import shopify as _sh  # noqa: E402
 # SMALL-1: live has caught up to the count -> one-click "agree" resolve.
 # BIG-1: live above the count -> recount-with-note path.
 _FAKE = {"SURPLUS-1": 2, "SURPLUS-2": 1, "NORMAL-1": 5, "OPTO-LPRO": 2,
-         "MID-1": 5, "SMALL-1": 3, "BIG-1": 9}
+         "MID-1": 5, "SMALL-1": 3, "BIG-1": 9,
+         # 0 on hand + 2 live tags -> the sold-out shortcut appears.
+         "SOLDOUT-1": 0}
 def _fake_get(sku):
     return _FAKE.get(sku)
 def _fake_set(sku, qty):
@@ -305,6 +353,13 @@ _sh.set_product_bin = (
 _sh.fetch_all_variant_bins = lambda: []
 _sh.get_stock_info_by_skus = lambda skus: {}
 _sh.get_quantities_by_skus = lambda skus: {}
+_sh.get_on_hand_by_skus = lambda skus: {
+    s: _FAKE[s] for s in skus if s in _FAKE}
+# The broken-SKU demo: live Shopify still holds the real character our
+# VARCHAR mangled to '?' (a double-prime), so the flag can NAME it.
+_sh.get_variant_idents = lambda vid: (
+    {"sku": "ZWO-HA 7nm 1.25″", "barcode": "905"}
+    if vid == "gid://shopify/ProductVariant/77" else None)
 # Native-bundle components (the Shopify Bundles / Bundles.app import):
 # the MISMATCH-1 demo product answers as a bundle of 4 × NORMAL-1.
 _sh.get_bundle_components = lambda gid: (

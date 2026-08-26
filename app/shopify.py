@@ -752,6 +752,25 @@ def set_on_hand(sku: str, qty: int) -> int:
     return before
 
 
+_VARIANT_IDENT_QUERY = """
+query variantIdent($id: ID!) {
+  productVariant(id: $id) { sku barcode }
+}
+"""
+
+
+def get_variant_idents(variant_gid: str) -> dict | None:
+    """The variant's LIVE sku/barcode straight from the API, by GID.
+    The one place the real characters survive: our VARCHAR columns store
+    anything non-Latin as '?', so showing an operator WHICH character
+    broke a record needs this round trip (Nick, 2026-08-26)."""
+    data = query_shopify(_VARIANT_IDENT_QUERY, {"id": variant_gid})
+    node = data.get("productVariant")
+    if not node:
+        return None
+    return {"sku": node.get("sku"), "barcode": node.get("barcode")}
+
+
 def get_on_hand(sku: str) -> int | None:
     """Live ON-HAND for one SKU (sum across locations); None if the SKU
     isn't found. Used for shelf expectations — never trust the mirror's

@@ -2654,3 +2654,12 @@ tr.binaudit-untagged td { opacity: 0.72; }
   .product { animation: none; }
   * { transition: none !important; }
 }
+
+/* Product preview title links to the Shopify admin page (Nick,
+   2026-08-26). Quiet by default, obviously a link on hover. */
+.phist-titlelink {
+  color: inherit;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+.phist-titlelink:hover { text-decoration: underline solid; }

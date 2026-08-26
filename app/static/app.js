@@ -413,6 +413,8 @@ const EVENT_META = {
   "tag-sold": ["Tag Sold", "#4053b8"],
   "tag-retired": ["Tag Retired", "#7a5ea8"],
   "tag-unretired": ["Tag Restored", "#3f8f6b"],
+  "backorder-noted": ["Backorder Noted", "#146c60"],
+  "backorder-cleared": ["Backorder Cleared", "#5c5f62"],
   "tag-onhand-mismatch": ["Tags ≠ On-hand", "#8e44ad"],
   "shopify-bin-read": ["Read From Shopify", "#1f5f8b"],
   "scan-note": ["Scan Note", "#8a6116"],
@@ -5439,6 +5441,30 @@ const FLAG_TEXT = {
     "were among the scans, lower the scan count (−/+ in the editor)",
 };
 
+// Check-list importance (mirror of the server's ranking): biggest
+// problems first, count-mismatch explicitly LAST (Nick, 2026-08-26).
+const FLAG_RANK = {
+  unresolved: 9,
+  "bad-chars": 8,
+  ambiguous: 7,
+  "tags-silent": 6,
+  "wrong-bin": 5,
+  "tags-unheard": 4,
+  "double-count": 3,
+  "tagged-not-detected": 3,
+  skipped: 2,
+  bundle: 2,
+  "unconfirmed-name": 2,
+  "not-on-shelf": 1,
+  "count-mismatch": 0,
+};
+function entryRank(e) {
+  return (e.flags || []).reduce(
+    (m, f) => Math.max(m, FLAG_RANK[f] ?? 1),
+    0
+  );
+}
+
 let checkEntries = [];
 let bitemEntry = null;
 let bitemIdx = 0;
@@ -5577,6 +5603,11 @@ async function loadBatchReview(showAll) {
         ),
       }))
       .filter((e) => e.flags.length);
+    // Re-rank after the local wrong-bin filter: the server already
+    // orders biggest-problem-first, but ignoring a wrong-bin warning
+    // can demote an entry to count-mismatch-only, which belongs at the
+    // bottom (Nick, 2026-08-26).
+    checkEntries.sort((a, b) => entryRank(b) - entryRank(a));
     if (showAll) {
       // "Review all products": every scanned product, flagged or not, so
       // label names/SKUs can be edited before printing.
@@ -5617,9 +5648,24 @@ function renderCheckList() {
       const flags = document.createElement("div");
       flags.className = "bcell__meta bcell__flags";
       const sh = entry.shelf;
+      // bad-chars names its broken field(s) when the server could tell.
+      const flagText = (f) => {
+        if (f === "bad-chars" && entry.bad_chars) {
+          const parts = [];
+          if (entry.bad_chars.sku) parts.push("SKU");
+          if (entry.bad_chars.barcode) parts.push("barcode");
+          if (parts.length)
+            return (
+              `the ${parts.join(" and ")} ` +
+              `${parts.length > 1 ? "have" : "has"} a broken special ` +
+              `character - records can't match until it's fixed`
+            );
+        }
+        return FLAG_TEXT[f] || f;
+      };
       flags.textContent =
         "⚠ " +
-        entry.flags.map((f) => FLAG_TEXT[f] || f).join(" · ") +
+        entry.flags.map(flagText).join(" · ") +
         (sh && sh.on_file
           ? ` — sweep heard ${sh.heard} of ${sh.on_file} on file, expected ${sh.expected}` +
             (sh.presumed_sold ? ` (${sh.presumed_sold} presumed sold)` : "") +
@@ -5710,8 +5756,34 @@ function renderBitem() {
   const identWrap = document.getElementById("bitem-identwrap");
   identWrap.hidden = !it.resolved;
   if (it.resolved) {
-    document.getElementById("bitem-identwarn").hidden =
-      !bitemEntry.flags.includes("bad-chars");
+    const identWarn = document.getElementById("bitem-identwarn");
+    identWarn.hidden = !bitemEntry.flags.includes("bad-chars");
+    // Name WHICH field broke and SHOW the character, bracketed - the
+    // live Shopify value carries the real one (Nick, 2026-08-26: a
+    // bare "shows as ?" left the operator guessing).
+    const bc = bitemEntry.bad_chars;
+    const warnSpan = identWarn.querySelector("span");
+    if (bc && (bc.sku || bc.barcode) && warnSpan) {
+      const lines = [];
+      if (bc.sku)
+        lines.push(
+          `⚠ The SKU contains a character the database can't store: ` +
+            `${bc.sku}. Recommend updating the SKU.`
+        );
+      if (bc.barcode)
+        lines.push(
+          `⚠ The barcode contains a character the database can't store: ` +
+            `${bc.barcode}. Recommend updating the barcode.`
+        );
+      warnSpan.textContent =
+        lines.join(" ") + " Fix it below; the change writes to Shopify.";
+    } else if (warnSpan) {
+      // Reset: the element is shared across opens.
+      warnSpan.innerHTML =
+        "⚠ The SKU or barcode contains a character the database can't " +
+        "store (it shows as <b>?</b>) — records won't match until it's " +
+        "replaced. Fix it below; the change writes to Shopify.";
+    }
     const skuIn = document.getElementById("bitem-sku");
     const bcIn = document.getElementById("bitem-bc");
     skuIn.value = it.sku || "";
@@ -9059,6 +9131,14 @@ function openResolveWindow(t) {
         <span class="rvw-recount__label" id="rvw-recount-label">Manually set the counted number</span>
         <span class="rvw-recount__pm" id="rvw-plus">+</span>
       </button>`;
+  } else if (t.category === "tag-onhand-mismatch") {
+    // The sold-out shortcut (Nick, 2026-08-26): when the LIVE on-hand
+    // is 0, every remaining box has sold - the context loader offers
+    // one click that retires all tags presumed-sold and resolves this.
+    middle = `
+      <div class="recent__meta" id="rvw-liveline" style="margin-bottom:8px">Checking the live numbers…</div>
+      <div id="rvw-actions"></div>
+      <button class="reset rvw-wide" id="rvw-station" type="button">Open at the Scan Station</button>`;
   } else if (t.category === "pairing-incomplete") {
     middle = `
       <div class="recent__meta" id="rvw-liveline" style="margin-bottom:8px">Checking the live pairing state…</div>
@@ -9435,6 +9515,52 @@ async function loadResolveContext(t, counted) {
         line.textContent = `Live on-hand is ${live} — still above the count. Lowering a number stays a Shopify-admin job (nothing here writes down), so recount or resolve with a note.`;
       } else {
         line.textContent = "Live on-hand unavailable right now.";
+      }
+    } else if (t.category === "tag-onhand-mismatch") {
+      const live = ctx.live_on_hand;
+      const units = ctx.units_on_file;
+      if (live == null) {
+        line.textContent = "Live on-hand unavailable right now.";
+      } else {
+        line.textContent = `Shopify on-hand is now ${live} · RFID tags stand for ${units ?? "?"} unit(s).`;
+        if (live === 0 && (units ?? 0) > 0) {
+          const actions = document.getElementById("rvw-actions");
+          actions.innerHTML = `
+            <button class="reset rvw-wide rvw-choice rvw-choice--amber" id="rvw-allsold" type="button">
+              Mark all ${ctx.tag_count} tag(s) presumed sold
+              <span class="rvw-choice__sub">Shopify says 0 on hand - every remaining box has sold. Retires the tags (restorable from History) and resolves this task.</span>
+            </button>`;
+          document.getElementById("rvw-allsold").addEventListener("click", async () => {
+            const operator = operatorEl.value;
+            if (!operator) {
+              alert("Pick who's scanning (top right) first.");
+              return;
+            }
+            if (
+              !confirm(
+                `Mark all ${ctx.tag_count} tag(s) (${units} unit(s)) of ${t.sku} presumed sold?\n\n` +
+                  `Shopify on-hand is 0, so no boxes are expected on the shelf. ` +
+                  `The tags retire (each restorable from History) and this task resolves. ` +
+                  `Shopify is not touched.`
+              )
+            )
+              return;
+            const allSold = document.getElementById("rvw-allsold");
+            allSold.disabled = true;
+            try {
+              await postJson(`/api/review-tasks/${t.id}/retire-all-sold`, {
+                changed_by: operator,
+                confirmed: true,
+              });
+              reviewTasks = reviewTasks.filter((x) => x.id !== t.id);
+              closeResolveWindow();
+              renderReview();
+            } catch (err) {
+              allSold.disabled = false;
+              alert(err.message);
+            }
+          });
+        }
       }
     } else if (t.category === "pairing-incomplete") {
       if (ctx.paired_count != null && ctx.labels_total != null) {
@@ -11485,9 +11611,26 @@ async function openProductHistory(term) {
           : `Marked as a multi-box product${who}${when} — one label per box.`;
     }
     document.getElementById("phist-print").disabled = !p;
-    document.getElementById("phist-title").textContent = p
+    // The title links to the product's Shopify admin page (Nick,
+    // 2026-08-26) - every preview across the tabs opens through this
+    // parent window, so they all get it.
+    const titleEl = document.getElementById("phist-title");
+    const titleText = p
       ? p.product_title + (p.variant_title ? ` (${p.variant_title})` : "")
       : `(not in the catalog) ${term}`;
+    if (p && p.admin_url) {
+      titleEl.innerHTML = "";
+      const a = document.createElement("a");
+      a.href = p.admin_url;
+      a.target = "_blank";
+      a.rel = "noopener";
+      a.className = "phist-titlelink";
+      a.title = "Open this product in Shopify admin";
+      a.textContent = titleText;
+      titleEl.append(a);
+    } else {
+      titleEl.textContent = titleText;
+    }
     document.getElementById("phist-meta").textContent =
       `SKU: ${data.sku || "—"} · Barcode: ${data.barcode || "—"}` +
       (p ? ` · Bin: ${p.bin_location || "—"}` : "") +
@@ -12408,7 +12551,41 @@ async function undoHistoryEvent(e, btn) {
   }
   // Retired tags: undo moves the record straight back from the retired
   // table to the active one (a return, a mis-click, a sweep that lied).
+  // Grouped events (a sweep cleanup, the sold-out button) restore the
+  // whole set in one call; re-used EPCs are skipped server-side.
   if (e.undo.kind === "tag-retired") {
+    const operator = operatorEl.value;
+    if (!operator) {
+      alert("Pick who's scanning (top right) first.");
+      return;
+    }
+    const epcs = e.undo.epcs || [e.undo.epc];
+    if (
+      !confirm(
+        (epcs.length === 1
+          ? `Restore tag ${epcs[0]}?`
+          : `Restore all ${epcs.length} retired tags?`) +
+          `\n\n${e.sku || ""} - the record${epcs.length === 1 ? " moves" : "s move"} ` +
+          `back to the active tags, exactly as before retirement.`
+      )
+    )
+      return;
+    btn.disabled = true;
+    try {
+      await postJson("/api/assignments/unretire", {
+        epcs,
+        changed_by: operator,
+      });
+      await loadHistory();
+    } catch (err) {
+      btn.disabled = false;
+      alert(err.message);
+    }
+    return;
+  }
+  // Backorder notes: "undo" clears the note by hand — the expected
+  // count drops back and the daily check may flag the SKU again.
+  if (e.undo.kind === "backorder-debt") {
     const operator = operatorEl.value;
     if (!operator) {
       alert("Pick who's scanning (top right) first.");
@@ -12416,15 +12593,15 @@ async function undoHistoryEvent(e, btn) {
     }
     if (
       !confirm(
-        `Restore tag ${e.undo.epc}?\n\n${e.sku || ""} — the record moves ` +
-          `back to the active tags, exactly as before it was retired.`
+        `Clear this backorder note?\n\n${e.sku || ""} - the expected tag ` +
+          `count drops by ${e.undo.units} unit(s), and the Tags vs ` +
+          `On-hand check may flag this product again.`
       )
     )
       return;
     btn.disabled = true;
     try {
-      await postJson("/api/assignments/unretire", {
-        epcs: [e.undo.epc],
+      await postJson(`/api/backorder-debts/${e.undo.debt_id}/clear`, {
         changed_by: operator,
       });
       await loadHistory();
