@@ -456,8 +456,8 @@ def main() -> None:
     if not args.no_backfeed_fix and not args.dry_run:
         try:
             print_label(BACKFEED_BEFORE_ZPL)
-            print("  ~JSB sent: backfeed happens BEFORE each print, so "
-                  "tear-bar pull re-registers itself - no wasted labels.")
+            print("  ~JSB sent (backfeed-before-print; field verdict: "
+                  "does NOT fix tear drift - ~PH re-align does).")
         except Exception as error:  # noqa: BLE001 — printing still works
             print(f"! could not send the backfeed setting: {error}")
 

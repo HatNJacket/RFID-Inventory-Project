@@ -188,9 +188,12 @@ Three of Nick's field reports in one round:
   re-registers). Agent v3 (running): optional --realign-after-idle MIN
   feeds once at the first burst after MIN minutes idle (1 blank label
   per fresh session instead of 2 misprints + 1 blank after a hard
-  rip) - OFF by default per Nick's no-waste rule, flag lives in
-  print_agent_loop.cmd when wanted. Agent logging is line-buffered now
-  so the log file is finally live.
+  rip). **ON since 2026-08-26 evening at 0.5 min** (Nick: the
+  2-bad-1-blank pattern kept costing more than the blank; flag lives
+  in print_agent_loop.cmd, agent restarted with it). Expect exactly
+  one blank at the start of any run after 30+ quiet seconds - that
+  blank IS the re-align. Agent logging is line-buffered now so the log
+  file is finally live.
 
 ## 🖨 Print step stays put during a live run — ✅ DEPLOYED 2026-08-26
 
