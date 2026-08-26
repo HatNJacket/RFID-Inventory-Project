@@ -1549,16 +1549,25 @@ def list_printers(session: Session = Depends(get_session)):
 
 
 def _touch_printer(session: Session, name: str, kind: str | None) -> None:
-    """Upsert the claiming agent's printer row (detection + liveness)."""
+    """Upsert the claiming agent's printer row (detection + liveness).
+
+    Throttled (2026-08-26): the agent claims every ~3s around the clock,
+    and stamping last_seen on every poll meant a write transaction
+    every 3 seconds against a 5-DTU database - a real slice of the DTU
+    saturation that made the C72 crawl. Liveness reads a 120s window
+    (PRINTER_ONLINE_SECONDS), so refreshing the stamp every 45s loses
+    nothing."""
     row = session.scalars(
         select(Printer).where(Printer.name == name)
     ).first()
     if row is None:
         row = Printer(name=name)
         session.add(row)
-    if kind:
+    if kind and row.kind != kind[:100]:
         row.kind = kind[:100]
-    row.last_seen = datetime.utcnow()
+    now = datetime.utcnow()
+    if row.last_seen is None or (now - row.last_seen).total_seconds() > 45:
+        row.last_seen = now
 
 
 @app.post("/api/print-jobs/claim", dependencies=[Depends(require_agent_key)])

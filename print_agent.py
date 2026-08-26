@@ -39,7 +39,7 @@ import requests
 
 # Reported to the app on every command poll; the web terminal's Queue
 # tab shows it and marks re-align capability. Bump on behavior changes.
-AGENT_VERSION = "2"
+AGENT_VERSION = "3"
 
 # ---------------------------------------------------------------------------
 # Label geometry. Defaults match the warehouse RFID stickers (measured
@@ -96,13 +96,14 @@ FEED_ZPL = "~PH\n"
 # Backfeed BEFORE printing (Nick, 2026-08-25): ripping labels at the
 # tear bar drags the liner forward a random amount, and with the default
 # backfeed-after sequence the next two labels print off-center before
-# the printer finds itself. ~JSB moves the re-registration to PRINT
-# time: before each format the printer backfeeds and re-registers on the
-# gap sensor, so tear-bar pull is absorbed with NO wasted labels - a
-# clean rip costs nothing, a hard rip self-corrects. Sent once at
-# startup (it does not survive a printer power cycle, and writing the
-# printer's saved config unasked would be rude); --no-backfeed-fix
-# restores the old behavior if the printer dislikes it.
+# the printer finds itself. ~JSB moves the backfeed to PRINT time.
+# FIELD VERDICT (Nick, 2026-08-26): it does NOT fix tear drift - the
+# backfeed is a fixed, dead-reckoned distance, not a sensor seek, so a
+# dragged liner stays dragged and the 2-bad-1-blank pattern survives.
+# Still sent (harmless, keeps tear-off behavior consistent), but the
+# real remedy is a ~PH feed, which DOES re-register on the gap sensor
+# at the cost of one label: the manual Queue-tab button, or
+# --realign-after-idle below.
 BACKFEED_BEFORE_ZPL = "~JSB\n"
 
 # Alignment test: a border box + corner ticks, no job needed. If the box
@@ -385,6 +386,16 @@ def build_parser() -> argparse.ArgumentParser:
              "default the agent sets it so tear-bar pull self-corrects "
              "at print time without wasting labels.",
     )
+    parser.add_argument(
+        "--realign-after-idle", type=float, default=0, metavar="MIN",
+        help="When the first print burst after MIN minutes of idle "
+             "starts, feed to the next label's home first (~PH, gap-"
+             "sensor re-registration). Rips happen when the finished "
+             "strip is torn off, so the burst after a quiet stretch is "
+             "exactly the one that would print off-center. Costs ONE "
+             "blank label per idle start - even when the rip was clean "
+             "- which is why it is OFF by default (0).",
+    )
     parser.add_argument("--shift-down", type=int, default=SHIFT_DOWN_DOTS,
                         help="Move the whole image down N dots (203/inch; "
                              "default %(default)s)")
@@ -395,6 +406,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    # The loop wrapper redirects stdout to a log file; without line
+    # buffering nothing lands in it until 8KB accumulates, which made
+    # the log useless for live diagnosis (2026-08-26).
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:  # noqa: BLE001 - logging is best-effort
+        pass
     parser = build_parser()
     args = parser.parse_args()
 
@@ -443,6 +461,11 @@ def main() -> None:
         except Exception as error:  # noqa: BLE001 — printing still works
             print(f"! could not send the backfeed setting: {error}")
 
+    # When THIS agent last physically printed a label - drives the
+    # idle re-align. None = nothing printed since startup, and overnight
+    # counts as idle (the finished strip was torn off yesterday).
+    last_print_at = None
+
     while True:
         # Commands BEFORE jobs: a queued re-align must land ahead of the
         # labels it is meant to straighten.
@@ -476,6 +499,22 @@ def main() -> None:
             except Exception:  # noqa: BLE001 — jobs still get their shot
                 pass
 
+        # First burst after a quiet stretch: the finished strip was
+        # likely torn off in between, and a hard rip drags the liner -
+        # feed to the next label's home (gap-sensor re-registration)
+        # before printing anything. One blank label instead of two
+        # misprints plus a blank. Opt-in via --realign-after-idle.
+        if jobs and args.realign_after_idle > 0 and not args.dry_run:
+            idle = (time.time() - last_print_at) if last_print_at else None
+            if idle is None or idle >= args.realign_after_idle * 60:
+                try:
+                    print_label(FEED_ZPL)
+                    print("  idle re-align: fed to the next label's home "
+                          + ("(first burst since startup)" if idle is None
+                             else f"({idle / 60:.0f} min idle)"))
+                except Exception as error:  # noqa: BLE001
+                    print(f"! idle re-align failed: {error}")
+
         for job in jobs:
             label = f"job {job['id']} ({job.get('sku') or job.get('barcode')})"
             try:
@@ -484,6 +523,7 @@ def main() -> None:
                     args.shift_down, args.shift_right,
                 ))
                 client.complete(job["id"], create_assignment=encode_rfid)
+                last_print_at = time.time()
                 print(f"  printed {label}" + (
                     f" -> EPC {job['epc']}" if encode_rfid
                     else " (barcode only — scan tag to link)"

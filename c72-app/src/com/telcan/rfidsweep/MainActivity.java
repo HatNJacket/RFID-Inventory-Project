@@ -340,6 +340,13 @@ public class MainActivity extends Activity {
         // Tags for this product already in the system from BEFORE this
         // batch (side trip, earlier session): triggers the first-scan ask.
         int priorTags;
+        // Labels actually PRINTED for this product in this batch - the
+        // pair auto-advance target (Nick, 2026-08-26). 0 = none/unknown.
+        int printed;
+        // When this product was first physically scanned - the walking
+        // order, which is also the order its labels printed. ISO string;
+        // string comparison sorts it correctly.
+        String firstScanned;
 
         static BItem from(JSONObject o) {
             BItem b = new BItem();
@@ -376,6 +383,9 @@ public class MainActivity extends Activity {
             b.noScan = o.optBoolean("rfid_incompatible", false);
             b.taggedBefore = o.optInt("tagged_before", 0);
             b.priorTags = o.optInt("prior_tags", 0);
+            b.printed = o.optInt("printed_count", 0);
+            b.firstScanned = o.isNull("first_scanned_at") ? null
+                    : o.optString("first_scanned_at");
             return b;
         }
 
@@ -426,6 +436,18 @@ public class MainActivity extends Activity {
     private BItem previewItem = null;   // last scanned / pair target
     private BItem pairActive = null;
     private final ArrayDeque<String[]> pairHistory = new ArrayDeque<>();
+
+    // Auto-advance pairing (Settings toggle "pair_auto_next", Nick
+    // 2026-08-26): when a product's paired count reaches its printed-
+    // label count, selection hops to the neighboring product in PRINT
+    // order (the order the label stack came off the printer), so the
+    // operator works straight up or down the strip without scanning a
+    // barcode per product. Which END of the stack they started from is
+    // inferred from the first completions and then LOCKED - the check
+    // only runs until the system is sure.
+    private int pairDir = 0;           // 0 unknown, +1 with print order, -1 against
+    private int pairDirEvidence = 0;   // consistent signals; locked at 2
+    private int pairLastDoneIdx = -1;  // print-order index of the last completion
 
     // check-item editor state
     private CheckEntry editEntry = null;
@@ -7763,6 +7785,10 @@ public class MainActivity extends Activity {
     private void loadScanOrder() {
         scanOrder.clear();
         scanSeq = 0;
+        // Fresh batch, fresh auto-advance story: direction re-infers.
+        pairDir = 0;
+        pairDirEvidence = 0;
+        pairLastDoneIdx = -1;
         try {
             JSONObject saved = new JSONObject(
                     prefs.getString("scan_order_json", "{}"));
@@ -8687,6 +8713,14 @@ public class MainActivity extends Activity {
                     tagReadBusy = false;
                     BItem existing = itemById(item.id);
                     if (existing != null) {
+                        // The pair response's item snapshot lacks the
+                        // printed-label count and walking stamp (only the
+                        // full batch payload carries them) - keep the
+                        // known values so auto-advance stays informed.
+                        if (item.printed == 0) item.printed = existing.printed;
+                        if (item.firstScanned == null) {
+                            item.firstScanned = existing.firstScanned;
+                        }
                         bItems.set(bItems.indexOf(existing), item);
                         if (pairActive == existing) pairActive = item;
                         if (previewItem == existing) previewItem = item;
@@ -8702,6 +8736,7 @@ public class MainActivity extends Activity {
                             + " tags)" + pickNote(read));
                     updateBatchCard();
                     refreshBatchList();
+                    maybeAutoAdvance(item);
                 });
             } catch (Exception e) {
                 ui.post(() -> {
@@ -8711,6 +8746,102 @@ public class MainActivity extends Activity {
                 });
             }
         }).start();
+    }
+
+    // ------------------------------------------ pair auto-advance ---------
+    // Products in PRINT order: the operator's walking order (which is
+    // exactly the order labels queued), never-stamped rows last.
+    private List<BItem> printOrderItems() {
+        List<BItem> out = new ArrayList<>();
+        for (BItem b : bItems) {
+            if (b.resolved && !b.skipped
+                    && (b.printed > 0 || b.labelsTotal > 0)) {
+                out.add(b);
+            }
+        }
+        java.util.Collections.sort(out, (a, b2) -> {
+            String fa = a.firstScanned, fb = b2.firstScanned;
+            if (fa == null && fb == null) return a.id - b2.id;
+            if (fa == null) return 1;
+            if (fb == null) return -1;
+            int c = fa.compareTo(fb);
+            return c != 0 ? c : a.id - b2.id;
+        });
+        return out;
+    }
+
+    /** The auto-advance target: labels actually printed, falling back to
+     *  labels owed when the printed count isn't on hand. */
+    private int pairTarget(BItem b) {
+        return b.printed > 0 ? b.printed : b.labelsTotal;
+    }
+
+    /** After a successful pair: when the product just reached EXACTLY its
+     *  printed-label count, hop the selection to the neighboring product
+     *  in print order (Nick, 2026-08-26). Direction is inferred from the
+     *  first completions - start at the top of the label stack and it
+     *  walks down, start at the bottom and it walks up - and locks once
+     *  two signals agree. Over-pairing never advances (that's an error
+     *  the red row should hold attention on). */
+    private void maybeAutoAdvance(BItem it) {
+        if (!prefs.getBoolean("pair_auto_next", false)) return;
+        if (!inBatch() || step != STEP_PAIR || it == null) return;
+        int target = pairTarget(it);
+        if (target <= 0 || it.paired != target) return;
+        List<BItem> order = printOrderItems();
+        int p = -1;
+        for (int i = 0; i < order.size(); i++) {
+            if (order.get(i).id == it.id) { p = i; break; }
+        }
+        if (p < 0) return;
+        // Direction check - only until the system is sure (2 consistent
+        // signals lock it; a lone jump the other way after that never
+        // flips the walk).
+        if (pairDirEvidence < 2) {
+            int guess = 0;
+            if (pairLastDoneIdx >= 0 && p != pairLastDoneIdx) {
+                guess = p > pairLastDoneIdx ? 1 : -1;
+            } else if (p == 0) {
+                guess = 1;   // completed the FIRST label printed - top-down
+            } else if (p == order.size() - 1) {
+                guess = -1;  // completed the LAST - bottom-up
+            }
+            if (guess != 0) {
+                if (pairDirEvidence > 0 && guess == pairDir) {
+                    pairDirEvidence++;
+                } else {
+                    pairDir = guess;
+                    pairDirEvidence = 1;
+                }
+            }
+        }
+        pairLastDoneIdx = p;
+        int dir = pairDir != 0 ? pairDir : 1;
+        BItem next = nextNeedingTags(order, p, dir);
+        if (next == null) next = nextNeedingTags(order, p, -dir);
+        if (next == null) {
+            beep(SOUND_OTHER);
+            status.setText("✓ " + it.name() + " done (" + it.paired + "/"
+                    + target + ") — every printed label is paired.");
+            return;
+        }
+        pairActive = next;
+        previewItem = next;
+        beep(SOUND_OTHER);
+        status.setText("✓ " + it.name() + " done — next up: "
+                + next.name() + " (" + next.paired + "/"
+                + pairTarget(next) + "). Trigger on its stickers.");
+        updateBatchCard();
+        refreshBatchList();
+    }
+
+    private BItem nextNeedingTags(List<BItem> order, int from, int dir) {
+        for (int i = from + dir; i >= 0 && i < order.size(); i += dir) {
+            BItem b = order.get(i);
+            int t = pairTarget(b);
+            if (t > 0 && b.paired < t) return b;
+        }
+        return null;
     }
 
     // Queue the batch's label run straight from the shelf — one label per
@@ -8819,6 +8950,9 @@ public class MainActivity extends Activity {
         pairActive = null;
         previewItem = null;
         pairHistory.clear();
+        pairDir = 0;
+        pairDirEvidence = 0;
+        pairLastDoneIdx = -1;
         step = STEP_COLLECT;
         checkEntries.clear();
         checkFlagText.clear();
@@ -10810,6 +10944,17 @@ public class MainActivity extends Activity {
                 "Listens ~600 ms and pairs the strongest answer. "
                 + "Off: the first tag heard wins.", swStrong));
 
+        box.addView(sectionLabel("BATCH TAGGING"));
+        final Switch swPairNext =
+                mkToggle(prefs.getBoolean("pair_auto_next", false));
+        box.addView(toggleRow("Auto-advance pairing",
+                "When a product's paired tags hit its printed-label "
+                + "count, selection hops to the next product in PRINT "
+                + "order — work the label stack top-down or bottom-up "
+                + "without scanning each barcode. Which way you're "
+                + "going is learned from your first products, then "
+                + "locked.", swPairNext));
+
         // Trigger pulls card — hold-to-sweep lives one tap deeper, like
         // Connection, so the everyday screen stays short.
         LinearLayout trig = new LinearLayout(this);
@@ -10990,6 +11135,8 @@ public class MainActivity extends Activity {
                 .setPositiveButton("Save", (d, w) -> {
                     prefs.edit()
                             .putBoolean("strongest_read", swStrong.isChecked())
+                            .putBoolean("pair_auto_next",
+                                    swPairNext.isChecked())
                             .putBoolean("auto_default", swAutoDef.isChecked())
                             .putBoolean("tab_station", swStation.isChecked())
                             .putBoolean("tab_sweep", swSweep.isChecked())

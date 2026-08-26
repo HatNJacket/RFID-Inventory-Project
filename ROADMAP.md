@@ -3,6 +3,39 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-08-25.
 
+## 🔫 C72 3.60: pair auto-advance + slowness + printer verdict (2026-08-26, afternoon)
+
+Three of Nick's field reports in one round:
+
+- **Pair auto-advance (C72 3.60, code 78, setting OFF by default)**:
+  Settings > Batch tagging > "Auto-advance pairing". When a product's
+  paired count reaches EXACTLY its printed-label count, selection hops
+  to the neighboring product in PRINT order (the label-stack order:
+  first_scanned_at, now included in the batch item payload; the pair
+  response's item merge preserves printed_count). Direction (top-down
+  vs bottom-up through the stack) is inferred - first/last-position
+  completions and completion-to-completion movement are the signals -
+  and LOCKS after 2 consistent ones, per Nick's "only check until
+  sure". Over-pairing never advances (red rows should hold attention);
+  when nothing is left, it says every printed label is paired.
+- **C72 slowness = the DATABASE, not the gun**: TELCAN runs on Basic
+  (5 DTU) and pegged 100% DTU 8:30-11:00 while Nick worked - request
+  maxima hit 240s; every 1-row UPDATE (qty +1, scan deletes) queued
+  behind the throttle. Trimmed the constant write load (_touch_printer
+  now refreshes last_seen at most every 45s instead of on every 3s
+  agent claim; liveness window is 120s so nothing changes visibly).
+  REAL fix = tier bump, WAITING ON NICK/STEVE (monthly cost):
+  `az sql db update -g shopify-automation-rg -s telcansql -n TELCAN --service-objective S0`
+  (10 DTU, ~$15 USD/mo; S1 = 20 DTU ~$30/mo). Basic is ~$5/mo.
+- **Printer rip-drift verdict**: ~JSB does NOT fix tear drift (field-
+  confirmed; backfeed is dead-reckoned, only a ~PH gap-sensor feed
+  re-registers). Agent v3 (running): optional --realign-after-idle MIN
+  feeds once at the first burst after MIN minutes idle (1 blank label
+  per fresh session instead of 2 misprints + 1 blank after a hard
+  rip) - OFF by default per Nick's no-waste rule, flag lives in
+  print_agent_loop.cmd when wanted. Agent logging is line-buffered now
+  so the log file is finally live.
+
 ## 🖨 Print step stays put during a live run — ✅ DEPLOYED 2026-08-26
 
 Nick: the web Print step jumped to Pair after the first burst of 5

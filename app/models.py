@@ -741,6 +741,13 @@ class BatchItem(Base):
             "skipped": self.skipped,
             "skip_reason": self.skip_reason,
             "listing_locked": self.listing_locked,
+            # The operator's walking order - also the PRINT order (labels
+            # queue by it), which the C72's pair auto-advance walks
+            # (Nick, 2026-08-26).
+            "first_scanned_at": (
+                self.first_scanned_at.isoformat()
+                if self.first_scanned_at else None
+            ),
             # Precomputed so every client shows the same two numbers rather
             # than each reinventing the arithmetic. Baseline-tagged boxes
             # are units on the shelf (so old C72 builds show the combined
