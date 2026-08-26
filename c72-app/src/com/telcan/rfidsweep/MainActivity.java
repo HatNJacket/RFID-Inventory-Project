@@ -762,6 +762,7 @@ public class MainActivity extends Activity {
         // job is feeding the web terminal (Nick, 2026-08-18).
         selectTab(TAB_LINK);
         initReader();
+        myTickGen = ++tickGen; // retire any loop a recreated activity left
         ui.postDelayed(this::refreshTick, 400);
         // One batch of sensor lines per launch — tells the desk whether
         // this gun has a real gyro (drives the radar engine choice).
@@ -10654,7 +10655,19 @@ public class MainActivity extends Activity {
     }
 
     // -------------------------------------------------------------- UI ------
+    // The 400 ms loop must NOT survive activity recreation (theme
+    // toggle, remote recreate, config change): each onCreate posts a
+    // fresh loop and the orphaned one used to keep running forever.
+    // Enough recreations stacked into a poll storm - 2026-08-26 the
+    // gun was hitting the tuning/command endpoints ~85x per second,
+    // which alone pegged the shared database at 100% DTU. The static
+    // generation ticks up per onCreate; a loop whose generation is
+    // stale dies quietly on its next tick.
+    private static int tickGen = 0;
+    private int myTickGen;
+
     private void refreshTick() {
+        if (myTickGen != tickGen) return; // orphaned loop - stop here
         if (listDirty) {
             listDirty = false;
             if (activeTab == TAB_SWEEP) refreshSweepList();
