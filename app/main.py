@@ -583,10 +583,15 @@ def _product_lookup(barcode: str):
     #    mangled and still holds that way.
     # Each fires only when the term actually contains such characters and
     # re-enters the FULL chain (aliases included); the changed-term guard
-    # makes recursion terminate (both folds are idempotent).
+    # makes recursion terminate (all folds are idempotent).
+    # 3) '+' -> ' ' (2026-08-26): C72 builds before 3.63 form-encoded URL
+    #    path segments, so the gun asked for "ZWO+D25AR" when the operator
+    #    typed "ZWO D25AR". LAST in the chain on purpose - real SKUs
+    #    contain '+' ("22451+81037+93575") and must win untouched first.
     for fixed in dict.fromkeys((
         unicodedata.normalize("NFKC", barcode),
         re.sub(r"[^\x00-\x7e]", "?", barcode),
+        barcode.replace("+", " "),
     )):
         if fixed == barcode or not fixed.strip():
             continue

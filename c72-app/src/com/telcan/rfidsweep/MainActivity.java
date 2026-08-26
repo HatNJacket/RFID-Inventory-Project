@@ -1044,7 +1044,7 @@ public class MainActivity extends Activity {
             }
             try {
                 JSONObject info = api("GET", "/api/tag-info/"
-                        + URLEncoder.encode(epc, "UTF-8"), null);
+                        + encPath(epc), null);
                 ui.post(() -> {
                     tagReadBusy = false;
                     beep(SOUND_OK);
@@ -1187,7 +1187,7 @@ public class MainActivity extends Activity {
                 .setPositiveButton("UNLINK", (d, w) -> new Thread(() -> {
                     try {
                         api("DELETE", "/api/rfid-assignments/"
-                                + URLEncoder.encode(epc, "UTF-8")
+                                + encPath(epc)
                                 + "?by=" + URLEncoder.encode(
                                         prefs.getString("device", "C72"),
                                         "UTF-8"), null);
@@ -1285,7 +1285,7 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             try {
                 JSONObject p = api("GET", "/api/products/by-barcode/"
-                        + URLEncoder.encode(code, "UTF-8"), null);
+                        + encPath(code), null);
                 final String bin = p.optString("bin_location", "");
                 final String title = p.optString("product_title", "(unknown)");
                 final String variant = p.isNull("variant_title") ? ""
@@ -1336,7 +1336,7 @@ public class MainActivity extends Activity {
                 JSONObject c = null;
                 try {
                     c = api("GET", "/api/cases/"
-                            + URLEncoder.encode(code, "UTF-8"), null);
+                            + encPath(code), null);
                 } catch (Exception ignored) {
                     // genuinely unknown; fall through to the error below
                 }
@@ -2387,7 +2387,7 @@ public class MainActivity extends Activity {
                 JSONObject product = null;
                 try {
                     product = api("GET", "/api/products/by-barcode/"
-                            + URLEncoder.encode(code, "UTF-8"), null);
+                            + encPath(code), null);
                 } catch (Exception ignored) {
                     // Not in the catalog under that code — the tags call
                     // below still matches raw SKU/barcode on tags.
@@ -3930,7 +3930,7 @@ public class MainActivity extends Activity {
                         .put("placement", mode)
                         .put("updated_by", prefs.getString("device", "C72"));
                 api("PUT", "/api/label-names/"
-                        + URLEncoder.encode(sku, "UTF-8"), body);
+                        + encPath(sku), body);
                 ui.post(() -> editMsg.setText(name.isEmpty()
                         ? "Cleared ✓ — standard label."
                         : "Saved ✓ — prints as the "
@@ -4221,7 +4221,7 @@ public class MainActivity extends Activity {
             try {
                 JSONObject body = new JSONObject().put("label_name", name);
                 api("PUT", "/api/serial-prefixes/"
-                        + URLEncoder.encode(prefix, "UTF-8") + "/label",
+                        + encPath(prefix) + "/label",
                         body);
                 ui.post(() -> editMsg.setText("Name confirmed ✓"));
             } catch (Exception e) {
@@ -5179,6 +5179,19 @@ public class MainActivity extends Activity {
     }
 
     // -------------------------------------------------------------- HTTP ----
+    /** Percent-encoding for URL PATH segments. URLEncoder is a FORM
+     *  encoder: it writes spaces as '+', which a path segment reads back
+     *  as a literal plus - so looking up the SKU "ZWO D25AR" asked the
+     *  server for "ZWO+D25AR" and found nothing (Nick, 2026-08-26).
+     *  %20 is what a path needs; query-string values keep URLEncoder. */
+    private static String encPath(String s) {
+        try {
+            return URLEncoder.encode(s, "UTF-8").replace("+", "%20");
+        } catch (Exception e) {
+            return s;
+        }
+    }
+
     private JSONObject api(String method, String path, JSONObject body)
             throws Exception {
         String server = prefs.getString("server", DEFAULT_SERVER)
@@ -8079,7 +8092,7 @@ public class MainActivity extends Activity {
                 }
                 try {
                     JSONObject check = api("POST", "/api/bins/"
-                            + URLEncoder.encode(batchBin, "UTF-8")
+                            + encPath(batchBin)
                             + "/check",
                             new JSONObject()
                                     .put("epcs", new JSONArray(heard))
@@ -8589,7 +8602,7 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             try {
                 JSONObject r = api("GET", "/api/planner/on-order/"
-                        + URLEncoder.encode(item.sku, "UTF-8")
+                        + encPath(item.sku)
                         + "?operator=" + URLEncoder.encode(
                                 prefs.getString("device", "C72"), "UTF-8"),
                         null);
@@ -9198,7 +9211,7 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             try {
                 JSONObject resp = api("GET", "/api/bins/"
-                        + URLEncoder.encode(batchBin, "UTF-8")
+                        + encPath(batchBin)
                         + "/odd-barcodes?scanned="
                         + URLEncoder.encode(scanned, "UTF-8"), null);
                 final List<JSONObject> found = new ArrayList<>();
@@ -9388,7 +9401,7 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             try {
                 JSONObject p = api("GET", "/api/products/by-barcode/"
-                        + URLEncoder.encode(target, "UTF-8"), null);
+                        + encPath(target), null);
                 final String title = p.optString("product_title", "?");
                 final String sku = p.isNull("sku") ? target
                         : p.optString("sku");
@@ -9537,7 +9550,7 @@ public class MainActivity extends Activity {
                             .put("changed_by",
                                     prefs.getString("device", "C72"));
                     api("PUT", "/api/products/"
-                            + URLEncoder.encode(it.sku, "UTF-8")
+                            + encPath(it.sku)
                             + "/rfid-incompatible", body);
                     ui.post(() -> {
                         beep(SOUND_OK);
@@ -9894,7 +9907,7 @@ public class MainActivity extends Activity {
                         .put("flagged_by", prefs.getString("device", "C72"));
                 if (note != null && !note.isEmpty()) body.put("note", note);
                 api("PUT", "/api/bins/"
-                        + URLEncoder.encode(bin, "UTF-8") + "/flagged", body);
+                        + encPath(bin) + "/flagged", body);
                 ui.post(() -> {
                     beep(SOUND_OK);
                     status.setText(flagged
@@ -10556,7 +10569,7 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             try {
                 api("DELETE", "/api/rfid-assignments/"
-                        + URLEncoder.encode(last, "UTF-8"), null);
+                        + encPath(last), null);
                 ui.post(() -> {
                     stationHistory.poll();
                     stationTags = Math.max(0, stationTags - 1);

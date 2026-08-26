@@ -3,6 +3,20 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-08-25.
 
+## 🔤 Spaced SKUs from the gun: form-encoded paths — ✅ FIXED 2026-08-26 (C72 3.63)
+
+Nick's ZWO D25AR: typing the SKU into the gun's "LINK TO A PRODUCT"
+found nothing, though Shopify has it. Java's URLEncoder is a FORM
+encoder - spaces become '+', which a URL PATH segment reads back as a
+literal plus - so the gun asked for "ZWO+D25AR". Space-free barcodes
+never trip it. C72 3.63 (code 81): new encPath() (%20) used at all 14
+path-segment call sites (by-barcode, tag-info, cases, label-names,
+serial-prefixes, planner/on-order, products/{sku}, bins/{bin},
+rfid-assignments); query-string values keep form encoding (correct
+there). Server safety net for older builds: the lookup rescue chain
+gained a LAST-resort '+' -> space fold - real plus-bearing SKUs
+("22451+81037+93575") always win untouched first. test_charfix 16.
+
 ## 🔥 DTU poll storm: the gun's orphaned UI loops — ✅ FIXED 2026-08-26 (C72 3.62)
 
 The midday 100%-DTU flatline was pure CPU with near-zero IO, and the

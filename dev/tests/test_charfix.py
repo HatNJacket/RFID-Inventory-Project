@@ -172,6 +172,15 @@ with patch("app.shopify.lookup_barcode", side_effect=fake_lookup), \
     r = rec("ZWO T2-Tilter-X")
     check("a genuinely different code recommends nothing", r is None, r)
 
+    # 7) '+' -> space rescue (Nick, 2026-08-26, ZWO D25AR): C72 builds
+    # before 3.63 form-encoded URL path segments, so a typed spaced SKU
+    # arrived with '+' in place of every space and missed. The fold runs
+    # LAST so real plus-bearing SKUs always win untouched.
+    r = cl.get("/api/products/by-barcode/ZWO%2BNikon-T2-II")
+    check("a form-encoded '+' term still finds the spaced SKU",
+          r.status_code == 200 and r.json()["sku"] == "ZWO Nikon-T2-II",
+          r.text[:150])
+
 print()
 print("FAILED: "+", ".join(fails) if fails else "ALL CHECKS PASSED")
 sys.exit(1 if fails else 0)
