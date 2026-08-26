@@ -1,7 +1,60 @@
 # RFID Inventory System — Roadmap
 
 Source of truth for project status. Updated by Claude each working session.
-Last updated: 2026-08-25.
+Last updated: 2026-08-26.
+
+## 📦 Backorders vs the tag arithmetic + sold-out shortcut — ✅ DEPLOYED 2026-08-26
+
+Nick's AirGradient I-9PSL-DE-KIT: Shopify on-hand sat at **-1** (one
+unit committed on customer backorder), 48 boxes arrived and were
+tagged, so Shopify counted 47 against 48 tags and the Tags ≠ On-hand
+check false-flagged the SKU forever (task 8886).
+
+- **rfid_backorder_debt** table (migration `dev/alter_add_backorder_
+  debt.py`, RUN on prod): units Shopify's on-hand runs behind the
+  shelf. Noted automatically when a receiving batch closes — gap =
+  tags − on-hand − sold-since-baseline − existing debt, **capped at
+  the committed units** Shopify still owes customers, so a plain
+  mistag can never hide in it. Fail-soft; one batched on-hand call,
+  per-SKU breakdown only for gap>0 rows.
+- Expected count = on-hand + sold-unretired + **debt**; the task
+  detail names it ("+ N on customer backorder when received").
+- Clearing: any operator on-hand write supersedes older notes (lazily
+  in the refresh); History "Backorder Noted" event's undo clears one
+  by hand (POST /api/backorder-debts/{id}/clear → "Backorder
+  Cleared"). AirGradient's unit backfilled; next sync closed 8886
+  ("Tags, on-hand and the sold ledger agree again").
+- **Sold-out shortcut**: the Tags ≠ On-hand resolve window shows live
+  on-hand + tag units, and at on-hand **0** offers "Mark all N tag(s)
+  presumed sold" (POST /api/review-tasks/{id}/retire-all-sold —
+  re-checks live on-hand server-side, retires every tag presumed-sold,
+  consumes the ledger, resolves the task). History folds same-moment
+  retirements into ONE event with a grouped undo restoring the set.
+- Suite test_backorder.py (27 checks).
+
+## 🧹 Check-step polish: named broken chars, instant fixes, ordering, admin links — ✅ DEPLOYED 2026-08-26 (C72 3.64)
+
+Nick's four asks (suite test_checkpolish.py, 12 checks; 44/44):
+
+1. **bad-chars names its field and character**: new
+   `shopify.get_variant_idents(gid)` recovers the REAL character from
+   live Shopify (VARCHAR stores it as '?'), review entries carry
+   `bad_chars` {sku/barcode: value with the offender bracketed}, and
+   the web editor + C72 3.64 dialog read e.g. "The SKU contains a
+   character the database can't store: ZWO-HA 7nm 1.25[″]. Recommend
+   updating the SKU." Fallback brackets the stored '?' if live fails.
+2. **Overwrites show up immediately**: SKU/barcode overwrites push the
+   new value into OPEN batches' rows and live tag records
+   (`_refresh_item_idents`) — web Check list and the C72's next pull
+   both see the fix without waiting for the nightly rebuild. Finished
+   batches keep their history.
+3. **Check list ordering**: server-side rank (web + C72 for free,
+   `_FLAG_RANK`) — biggest problems first, count-mismatch explicitly
+   LAST; stable within tiers; web re-sorts after its local wrong-bin
+   "ignore" filter.
+4. **Preview title → Shopify admin**: the parent product-preview
+   window's title links to the product's admin page (`admin_url` in
+   the product-history payload; store-domain /admin redirects).
 
 ## 🔤 Spaced SKUs from the gun: form-encoded paths — ✅ FIXED 2026-08-26 (C72 3.63)
 
