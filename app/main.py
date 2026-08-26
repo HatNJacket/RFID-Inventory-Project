@@ -1415,7 +1415,34 @@ def list_print_jobs(
         "count": len(rows),
         "jobs": [j.as_dict() for j in rows],
         "batches": batches,
+        # Enables the Resume button independent of the listing's limit.
+        "resumable_stopped": len(_resumable_stopped_jobs(session)),
     }
+
+
+def _resumable_stopped_jobs(session: Session) -> list[PrintJob]:
+    """Jobs a Stop press canceled that can simply run again: they never
+    printed, their EPCs were never used, and their batch (if any) is
+    still alive. Ordered by id - the original print order."""
+    rows = session.scalars(
+        select(PrintJob).where(
+            PrintJob.status == "canceled",
+            PrintJob.error == "stopped by operator",
+        ).order_by(PrintJob.id)
+    ).all()
+    alive: dict[int, bool] = {}
+    out = []
+    for job in rows:
+        if job.batch_id:
+            if job.batch_id not in alive:
+                b = session.get(Batch, job.batch_id)
+                alive[job.batch_id] = (
+                    b is not None and b.status not in ("done", "abandoned")
+                )
+            if not alive[job.batch_id]:
+                continue
+        out.append(job)
+    return out
 
 
 # Print-agent heartbeat: the agent polls claim every ~10 s, so a recent
@@ -1659,8 +1686,46 @@ def stop_printing(
             f"{len(rows)} queued label(s) canceled."
             + (f" Up to {in_flight} label(s) already claimed by the "
                "printer may still come out." if in_flight else "")
-            + " Reprint anything you still need from the Queue or the "
-              "batch's Print step."
+            + " Resume printing brings the whole stopped run back in "
+              "order, or reprint single labels from the Queue."
+        ),
+    }
+
+
+@app.post("/api/print-jobs/resume", dependencies=[Depends(require_user)])
+def resume_printing(
+    payload: StopPrintingIn, session: Session = Depends(get_session)
+):
+    """The Stop button's inverse (Nick, 2026-08-26: stopped a run while
+    the printer looked broken, then had no way back but label-by-label).
+    A stopped job never printed and its EPC was never used, so it simply
+    returns to pending - the SAME rows, so the original ids keep the
+    original print order, and the agent takes them ahead of anything
+    queued since. Jobs whose batch has since finished or been abandoned
+    stay canceled. Stop and Resume can loop forever; both are manual."""
+    rows = _resumable_stopped_jobs(session)
+    if not rows:
+        raise HTTPException(
+            422, "No stopped labels to resume - nothing was stopped, or "
+                 "their batches have since finished."
+        )
+    for job in rows:
+        job.status = "pending"
+        job.error = None
+    session.add(BarcodeChange(
+        product_title="Print queue",
+        changed_field="print-resume",
+        old_barcode=f"{len(rows)} job(s) resumed"[:64],
+        new_barcode="original order kept"[:64],
+        changed_by=(payload.requested_by or "").strip()[:100] or None,
+    ))
+    session.commit()
+    return {
+        "resumed": len(rows),
+        "message": (
+            f"{len(rows)} stopped label(s) are back in the queue in "
+            f"their original order - the printer picks them up on its "
+            f"next pass."
         ),
     }
 
@@ -11879,6 +11944,7 @@ def history(
         "non-taggable": "non-taggable",
         "batch-reprint": "batch-reprinted",
         "print-stop": "printing-stopped",
+        "print-resume": "printing-resumed",
         "on-hand": "on-hand-updated", "on-hand-undo": "on-hand-undone",
         "on-hand-lower": "on-hand-lowered",
         "on-hand-lower-undo": "on-hand-lower-undone",

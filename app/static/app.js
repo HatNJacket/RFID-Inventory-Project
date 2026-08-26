@@ -366,6 +366,7 @@ const EVENT_META = {
   "non-taggable": ["Non-taggable", "#8a6116"],
   "batch-reprinted": ["Batch Reprint", "#5c5f62"],
   "printing-stopped": ["Stopped Printing", "#d72c0d"],
+  "printing-resumed": ["Resumed Printing", "#116329"],
   "on-hand-updated": ["Raised On-hand", "#0c5132"],
   "on-hand-undone": ["Undid On-hand", "#6d7175"],
   "on-hand-lowered": ["Lowered On-hand", "#8a4b0e"],
@@ -8179,6 +8180,36 @@ document
     loadQueue();
   });
 
+// Resume printing (Nick, 2026-08-26): the Stop button's inverse. A
+// stopped label never printed and its EPC was never used, so its job
+// simply returns to pending - same rows, same original ids, so the run
+// comes back in EXACTLY its original order, ahead of anything queued
+// since. Stop and Resume can loop forever; both are manual.
+document
+  .getElementById("printer-resume")
+  .addEventListener("click", async () => {
+    const n = (queueData && queueData.resumable_stopped) || 0;
+    if (
+      !confirm(
+        `Resume printing?\n\n${n} stopped label(s) go back in the ` +
+          `queue in their original order and print ahead of anything ` +
+          `queued since. Make sure the printer is loaded and ready.`
+      )
+    )
+      return;
+    const btn = document.getElementById("printer-resume");
+    btn.disabled = true;
+    try {
+      const res = await postJson("/api/print-jobs/resume", {
+        requested_by: operatorEl.value || null,
+      });
+      alert(res.message);
+    } catch (err) {
+      alert(err.message);
+    }
+    loadQueue();
+  });
+
 // Re-align (Nick, 2026-08-25): a rip at the tear bar drags the liner
 // forward a random amount, so the next two labels print off-center and a
 // third feeds blank while the printer finds itself again. This queues a
@@ -8529,6 +8560,11 @@ async function loadQueue() {
     stopBtn.disabled = !(data.jobs || []).some(
       (j) => j.status === "pending" || j.status === "printing"
     );
+    // Resume is live only while a Stop press left labels behind whose
+    // batch is still alive (server-counted, so the listing's limit
+    // can't hide them) - Nick, 2026-08-26.
+    document.getElementById("printer-resume").disabled =
+      !(data.resumable_stopped > 0);
     queueData = data;
     renderQueue();
   } catch (err) {

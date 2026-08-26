@@ -1060,7 +1060,9 @@
         <button class="reset" id="printer-realign" type="button"
                 title="Ripping labels can pull the liner forward, so the next prints land off the sticker. This feeds the media to the NEXT label's start (using the printer's gap sensor) before anything prints - it consumes the one already-disturbed label instead of two misprints and a blank. Nothing is printed or encoded. Needs the updated print agent running on the warehouse PC.">Re-align labels (feed one)</button>
         <button class="reset queue-stop" id="printer-stop" type="button" disabled
-                title="Cancels every label still waiting to print - at most the handful already claimed by the printer still come out. Reprint anything you need from the Queue or the batch's Print step.">⏹ Stop printing</button>
+                title="Cancels every label still waiting to print - at most the handful already claimed by the printer still come out. Resume printing brings the whole run back in order.">⏹ Stop printing</button>
+        <button class="reset queue-resume" id="printer-resume" type="button" disabled
+                title="Puts every label a Stop press canceled back in the queue - same labels, same original order, printed ahead of anything queued since. Labels from batches that have since finished stay canceled.">▶ Resume printing</button>
       </div>
       <div class="inventory__scroll">
         <table class="inventory__table">

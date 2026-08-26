@@ -159,6 +159,54 @@ with patch("app.shopify.lookup_barcode", side_effect=fake_lookup), \
     check("stop with an idle printer says so",
           r.status_code == 422, r.text[:200])
 
+    # 7) Resume printing (Nick, 2026-08-26): the Stop button's inverse.
+    # Stopped labels never printed, so the SAME jobs return to pending -
+    # original ids, original order - and the listing counts them so the
+    # button can light up regardless of pagination.
+    with Session(get_engine()) as s:
+        stopped_ids = [j.id for j in s.scalars(
+            select(PrintJob).where(PrintJob.status == "canceled")
+            .order_by(PrintJob.id)).all()]
+    q = cl.get("/api/print-jobs?limit=5").json()
+    check("the queue listing counts resumable stopped labels",
+          q.get("resumable_stopped") == len(stopped_ids), q.get(
+              "resumable_stopped"))
+    r = cl.post("/api/print-jobs/resume", json={"requested_by": "Nick"})
+    check("resume brings every stopped label back",
+          r.status_code == 200 and r.json()["resumed"] == len(stopped_ids),
+          r.text[:200])
+    with Session(get_engine()) as s:
+        pend = s.scalars(select(PrintJob).where(
+            PrintJob.status == "pending").order_by(PrintJob.id)).all()
+        check("the SAME jobs are pending again - original ids and order",
+              [j.id for j in pend] == stopped_ids
+              and all(j.error is None for j in pend),
+              [j.id for j in pend])
+    ev = [e for e in cl.get("/api/history?limit=100").json()["events"]
+          if e["type"] == "printing-resumed"]
+    check("the resume is logged to History",
+          ev and "resumed" in (ev[0]["detail"] or ""), ev[:1])
+    r = cl.post("/api/print-jobs/resume", json={})
+    check("resume with nothing stopped says so",
+          r.status_code == 422, r.text[:200])
+
+    # A stop against a batch that then finishes stays canceled: re-stop,
+    # mark the batch done, resume finds only the batchless jobs.
+    cl.post("/api/print-jobs/stop", json={"requested_by": "Nick"})
+    with Session(get_engine()) as s:
+        from app.models import Batch
+        b = s.get(Batch, bid)
+        b.status = "abandoned"
+        s.commit()
+        batchless = [j.id for j in s.scalars(
+            select(PrintJob).where(PrintJob.status == "canceled",
+                                   PrintJob.batch_id.is_(None))
+            .order_by(PrintJob.id)).all()]
+    r = cl.post("/api/print-jobs/resume", json={"requested_by": "Nick"})
+    check("a finished batch's stopped labels stay canceled",
+          (r.status_code == 200 and r.json()["resumed"] == len(batchless))
+          or (r.status_code == 422 and not batchless), r.text[:200])
+
 print()
 print("FAILED: "+", ".join(fails) if fails else "ALL CHECKS PASSED")
 sys.exit(1 if fails else 0)

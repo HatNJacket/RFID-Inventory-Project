@@ -1809,6 +1809,13 @@ body {
   font-weight: 650;
 }
 .queue-stop[disabled] { opacity: 0.45; cursor: default; }
+/* Resume printing: the Stop button's green inverse */
+.queue-resume:not([disabled]) {
+  color: #3fb950;
+  border-color: #116329;
+  font-weight: 650;
+}
+.queue-resume[disabled] { opacity: 0.45; cursor: default; }
 
 /* The two small receiving windows: product preview + [−] number [+] */
 .recvmodal__product { display: flex; align-items: center; gap: 10px; margin: 10px 0 14px; }
