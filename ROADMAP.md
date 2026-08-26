@@ -3,6 +3,21 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-08-26.
 
+## 🔄 Inventory checks follow the newest count + Auto-Resolved tag — ✅ DEPLOYED 2026-08-26
+
+Nick's ZWO M54-M54-7.5: a stale "0 counted vs 1" task outlived a newer
+batch that counted the 1. Now batch_complete reconciles every OPEN
+inventory-check per counted SKU: figures rewrite to the fresh
+observation (ReviewNote names the batch), an AGREEING count closes the
+task itself (resolved_by "batch-count"), and a still-standing mismatch
+lands on the existing task instead of stacking a duplicate. History
+derives a distinct "review-autoclosed" (Auto-Resolved, slate) event
+for system closures — batch-count, orders-sync, dupe-check (the
+AUTO_CLOSERS set) — so they never pose as a person's click; the reopen
+undo is unchanged. Backfill ran on prod: 29 stale tasks closed against
+newer agreeing counts (incl. #8882 M54-M54-7.5), 28 updated but
+honestly still open. Suite test_autoclose.py (12); 45/45.
+
 ## ✅ Inventory Check: "Shopify is wrong → use the RFID count" — ✅ DEPLOYED 2026-08-26
 
 Bin-mismatch-style choice button in the resolve window (plus the −/+
