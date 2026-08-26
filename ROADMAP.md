@@ -188,12 +188,13 @@ Three of Nick's field reports in one round:
   re-registers). Agent v3 (running): optional --realign-after-idle MIN
   feeds once at the first burst after MIN minutes idle (1 blank label
   per fresh session instead of 2 misprints + 1 blank after a hard
-  rip). **ON since 2026-08-26 evening at 0.5 min** (Nick: the
-  2-bad-1-blank pattern kept costing more than the blank; flag lives
-  in print_agent_loop.cmd, agent restarted with it). Expect exactly
-  one blank at the start of any run after 30+ quiet seconds - that
-  blank IS the re-align. Agent logging is line-buffered now so the log
-  file is finally live.
+  rip). Briefly ON 2026-08-26 evening at 0.5 min, then **OFF again the
+  same evening**: the recurring drag traced to Nick tearing UPWARD
+  (which pulls the liner through the platen grip); he is testing
+  downward tears for a few jobs first, and the flag comes back only if
+  clean tears still drift. Flag lives in print_agent_loop.cmd; the
+  Queue tab's manual Re-align button stays as the fallback. Agent
+  logging is line-buffered now so the log file is finally live.
 
 ## 🖨 Print step stays put during a live run — ✅ DEPLOYED 2026-08-26
 
