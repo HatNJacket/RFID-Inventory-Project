@@ -4338,7 +4338,22 @@ async function pullBatch(announce) {
       batch.status !== prevStatus ? STAGE_FOR_STATUS[batch.status] : null;
     // A status change is the stronger signal — the published step can be
     // stale (nobody republishes it when the server moves the batch on).
-    const target = statusTarget || stepTarget;
+    let target = statusTarget || stepTarget;
+    // The gun starts pairing while labels are still coming out - that is
+    // the normal rhythm (the agent prints bursts of 5), NOT a sign that
+    // printing is over. Its pair screen publishes "pair" and the first
+    // pair flips the status to "pairing"; neither may yank this screen
+    // off a LIVE print run (Nick, 2026-08-26) - the whole point of
+    // standing here is watching the rest of the run. Following resumes
+    // by itself once nothing is left to print, and the step chips
+    // always work by hand.
+    if (
+      target === "pair" &&
+      batchStage === "print" &&
+      (bprintOutstanding == null || bprintOutstanding > 0)
+    ) {
+      target = null;
+    }
     if (target && target !== batchStage) {
       applyingRemoteStep = true;
       lastPublishedStep = batch.ui_step || null;
@@ -4520,6 +4535,7 @@ function showBatchStage(stage) {
   } else if (stage === "labels") {
     loadBatchReview();
   } else if (stage === "print") {
+    bprintOutstanding = null; // unknown until the first poll answers
     pollBatchPrint();
     batchPrintTimer = setInterval(pollBatchPrint, 3000);
   } else if (stage === "pair") {
@@ -6783,6 +6799,11 @@ document
     }
   });
 
+// Labels this batch still has to print (pending + printing). null =
+// not yet known this visit. pullBatch's follow-along reads it so a
+// "pair" signal can never pull the screen off a LIVE print run.
+let bprintOutstanding = null;
+
 async function pollBatchPrint() {
   if (!batch) return;
   try {
@@ -6807,6 +6828,7 @@ async function pollBatchPrint() {
     live.forEach((j) => {
       counts[j.status] = (counts[j.status] || 0) + 1;
     });
+    bprintOutstanding = counts.pending + counts.printing;
     const total = live.length;
     bEl.printStatus.textContent =
       `Printed ${counts.done}/${total}` +

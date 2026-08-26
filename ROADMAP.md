@@ -3,6 +3,22 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-08-25.
 
+## 🖨 Print step stays put during a live run — ✅ DEPLOYED 2026-08-26
+
+Nick: the web Print step jumped to Pair after the first burst of 5
+prints with jobs still queued. Root cause: the C72 has no print step -
+its pair screen publishes ui_step "pair" the moment the operator gets
+there (which is exactly when the first burst lands), and the first
+pair also flips batch status to "pairing"; the web's follow-along
+obeyed both signals unconditionally. Fix (app.js): while the Print
+step is watching a LIVE run (pending+printing > 0, tracked in
+bprintOutstanding by the poll; null = not yet known = hold), a "pair"
+target from either signal is ignored - the gun pairing while labels
+still print is the normal rhythm, not a step change. Following
+resumes by itself once everything printed, and the step chips always
+work by hand. Browser-verified both ways (gate holds at 0/8..5/8,
+releases at 8/8).
+
 ## 🔎 Show Recommended: near-miss folds — ✅ DEPLOYED 2026-08-26
 
 Nick's ZWO T2-Tilter-II case: the product's SKU is "ZWO T2-Tilter-Ⅱ"
