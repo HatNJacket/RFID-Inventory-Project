@@ -140,6 +140,25 @@ with patch("app.shopify.lookup_barcode", side_effect=fake_lookup), \
           all(j["print_session"] == "sess-abc123"
               for j in r.json()["jobs"]), r.json()["jobs"])
 
+    # 6) Stop printing (Nick, 2026-08-25): cancels everything still
+    # waiting, leaves whatever already printed alone, logs to History,
+    # and refuses politely when nothing is happening.
+    r = cl.post("/api/print-jobs/stop", json={"requested_by": "Nick"})
+    check("stop cancels the waiting labels",
+          r.status_code == 200 and r.json()["canceled"] >= 2, r.text[:200])
+    with Session(get_engine()) as s:
+        left = s.scalars(select(PrintJob).where(
+            PrintJob.status == "pending")).all()
+        check("no jobs are left waiting after a stop", not left,
+              [j.id for j in left])
+    ev = [e for e in cl.get("/api/history?limit=100").json()["events"]
+          if e["type"] == "printing-stopped"]
+    check("the stop is logged to History",
+          ev and "canceled" in (ev[0]["detail"] or ""), ev[:1])
+    r = cl.post("/api/print-jobs/stop", json={})
+    check("stop with an idle printer says so",
+          r.status_code == 422, r.text[:200])
+
 print()
 print("FAILED: "+", ".join(fails) if fails else "ALL CHECKS PASSED")
 sys.exit(1 if fails else 0)

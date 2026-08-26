@@ -179,6 +179,66 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
           r.status_code == 200 and r.json()["qty_scanned"] == 7
           and r.json()["expected_qty"] == 5, r.text[:200])
 
+    # --- Planner-driven closure + the Link-to-product fix ---------------
+    # A fresh order: one known product, one unknown code.
+    r = cl.post("/api/receiving/prints", json={
+        "items": [{"sku": "ZWO EAF-5V", "quantity": 1},
+                  {"sku": "GHOST-9", "quantity": 1}],
+        "requested_by": "Nick", "reference": "SO 44 · ZWO",
+    })
+    b2 = r.json()["batch"]["id"]
+    items2 = cl.get(f"/api/batches/{b2}").json()["items"]
+    eaf = next(i for i in items2 if i["sku"] == "ZWO EAF-5V")
+    ghost9 = next(i for i in items2 if i["scanned_code"] == "GHOST-9")
+
+    # Tagging the known box does NOT close the shipment - the unfixed
+    # unknown row is real untagged stock.
+    r = cl.post(f"/api/batches/{b2}/pair", json={
+        "epc": "AB000000000000000000AB01", "item_id": eaf["id"],
+        "created_by": "Nick"})
+    check("an unfixed unknown row keeps the shipment open",
+          r.status_code == 201 and r.json()["receiving_done"] is False,
+          r.text[:200])
+
+    # Link the code to the real product: alias + resolve. The row merges
+    # into the existing product row, the planner count folds in, and the
+    # box's label queues by itself.
+    r = cl.post("/api/barcode-aliases", json={
+        "alias_barcode": "GHOST-9", "target": "ZWO EAF-5V",
+        "created_by": "Nick"})
+    check("the planner's code links as an alias", r.status_code == 201,
+          r.text[:200])
+    r = cl.post(f"/api/batches/{b2}/items/{ghost9['id']}/resolve", json={})
+    out = r.json()
+    check("resolving merges the fixed row and queues its label",
+          out["resolved"] and out["merged"] and out["queued"] == 1
+          and out["item"]["qty_scanned"] == 2
+          and out["item"]["expected_qty"] == 2, out)
+
+    # The LAST pair closes the shipment by itself - no Finish button.
+    r = cl.post(f"/api/batches/{b2}/pair", json={
+        "epc": "AB000000000000000000AB02", "item_id": out["item"]["id"],
+        "created_by": "Nick"})
+    check("the last pair closes the shipment",
+          r.json()["receiving_done"] is True, r.text[:200])
+    b2row = cl.get(f"/api/batches/{b2}").json()["batch"]
+    check("the batch is done with a completion time",
+          b2row["status"] == "done" and b2row["completed_at"], b2row)
+
+    # A count corrected DOWN to what's tagged also closes the shipment.
+    r = cl.post("/api/receiving/prints", json={
+        "items": [{"sku": "ZWO EAF-5V", "quantity": 2}],
+        "requested_by": "Nick", "reference": "SO 45 · ZWO",
+    })
+    b3 = r.json()["batch"]["id"]
+    it3 = cl.get(f"/api/batches/{b3}").json()["items"][0]
+    cl.post(f"/api/batches/{b3}/pair", json={
+        "epc": "AB000000000000000000AB03", "item_id": it3["id"],
+        "created_by": "Nick"})
+    r = cl.post(f"/api/batches/{b3}/items/{it3['id']}/qty", json={"qty": 1})
+    check("lowering the count to the tagged number closes the shipment",
+          r.json().get("receiving_done") is True, r.text[:200])
+
 print()
 print("FAILED: "+", ".join(fails) if fails else "ALL CHECKS PASSED")
 sys.exit(1 if fails else 0)

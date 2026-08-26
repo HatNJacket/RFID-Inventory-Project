@@ -686,13 +686,31 @@
              Problem rows (unknown product, no bin, non-taggable) are
              flagged and explain themselves when selected. -->
         <div id="bstage-receiving" hidden>
+          <!-- No Finish button: receiving is entirely planner-driven
+               (Nick, 2026-08-25) - the shipment closes ITSELF when every
+               received box is tagged. -->
+          <p class="linkbox__text recvdone" id="recv-done" hidden>✅ Shipment complete - every received box is tagged. This batch closed itself.</p>
           <p class="linkbox__text" id="recv-summary" hidden></p>
           <ul class="batch__items recvlist" id="recv-list"></ul>
           <p class="recvlist__empty" id="recv-empty" hidden>No products set to receive.</p>
-          <div class="linkbox__actions">
-            <button class="reset" id="recv-finish" type="button"
-                    title="Closes the shipment and files an inventory-check Review task for every bin that received stock.">✅ Finish receiving…</button>
-          </div>
+        </div>
+
+        <!-- Receiving: link an unknown planner row to the right product
+             (a lookup alias - Shopify untouched) -->
+        <div class="phist-overlay" id="recv-link-overlay" hidden>
+          <section class="linkbox serialbox phist-modal" style="max-width:460px">
+            <div class="linkbox__title">Link to product</div>
+            <div class="recvmodal__product" id="recv-link-product"></div>
+            <label class="step__label" for="recv-link-target">Scan or type the correct barcode or SKU</label>
+            <input class="linkbox__input" id="recv-link-target" type="text" maxlength="64"
+                   autocomplete="off" autocapitalize="off" spellcheck="false" />
+            <p class="linkbox__text">The planner's code becomes a lookup alias for the product you pick - Shopify is not touched, and the row rejoins the shipment with its labels queued. Unlink any time in History.</p>
+            <p class="linkbox__text" id="recv-link-msg"></p>
+            <div class="linkbox__actions">
+              <button class="print__btn" id="recv-link-go" type="button">🔗 Link</button>
+              <button class="reset" id="recv-link-cancel" type="button">Cancel</button>
+            </div>
+          </section>
         </div>
 
         <!-- Receiving: reprint labels for one product (count only — the
@@ -1041,6 +1059,8 @@
         <span class="pill" id="agent-pill">Printer agent: checking…</span>
         <button class="reset" id="printer-realign" type="button"
                 title="Ripping labels can pull the liner forward, so the next prints land off the sticker. This feeds the media to the NEXT label's start (using the printer's gap sensor) before anything prints - it consumes the one already-disturbed label instead of two misprints and a blank. Nothing is printed or encoded. Needs the updated print agent running on the warehouse PC.">Re-align labels (feed one)</button>
+        <button class="reset queue-stop" id="printer-stop" type="button" disabled
+                title="Cancels every label still waiting to print - at most the handful already claimed by the printer still come out. Reprint anything you need from the Queue or the batch's Print step.">⏹ Stop printing</button>
       </div>
       <div class="inventory__scroll">
         <table class="inventory__table">

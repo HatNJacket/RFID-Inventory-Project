@@ -3,12 +3,11 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-08-25.
 
-## 📦 Receiving phase 2: stepless list + Assigned Tag undo chain (2026-08-25, ⚠ BUILT, NOT DEPLOYED)
+## 📦 Receiving phase 2: stepless list + Assigned Tag undo chain — ✅ DEPLOYED 2026-08-26
 
-Nick's evening direction. Coded, 41/41 suites, browser-verified on the
-seed server; **prod deploy + the rfid_released_tags migration
-(dev/alter_add_released_tags.py) are HELD until Nick reviews the
-previews** (artifact "Receiving Rework Preview").
+Nick's evening direction, refined by his answers next morning and
+deployed (rfid_released_tags migration run on prod). Previews live in
+the "Receiving Rework Preview" artifact.
 
 - **Receiving has no steps any more**: opening a receiving batch shows
   ONE list (no stage chips) of every product the planner sent to
@@ -23,7 +22,30 @@ previews** (artifact "Receiving Rework Preview").
   card flags it and offers to print exactly the missing ones. Empty
   list says "No products set to receive". The manual "Start receiving"
   button is GONE - receiving batches come only from the planner's
-  "Print labels" save. Finish receiving (bin checks) stays.
+  "Print labels" save.
+- **Entirely planner-driven closure (Nick's answer #1)**: no Finish
+  button and no bin-check filing - the shipment closes ITSELF when
+  every received box is tagged (checked after each pair, count update
+  and problem fix; `_maybe_close_receiving`). Flagged informational
+  rows (non-taggable) never block; an unfixed unknown row does (its
+  boxes are real untagged stock); lowering a count to what's tagged
+  closes too. History's receiving-completed event derives from the
+  closed batch as before. The C72 keeps its normal pair flow (his
+  answer #3: LINK is fine).
+- **Link to product on flagged cards (answer #2)**: an unknown planner
+  code gets a 🔗 button right on the card - alias (Shopify untouched,
+  unlinkable in History) + in-place resolve; the row rejoins the
+  shipment (merging into an existing row when the product already has
+  one, planner counts folded), and its labels queue automatically
+  (`_queue_receiving_labels_after_fix`; resolve preserves the
+  planner's expected_qty against the Shopify-on-hand overwrite).
+- **Queue tab Stop printing (answer #4)**: red-live only while labels
+  are pending/printing, grayed when idle. POST /api/print-jobs/stop
+  cancels everything still waiting (the agent claims ≤5 per 3s burst,
+  so at most that many still come out - no agent update needed), logs
+  a "Stopped Printing" History event, and canceled labels reprint from
+  the normal flows. Explicitly NOT wired to count-lowering - that
+  never cancels anything (his answer).
 - **Problems live on the batch now**: /api/receiving/prints keeps
   failures as flagged rows (skip_reason) instead of only naming them in
   the response - unknown SKU/barcode, non-taggable, and a catch-all for

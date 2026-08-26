@@ -1595,6 +1595,54 @@ def claim_print_jobs(
     return {"count": len(rows), "jobs": [j.as_dict() for j in rows]}
 
 
+class StopPrintingIn(BaseModel):
+    requested_by: str | None = Field(default=None, max_length=100)
+
+
+@app.post("/api/print-jobs/stop", dependencies=[Depends(require_user)])
+def stop_printing(
+    payload: StopPrintingIn, session: Session = Depends(get_session)
+):
+    """The Queue tab's Stop printing button (Nick, 2026-08-25): the
+    printer is spewing (wax out, wrong labels, jam) and the run must
+    halt NOW. Cancels every job still waiting - the agent's next claim
+    (it polls every few seconds and takes at most 5 labels per burst)
+    then comes back empty, so at most the burst in flight finishes.
+    Canceled labels reprint from the normal Queue/batch reprint flows;
+    nothing already printed is touched."""
+    rows = session.scalars(
+        select(PrintJob).where(PrintJob.status == "pending")
+    ).all()
+    in_flight = session.scalar(
+        select(func.count()).where(PrintJob.status == "printing")
+    ) or 0
+    if not rows and not in_flight:
+        raise HTTPException(422, "Nothing is printing or waiting to print.")
+    for job in rows:
+        job.status = "canceled"
+        job.error = "stopped by operator"
+    session.add(BarcodeChange(
+        product_title="Print queue",
+        changed_field="print-stop",
+        old_barcode=f"{len(rows)} job(s) canceled"[:64],
+        new_barcode=(f"{in_flight} in flight finished"
+                     if in_flight else "queue was drained")[:64],
+        changed_by=(payload.requested_by or "").strip()[:100] or None,
+    ))
+    session.commit()
+    return {
+        "canceled": len(rows),
+        "in_flight": in_flight,
+        "message": (
+            f"{len(rows)} queued label(s) canceled."
+            + (f" Up to {in_flight} label(s) already claimed by the "
+               "printer may still come out." if in_flight else "")
+            + " Reprint anything you still need from the Queue or the "
+              "batch's Print step."
+        ),
+    }
+
+
 # --- Refresh timing ---------------------------------------------------------
 # Every refresh button on the site (manual or automatic) reports how long
 # it took; the stats endpoint serves a recent median per kind so buttons
@@ -4883,6 +4931,36 @@ def _is_receiving(batch: Batch) -> bool:
     return batch.kind == "receiving"
 
 
+def _maybe_close_receiving(session: Session, batch: Batch) -> bool:
+    """Receiving is entirely planner-driven (Nick, 2026-08-25): no Finish
+    button. The shipment closes ITSELF the moment every received box is
+    tagged - checked after each pair, count update and problem-row fix.
+    Flagged informational rows (non-taggable) never block; an UNFIXED
+    unknown row does, because its boxes are real and untagged - fix it
+    with the card's Link button or abandon the batch. Runs inside the
+    caller's transaction; History derives the receiving-completed event
+    from the closed batch row."""
+    if not _is_receiving(batch) or batch.status in ("done", "abandoned"):
+        return False
+    total = 0
+    for i in _batch_items(session, batch.id):
+        if not i.resolved:
+            return False
+        if i.skip_reason or i.skipped or i.kind == "bundle":
+            continue
+        want = i.qty_scanned + i.case_count
+        if want <= 0:
+            continue
+        if (i.paired_count or 0) < want:
+            return False
+        total += want
+    if total <= 0:
+        return False
+    batch.status = "done"
+    batch.completed_at = datetime.now(timezone.utc)
+    return True
+
+
 @app.post(
     "/api/batches", status_code=201, dependencies=[Depends(require_user)]
 )
@@ -6673,42 +6751,81 @@ def batch_item_resolve(
         None,
     )
     title = product.get("product_title") or sku or code
+    recv = _is_receiving(batch)
     if existing is not None:
         moved = item.qty_scanned
         existing.qty_scanned += item.qty_scanned
         existing.paired_count += item.paired_count
+        if recv and item.expected_qty:
+            # Receiving rows keep the PLANNER's number in expected_qty -
+            # merging a fixed problem row folds its share in too.
+            existing.expected_qty = (
+                (existing.expected_qty or 0) + item.expected_qty
+            )
         stamps = [t for t in (existing.first_scanned_at,
                               item.first_scanned_at) if t is not None]
         if stamps:
             existing.first_scanned_at = min(stamps)
         session.delete(item)
+        queued = _queue_receiving_labels_after_fix(session, batch) if recv \
+            else 0
         session.commit()
         session.refresh(existing)
         return {
             "resolved": True,
             "merged": True,
             "was_resolved": was_resolved,
+            "queued": queued,
             "item": existing.as_dict(),
             "message": (
                 f"Resolved to {title} — its {moved} box(es) merged into the "
                 f"row already in this batch ({existing.qty_scanned} total)."
+                + (f" {queued} label(s) queued." if queued else "")
             ),
         }
 
+    planner_expected = item.expected_qty if recv else None
     _apply_product_to_item(session, item, product, batch)
+    queued = 0
+    if recv:
+        # A fixed problem row rejoins the shipment as a normal card: the
+        # flag clears, the planner's number survives the product refresh
+        # (apply stores the Shopify on-hand snapshot), and its boxes get
+        # their labels right away - printing stays planner-driven.
+        item.expected_qty = planner_expected
+        item.skipped = False
+        item.skip_reason = None
+        if item.first_scanned_at is None:
+            item.first_scanned_at = datetime.now(timezone.utc)
+        queued = _queue_receiving_labels_after_fix(session, batch)
     session.commit()
     session.refresh(item)
     return {
         "resolved": True,
         "merged": False,
         "was_resolved": was_resolved,
+        "queued": queued,
         "item": item.as_dict(),
         "message": (
-            f"Refreshed from Shopify ✓ — {title}."
-            if was_resolved
-            else f"Resolved to {title} ✓ — {item.qty_scanned} box(es) kept."
+            (f"Refreshed from Shopify ✓ — {title}."
+             if was_resolved
+             else f"Resolved to {title} ✓ — {item.qty_scanned} box(es) "
+                  f"kept.")
+            + (f" {queued} label(s) queued." if queued else "")
         ),
     }
+
+
+def _queue_receiving_labels_after_fix(
+    session: Session, batch: Batch
+) -> int:
+    """Queue whatever a just-fixed receiving row now needs. The builder
+    only ever prints unlabelled boxes, so this is safe to run batch-wide."""
+    jobs, _held = _build_receiving_label_jobs(
+        session, batch, batch.created_by
+    )
+    session.add_all(jobs)
+    return len(jobs)
 
 
 class ProductKindIn(BaseModel):
@@ -7210,7 +7327,7 @@ def set_item_qty(
     payload: ItemQtyIn,
     session: Session = Depends(get_session),
 ):
-    _get_batch(session, batch_id)
+    batch = _get_batch(session, batch_id)
     item = session.get(BatchItem, item_id)
     if item is None or item.batch_id != batch_id:
         raise HTTPException(404, "No such item in this batch.")
@@ -7218,8 +7335,14 @@ def set_item_qty(
     # A manual bump from zero counts as this row's first contact too.
     if payload.qty > 0 and item.first_scanned_at is None:
         item.first_scanned_at = datetime.now(timezone.utc)
+    # A count lowered to what's actually tagged can be the last missing
+    # piece of a receiving shipment - check, same as after a pair.
+    session.flush()
+    receiving_done = _maybe_close_receiving(session, batch)
     session.commit()
-    return item.as_dict()
+    d = item.as_dict()
+    d["receiving_done"] = receiving_done
+    return d
 
 
 class ItemLabelIn(BaseModel):
@@ -8344,6 +8467,10 @@ def batch_pair(
     item.paired_count += 1
     if batch.status == "printing":
         batch.status = "pairing"
+    # The last box's tag closes a receiving shipment by itself - the
+    # whole flow is planner-driven, no Finish ceremony.
+    session.flush()
+    receiving_done = _maybe_close_receiving(session, batch)
     try:
         session.commit()
     except IntegrityError:
@@ -8360,7 +8487,11 @@ def batch_pair(
         )
     session.refresh(assignment)
     session.refresh(item)
-    return {"assignment": assignment.as_dict(), "item": item.as_dict()}
+    return {
+        "assignment": assignment.as_dict(),
+        "item": item.as_dict(),
+        "receiving_done": receiving_done,
+    }
 
 
 class PairUndoIn(BaseModel):
@@ -11064,6 +11195,7 @@ def history(
         "rfid-scan": "rfid-flag-changed",
         "non-taggable": "non-taggable",
         "batch-reprint": "batch-reprinted",
+        "print-stop": "printing-stopped",
         "on-hand": "on-hand-updated", "on-hand-undo": "on-hand-undone",
         "on-hand-lower": "on-hand-lowered",
         "on-hand-lower-undo": "on-hand-lower-undone",

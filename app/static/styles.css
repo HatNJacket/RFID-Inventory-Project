@@ -1758,6 +1758,15 @@ body {
 .recvcard__caption { font-size: 12px; color: var(--ink-dim); margin-top: 5px; }
 .recvcard__missing { color: var(--warn-ink); font-weight: 600; }
 .recvlist__empty { color: var(--muted); text-align: center; padding: 22px 8px; }
+.recvdone { color: var(--ok-ink); font-weight: 650; }
+
+/* Stop printing: unmistakably a stop control while live, quiet when idle */
+.queue-stop:not([disabled]) {
+  color: #ff6a5b;
+  border-color: #d72c0d;
+  font-weight: 650;
+}
+.queue-stop[disabled] { opacity: 0.45; cursor: default; }
 
 /* The two small receiving windows: product preview + [−] number [+] */
 .recvmodal__product { display: flex; align-items: center; gap: 10px; margin: 10px 0 14px; }

@@ -363,6 +363,7 @@ const EVENT_META = {
   "rfid-flag-changed": ["RFID Flag", "#d72c0d"],
   "non-taggable": ["Non-taggable", "#8a6116"],
   "batch-reprinted": ["Batch Reprint", "#5c5f62"],
+  "printing-stopped": ["Stopped Printing", "#d72c0d"],
   "on-hand-updated": ["Raised On-hand", "#0c5132"],
   "on-hand-undone": ["Undid On-hand", "#6d7175"],
   "on-hand-lowered": ["Lowered On-hand", "#8a4b0e"],
@@ -4196,61 +4197,10 @@ document.getElementById("batch-baseline").addEventListener("click", async () => 
 bEl.create.addEventListener("click", startBatch);
 
 // Receiving batches are created by the Inventory Planner's "Print labels"
-// button only (Nick, 2026-08-25) — no manual start, no print pass: the
-// planner queues the labels, this side tags and corrects.
+// button only, and close THEMSELVES when every received box is tagged
+// (Nick, 2026-08-25) — no manual start, no print pass, no finish
+// ceremony: entirely planner-driven.
 
-// Finish receiving: close the shipment, file one bin-check per touched bin.
-document.getElementById("recv-finish").addEventListener("click", async () => {
-  if (!isReceivingBatch()) return;
-  const unpaired = batchItems.reduce(
-    (n, i) =>
-      n +
-      (i.resolved
-        ? Math.max(
-            0,
-            (i.labels_total ?? i.qty_scanned + (i.case_count || 0)) -
-              (i.paired_count || 0)
-          )
-        : 0),
-    0
-  );
-  const warn = unpaired
-    ? `\n\n⚠ ${unpaired} label(s) still have no tag paired — they'll be ` +
-      `flagged for Review.`
-    : "";
-  if (
-    !confirm(
-      "Finish receiving?\n\nFiles an inventory-check Review task for " +
-        "every bin that received stock — each one is a quick bin-audit " +
-        "walk-scan." + warn
-    )
-  ) {
-    return;
-  }
-  try {
-    const res = await postJson(`/api/batches/${batch.id}/complete`, {
-      finalize: true,
-      created_by: operatorEl.value || null,
-    });
-    const bins = res.bins_touched || {};
-    const parts = Object.entries(bins).map(([b, n]) => `${b} (${n})`);
-    batch = null;
-    batchItems = [];
-    stopBatchPrintPoll();
-    stopBatchLive();
-    enterBatchTab();
-    setBatchResult(
-      parts.length
-        ? `Receiving done ✓ — inventory checks filed for: ${parts.join(
-            ", "
-          )} (see Review).`
-        : "Receiving done ✓ — nothing was shelved, no checks filed.",
-      "ok"
-    );
-  } catch (err) {
-    setBatchResult(err.message, "err");
-  }
-});
 bEl.bin.addEventListener("keydown", (e) => {
   if (e.key === "Enter") startBatch();
 });
@@ -4354,8 +4304,15 @@ async function pullBatch(announce) {
     batch = data.batch;
     batchItems = data.items;
     // Receiving is stepless: never follow the C72's published step, just
-    // keep the list live.
+    // keep the list live. The shipment closes itself on the last pair -
+    // say so the moment this screen notices.
     if (isReceivingBatch()) {
+      if (prevStatus !== "done" && batch.status === "done")
+        setBatchResult(
+          "Shipment complete ✓ - every received box is tagged, so the " +
+            "batch closed itself.",
+          "ok"
+        );
       if (batchStage !== "receiving") showBatchStage("receiving");
       else renderReceivingList();
       if (announce) setBatchResult("Refreshed from the server.", "ok");
@@ -4978,6 +4935,9 @@ function renderReceivingList() {
   const list = document.getElementById("recv-list");
   const empty = document.getElementById("recv-empty");
   const items = batchItems || [];
+  document.getElementById("recv-done").hidden = !(
+    batch && batch.status === "done"
+  );
   const printed = items.reduce((n, i) => n + (i.printed_count || 0), 0);
   const tagged = items.reduce((n, i) => n + (i.paired_count || 0), 0);
   const flagged = items.filter((i) => recvProblemText(i)).length;
@@ -5055,6 +5015,12 @@ function recvCard(item) {
           : ""
       }
       ${
+        !item.resolved
+          ? `<button class="reset" type="button" data-act="link"
+              title="Pick the product this code really is - it becomes a lookup alias (Shopify untouched) and the row rejoins the shipment with labels queued">🔗 Link to product</button>`
+          : ""
+      }
+      ${
         focused
           ? `<button class="reset" type="button" data-act="cancel">Cancel</button>`
           : ""
@@ -5070,6 +5036,8 @@ function recvCard(item) {
         openRecvReprint(item);
       } else if (btn.dataset.act === "count") {
         openRecvCount(item);
+      } else if (btn.dataset.act === "link") {
+        openRecvLink(item);
       } else if (btn.dataset.act === "missing") {
         recvPrintMissing(item, missing);
       }
@@ -5159,17 +5127,88 @@ function openRecvCount(item) {
   document.getElementById("recv-count-overlay").hidden = false;
 }
 
+// Link an unknown planner row to the right product (Nick, 2026-08-25):
+// same alias-then-resolve flow as the batch Check step, without leaving
+// the receiving list. The server re-queues the row's labels on success.
+function openRecvLink(item) {
+  recvModalItemId = item.id;
+  document.getElementById("recv-link-product").innerHTML = `
+    <span class="bcell__img bcell__img--empty"></span>
+    <div>
+      <div class="bcell__name">${escapeHtml(item.scanned_code || "?")}</div>
+      <div class="bcell__meta">the planner sent ${item.qty_scanned || 0} of this unknown code</div>
+    </div>`;
+  document.getElementById("recv-link-target").value = "";
+  document.getElementById("recv-link-msg").textContent = "";
+  document.getElementById("recv-link-overlay").hidden = false;
+  document.getElementById("recv-link-target").focus();
+}
+
+async function recvLinkGo() {
+  const item = (batchItems || []).find((i) => i.id === recvModalItemId);
+  const msg = document.getElementById("recv-link-msg");
+  const term = document.getElementById("recv-link-target").value.trim();
+  if (!item || !batch || !term) return;
+  msg.textContent = `Looking up ${term}…`;
+  let p;
+  try {
+    p = await apiJson(`/api/products/by-barcode/${encodeURIComponent(term)}`);
+  } catch (err) {
+    msg.textContent = `No product found for ${term} (${err.message}).`;
+    return;
+  }
+  const title = p.product_title || p.sku || term;
+  if (
+    !confirm(
+      `Link ${item.scanned_code} to "${title}"` +
+        (p.sku ? ` (SKU ${p.sku})` : "") +
+        `?\n\nThe planner's code will find this product from now on; ` +
+        `Shopify is not touched. Labels for its boxes queue right away. ` +
+        `Unlink any time in History.`
+    )
+  )
+    return;
+  const btn = document.getElementById("recv-link-go");
+  btn.disabled = true;
+  try {
+    await postJson("/api/barcode-aliases", {
+      alias_barcode: item.scanned_code,
+      target: p.sku || term,
+      created_by: operatorEl.value || null,
+    });
+    const res = await postJson(
+      `/api/batches/${batch.id}/items/${item.id}/resolve`, {}
+    );
+    document.getElementById("recv-link-overlay").hidden = true;
+    setBatchResult(res.message, res.resolved ? "ok" : "err");
+    await pullBatch(false);
+  } catch (err) {
+    msg.textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+document.getElementById("recv-link-go").addEventListener("click", recvLinkGo);
+document.getElementById("recv-link-target").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") recvLinkGo();
+});
+
 document.getElementById("recv-reprint-cancel").addEventListener("click", () => {
   document.getElementById("recv-reprint-overlay").hidden = true;
 });
 document.getElementById("recv-count-cancel").addEventListener("click", () => {
   document.getElementById("recv-count-overlay").hidden = true;
 });
-["recv-reprint-overlay", "recv-count-overlay"].forEach((id) => {
-  document.getElementById(id).addEventListener("click", (e) => {
-    if (e.target === e.currentTarget) e.currentTarget.hidden = true;
-  });
+document.getElementById("recv-link-cancel").addEventListener("click", () => {
+  document.getElementById("recv-link-overlay").hidden = true;
 });
+["recv-reprint-overlay", "recv-count-overlay", "recv-link-overlay"].forEach(
+  (id) => {
+    document.getElementById(id).addEventListener("click", (e) => {
+      if (e.target === e.currentTarget) e.currentTarget.hidden = true;
+    });
+  }
+);
 // The − / + steppers beside each number box.
 document.querySelectorAll(".recvcounter__btn").forEach((btn) => {
   btn.addEventListener("click", () => {
@@ -8003,6 +8042,39 @@ bEl.complete.addEventListener("click", async () => {
 });
 
 // === Print queue tab ========================================================
+// Stop printing (Nick, 2026-08-25): the printer is spewing - wax out,
+// wrong labels, jam - and the run must halt NOW. Cancels every label
+// still waiting; the agent's next claim comes back empty, so at most
+// the handful already claimed still come out. Enabled only while
+// something is queued or printing.
+document
+  .getElementById("printer-stop")
+  .addEventListener("click", async () => {
+    const waiting = ((queueData && queueData.jobs) || []).filter(
+      (j) => j.status === "pending" || j.status === "printing"
+    ).length;
+    if (
+      !confirm(
+        `Stop printing?\n\n${waiting} label(s) are queued or coming out. ` +
+          `Everything still waiting is canceled; at most the few already ` +
+          `claimed by the printer finish. Reprint anything you need from ` +
+          `the Queue or the batch's Print step.`
+      )
+    )
+      return;
+    const btn = document.getElementById("printer-stop");
+    btn.disabled = true;
+    try {
+      const res = await postJson("/api/print-jobs/stop", {
+        requested_by: operatorEl.value || null,
+      });
+      alert(res.message);
+    } catch (err) {
+      alert(err.message);
+    }
+    loadQueue();
+  });
+
 // Re-align (Nick, 2026-08-25): a rip at the tear bar drags the liner
 // forward a random amount, so the next two labels print off-center and a
 // third feeds blank while the printer finds itself again. This queues a
@@ -8346,6 +8418,13 @@ async function loadQueue() {
         "/api/print-agent/script (open it with the station link), " +
         "replace print_agent.py, and restart the print agent's " +
         "scheduled task.";
+    // Stop printing is live only while something is actually queued or
+    // coming out of the printer; otherwise it sits grayed (Nick,
+    // 2026-08-25).
+    const stopBtn = document.getElementById("printer-stop");
+    stopBtn.disabled = !(data.jobs || []).some(
+      (j) => j.status === "pending" || j.status === "printing"
+    );
     queueData = data;
     renderQueue();
   } catch (err) {
