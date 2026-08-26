@@ -3,6 +3,22 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-08-25.
 
+## 🔥 DTU poll storm: the gun's orphaned UI loops — ✅ FIXED 2026-08-26 (C72 3.62)
+
+The midday 100%-DTU flatline was pure CPU with near-zero IO, and the
+plan cache told the story: /api/c72/tuning + /api/c72/commands hit
+~243k times in 48 minutes (~85 polls/s vs the designed 0.5/s). The
+C72's 400ms refreshTick (which carries those polls) is posted in
+onCreate and reschedules itself forever - activity recreations (theme
+toggle, remote recreate, config changes) each leaked one more copy of
+the loop, stacking into the storm. Sub-0.1ms queries, but that request
+volume alone saturates Basic's CPU sliver. Fix: static generation
+counter per onCreate; stale loops die on their next tick (3.62, code
+80, on prod - the gun should take the update). Until it updates, a
+couple of stacked loops (~1.2 polls/s) linger, which is harmless.
+Lesson recorded: DTU on this database = REQUEST VOLUME first, query
+weight second.
+
 ## 🧰 Six-pack: product window, review truth, wrong-bin strays — ✅ DEPLOYED 2026-08-26 (C72 3.61)
 
 Nick's afternoon batch, all six shipped (suite test_batch6.py, 15
