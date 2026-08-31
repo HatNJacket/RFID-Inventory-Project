@@ -271,6 +271,42 @@ with Session(get_engine()) as s:
                                barcode=item.barcode,
                                bin_location=item.bin_location,
                                shopify_variant_id=item.shopify_variant_id))
+    # --- Labels Not Printed demo (the Update-stock safety net) ----------
+    # A planner push that updated Shopify WITHOUT printing: the boxes
+    # are booked on their own receiving batch, no print jobs exist, and
+    # one open Review task tracks the owed labels.
+    ub = Batch(bin_name="RECEIVING", kind="receiving", status="collecting",
+               created_by="TC-Planner · SO 940 · AirGradient")
+    s.add(ub)
+    s.flush()
+    s.add_all([
+        BatchItem(batch_id=ub.id, scanned_code="806", resolved=True,
+                  sku="AG-ONE-KIT", barcode="806",
+                  product_title="AirGradient One Kit (unprinted demo)",
+                  shopify_variant_id="t:U1", qty_scanned=3,
+                  expected_qty=3, bin_location="I5-1"),
+        BatchItem(batch_id=ub.id, scanned_code="807", resolved=True,
+                  sku="AG-OPEN-AIR", barcode="807",
+                  product_title="AirGradient Open Air (unprinted demo)",
+                  shopify_variant_id="t:U2", qty_scanned=2,
+                  expected_qty=2, bin_location="I5-2"),
+    ])
+    unprinted_task = ReviewTask(
+        category="labels-not-printed",
+        product_title="TC-Planner · SO 940 · AirGradient",
+        detail=("TC-Planner · SO 940 · AirGradient: stock was updated in "
+                f"Shopify without printing labels. 5 label(s) are waiting "
+                f"on receiving batch #{ub.id}. Resolve to queue them - "
+                "the normal receiving print and pair flow takes over."),
+        batch_id=ub.id, created_by="Nick",
+    )
+    s.add(unprinted_task)
+    s.flush()
+    from app.models import ReviewNote
+    s.add(ReviewNote(task_key=str(unprinted_task.id),
+                     note="Stock push without labels: 5 unit(s) across "
+                          "2 product(s).",
+                     created_by="Nick"))
     # --- Sold-out shortcut demo tags (fake on-hand for SOLDOUT-1 is 0) --
     for epc in ("50FD0000000000000000000A", "50FD0000000000000000000B"):
         s.add(RfidAssignment(rfid_id=epc, shopify_variant_id="t:SO",
