@@ -620,7 +620,14 @@
                    autocapitalize="off" spellcheck="false"
                    placeholder="Scan a product barcode…" />
             <button class="reset" id="sortship-clear" type="button"
-                    title="Empties the scanned pile (nothing was saved anywhere)">Clear pile</button>
+                    title="Empties the scanned pile (nothing was saved anywhere). Set definitions made with Bundle components are KEPT for future shipments.">Clear pile</button>
+            <button class="reset" id="sortship-bundle" type="button"
+                    title="Some products ship as component boxes of ONE listed set (Buckeye's S30 Pro set, the NexStar bracket + tripod clip combo). Pick the component rows, name the set they belong to, and every future scan of a component counts toward one set unit.">🧺 Bundle components…</button>
+          </div>
+          <div class="sortselbar" id="sortship-selbar" hidden>
+            <span id="sortship-selcount">0 selected</span>
+            <button class="print__btn" id="sortship-sellink" type="button">Link selected into a set…</button>
+            <button class="reset" id="sortship-selcancel" type="button">Cancel</button>
           </div>
           <p class="linkbox__text" id="sortship-status"></p>
           <div id="sortship-groups"></div>

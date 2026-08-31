@@ -193,6 +193,14 @@ with Session(get_engine()) as s:
         m("Synta-RigelQuikfinder",
           "Buckeye Synta Vixen Base for the Rigel QuikFinder",
           "E4-2", 2, barcode="54318861007862"),
+        # Bundle demo: scan S30-DEW and S30-DUST, bundle them into
+        # S30PRO-SET (which has an open order below).
+        m("S30PRO-SET", "Buckeye Seestar S30 Pro Accessories Set",
+          "E4-4", 0, barcode="70000000000001"),
+        m("S30-DEW", "Buckeye S30 Pro Dew Shield (component)",
+          "E4-4", 0, barcode="70000000000002"),
+        m("S30-DUST", "Buckeye S30 Pro Dust Cap (component)",
+          "E4-4", 0, barcode="70000000000003"),
     ])
     s.add(RfidAssignment(rfid_id="MMMM0000000000000000000M",
                          shopify_variant_id="t:MM", sku="MISMATCH-1",
@@ -448,6 +456,14 @@ def _fake_on_order(sku, operator=None):
              "ordered": 2, "received": 0, "remaining": 2},
         ]
         base["total_remaining"] = 3
+    if (sku or "").upper() == "S30PRO-SET":
+        base["orders"] = [{
+            "order_id": 14, "reference_number": 948,
+            "vendor": "BuckeyeStargazer", "status": "partial_received",
+            "expected_date": "2026-09-07",
+            "ordered": 2, "received": 0, "remaining": 2,
+        }]
+        base["total_remaining"] = 2
     if (sku or "").upper() == "ZWO-SLIDERCASE-GEN2":
         base["orders"] = [{
             "order_id": 13, "reference_number": 960,

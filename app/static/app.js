@@ -13482,12 +13482,56 @@ let sortShipRows = {};
 let sortShipSeq = [];
 let sortShipPlannerUrl = null;
 let sortShipBusy = false;
+// Component-set definitions (Nick, 2026-08-31: Buckeye's S30 Pro set,
+// the NexStar bracket + tripod-clip combo): a SET's sku plus the
+// component skus whose boxes each count toward one set unit. Kept in
+// their own localStorage key so Clear pile never forgets them - future
+// shipments auto-group. RFID-side only; the planner never changes.
+let sortShipDefs = {};
+// Session cache of the SET product's open orders, keyed like defs.
+let sortShipSetOrders = {};
+let sortShipSelect = false;
+let sortShipSelected = new Set();
+
+function sortShipLoadDefs() {
+  try {
+    sortShipDefs = JSON.parse(
+      localStorage.getItem("sortship_bundle_defs") || "{}"
+    ) || {};
+  } catch (err) {
+    sortShipDefs = {};
+  }
+}
+
+function sortShipSaveDefs() {
+  try {
+    localStorage.setItem(
+      "sortship_bundle_defs", JSON.stringify(sortShipDefs)
+    );
+  } catch (err) {
+    /* per-session fallback is fine */
+  }
+}
+
+function sortShipComponentDefKey(sku) {
+  const up = (sku || "").trim().toUpperCase();
+  if (!up) return null;
+  for (const [defKey, def] of Object.entries(sortShipDefs)) {
+    if ((def.components || []).some((c) => (c.sku || "").toUpperCase() === up))
+      return defKey;
+  }
+  return null;
+}
 
 function sortShipSave() {
   try {
     localStorage.setItem(
       "sortship_pile",
-      JSON.stringify({ rows: sortShipRows, seq: sortShipSeq })
+      JSON.stringify({
+        rows: sortShipRows,
+        seq: sortShipSeq,
+        setOrders: sortShipSetOrders,
+      })
     );
   } catch (err) {
     /* per-session fallback is fine */
@@ -13495,6 +13539,7 @@ function sortShipSave() {
 }
 
 function sortShipRestore() {
+  sortShipLoadDefs();
   try {
     const raw = localStorage.getItem("sortship_pile");
     if (!raw) return;
@@ -13502,10 +13547,38 @@ function sortShipRestore() {
     if (data && data.rows && data.seq) {
       sortShipRows = data.rows;
       sortShipSeq = data.seq;
+      sortShipSetOrders = data.setOrders || {};
     }
   } catch (err) {
     /* corrupted draft - start clean */
   }
+}
+
+async function sortShipFetchSetOrders(defKey) {
+  if (sortShipSetOrders[defKey]) return sortShipSetOrders[defKey];
+  const def = sortShipDefs[defKey];
+  if (!def) return [];
+  let orders = [];
+  try {
+    const oo = await apiJson(
+      `/api/planner/on-order/${encodeURIComponent(def.setSku)}` +
+        `?operator=${encodeURIComponent(operatorEl.value || "")}`
+    );
+    if (oo.ok) {
+      orders = (oo.orders || [])
+        .filter((o) => (o.remaining || 0) > 0)
+        .sort(
+          (a, b) =>
+            String(a.expected_date || "9999").localeCompare(
+              String(b.expected_date || "9999")
+            ) || a.order_id - b.order_id
+        );
+    }
+  } catch (err) {
+    /* no orders - the set lands in unexplained */
+  }
+  sortShipSetOrders[defKey] = orders;
+  return orders;
 }
 
 function setSortShipStatus(text) {
@@ -13555,6 +13628,12 @@ async function sortShipScan(code) {
       }
     }
     const key = ((product && product.sku) || term).toUpperCase();
+    // A component of a defined SET never sorts on its own: its scans
+    // tally toward one set unit (Nick, 2026-08-31).
+    const bundleKey = product
+      ? sortShipComponentDefKey(product.sku)
+      : null;
+    if (bundleKey) await sortShipFetchSetOrders(bundleKey);
     let row = sortShipRows[key];
     if (!row) {
       row = {
@@ -13565,6 +13644,7 @@ async function sortShipScan(code) {
         image_url: product ? product.image_url : null,
         matchNote,
         suggestion,
+        bundleKey,
         orders: [],
         alloc: {},
         unexplained: 0,
@@ -13602,6 +13682,19 @@ async function sortShipScan(code) {
       sortShipRows[key] = row;
       sortShipSeq.push(key);
     }
+    if (row.bundleKey && sortShipDefs[row.bundleKey]) {
+      // Component tally only - the SET allocates as one product.
+      row.scanned += 1;
+      sortShipSave();
+      renderSortShip();
+      const def = sortShipDefs[row.bundleKey];
+      const units = sortShipBundleUnits(row.bundleKey);
+      setSortShipStatus(
+        `${row.title}: +1 component of ${def.setSku} - set count now ` +
+          `${units}.`
+      );
+      return;
+    }
     const target = row.orders.find(
       (o) => (row.alloc[o.order_id] || 0) < o.remaining
     );
@@ -13628,12 +13721,25 @@ async function sortShipScan(code) {
   }
 }
 
+function sortShipBundleUnits(defKey) {
+  const def = sortShipDefs[defKey];
+  if (!def || !(def.components || []).length) return 0;
+  let units = Infinity;
+  for (const c of def.components) {
+    const row = sortShipRows[(c.sku || "").toUpperCase()];
+    units = Math.min(units, row ? row.scanned : 0);
+  }
+  return Number.isFinite(units) ? units : 0;
+}
+
 function sortShipGroups() {
   const orders = new Map();
   const unexplained = [];
   for (const key of sortShipSeq) {
     const row = sortShipRows[key];
     if (!row) continue;
+    // Set components render inside their bundle block, never alone.
+    if (row.bundleKey && sortShipDefs[row.bundleKey]) continue;
     for (const o of row.orders) {
       const n = row.alloc[o.order_id] || 0;
       if (!n) continue;
@@ -13644,15 +13750,50 @@ function sortShipGroups() {
     }
     if (row.unexplained > 0) unexplained.push(row);
   }
-  return { orders, unexplained };
+  // Bundles: one set unit per full component sweep. A bundle lives in
+  // exactly ONE bucket (Nick, 2026-08-31: never spread across lists) -
+  // the oldest order with capacity takes what it can, any excess is
+  // noted on the block rather than spilling to a second bucket.
+  const bundles = [];
+  for (const [defKey, def] of Object.entries(sortShipDefs)) {
+    const members = (def.components || []).map((c) => ({
+      comp: c,
+      row: sortShipRows[(c.sku || "").toUpperCase()] || null,
+    }));
+    if (!members.some((m) => m.row && m.row.scanned > 0)) continue;
+    const units = sortShipBundleUnits(defKey);
+    const ordersList = sortShipSetOrders[defKey] || [];
+    const target = ordersList.find((o) => (o.remaining || 0) > 0) || null;
+    const alloc = target ? Math.min(units, target.remaining) : 0;
+    bundles.push({
+      defKey,
+      def,
+      members,
+      units,
+      target,
+      alloc,
+      leftover: units - alloc,
+    });
+    if (target && !orders.has(target.order_id)) {
+      orders.set(target.order_id, { meta: target, entries: [] });
+    }
+  }
+  return { orders, unexplained, bundles };
 }
 
 function renderSortShip() {
   const host = document.getElementById("sortship-groups");
   if (!host) return;
-  const { orders, unexplained } = sortShipGroups();
+  const { orders, unexplained, bundles } = sortShipGroups();
   const rowHtml = (row, n, act) => `
     <div class="sortrow">
+      ${
+        sortShipSelect && !row.bundleKey
+          ? `<input type="checkbox" class="sortsel" data-sel="${escapeHtml(row.key)}" ${
+              sortShipSelected.has(row.key) ? "checked" : ""
+            } />`
+          : ""
+      }
       ${
         row.image_url
           ? `<img class="bcell__img" src="${escapeHtml(row.image_url)}" alt="" loading="lazy" />`
@@ -13669,9 +13810,46 @@ function renderSortShip() {
       <button class="reset sortrow__minus" type="button" title="Mis-scan: remove one"
         data-key="${escapeHtml(row.key)}" data-act="${act}">−</button>
     </div>`;
+  // The bundle block (Nick, 2026-08-31): components looped in one
+  // outline, each with its own count; the SET count sits centered
+  // beside them.
+  const bundleHtml = (b) => `
+    <div class="sortbundle">
+      <div class="sortbundle__members">
+        ${b.members
+          .map((m) =>
+            m.row
+              ? rowHtml(m.row, m.row.scanned, "bun")
+              : `<div class="sortrow sortrow--ghost">
+                  <span class="bcell__img bcell__img--empty"></span>
+                  <span class="sortrow__name">${escapeHtml(
+                    m.comp.title || m.comp.sku
+                  )} <span class="mono">· ${escapeHtml(m.comp.sku)}</span></span>
+                  <span class="sortrow__n">× 0</span>
+                </div>`
+          )
+          .join("")}
+      </div>
+      <div class="sortbundle__side">
+        <div class="sortbundle__count">× ${b.units}</div>
+        <div class="mono sortbundle__sku">${escapeHtml(b.def.setSku)}</div>
+        ${
+          b.leftover > 0
+            ? `<div class="recent__note">+${b.leftover} beyond the order</div>`
+            : ""
+        }
+        <button class="reset" type="button" data-unbundle="${escapeHtml(b.defKey)}"
+          title="Dissolves this set definition: the component scans re-sort as their own products, and future scans stop grouping.">Unbundle</button>
+      </div>
+    </div>`;
   let html = "";
   for (const [orderId, g] of orders) {
-    const units = g.entries.reduce((s, e) => s + e.n, 0);
+    const groupBundles = bundles.filter(
+      (b) => b.target && b.target.order_id === orderId
+    );
+    const units =
+      g.entries.reduce((s, e) => s + e.n, 0) +
+      groupBundles.reduce((s, b) => s + b.alloc, 0);
     const ref =
       g.meta.reference_number != null ? g.meta.reference_number : orderId;
     html += `
@@ -13689,18 +13867,21 @@ function renderSortShip() {
             title="Opens this stock order in the TC-Planner with these To-receive counts pre-filled. Review there, then Save / Update stock / Print labels - nothing is saved from here.">Open in TC-Planner (pre-filled)</button>
         </div>
         ${g.entries.map((e) => rowHtml(e.row, e.n, String(orderId))).join("")}
+        ${groupBundles.map(bundleHtml).join("")}
       </div>`;
   }
-  if (unexplained.length) {
+  const strayBundles = bundles.filter((b) => !b.target);
+  if (unexplained.length || strayBundles.length) {
     html += `
       <div class="sortgroup sortgroup--warn">
         <div class="sortgroup__head">
           <span class="sortgroup__title">⚠ No order explains these</span>
-          <span class="recent__note">${unexplained.reduce(
-            (s, r) => s + r.unexplained,
-            0
-          )} unit(s)</span>
+          <span class="recent__note">${
+            unexplained.reduce((s, r) => s + r.unexplained, 0) +
+            strayBundles.reduce((s, b) => s + b.units, 0)
+          } unit(s)</span>
         </div>
+        ${strayBundles.map(bundleHtml).join("")}
         ${unexplained
           .map(
             (row) =>
@@ -13729,18 +13910,33 @@ function renderSortShip() {
       if (!row) return;
       if (btn.dataset.act === "unx") {
         row.unexplained = Math.max(0, row.unexplained - 1);
-      } else {
+      } else if (btn.dataset.act !== "bun") {
         const oid = Number(btn.dataset.act);
         row.alloc[oid] = Math.max(0, (row.alloc[oid] || 0) - 1);
       }
       row.scanned = Math.max(0, row.scanned - 1);
-      if (row.scanned === 0) {
+      if (row.scanned === 0 && !row.bundleKey) {
         delete sortShipRows[row.key];
         sortShipSeq = sortShipSeq.filter((k) => k !== row.key);
       }
       sortShipSave();
       renderSortShip();
     })
+  );
+  host.querySelectorAll(".sortsel").forEach((cb) =>
+    cb.addEventListener("change", () => {
+      if (cb.checked) sortShipSelected.add(cb.dataset.sel);
+      else sortShipSelected.delete(cb.dataset.sel);
+      const n = sortShipSelected.size;
+      document.getElementById("sortship-selcount").textContent =
+        `${n} selected`;
+      document.getElementById("sortship-sellink").disabled = n < 2;
+    })
+  );
+  host.querySelectorAll("[data-unbundle]").forEach((btn) =>
+    btn.addEventListener("click", () =>
+      sortShipUnbundle(btn.dataset.unbundle)
+    )
   );
   host.querySelectorAll(".sortgroup__go").forEach((btn) =>
     btn.addEventListener("click", () =>
@@ -13819,15 +14015,20 @@ async function sortShipResolveSuggestion(key, how) {
 }
 
 function sortShipOpenPlanner(orderId) {
-  const { orders } = sortShipGroups();
+  const { orders, bundles } = sortShipGroups();
   const g = orders.get(orderId);
   if (!g) return;
-  const payload = {
-    order_id: orderId,
-    items: g.entries
-      .filter((e) => e.row.sku)
-      .map((e) => ({ sku: e.row.sku, qty: e.n })),
-  };
+  const items = g.entries
+    .filter((e) => e.row.sku)
+    .map((e) => ({ sku: e.row.sku, qty: e.n }));
+  // Bundles hand off as the SET product - components never reach the
+  // planner (Nick, 2026-08-31: the planner stays untouched).
+  for (const b of bundles) {
+    if (b.target && b.target.order_id === orderId && b.alloc > 0) {
+      items.push({ sku: b.def.setSku, qty: b.alloc });
+    }
+  }
+  const payload = { order_id: orderId, items };
   if (!sortShipPlannerUrl) {
     alert(
       "The planner bridge doesn't report its address - open the " +
@@ -13902,3 +14103,152 @@ document.getElementById("sortship-scan").addEventListener("keydown", (e) => {
   e.target.value = "";
   sortShipScan(val);
 });
+
+// --- Component bundles (Nick, 2026-08-31) -----------------------------------
+function sortShipExitSelect() {
+  sortShipSelect = false;
+  sortShipSelected = new Set();
+  document.getElementById("sortship-selbar").hidden = true;
+  document.getElementById("sortship-bundle").textContent =
+    "🧺 Bundle components…";
+  renderSortShip();
+}
+
+document.getElementById("sortship-bundle").addEventListener("click", () => {
+  if (sortShipSelect) {
+    sortShipExitSelect();
+    return;
+  }
+  sortShipSelect = true;
+  sortShipSelected = new Set();
+  document.getElementById("sortship-selbar").hidden = false;
+  document.getElementById("sortship-selcount").textContent = "0 selected";
+  document.getElementById("sortship-sellink").disabled = true;
+  document.getElementById("sortship-bundle").textContent =
+    "🧺 Picking components…";
+  renderSortShip();
+  setSortShipStatus(
+    "Tick the component rows that arrive together as ONE listed set, " +
+      "then press Link selected."
+  );
+});
+
+document
+  .getElementById("sortship-selcancel")
+  .addEventListener("click", sortShipExitSelect);
+
+document
+  .getElementById("sortship-sellink")
+  .addEventListener("click", () => sortShipCreateBundle());
+
+async function sortShipCreateBundle() {
+  const keys = [...sortShipSelected].filter(
+    (k) => sortShipRows[k] && sortShipRows[k].sku && !sortShipRows[k].bundleKey
+  );
+  if (keys.length < 2) {
+    alert("Pick at least two RESOLVED component rows (unknown codes "
+      + "can't join a set).");
+    return;
+  }
+  const label = prompt(
+    "Which SET do these boxes belong to?\n\nScan or type the set's SKU " +
+      "or label (for example S30Pro-Set):"
+  );
+  if (!label || !label.trim()) return;
+  let setProduct = null;
+  try {
+    setProduct = await apiJson(
+      `/api/products/by-barcode/${encodeURIComponent(label.trim())}`
+    );
+  } catch (err) {
+    try {
+      const m = await apiJson(
+        `/api/products/label-match/${encodeURIComponent(label.trim())}`
+      );
+      if (m.ok) setProduct = m.product;
+      else if (
+        m.suggestion &&
+        confirm(
+          `Did you mean ${m.suggestion.sku} ` +
+            `("${m.suggestion.product_title}")?`
+        )
+      ) {
+        setProduct = m.suggestion;
+      }
+    } catch (err2) {
+      /* falls through to not-found */
+    }
+  }
+  if (!setProduct || !setProduct.sku) {
+    alert(`No product found for "${label}".`);
+    return;
+  }
+  const defKey = setProduct.sku.trim().toUpperCase();
+  if (
+    sortShipDefs[defKey] &&
+    !confirm(
+      `A set definition for ${setProduct.sku} already exists - replace it?`
+    )
+  )
+    return;
+  sortShipDefs[defKey] = {
+    setSku: setProduct.sku,
+    setTitle: setProduct.product_title || setProduct.sku,
+    components: keys.map((k) => ({
+      sku: sortShipRows[k].sku,
+      title: sortShipRows[k].title,
+    })),
+  };
+  sortShipSaveDefs();
+  for (const k of keys) {
+    const r = sortShipRows[k];
+    r.bundleKey = defKey;
+    r.alloc = {};
+    r.unexplained = 0;
+  }
+  delete sortShipSetOrders[defKey];
+  await sortShipFetchSetOrders(defKey);
+  sortShipSave();
+  sortShipExitSelect();
+  setSortShipStatus(
+    `${keys.length} component(s) linked into ${setProduct.sku} - a full ` +
+      `sweep of them counts one set. Remembered for future shipments; ` +
+      `Unbundle forgets it.`
+  );
+}
+
+async function sortShipUnbundle(defKey) {
+  const def = sortShipDefs[defKey];
+  if (!def) return;
+  if (
+    !confirm(
+      `Unbundle ${def.setSku}?\n\nThe component scans re-sort as their ` +
+        `own products, and future scans stop grouping.`
+    )
+  )
+    return;
+  delete sortShipDefs[defKey];
+  sortShipSaveDefs();
+  delete sortShipSetOrders[defKey];
+  const members = [];
+  for (const c of def.components || []) {
+    const row = sortShipRows[(c.sku || "").toUpperCase()];
+    if (row) {
+      members.push({ term: row.term || row.key, n: row.scanned, key: row.key });
+    }
+  }
+  for (const m of members) {
+    delete sortShipRows[m.key];
+    sortShipSeq = sortShipSeq.filter((k) => k !== m.key);
+  }
+  sortShipSave();
+  for (const m of members) {
+    for (let i = 0; i < m.n; i++) {
+      await sortShipScan(m.term);
+    }
+  }
+  renderSortShip();
+  setSortShipStatus(
+    `${def.setSku} unbundled - ${members.length} product(s) re-sorted.`
+  );
+}

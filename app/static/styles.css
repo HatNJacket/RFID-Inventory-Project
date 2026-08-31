@@ -2766,3 +2766,41 @@ tr.binaudit-untagged td { opacity: 0.72; }
 
 /* Near-miss resolve buttons under an unexplained sorter row */
 .sortrow__fix { display: flex; gap: 8px; flex-wrap: wrap; margin: 2px 0 8px 42px; }
+
+/* Component bundles in the shipment sorter (Nick, 2026-08-31): the
+   components loop inside one outline; the SET count sits centered
+   beside them. */
+.sortbundle {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  border: 2px dashed var(--accent, #5c6ac4);
+  border-radius: 10px;
+  padding: 6px 10px;
+  margin: 8px 0;
+}
+.sortbundle__members { flex: 1; min-width: 0; }
+.sortbundle__side {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-left: 1px solid var(--line);
+  min-width: 120px;
+  text-align: center;
+}
+.sortbundle__count { font-size: 22px; font-weight: 800; }
+.sortbundle__sku { font-size: 11px; word-break: break-all; }
+.sortrow--ghost { opacity: 0.55; }
+.sortselbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.sortsel { width: 18px; height: 18px; }
