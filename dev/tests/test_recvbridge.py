@@ -98,13 +98,26 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
     check("only the newly received boxes queue", r.json()["queued"] == 2,
           r.json())
 
-    # A different stock order gets its own batch.
+    # Same-VENDOR stock orders merge into one batch (Nick, 2026-08-31):
+    # one pallet, one pairing session - and the batch name keeps every
+    # stock order it covers.
     r = cl.post("/api/receiving/prints", json={
         "items": [{"sku": "ZWO EAF-5V", "quantity": 1}],
         "requested_by": "Nick",
         "reference": "SO 43 · ZWO",
     })
-    check("a different order gets its own batch",
+    check("a same-vendor order lands on the SAME batch",
+          r.json()["batch"]["id"] == bid, r.json()["batch"])
+    check("the batch name lists every stock order it covers",
+          r.json()["batch"]["created_by"]
+          == "TC-Planner · SO 42, SO 43 · ZWO", r.json()["batch"])
+    # A different VENDOR still gets its own batch.
+    r = cl.post("/api/receiving/prints", json={
+        "items": [{"sku": "ZWO EAF-5V", "quantity": 1}],
+        "requested_by": "Nick",
+        "reference": "SO 90 · Askar",
+    })
+    check("a different vendor gets its own batch",
           r.json()["batch"]["id"] != bid, r.json()["batch"])
 
     listing = cl.get("/api/print-jobs?limit=200").json()
@@ -184,7 +197,7 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
     r = cl.post("/api/receiving/prints", json={
         "items": [{"sku": "ZWO EAF-5V", "quantity": 1},
                   {"sku": "GHOST-9", "quantity": 1}],
-        "requested_by": "Nick", "reference": "SO 44 · ZWO",
+        "requested_by": "Nick", "reference": "SO 44 · Baader",
     })
     b2 = r.json()["batch"]["id"]
     items2 = cl.get(f"/api/batches/{b2}").json()["items"]
@@ -228,7 +241,7 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
     # A count corrected DOWN to what's tagged also closes the shipment.
     r = cl.post("/api/receiving/prints", json={
         "items": [{"sku": "ZWO EAF-5V", "quantity": 2}],
-        "requested_by": "Nick", "reference": "SO 45 · ZWO",
+        "requested_by": "Nick", "reference": "SO 45 · Sky-Watcher",
     })
     b3 = r.json()["batch"]["id"]
     it3 = cl.get(f"/api/batches/{b3}").json()["items"][0]

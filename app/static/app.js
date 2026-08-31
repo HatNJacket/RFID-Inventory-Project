@@ -5112,6 +5112,44 @@ function recvProblemText(item) {
   return null;
 }
 
+// Over-pair dismissals survive reloads (localStorage; item ids never
+// repeat). An over-paired product stays LISTED and flagged until the
+// operator dismisses it by hand (Nick, 2026-08-31).
+function recvOverDismissedSet() {
+  try {
+    return new Set(
+      JSON.parse(localStorage.getItem("recv_over_dismissed") || "[]")
+    );
+  } catch (err) {
+    return new Set();
+  }
+}
+
+function recvDismissOver(id) {
+  const s = recvOverDismissedSet();
+  s.add(id);
+  try {
+    localStorage.setItem("recv_over_dismissed", JSON.stringify([...s]));
+  } catch (err) {
+    /* per-session fallback is fine */
+  }
+}
+
+// Boxes this row stands for: loose scans plus sealed cases.
+function recvWant(item) {
+  return (item.qty_scanned || 0) + (item.case_count || 0);
+}
+
+// Fully-paired products leave the list (Nick, 2026-08-31) - unless
+// they're OVER-paired, which stays as a flag until dismissed.
+function recvItemDone(item, dismissed) {
+  if (recvProblemText(item)) return false;
+  const want = recvWant(item);
+  const paired = item.paired_count || 0;
+  if (want <= 0 || paired < want) return false;
+  return paired === want || dismissed.has(item.id);
+}
+
 function renderReceivingList() {
   const summary = document.getElementById("recv-summary");
   const list = document.getElementById("recv-list");
@@ -5120,33 +5158,45 @@ function renderReceivingList() {
   document.getElementById("recv-done").hidden = !(
     batch && batch.status === "done"
   );
+  const dismissed = recvOverDismissedSet();
+  const done = items.filter((i) => recvItemDone(i, dismissed));
+  const shown = items.filter((i) => !recvItemDone(i, dismissed));
   const printed = items.reduce((n, i) => n + (i.printed_count || 0), 0);
   const tagged = items.reduce((n, i) => n + (i.paired_count || 0), 0);
-  const flagged = items.filter((i) => recvProblemText(i)).length;
+  const flagged = shown.filter((i) => recvProblemText(i)).length;
   summary.textContent = items.length
     ? `${items.length} product(s) · ${printed} label(s) printed · ` +
       `${tagged} tagged` +
-      (flagged ? ` · ⚠ ${flagged} flagged` : "")
+      (flagged ? ` · ⚠ ${flagged} flagged` : "") +
+      (done.length ? ` · ${done.length} fully tagged (hidden)` : "")
     : "";
   summary.hidden = !items.length;
   empty.hidden = !!items.length;
+  if (recvFocusId != null && !shown.some((i) => i.id === recvFocusId)) {
+    recvFocusId = null;
+  }
   list.innerHTML = "";
+  if (items.length && !shown.length) {
+    const all = document.createElement("li");
+    all.className = "recvdivider";
+    all.textContent = "every product is fully tagged ✓";
+    list.append(all);
+  }
   // The focused product leads the list with a divider under it - the
-  // current work sits on top, everything else waits below (Nick,
-  // 2026-08-31).
+  // current work sits on top, the rest waits below (Nick, 2026-08-31).
   const focusedItem =
-    recvFocusId != null ? items.find((i) => i.id === recvFocusId) : null;
+    recvFocusId != null ? shown.find((i) => i.id === recvFocusId) : null;
   if (focusedItem) {
     list.append(recvCard(focusedItem));
     const divider = document.createElement("li");
     divider.className = "recvdivider";
     divider.textContent = "products to scan";
     list.append(divider);
-    items
+    shown
       .filter((i) => i.id !== focusedItem.id)
       .forEach((item) => list.append(recvCard(item)));
   } else {
-    items.forEach((item) => list.append(recvCard(item)));
+    shown.forEach((item) => list.append(recvCard(item)));
   }
   syncRecvSweepPoll(
     !!focusedItem && !recvProblemText(focusedItem) && batch && !batch.completed_at
@@ -5162,7 +5212,9 @@ function recvCard(item) {
   const printedN = item.printed_count || 0;
   const taggedN = item.paired_count || 0;
   const planner = item.expected_qty;
-  if (problem) li.classList.add("bcell--warn");
+  const want = recvWant(item);
+  const over = !problem && want > 0 && taggedN > want;
+  if (problem || over) li.classList.add("bcell--warn");
   else if (received > 0 && taggedN >= received)
     li.classList.add("bcell--exact");
   if (focused) li.classList.add("recvcard--focused");
@@ -5198,14 +5250,16 @@ function recvCard(item) {
         ${
           problem
             ? `<div class="bcell__meta recvcard__flag">⚠ Problem${focused ? "" : " · select to see why"}</div>`
-            : missing
-              ? `<div class="bcell__meta recvcard__flag">⚠ ${missing} label(s) not printed yet${focused ? "" : " · select for details"}</div>`
-              : ""
+            : over
+              ? `<div class="bcell__meta recvcard__flag">⚠ ${taggedN - want} more tag(s) than boxes${focused ? "" : " · select to review"}</div>`
+              : missing
+                ? `<div class="bcell__meta recvcard__flag">⚠ ${missing} label(s) not printed yet${focused ? "" : " · select for details"}</div>`
+                : ""
         }
       </div>
       <span class="bcell__tracker" title="tags paired / products received">${taggedN}/${received}</span>
     </div>
-    ${focused ? recvFocusBody(item, problem, received, printedN, taggedN, missing) : ""}
+    ${focused ? recvFocusBody(item, problem, received, printedN, taggedN, missing, over) : ""}
     <div class="recvcard__btns">
       ${
         item.resolved && !item.skip_reason
@@ -5251,6 +5305,15 @@ function recvCard(item) {
         recvPullSweep(item);
       } else if (btn.dataset.act === "edit") {
         openProductHistory(item.sku || item.barcode);
+      } else if (btn.dataset.act === "overdismiss") {
+        recvDismissOver(item.id);
+        recvFocusId = null;
+        renderReceivingList();
+        setBatchResult(
+          `${itemDisplayName(item)}: over-pair flag dismissed - the ` +
+            `extra tag(s) stay paired.`,
+          "ok"
+        );
       }
     })
   );
@@ -5261,10 +5324,22 @@ function recvCard(item) {
   return li;
 }
 
-function recvFocusBody(item, problem, received, printedN, taggedN, missing) {
+function recvFocusBody(item, problem, received, printedN, taggedN, missing, over) {
   if (problem) {
     return `<div class="recvcard__body recvcard__body--problem">${escapeHtml(problem)}</div>`;
   }
+  // Over-paired: more tags answered to this product than it has boxes -
+  // usually a spare or blank label swept by accident. Stays flagged
+  // until dismissed by hand (Nick, 2026-08-31).
+  const overBlock = over
+    ? `<div class="recvcard__body recvcard__body--problem">
+        ⚠ ${taggedN} tag(s) paired against ${recvWant(item)} box(es).
+        A spare or blank label in range may have been swept onto this
+        product - unpair it from Edit product → live tags. If the extra
+        tag is real (a box the count missed), fix the count or dismiss.
+        <button class="reset" type="button" data-act="overdismiss">Dismiss this flag</button>
+      </div>`
+    : "";
   const target = Math.max(received, printedN, taggedN, 1);
   const tagPct = Math.round((taggedN / target) * 100);
   const prtPct = Math.round((Math.max(printedN - taggedN, 0) / target) * 100);
@@ -5288,6 +5363,7 @@ function recvFocusBody(item, problem, received, printedN, taggedN, missing) {
           title="Pair every NEW tag from the most recent C72 sweep (SWEEP tab → SEND on the gun) to this product. Tags already tied to anything are skipped, never stolen.">📶 Use latest C72 sweep</button>
         <span class="bulknote" id="recv-sweep-note" hidden></span>
       </div>
+      ${overBlock}
     </div>`;
 }
 

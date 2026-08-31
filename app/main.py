@@ -8346,17 +8346,47 @@ def _receiving_intake(
     no-labels path (the Update-stock safety net) books the SAME rows so
     the boxes are never lost; their labels queue later from the Review
     task. Caller commits."""
-    tag = ("TC-Planner"
-           + (f" · {payload.reference.strip()}"
-              if payload.reference and payload.reference.strip() else "")
-           )[:100]
-    batch = session.scalar(
-        select(Batch).where(
-            Batch.kind == "receiving",
-            Batch.status.notin_(("done", "abandoned")),
-            Batch.created_by == tag,
-        ).order_by(Batch.id.desc())
-    )
+    ref = (payload.reference or "").strip()
+    parts = [p.strip() for p in ref.split("·")] if ref else []
+    vendor = parts[1] if len(parts) > 1 and parts[1] else None
+    so_part = parts[0] if parts else ""
+    batch = None
+    if vendor:
+        # One receiving batch per VENDOR (Nick, 2026-08-31): same-vendor
+        # stock orders arrive on one pallet, so their labels and pairing
+        # belong together. The batch name keeps EVERY stock order it
+        # covers - "TC-Planner · SO 1254, SO 1266 · ZWO".
+        for cand in session.scalars(
+            select(Batch).where(
+                Batch.kind == "receiving",
+                Batch.status.notin_(("done", "abandoned")),
+                Batch.created_by.like("TC-Planner ·%"),
+            ).order_by(Batch.id.desc())
+        ):
+            cparts = [p.strip() for p in (cand.created_by or "").split("·")]
+            if (len(cparts) >= 3
+                    and cparts[-1].upper() == vendor.upper()):
+                batch = cand
+                sos = [s.strip() for s in cparts[1].split(",")
+                       if s.strip()]
+                if so_part and so_part not in sos:
+                    sos.append(so_part)
+                    cand.created_by = (
+                        "TC-Planner · " + ", ".join(sos)
+                        + " · " + cparts[-1]
+                    )[:100]
+                break
+        tag = (batch.created_by if batch is not None
+               else "TC-Planner · " + ref)[:100]
+    else:
+        tag = ("TC-Planner" + (f" · {ref}" if ref else ""))[:100]
+        batch = session.scalar(
+            select(Batch).where(
+                Batch.kind == "receiving",
+                Batch.status.notin_(("done", "abandoned")),
+                Batch.created_by == tag,
+            ).order_by(Batch.id.desc())
+        )
     if batch is None:
         batch = Batch(bin_name=RECEIVING_BIN, kind="receiving",
                       created_by=tag)
