@@ -598,6 +598,32 @@
           <input id="batch-bin" class="linkbox__input linkbox__short" type="text" maxlength="100"
                  autocomplete="off" spellcheck="false" placeholder="Bin…" />
           <button class="print__btn" id="batch-create" type="button">Start batch</button>
+          <button class="reset" id="sortship-open" type="button"
+                  title="A shipment arrived and you're not sure which stock orders the boxes belong to: scan every box and this sorts them into per-order lists (asking the TC-Planner which open orders expect each product), with an extra list for boxes no order explains. Each list then opens pre-filled in the planner, ready to save, update stock and print from there.">📥 Sort a shipment</button>
+        </div>
+        <!-- Shipment sort (Nick, 2026-08-31): scan a mixed delivery and
+             bucket the boxes by the stock order that expects them, then
+             hand each bucket to the TC-Planner pre-filled. READS only -
+             nothing here saves anywhere; the planner stays the place
+             where receives are saved, stock updated and labels printed. -->
+        <div class="linkbox serialbox" id="sortship" hidden>
+          <div class="linkbox__title">Sort a shipment
+            <button class="reset sortship__close" id="sortship-exit" type="button" title="Close the sorter - the scanned pile is kept for next time until you press Clear">✕</button>
+          </div>
+          <p class="linkbox__text">Scan every box in the delivery. Each scan asks the
+            TC-Planner which open stock orders still expect that product and drops the
+            box into that order's list - oldest expected date first. Nothing is saved
+            anywhere from here: open each list in the planner (pre-filled), review,
+            then Save / Update stock / Print labels over there.</p>
+          <div class="linkbox__form">
+            <input id="sortship-scan" class="scan" type="text" autocomplete="off"
+                   autocapitalize="off" spellcheck="false"
+                   placeholder="Scan a product barcode…" />
+            <button class="reset" id="sortship-clear" type="button"
+                    title="Empties the scanned pile (nothing was saved anywhere)">Clear pile</button>
+          </div>
+          <p class="linkbox__text" id="sortship-status"></p>
+          <div id="sortship-groups"></div>
         </div>
         <!-- Receiving batches are created by the Inventory Planner's
              "Print labels" button, never by hand (Nick, 2026-08-25) —

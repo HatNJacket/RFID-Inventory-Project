@@ -72,9 +72,13 @@ def health(operator: str | None = None) -> dict:
             "ok": h.get("status") == "ok",
             "service": h.get("service"),
             "identified_as": who.get("user"),
+            # The shipment-sort hand-off links straight into the
+            # planner's UI (Nick, 2026-08-31).
+            "app_url": config.PLANNER_URL,
         }
     except Exception as exc:  # noqa: BLE001 — probe reports, never raises
-        return {"configured": True, "ok": False, "error": str(exc)[:200]}
+        return {"configured": True, "ok": False, "error": str(exc)[:200],
+                "app_url": config.PLANNER_URL}
 
 
 def on_order_for_sku(sku: str, operator: str | None = None) -> dict:

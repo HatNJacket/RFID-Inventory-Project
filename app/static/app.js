@@ -13469,3 +13469,320 @@ document.getElementById("hist-search").addEventListener("input", () => {
 resetStation();
 loadRecent();
 loadRefreshStats();
+
+// === Shipment sort (Nick, 2026-08-31) ======================================
+// A mixed delivery gets scanned box by box; each scan asks the planner
+// which OPEN stock orders still expect that product and buckets the box
+// into the oldest order with capacity left. Boxes nothing expects land
+// in an "unexplained" list. READ-ONLY end to end: the hand-off buttons
+// open each bucket in the TC-Planner pre-filled, and saving, updating
+// stock and printing all stay over there (manual by request). The pile
+// survives reloads in localStorage until cleared.
+let sortShipRows = {};
+let sortShipSeq = [];
+let sortShipPlannerUrl = null;
+let sortShipBusy = false;
+
+function sortShipSave() {
+  try {
+    localStorage.setItem(
+      "sortship_pile",
+      JSON.stringify({ rows: sortShipRows, seq: sortShipSeq })
+    );
+  } catch (err) {
+    /* per-session fallback is fine */
+  }
+}
+
+function sortShipRestore() {
+  try {
+    const raw = localStorage.getItem("sortship_pile");
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    if (data && data.rows && data.seq) {
+      sortShipRows = data.rows;
+      sortShipSeq = data.seq;
+    }
+  } catch (err) {
+    /* corrupted draft - start clean */
+  }
+}
+
+function setSortShipStatus(text) {
+  document.getElementById("sortship-status").textContent = text || "";
+}
+
+async function sortShipScan(code) {
+  const term = (code || "").trim();
+  if (!term || sortShipBusy) return;
+  sortShipBusy = true;
+  try {
+    let product = null;
+    try {
+      product = await apiJson(
+        `/api/products/by-barcode/${encodeURIComponent(term)}`
+      );
+    } catch (err) {
+      /* unknown code - lands in unexplained below */
+    }
+    const key = ((product && product.sku) || term).toUpperCase();
+    let row = sortShipRows[key];
+    if (!row) {
+      row = {
+        key,
+        sku: product ? product.sku : null,
+        title: product ? product.product_title : term,
+        image_url: product ? product.image_url : null,
+        orders: [],
+        alloc: {},
+        unexplained: 0,
+        scanned: 0,
+        reason: product
+          ? null
+          : "unknown product - fix the barcode or link it at the Scan Station",
+      };
+      if (product && product.sku) {
+        try {
+          const oo = await apiJson(
+            `/api/planner/on-order/${encodeURIComponent(product.sku)}` +
+              `?operator=${encodeURIComponent(operatorEl.value || "")}`
+          );
+          if (oo.ok) {
+            row.orders = (oo.orders || [])
+              .filter((o) => (o.remaining || 0) > 0)
+              .sort(
+                (a, b) =>
+                  String(a.expected_date || "9999").localeCompare(
+                    String(b.expected_date || "9999")
+                  ) || a.order_id - b.order_id
+              );
+          }
+          if (!row.orders.length && !row.reason) {
+            row.reason = "no open stock order expects this product";
+          }
+        } catch (err) {
+          row.reason = "planner lookup failed - counted as unexplained";
+        }
+      }
+      sortShipRows[key] = row;
+      sortShipSeq.push(key);
+    }
+    const target = row.orders.find(
+      (o) => (row.alloc[o.order_id] || 0) < o.remaining
+    );
+    if (target) {
+      row.alloc[target.order_id] = (row.alloc[target.order_id] || 0) + 1;
+    } else {
+      row.unexplained += 1;
+    }
+    row.scanned += 1;
+    sortShipSave();
+    renderSortShip();
+    setSortShipStatus(
+      target
+        ? `${row.title}: +1 to SO ${
+            target.reference_number != null
+              ? target.reference_number
+              : target.order_id
+          } (${row.alloc[target.order_id]} of ${target.remaining} expected)`
+        : `${row.title}: +1 unexplained` +
+            (row.reason ? ` - ${row.reason}` : "")
+    );
+  } finally {
+    sortShipBusy = false;
+  }
+}
+
+function sortShipGroups() {
+  const orders = new Map();
+  const unexplained = [];
+  for (const key of sortShipSeq) {
+    const row = sortShipRows[key];
+    if (!row) continue;
+    for (const o of row.orders) {
+      const n = row.alloc[o.order_id] || 0;
+      if (!n) continue;
+      if (!orders.has(o.order_id)) {
+        orders.set(o.order_id, { meta: o, entries: [] });
+      }
+      orders.get(o.order_id).entries.push({ row, n, meta: o });
+    }
+    if (row.unexplained > 0) unexplained.push(row);
+  }
+  return { orders, unexplained };
+}
+
+function renderSortShip() {
+  const host = document.getElementById("sortship-groups");
+  if (!host) return;
+  const { orders, unexplained } = sortShipGroups();
+  const rowHtml = (row, n, act) => `
+    <div class="sortrow">
+      ${
+        row.image_url
+          ? `<img class="bcell__img" src="${escapeHtml(row.image_url)}" alt="" loading="lazy" />`
+          : `<span class="bcell__img bcell__img--empty"></span>`
+      }
+      <span class="sortrow__name">${escapeHtml(row.title)}${
+        row.sku ? ` <span class="mono">· ${escapeHtml(row.sku)}</span>` : ""
+      }</span>
+      <span class="sortrow__n">× ${n}</span>
+      <button class="reset sortrow__minus" type="button" title="Mis-scan: remove one"
+        data-key="${escapeHtml(row.key)}" data-act="${act}">−</button>
+    </div>`;
+  let html = "";
+  for (const [orderId, g] of orders) {
+    const units = g.entries.reduce((s, e) => s + e.n, 0);
+    const ref =
+      g.meta.reference_number != null ? g.meta.reference_number : orderId;
+    html += `
+      <div class="sortgroup">
+        <div class="sortgroup__head">
+          <span class="sortgroup__title">SO ${escapeHtml(String(ref))}${
+            g.meta.vendor ? ` · ${escapeHtml(g.meta.vendor)}` : ""
+          }${
+            g.meta.expected_date
+              ? ` <span class="recent__note">expected ${escapeHtml(g.meta.expected_date)}</span>`
+              : ""
+          }</span>
+          <span class="recent__note">${units} unit(s)</span>
+          <button class="print__btn sortgroup__go" type="button" data-order="${orderId}"
+            title="Opens this stock order in the TC-Planner with these To-receive counts pre-filled. Review there, then Save / Update stock / Print labels - nothing is saved from here.">Open in TC-Planner (pre-filled)</button>
+        </div>
+        ${g.entries.map((e) => rowHtml(e.row, e.n, String(orderId))).join("")}
+      </div>`;
+  }
+  if (unexplained.length) {
+    html += `
+      <div class="sortgroup sortgroup--warn">
+        <div class="sortgroup__head">
+          <span class="sortgroup__title">⚠ No order explains these</span>
+          <span class="recent__note">${unexplained.reduce(
+            (s, r) => s + r.unexplained,
+            0
+          )} unit(s)</span>
+        </div>
+        ${unexplained
+          .map(
+            (row) =>
+              rowHtml(row, row.unexplained, "unx") +
+              (row.reason
+                ? `<div class="recent__meta sortrow__why">${escapeHtml(row.reason)}</div>`
+                : "")
+          )
+          .join("")}
+      </div>`;
+  }
+  host.innerHTML =
+    html ||
+    `<p class="recent__empty">Nothing scanned yet - scan the first box.</p>`;
+  host.querySelectorAll(".sortrow__minus").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      const row = sortShipRows[btn.dataset.key];
+      if (!row) return;
+      if (btn.dataset.act === "unx") {
+        row.unexplained = Math.max(0, row.unexplained - 1);
+      } else {
+        const oid = Number(btn.dataset.act);
+        row.alloc[oid] = Math.max(0, (row.alloc[oid] || 0) - 1);
+      }
+      row.scanned = Math.max(0, row.scanned - 1);
+      if (row.scanned === 0) {
+        delete sortShipRows[row.key];
+        sortShipSeq = sortShipSeq.filter((k) => k !== row.key);
+      }
+      sortShipSave();
+      renderSortShip();
+    })
+  );
+  host.querySelectorAll(".sortgroup__go").forEach((btn) =>
+    btn.addEventListener("click", () =>
+      sortShipOpenPlanner(Number(btn.dataset.order))
+    )
+  );
+}
+
+function sortShipOpenPlanner(orderId) {
+  const { orders } = sortShipGroups();
+  const g = orders.get(orderId);
+  if (!g) return;
+  const payload = {
+    order_id: orderId,
+    items: g.entries
+      .filter((e) => e.row.sku)
+      .map((e) => ({ sku: e.row.sku, qty: e.n })),
+  };
+  if (!sortShipPlannerUrl) {
+    alert(
+      "The planner bridge doesn't report its address - open the " +
+        "planner by hand and type the counts."
+    );
+    return;
+  }
+  const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(payload))))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+  const base = sortShipPlannerUrl.replace(/\/+$/, "");
+  window.open(`${base}/#receive=${b64}`, "_blank", "noopener");
+  const ref =
+    g.meta.reference_number != null ? g.meta.reference_number : orderId;
+  setSortShipStatus(
+    `Opened SO ${ref} in the planner - review, Save, Update stock, ` +
+      `Print labels over there. The pile here stays until you Clear it.`
+  );
+}
+
+document.getElementById("sortship-open").addEventListener("click", async () => {
+  document.getElementById("sortship").hidden = false;
+  sortShipRestore();
+  renderSortShip();
+  if (sortShipSeq.length) {
+    setSortShipStatus("Picked up the pile from last time - Clear pile starts fresh.");
+  }
+  try {
+    const st = await apiJson("/api/planner/status");
+    sortShipPlannerUrl = st.app_url || null;
+    if (!st.configured || !st.ok) {
+      setSortShipStatus(
+        "⚠ The planner bridge isn't answering - every scan will land " +
+          "in 'no order explains these' until it's back."
+      );
+    }
+  } catch (err) {
+    /* status is decoration */
+  }
+  document.getElementById("sortship-scan").focus();
+});
+
+document.getElementById("sortship-exit").addEventListener("click", () => {
+  document.getElementById("sortship").hidden = true;
+});
+
+document.getElementById("sortship-clear").addEventListener("click", () => {
+  if (
+    sortShipSeq.length &&
+    !confirm(
+      "Clear the scanned pile?\n\nNothing was saved anywhere - this " +
+        "just empties the lists here."
+    )
+  )
+    return;
+  sortShipRows = {};
+  sortShipSeq = [];
+  try {
+    localStorage.removeItem("sortship_pile");
+  } catch (err) {
+    /* fine */
+  }
+  renderSortShip();
+  setSortShipStatus("");
+  document.getElementById("sortship-scan").focus();
+});
+
+document.getElementById("sortship-scan").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter") return;
+  const val = e.target.value;
+  e.target.value = "";
+  sortShipScan(val);
+});

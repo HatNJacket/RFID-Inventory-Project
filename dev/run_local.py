@@ -406,7 +406,8 @@ _sh.get_bundle_components = lambda gid: (
 from app import planner as _pl  # noqa: E402
 _pl.health = lambda operator=None: {
     "configured": True, "ok": True,
-    "service": "fake-planner", "identified_as": operator or "RFID"}
+    "service": "fake-planner", "identified_as": operator or "RFID",
+    "app_url": "https://tc-planner-app.azurewebsites.net"}
 def _fake_on_order(sku, operator=None):
     base = {"configured": True, "ok": True, "sku": sku,
             "total_remaining": 0, "orders": []}
@@ -418,6 +419,21 @@ def _fake_on_order(sku, operator=None):
             "ordered": 6, "received": 2, "remaining": 4,
         }]
         base["total_remaining"] = 4
+    # Shipment-sort demo (Nick, 2026-08-31): a product split across TWO
+    # open orders - scans fill the older one first, spill to the next,
+    # then land in "no order explains these" once both are full.
+    if (sku or "").upper() == "OPTO-LPRO":
+        base["orders"] = [
+            {"order_id": 11, "reference_number": 940,
+             "vendor": "BuckeyeStargazer", "status": "partial_received",
+             "expected_date": "2026-08-20",
+             "ordered": 3, "received": 2, "remaining": 1},
+            {"order_id": 12, "reference_number": 951,
+             "vendor": "BuckeyeStargazer", "status": "open",
+             "expected_date": "2026-09-05",
+             "ordered": 2, "received": 0, "remaining": 2},
+        ]
+        base["total_remaining"] = 3
     return base
 _pl.on_order_for_sku = _fake_on_order
 

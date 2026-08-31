@@ -2730,3 +2730,36 @@ tr.binaudit-untagged td { opacity: 0.72; }
 /* Receiving header row: summary text + the undo-last-pair button */
 .recvhead { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .recvhead #recv-summary { margin: 0; }
+
+/* Shipment sort (Nick, 2026-08-31): per-order buckets + unexplained */
+.sortship__close { float: right; font-size: 14px; }
+.sortgroup {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-top: 12px;
+}
+.sortgroup--warn { border-color: var(--warn-ink); }
+.sortgroup__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.sortgroup__title { font-weight: 700; }
+.sortgroup__go { margin-left: auto; }
+.sortrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0;
+}
+.sortrow__name { flex: 1; min-width: 0; }
+.sortrow__n { font-weight: 700; white-space: nowrap; }
+.sortrow__minus {
+  width: 30px;
+  text-align: center;
+  font-weight: 700;
+}
+.sortrow__why { margin: -2px 0 4px 42px; }
