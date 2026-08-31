@@ -13513,14 +13513,31 @@ function sortShipSaveDefs() {
   }
 }
 
-function sortShipComponentDefKey(sku) {
-  const up = (sku || "").trim().toUpperCase();
+function sortShipComponentDefKey(value) {
+  // A component is recognised by its catalog SKU when it has one, OR
+  // by its raw scanned label - the S30 set's boxes have NO products of
+  // their own yet (Nick, 2026-08-31), and if a label is later linked
+  // to a real product, both spellings keep matching.
+  const up = (value || "").trim().toUpperCase();
   if (!up) return null;
   for (const [defKey, def] of Object.entries(sortShipDefs)) {
-    if ((def.components || []).some((c) => (c.sku || "").toUpperCase() === up))
+    if (
+      (def.components || []).some(
+        (c) =>
+          (c.sku || "").toUpperCase() === up ||
+          (c.label || "").toUpperCase() === up ||
+          (c.key || "").toUpperCase() === up
+      )
+    )
       return defKey;
   }
   return null;
+}
+
+function sortShipMemberRow(c) {
+  return (
+    sortShipRows[(c.key || c.sku || c.label || "").toUpperCase()] || null
+  );
 }
 
 function sortShipSave() {
@@ -13629,10 +13646,11 @@ async function sortShipScan(code) {
     }
     const key = ((product && product.sku) || term).toUpperCase();
     // A component of a defined SET never sorts on its own: its scans
-    // tally toward one set unit (Nick, 2026-08-31).
-    const bundleKey = product
-      ? sortShipComponentDefKey(product.sku)
-      : null;
+    // tally toward one set unit (Nick, 2026-08-31). Match by resolved
+    // SKU and by the raw label, so product-less components group too.
+    const bundleKey =
+      (product ? sortShipComponentDefKey(product.sku) : null) ||
+      sortShipComponentDefKey(term);
     if (bundleKey) await sortShipFetchSetOrders(bundleKey);
     let row = sortShipRows[key];
     if (!row) {
@@ -13726,7 +13744,7 @@ function sortShipBundleUnits(defKey) {
   if (!def || !(def.components || []).length) return 0;
   let units = Infinity;
   for (const c of def.components) {
-    const row = sortShipRows[(c.sku || "").toUpperCase()];
+    const row = sortShipMemberRow(c);
     units = Math.min(units, row ? row.scanned : 0);
   }
   return Number.isFinite(units) ? units : 0;
@@ -13758,7 +13776,7 @@ function sortShipGroups() {
   for (const [defKey, def] of Object.entries(sortShipDefs)) {
     const members = (def.components || []).map((c) => ({
       comp: c,
-      row: sortShipRows[(c.sku || "").toUpperCase()] || null,
+      row: sortShipMemberRow(c),
     }));
     if (!members.some((m) => m.row && m.row.scanned > 0)) continue;
     const units = sortShipBundleUnits(defKey);
@@ -13823,8 +13841,10 @@ function renderSortShip() {
               : `<div class="sortrow sortrow--ghost">
                   <span class="bcell__img bcell__img--empty"></span>
                   <span class="sortrow__name">${escapeHtml(
-                    m.comp.title || m.comp.sku
-                  )} <span class="mono">· ${escapeHtml(m.comp.sku)}</span></span>
+                    m.comp.title || m.comp.sku || m.comp.label || "?"
+                  )} <span class="mono">· ${escapeHtml(
+                    m.comp.sku || m.comp.label || ""
+                  )}</span></span>
                   <span class="sortrow__n">× 0</span>
                 </div>`
           )
@@ -14142,12 +14162,14 @@ document
   .addEventListener("click", () => sortShipCreateBundle());
 
 async function sortShipCreateBundle() {
+  // Product-less components are welcome (Nick, 2026-08-31: the S30
+  // boxes have no listings of their own) - the raw label is identity
+  // enough, and a later product link keeps matching.
   const keys = [...sortShipSelected].filter(
-    (k) => sortShipRows[k] && sortShipRows[k].sku && !sortShipRows[k].bundleKey
+    (k) => sortShipRows[k] && !sortShipRows[k].bundleKey
   );
   if (keys.length < 2) {
-    alert("Pick at least two RESOLVED component rows (unknown codes "
-      + "can't join a set).");
+    alert("Pick at least two component rows.");
     return;
   }
   const label = prompt(
@@ -14195,7 +14217,9 @@ async function sortShipCreateBundle() {
     setSku: setProduct.sku,
     setTitle: setProduct.product_title || setProduct.sku,
     components: keys.map((k) => ({
+      key: sortShipRows[k].key,
       sku: sortShipRows[k].sku,
+      label: sortShipRows[k].term || sortShipRows[k].key,
       title: sortShipRows[k].title,
     })),
   };
@@ -14232,7 +14256,7 @@ async function sortShipUnbundle(defKey) {
   delete sortShipSetOrders[defKey];
   const members = [];
   for (const c of def.components || []) {
-    const row = sortShipRows[(c.sku || "").toUpperCase()];
+    const row = sortShipMemberRow(c);
     if (row) {
       members.push({ term: row.term || row.key, n: row.scanned, key: row.key });
     }
