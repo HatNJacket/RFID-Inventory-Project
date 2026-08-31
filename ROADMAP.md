@@ -14,6 +14,14 @@ at Remaining, one-shot, survives login) where Save / Update stock /
 Print labels stay manual (Nick's explicit wish). Pile survives reloads
 until cleared; per-row mis-scan minus.
 
+**Component bundles (added same day, deployed)**: "Bundle components…"
+links picked rows + a set SKU into a remembered definition (survives
+Clear pile; Unbundle forgets). Component scans tally inside a dashed
+outline with per-component counts; the SET count (minimum across
+components) sits centered beside them; the bundle lives in exactly ONE
+bucket (excess noted on the block, never spread). The planner hand-off
+carries only {set sku, qty} - the planner is untouched, per Nick.
+
 Label matching (his 10 recovered scans drove it): after by-barcode
 misses, /api/products/label-match runs separator folds over sku,
 barcode, and VARIANT titles (EAF-FTF30→EAF-FTF-30; ZWO-Slider-Gen2→
