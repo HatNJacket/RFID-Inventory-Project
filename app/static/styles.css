@@ -2686,3 +2686,17 @@ tr.binaudit-untagged td { opacity: 0.72; }
   text-underline-offset: 3px;
 }
 .phist-titlelink:hover { text-decoration: underline solid; }
+
+/* Bulk-link sweep-waiting chip (Nick, 2026-08-26): the newest C72
+   sweep's untagged count, colored against the labels left this bulk. */
+.bulknote {
+  font-size: 12px;
+  font-weight: 650;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  white-space: nowrap;
+}
+.bulknote--green { color: #3fb950; border-color: #116329; }
+.bulknote--yellow { color: #d4a72c; border-color: #9e6a03; }
+.bulknote--red { color: #ff6a5b; border-color: #d72c0d; }

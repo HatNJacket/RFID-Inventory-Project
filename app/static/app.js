@@ -400,6 +400,7 @@ const EVENT_META = {
   // System closures (a newer count agreed, the arithmetic caught up):
   // never a person's click, so they wear their own tag.
   "review-autoclosed": ["Auto-Resolved", "#57748c"],
+  "labels-not-printed": ["Labels Not Printed", "#c05717"],
   "inventory-check": ["Inventory Check", "#8a6116"],
   "pairing-incomplete": ["Pairing Incomplete", "#d72c0d"],
   "unresolved-barcode": ["Unresolved Barcode", "#d72c0d"],
@@ -3158,6 +3159,7 @@ function renderBulk() {
   const active = bulkOn && !!pendingProduct;
   bulkSweepBtn.hidden = !active;
   bulkProgress.hidden = !active;
+  syncBulkSweepPoll(active);
   if (active) {
     bulkProgress.textContent =
       bulkPrinted > 0
@@ -3178,6 +3180,78 @@ bulkToggle.addEventListener("click", () => {
   renderBulk();
 });
 el.autoReset.addEventListener("change", renderBulk);
+
+// --- The sweep-waiting chip (Nick, 2026-08-26) ------------------------------
+// While BULK is live the station watches for the gun's next link sweep:
+// the chip says how many UNTAGGED tags the newest sweep holds (counted
+// exactly like batch tagging counts a sweep), colored against the labels
+// still unscanned in this bulk. Green = the sweep covers exactly what's
+// left; yellow = a partial (or over-) sweep; red = nothing waiting, or a
+// sweep of only already-tagged labels.
+let bulkSweepTimer = null;
+let bulkSweepSummary = null;
+
+function syncBulkSweepPoll(active) {
+  const note = document.getElementById("bulk-sweep-note");
+  if (!note) return;
+  if (!active) {
+    if (bulkSweepTimer) clearInterval(bulkSweepTimer);
+    bulkSweepTimer = null;
+    bulkSweepSummary = null;
+    note.hidden = true;
+    return;
+  }
+  renderBulkSweepNote();
+  if (!bulkSweepTimer) {
+    pollBulkSweepNote();
+    bulkSweepTimer = setInterval(pollBulkSweepNote, 4000);
+  }
+}
+
+async function pollBulkSweepNote() {
+  if (!(bulkOn && pendingProduct)) return;
+  try {
+    bulkSweepSummary = await apiJson("/api/epc-captures/latest-summary");
+  } catch (err) {
+    bulkSweepSummary = null;
+  }
+  renderBulkSweepNote();
+}
+
+function renderBulkSweepNote() {
+  const note = document.getElementById("bulk-sweep-note");
+  if (!note) return;
+  if (!(bulkOn && pendingProduct)) {
+    note.hidden = true;
+    return;
+  }
+  const s = bulkSweepSummary;
+  const remaining = Math.max(0, bulkPrinted - bulkTagged);
+  let cls = "bulknote--red";
+  let text;
+  if (!s || !s.exists) {
+    text = "no sweep waiting - SWEEP then SEND on the gun";
+  } else if (s.untagged === 0) {
+    // The edge Nick called out: a sweep arrived but every tag in it is
+    // already linked - pulling it would assign nothing.
+    text = `sweep holds 0 untagged of ${s.epc_count} heard`;
+  } else if (remaining > 0 && s.untagged === remaining) {
+    cls = "bulknote--green";
+    text = `${s.untagged} tag(s) waiting - matches the ${remaining} left`;
+  } else {
+    cls = "bulknote--yellow";
+    text =
+      `${s.untagged} untagged tag(s) waiting` +
+      (remaining > 0 ? ` vs ${remaining} left in this bulk` : "");
+  }
+  if (s && s.exists && s.age_seconds > 120) {
+    const m = Math.round(s.age_seconds / 60);
+    text += ` · sweep is ${m}m old`;
+  }
+  note.className = `bulknote ${cls}`;
+  note.textContent = text;
+  note.hidden = false;
+}
 
 // The ledger's verdict after every assigning action: exact = done (reset
 // as a single scan would), over = ask (a blank label may have been swept).
@@ -3243,6 +3317,9 @@ bulkSweepBtn.addEventListener("click", async () => {
     setResult(err.message, "err", "rfid");
   } finally {
     bulkSweepBtn.disabled = false;
+    // The pull consumed the sweep's orphans - refresh the chip now
+    // rather than on the next 4s tick.
+    pollBulkSweepNote();
   }
 });
 
@@ -9182,6 +9259,16 @@ function openResolveWindow(t) {
         <span class="rvw-recount__label" id="rvw-recount-label">Manually set the counted number</span>
         <span class="rvw-recount__pm" id="rvw-plus">+</span>
       </button>`;
+  } else if (t.category === "labels-not-printed") {
+    // The Update-stock safety net (Nick, 2026-08-26): stock reached
+    // Shopify without labels. One click queues everything the linked
+    // receiving batch is still owed - mechanically the planner's Print
+    // labels pass - and the receiving list takes over from there.
+    middle = `
+      <button class="reset rvw-wide rvw-choice rvw-choice--amber" id="rvw-queuelabels" type="button">
+        Queue the missing labels
+        <span class="rvw-choice__sub">Prints one label per unlabelled box on the receiving batch, each with its home bin - identical to the planner's Print labels. No-bin products are held out and named.</span>
+      </button>`;
   } else if (t.category === "tag-onhand-mismatch") {
     // The sold-out shortcut (Nick, 2026-08-26): when the LIVE on-hand
     // is 0, every remaining box has sold - the context loader offers
@@ -9391,6 +9478,40 @@ function openResolveWindow(t) {
       }
     });
   }
+
+  // Queue-labels: the Update-stock safety net's one-click resolution.
+  const queueLabelsBtn = document.getElementById("rvw-queuelabels");
+  if (queueLabelsBtn)
+    queueLabelsBtn.addEventListener("click", async () => {
+      const operator = operatorEl.value;
+      if (!operator) {
+        alert("Pick who's scanning (top right) first.");
+        return;
+      }
+      if (
+        !confirm(
+          `Queue the missing labels for this receiving batch?\n\n` +
+            `One label per unlabelled box, printed with its home bin - ` +
+            `same as the planner's Print labels. The receiving list ` +
+            `then runs the normal print and pair flow.`
+        )
+      )
+        return;
+      queueLabelsBtn.disabled = true;
+      try {
+        const res = await postJson(
+          `/api/review-tasks/${t.id}/queue-labels`,
+          { changed_by: operator }
+        );
+        alert(res.message);
+        reviewTasks = reviewTasks.filter((x) => x.id !== t.id);
+        closeResolveWindow();
+        renderReview();
+      } catch (err) {
+        queueLabelsBtn.disabled = false;
+        alert(err.message);
+      }
+    });
 
   // "Shopify is wrong → use the RFID count" (Nick, 2026-08-26): the
   // bin-mismatch-style one-click for count disagreements. Reads the

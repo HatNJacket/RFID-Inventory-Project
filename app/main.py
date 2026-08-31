@@ -8336,22 +8336,16 @@ class ReceivingPrintsIn(BaseModel):
     reference: str | None = Field(default=None, max_length=60)
 
 
-@app.post(
-    "/api/receiving/prints",
-    status_code=201,
-    dependencies=[Depends(require_user)],
-)
-def receiving_prints(
-    payload: ReceivingPrintsIn, session: Session = Depends(get_session)
-):
-    """TC-Planner's "Print labels" button (Nick, 2026-08-25): the user
-    marks stock-order items received over there and sends them here to
-    print. Creates (or reuses, per reference) an open RECEIVING batch,
-    adds the received quantities to its rows, and queues labels exactly
-    like a receiving PRINT pass - only not-yet-labelled boxes, each label
-    carrying the item's home bin, items without a bin held out and named.
-    The warehouse then pairs tags in Batch tagging as usual. Nothing is
-    written to Shopify here."""
+def _receiving_intake(
+    session: Session, payload: ReceivingPrintsIn, queue_labels: bool
+) -> dict:
+    """Shared body of the planner bridge: create/reuse the stock order's
+    receiving batch, add the received quantities to its rows (problem
+    rows flagged, repeat saves folded) — and, when queue_labels, queue
+    the not-yet-labelled boxes exactly like a receiving print pass. The
+    no-labels path (the Update-stock safety net) books the SAME rows so
+    the boxes are never lost; their labels queue later from the Review
+    task. Caller commits."""
     tag = ("TC-Planner"
            + (f" · {payload.reference.strip()}"
               if payload.reference and payload.reference.strip() else "")
@@ -8484,15 +8478,51 @@ def receiving_prints(
                 f"Could not process: {str(error)[:80]}",
             )
     session.flush()
-    jobs, skipped_no_bin = _build_receiving_label_jobs(
-        session, batch, payload.requested_by or tag
-    )
-    session.add_all(jobs)
+    jobs: list[PrintJob] = []
+    skipped_no_bin: list[str] = []
+    if queue_labels:
+        jobs, skipped_no_bin = _build_receiving_label_jobs(
+            session, batch, payload.requested_by or tag
+        )
+        session.add_all(jobs)
+    return {
+        "batch": batch,
+        "tag": tag,
+        "added": added,
+        "jobs": jobs,
+        "skipped_no_bin": skipped_no_bin,
+        "skipped_unknown": skipped_unknown,
+        "skipped_non_taggable": skipped_non_taggable,
+    }
+
+
+@app.post(
+    "/api/receiving/prints",
+    status_code=201,
+    dependencies=[Depends(require_user)],
+)
+def receiving_prints(
+    payload: ReceivingPrintsIn, session: Session = Depends(get_session)
+):
+    """TC-Planner's "Print labels" button (Nick, 2026-08-25): the user
+    marks stock-order items received over there and sends them here to
+    print. Creates (or reuses, per reference) an open RECEIVING batch,
+    adds the received quantities to its rows, and queues labels exactly
+    like a receiving PRINT pass - only not-yet-labelled boxes, each label
+    carrying the item's home bin, items without a bin held out and named.
+    The warehouse then pairs tags in Batch tagging as usual. Nothing is
+    written to Shopify here."""
+    out = _receiving_intake(session, payload, queue_labels=True)
+    batch, tag = out["batch"], out["tag"]
+    jobs = out["jobs"]
+    skipped_unknown = out["skipped_unknown"]
+    skipped_non_taggable = out["skipped_non_taggable"]
+    skipped_no_bin = out["skipped_no_bin"]
     session.commit()
     session.refresh(batch)
     return {
         "batch": batch.as_dict(),
-        "added": added,
+        "added": out["added"],
         "queued": len(jobs),
         "skipped_no_bin": skipped_no_bin,
         "skipped_unknown": skipped_unknown,
@@ -8507,6 +8537,147 @@ def receiving_prints(
             + (f"; held for a bin: {', '.join(skipped_no_bin)}"
                if skipped_no_bin else "")
             + "."
+        ),
+    }
+
+
+@app.post(
+    "/api/receiving/unprinted",
+    status_code=201,
+    dependencies=[Depends(require_user)],
+)
+def receiving_unprinted(
+    payload: ReceivingPrintsIn, session: Session = Depends(get_session)
+):
+    """The Update-stock safety net (Nick, 2026-08-26): TC-Planner pushed
+    stock to Shopify for these items WITHOUT printing their labels. The
+    boxes still book into the stock order's receiving batch — same rows,
+    same problem handling as Print labels — but no labels queue yet;
+    instead ONE open Review task per batch tracks how many units are
+    waiting, and resolving it queues the missing labels (mechanically
+    identical to Print labels). Repeat pushes fold into the same task."""
+    out = _receiving_intake(session, payload, queue_labels=False)
+    batch, tag = out["batch"], out["tag"]
+    session.flush()
+    # What a print pass WOULD queue right now = the labels outstanding.
+    would, would_no_bin = _build_receiving_label_jobs(
+        session, batch, payload.requested_by or tag
+    )
+    pushed_units = sum(a["quantity"] for a in out["added"])
+    task = session.scalar(
+        select(ReviewTask).where(
+            ReviewTask.category == "labels-not-printed",
+            ReviewTask.status == "open",
+            ReviewTask.batch_id == batch.id,
+        )
+    )
+    detail = (
+        f"{tag}: stock was updated in Shopify without printing labels. "
+        f"{len(would)} label(s) are waiting on receiving batch "
+        f"#{batch.id}"
+        + (f" (plus {len(would_no_bin)} product(s) held for a bin)"
+           if would_no_bin else "")
+        + (f"; {len(out['skipped_unknown'])} unknown SKU(s) flagged on "
+           f"the batch" if out["skipped_unknown"] else "")
+        + ". Resolve to queue them - the normal receiving print and "
+        "pair flow takes over."
+    )[:500]
+    if task is None:
+        task = ReviewTask(
+            category="labels-not-printed",
+            product_title=tag,
+            detail=detail,
+            batch_id=batch.id,
+            created_by=payload.requested_by,
+        )
+        session.add(task)
+    else:
+        task.detail = detail
+    session.flush()
+    session.add(ReviewNote(
+        task_key=str(task.id),
+        note=(f"Stock push without labels: {pushed_units} unit(s) "
+              f"across {len(out['added'])} product(s).")[:500],
+        created_by=payload.requested_by,
+    ))
+    session.commit()
+    session.refresh(batch)
+    return {
+        "batch": batch.as_dict(),
+        "added": out["added"],
+        "labels_waiting": len(would),
+        "task_id": task.id,
+        "skipped_unknown": out["skipped_unknown"],
+        "skipped_non_taggable": out["skipped_non_taggable"],
+        "message": (
+            f"Booked {pushed_units} unit(s) on receiving batch "
+            f"{batch.id} with NO labels queued - Review task #{task.id} "
+            f"tracks the {len(would)} waiting label(s)."
+        ),
+    }
+
+
+class QueueLabelsIn(BaseModel):
+    changed_by: str | None = Field(default=None, max_length=100)
+
+
+@app.post(
+    "/api/review-tasks/{task_id}/queue-labels",
+    dependencies=[Depends(require_user)],
+)
+def queue_missing_labels(
+    task_id: int,
+    payload: QueueLabelsIn,
+    session: Session = Depends(get_session),
+):
+    """Resolution for the Update-stock safety net: queue every label the
+    linked receiving batch is still owed - mechanically identical to the
+    planner's Print labels pass (only unlabelled boxes, home bins on the
+    labels, no-bin items held out and named) - then close the task."""
+    task = session.get(ReviewTask, task_id)
+    if task is None:
+        raise HTTPException(404, "No such review task.")
+    if task.category != "labels-not-printed":
+        raise HTTPException(
+            422, "Queue-labels is for the unprinted-stock safety net."
+        )
+    if task.status != "open":
+        raise HTTPException(409, f"Task is already {task.status}.")
+    batch = session.get(Batch, task.batch_id) if task.batch_id else None
+    if batch is None or batch.status in ("done", "abandoned"):
+        raise HTTPException(
+            409,
+            "The receiving batch behind this task is gone or closed - "
+            "nothing left to print for it.",
+        )
+    by = (payload.changed_by or "").strip()[:100] or None
+    jobs, skipped_no_bin = _build_receiving_label_jobs(
+        session, batch, by or batch.created_by
+    )
+    session.add_all(jobs)
+    task.status = "resolved"
+    task.resolved_by = by
+    task.resolved_at = datetime.now(timezone.utc)
+    task.resolution_note = (
+        f"{len(jobs)} label(s) queued to receiving batch #{batch.id}."
+        + (f" Held for a bin: {', '.join(skipped_no_bin)}."
+           if skipped_no_bin else "")
+        if jobs or skipped_no_bin
+        else "Labels were already queued from the receiving list."
+    )[:255]
+    session.commit()
+    return {
+        "queued": len(jobs),
+        "skipped_no_bin": skipped_no_bin,
+        "batch_id": batch.id,
+        "message": (
+            f"{len(jobs)} label(s) queued on receiving batch {batch.id}"
+            + (f"; held for a bin: {', '.join(skipped_no_bin)}"
+               if skipped_no_bin else "")
+            + ". The receiving list runs the normal print and pair flow."
+            if jobs or skipped_no_bin
+            else "Nothing was owed - labels were already queued; task "
+                 "resolved."
         ),
     }
 
@@ -10774,6 +10945,59 @@ def latest_capture(session: Session = Depends(get_session)):
     if row is None:
         raise HTTPException(404, "No sweeps received yet.")
     return row.as_dict(with_epcs=True)
+
+
+@app.get(
+    "/api/epc-captures/latest-summary",
+    dependencies=[Depends(require_user)],
+)
+def latest_capture_summary(session: Session = Depends(get_session)):
+    """The bulk-link waiting chip's feed (Nick, 2026-08-26): how many
+    tags the newest C72 sweep holds that are NOT tied to anything yet -
+    counted exactly the way batch tagging counts a sweep (tags already
+    assigned never count). Always 200; exists=False when no sweep has
+    ever arrived. Registered BEFORE /{capture_id} so the path resolves."""
+    row = session.scalar(
+        select(EpcCapture).order_by(EpcCapture.id.desc()).limit(1)
+    )
+    if row is None:
+        return {"ok": True, "exists": False}
+    seen: set = set()
+    epcs: list[str] = []
+    for raw in (row.epcs or "").split("\n"):
+        epc = raw.strip().upper()
+        if epc and epc not in seen:
+            seen.add(epc)
+            epcs.append(epc)
+    taken: set = set()
+    if epcs:
+        taken = {
+            (e or "").strip().upper()
+            for e in session.scalars(
+                select(RfidAssignment.rfid_id).where(
+                    func.upper(RfidAssignment.rfid_id).in_(epcs)
+                )
+            )
+        }
+    age = None
+    if row.created_at is not None:
+        created = row.created_at
+        # Azure SQL hands timestamps back tz-aware; sqlite naive.
+        if created.tzinfo is not None:
+            created = created.astimezone(timezone.utc).replace(tzinfo=None)
+        age = max(0, int((datetime.utcnow() - created).total_seconds()))
+    return {
+        "ok": True,
+        "exists": True,
+        "id": row.id,
+        "created_at": (
+            row.created_at.isoformat() if row.created_at else None
+        ),
+        "age_seconds": age,
+        "device": row.device,
+        "epc_count": len(epcs),
+        "untagged": sum(1 for e in epcs if e not in taken),
+    }
 
 
 @app.get("/api/epc-captures/{capture_id}", dependencies=[Depends(require_user)])

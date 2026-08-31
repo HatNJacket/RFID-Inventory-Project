@@ -496,6 +496,8 @@
                     title="Bulk scan: keep accepting tags — single reads and pulled C72 sweeps — counted against labels printed this visit. Needs auto-reset ON; switches itself OFF whenever a new product loads.">⚡ BULK: OFF</button>
             <button class="sweep-pull" id="bulk-sweep" type="button" hidden
                     title="Assign every NEW tag from the most recent C72 sweep (SWEEP tab → SEND on the gun) to this product. Tags already assigned — this product's or anyone's — are skipped and named, never stolen.">📶 Use latest C72 sweep</button>
+            <span class="bulknote" id="bulk-sweep-note" hidden
+                  title="The newest C72 sweep on the server, counted like batch tagging counts a sweep: only tags not yet tied to anything. Green = it matches the labels left in this bulk; yellow = a partial or over-sweep; red = no sweep waiting, or the sweep held only already-tagged labels."></span>
           </div>
           <p class="step__hint" id="bulk-progress" hidden></p>
           <div class="bulkwarn" id="bulk-warn" hidden>

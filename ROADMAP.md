@@ -3,6 +3,33 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-08-26.
 
+## 🚚 Planner streamlining round — 🛠 BUILT 2026-08-31, ⚠ NOT DEPLOYED (Nick: hold all pushes)
+
+Three pieces, tested (47/47 + browser) but sitting in LOCAL commits
+only — deploy needs Nick's go (RFID: mkdeploy+az; planner: acr-build):
+
+1. **Bulk-link sweep chip**: the Scan Station's BULK mode polls
+   /api/epc-captures/latest-summary (registered before /{capture_id})
+   and shows, next to "Use latest C72 sweep", how many UNTAGGED tags
+   the newest sweep holds (counted like batch tagging counts a sweep).
+   Green = matches the labels left this bulk; yellow = partial/over;
+   red = no sweep, or a sweep of only already-tagged labels. Stale
+   sweeps get an "Nm old" suffix.
+2. **Planner: Print labels moved INTO the Update-stock window**
+   (StockUpdateModal): prints for the CHECKED lines
+   (adjustment→received_qty), tracks which line-ids got labels, turns
+   into "Labels printed ✓". The bottom-bar button is gone.
+3. **Update-stock safety net**: apply-stock-update relays
+   pushed-without-labels lines (frontend sends unprinted_item_ids) to
+   the RFID app's new POST /api/receiving/unprinted — books the SAME
+   receiving-batch rows as Print labels but queues NOTHING, and ONE
+   open "Labels Not Printed" Review task per batch tracks the owed
+   labels (repeat pushes fold in; ReviewNotes count units). Resolution
+   = the window's "Queue the missing labels" button →
+   /api/review-tasks/{id}/queue-labels, mechanically identical to a
+   print pass (home bins, no-bin items held out). receiving_prints
+   refactored onto shared _receiving_intake. Suite test_safety.py (18).
+
 ## 🧷 SKUs containing a double-quote: searches escape, not strip — ✅ FIXED 2026-08-26
 
 Nick's three Antlia 2" filters (ANT-ULTRA-2.5nm-2"-Ha/-OIII/-SII)
