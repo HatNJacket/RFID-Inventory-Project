@@ -5140,7 +5140,7 @@ function renderReceivingList() {
     list.append(recvCard(focusedItem));
     const divider = document.createElement("li");
     divider.className = "recvdivider";
-    divider.textContent = "everything else in this shipment";
+    divider.textContent = "products to scan";
     list.append(divider);
     items
       .filter((i) => i.id !== focusedItem.id)
@@ -5216,6 +5216,12 @@ function recvCard(item) {
           : ""
       }
       ${
+        item.resolved && (item.sku || item.barcode)
+          ? `<button class="reset" type="button" data-act="edit"
+              title="Open the full product window - set its bin (the held-for-a-bin fix), flags, label names, vendor, tags">📦 Edit product</button>`
+          : ""
+      }
+      ${
         !item.resolved
           ? `<button class="reset" type="button" data-act="link"
               title="Pick the product this code really is - it becomes a lookup alias (Shopify untouched) and the row rejoins the shipment with labels queued">🔗 Link to product</button>`
@@ -5243,6 +5249,8 @@ function recvCard(item) {
         recvPrintMissing(item, missing);
       } else if (btn.dataset.act === "sweep") {
         recvPullSweep(item);
+      } else if (btn.dataset.act === "edit") {
+        openProductHistory(item.sku || item.barcode);
       }
     })
   );
