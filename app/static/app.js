@@ -5362,6 +5362,12 @@ function renderRecvSweepNote() {
     0,
     (item.qty_scanned || 0) - (item.paired_count || 0)
   );
+  // Fully paired = nothing to wait for: the chip leaves instead of
+  // turning red at a job well done (Nick, 2026-08-31).
+  if (remaining === 0) {
+    note.hidden = true;
+    return;
+  }
   const st = sweepNoteState(recvSweepSummary, remaining);
   note.className = `bulknote ${st.cls}`;
   note.textContent = st.text;
