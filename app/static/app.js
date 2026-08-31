@@ -2981,9 +2981,89 @@ function stopLink(msg) {
   linkRelease();
 }
 
+// The relay can serve an on-screen RECEIVING batch (Nick, 2026-08-31:
+// boxes get linked at a desk, and after a few boxes you sweep anyway).
+// While the Batch tab shows an open receiving batch, gun LINK scans
+// drive it instead of the station: a barcode focuses that product's
+// card, a tag read pairs to the focused product.
+function receivingLinkLive() {
+  return (
+    !document.getElementById("tab-batch").hidden &&
+    batch &&
+    isReceivingBatch() &&
+    batch.status !== "done" &&
+    batch.status !== "abandoned"
+  );
+}
+
+async function actOnReceivingLinkScan(s) {
+  if (s.kind === "barcode") {
+    const code = (s.value || "").trim().toUpperCase();
+    let item = (batchItems || []).find((i) =>
+      [i.barcode, i.sku, i.scanned_code].some(
+        (v) => (v || "").trim().toUpperCase() === code
+      )
+    );
+    if (!item) {
+      // Aliases and rescued characters resolve server-side, then match
+      // the shipment by SKU.
+      try {
+        const p = await apiJson(
+          `/api/products/by-barcode/${encodeURIComponent(s.value)}`
+        );
+        const sku = (p.sku || "").trim().toUpperCase();
+        if (sku)
+          item = (batchItems || []).find(
+            (i) => (i.sku || "").trim().toUpperCase() === sku
+          );
+      } catch (err) {
+        /* falls through to not-in-shipment */
+      }
+    }
+    if (!item) {
+      const t = `${s.value} is not in this shipment.`;
+      setBatchResult(t, "err");
+      return { ok: false, text: t };
+    }
+    recvFocusId = item.id;
+    renderReceivingList();
+    const t = `${itemDisplayName(item)} focused - trigger on its stickers.`;
+    setBatchResult(t, "ok");
+    return { ok: true, text: t };
+  }
+  const item = (batchItems || []).find((i) => i.id === recvFocusId);
+  if (!item) {
+    const t =
+      "No product focused - scan its barcode (or tap its card) first.";
+    setBatchResult(t, "err");
+    return { ok: false, text: t };
+  }
+  try {
+    const r = await postJson(`/api/batches/${batch.id}/pair`, {
+      epc: s.value,
+      item_id: item.id,
+      created_by: operatorEl.value || null,
+    });
+    await pullBatch(false);
+    const fresh =
+      (batchItems || []).find((i) => i.id === item.id) || item;
+    const t =
+      `paired to ${itemDisplayName(item)} ` +
+      `(${fresh.paired_count}/${fresh.qty_scanned})` +
+      (r.receiving_done ? " - shipment complete ✓" : "");
+    setBatchResult(t, "ok");
+    return { ok: true, text: t };
+  } catch (err) {
+    setBatchResult(err.message, "err");
+    return { ok: false, text: err.message };
+  }
+}
+
 async function actOnLinkScan(s) {
   let out;
-  if (s.kind === "barcode") {
+  if (receivingLinkLive()) {
+    out = await actOnReceivingLinkScan(s);
+  } else if (s.kind === "barcode") {
     el.barcode.value = s.value;
     await stationBarcodeScan(s.value);
     out = stationOutcome("barcode");
@@ -3017,7 +3097,12 @@ async function pollLink() {
   // would be spooky (and print with nobody watching). Skipping also stops
   // presence stamping, so this terminal drops off other terminals'
   // listener counts within the TTL.
-  if (document.hidden || tabSections.scan[0].hidden) {
+  // The Batch tab counts as "on screen" too while it shows an open
+  // receiving batch - relayed scans drive that list (Nick, 2026-08-31).
+  if (
+    document.hidden ||
+    (tabSections.scan[0].hidden && !receivingLinkLive())
+  ) {
     linkSuspended = true;
     return;
   }
