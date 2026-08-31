@@ -180,6 +180,16 @@ with Session(get_engine()) as s:
         m("MISMATCH-1", "Mismatch Demo (tags K4-1, Shopify J2-2)",
           "J2-2", 1, barcode="999"),
     ])
+    # Shipment-sort label-match demos (Nick's Buckeye cases): scan
+    # "EAF-FTF30" (separator shift) or "ZWO-Slider-Gen2" (variant name).
+    slider = m("ZWO-SliderCase-Gen2", "Buckeye Filter Slider Case",
+               "E4-3", 2, barcode="93952531000379")
+    slider.variant_title = "ZWO Slider Gen2"
+    s.add_all([
+        m("EAF-FTF-30", "Buckeye ZWO EAF Bracket", "E4-1", 1,
+          barcode="59995776891995"),
+        slider,
+    ])
     s.add(RfidAssignment(rfid_id="MMMM0000000000000000000M",
                          shopify_variant_id="t:MM", sku="MISMATCH-1",
                          product_title="Mismatch Demo (tags K4-1, "
@@ -434,6 +444,14 @@ def _fake_on_order(sku, operator=None):
              "ordered": 2, "received": 0, "remaining": 2},
         ]
         base["total_remaining"] = 3
+    if (sku or "").upper() == "ZWO-SLIDERCASE-GEN2":
+        base["orders"] = [{
+            "order_id": 13, "reference_number": 960,
+            "vendor": "BuckeyeStargazer", "status": "open",
+            "expected_date": "2026-09-02",
+            "ordered": 2, "received": 0, "remaining": 2,
+        }]
+        base["total_remaining"] = 2
     return base
 _pl.on_order_for_sku = _fake_on_order
 

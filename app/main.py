@@ -4458,6 +4458,66 @@ def _fold_seps(value: str | None) -> str:
 
 
 @app.get(
+    "/api/products/label-match/{code:path}",
+    dependencies=[Depends(require_user)],
+)
+def product_label_match(code: str, session: Session = Depends(get_session)):
+    """The shipment sorter's second try (Nick, 2026-08-31, the Buckeye
+    box labels): a vendor's under-barcode string is USUALLY our SKU but
+    sometimes differs by separators (EAF-FTF30 vs sku EAF-FTF-30) or is
+    really the VARIANT name (ZWO-Slider-Gen2 vs variant 'ZWO Slider
+    Gen2' on sku ZWO-SliderCase-Gen2). Separator folds only - never
+    edit distance (house rule) - across sku, barcode, then variant
+    title; only a UNIQUE product answers, ambiguity returns candidates
+    for a human. Read-only."""
+    term = (code or "").strip()
+    fold = _fold_seps(term)
+    if len(fold) < 4:
+        raise HTTPException(
+            404, "Label string too short to match safely."
+        )
+    hits: dict[str, tuple[str, str, BinMapEntry]] = {}
+    for row in session.scalars(select(BinMapEntry)):
+        for field, value in (
+            ("sku", row.sku),
+            ("barcode", row.barcode),
+            ("variant name", row.variant_title),
+        ):
+            if value and _fold_seps(value) == fold:
+                key = row.shopify_variant_id or row.sku or value
+                hits.setdefault(key, (field, value, row))
+                break
+    if not hits:
+        raise HTTPException(404, "No catalog match for that label.")
+    if len(hits) > 1:
+        return {
+            "ok": False,
+            "ambiguous": True,
+            "candidates": [
+                {"sku": r.sku, "product_title": r.product_title,
+                 "matched_by": f, "matched_value": v}
+                for f, v, r in list(hits.values())[:5]
+            ],
+        }
+    field, value, row = next(iter(hits.values()))
+    return {
+        "ok": True,
+        "matched_by": field,
+        "matched_value": value,
+        "product": {
+            "sku": row.sku,
+            "barcode": row.barcode,
+            "product_title": row.product_title,
+            "variant_title": row.variant_title,
+            "shopify_variant_id": row.shopify_variant_id,
+            "shopify_product_id": row.shopify_product_id,
+            "bin_location": row.bin,
+            "image_url": row.image_url,
+        },
+    }
+
+
+@app.get(
     "/api/bins/{bin_name}/odd-barcodes", dependencies=[Depends(require_user)]
 )
 def bin_odd_barcodes(

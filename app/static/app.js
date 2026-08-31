@@ -13518,12 +13518,36 @@ async function sortShipScan(code) {
   sortShipBusy = true;
   try {
     let product = null;
+    let matchNote = null;
+    let ambiguous = null;
     try {
       product = await apiJson(
         `/api/products/by-barcode/${encodeURIComponent(term)}`
       );
     } catch (err) {
-      /* unknown code - lands in unexplained below */
+      // Vendor box labels are often the maker's own item string, not
+      // our SKU or barcode (Nick, 2026-08-31, the Buckeye shipment):
+      // second try folds separators and matches sku, barcode, and
+      // VARIANT names - unique hits only, ambiguity stays human.
+      try {
+        const m = await apiJson(
+          `/api/products/label-match/${encodeURIComponent(term)}`
+        );
+        if (m.ok) {
+          product = m.product;
+          matchNote = `matched by ${m.matched_by} "${m.matched_value}"`;
+        } else if (m.ambiguous) {
+          ambiguous =
+            "could be " +
+            m.candidates
+              .map((c) => c.sku || c.product_title)
+              .slice(0, 3)
+              .join(" or ") +
+            " - pick by hand in the planner";
+        }
+      } catch (err2) {
+        /* genuinely unknown - lands in unexplained below */
+      }
     }
     const key = ((product && product.sku) || term).toUpperCase();
     let row = sortShipRows[key];
@@ -13533,13 +13557,15 @@ async function sortShipScan(code) {
         sku: product ? product.sku : null,
         title: product ? product.product_title : term,
         image_url: product ? product.image_url : null,
+        matchNote,
         orders: [],
         alloc: {},
         unexplained: 0,
         scanned: 0,
         reason: product
           ? null
-          : "unknown product - fix the barcode or link it at the Scan Station",
+          : ambiguous ||
+            "unknown product - fix the barcode or link it at the Scan Station",
       };
       if (product && product.sku) {
         try {
@@ -13625,6 +13651,10 @@ function renderSortShip() {
       }
       <span class="sortrow__name">${escapeHtml(row.title)}${
         row.sku ? ` <span class="mono">· ${escapeHtml(row.sku)}</span>` : ""
+      }${
+        row.matchNote
+          ? ` <span class="recent__note" title="The scanned label didn't equal the SKU or barcode - this is how it was recognised. Double-check it's the right product.">· ${escapeHtml(row.matchNote)}</span>`
+          : ""
       }</span>
       <span class="sortrow__n">× ${n}</span>
       <button class="reset sortrow__minus" type="button" title="Mis-scan: remove one"
