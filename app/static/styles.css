@@ -2763,3 +2763,6 @@ tr.binaudit-untagged td { opacity: 0.72; }
   font-weight: 700;
 }
 .sortrow__why { margin: -2px 0 4px 42px; }
+
+/* Near-miss resolve buttons under an unexplained sorter row */
+.sortrow__fix { display: flex; gap: 8px; flex-wrap: wrap; margin: 2px 0 8px 42px; }

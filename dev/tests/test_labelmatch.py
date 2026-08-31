@@ -76,6 +76,29 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
     check("a genuinely unknown label 404s", r.status_code == 404,
           r.status_code)
 
+    # --- Tier 3: token suggestions (RigelQF-Synta, Nick 2026-08-31) ---
+    with Session(get_engine()) as s:
+        s.add(BinMapEntry(sku="Synta-RigelQuikfinder", barcode="54318861",
+                          product_title="Buckeye Synta Vixen Base for "
+                                        "the Rigel QuikFinder",
+                          bin="E4-2", qty=2, shopify_variant_id="t:RQF"))
+        s.add(BinMapEntry(sku="ZWO T2-Tilter-II", barcode="806",
+                          product_title="ZWO T2 Tilter II", bin="G5-1",
+                          qty=1, shopify_variant_id="t:TILT2"))
+        s.commit()
+
+    r = cl.get("/api/products/label-match/RigelQF-Synta")
+    check("word-order + abbreviation comes back as a SUGGESTION",
+          r.status_code == 200 and not r.json().get("ok")
+          and r.json().get("suggestion", {}).get("sku")
+          == "Synta-RigelQuikfinder", r.text[:250])
+    check("a suggestion is never presented as a resolution",
+          r.json().get("ok") is False, r.json())
+
+    r = cl.get("/api/products/label-match/ZWO-T2-Tilter-I")
+    check("Tilter-I never suggests Tilter-II (short tokens are exact)",
+          r.status_code == 404, r.text[:150])
+
 print()
 print("FAILED: "+", ".join(fails) if fails else "ALL CHECKS PASSED")
 sys.exit(1 if fails else 0)

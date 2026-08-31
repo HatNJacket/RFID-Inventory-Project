@@ -189,6 +189,10 @@ with Session(get_engine()) as s:
         m("EAF-FTF-30", "Buckeye ZWO EAF Bracket", "E4-1", 1,
           barcode="59995776891995"),
         slider,
+        # Near-miss suggestion demo: scan "RigelQF-Synta".
+        m("Synta-RigelQuikfinder",
+          "Buckeye Synta Vixen Base for the Rigel QuikFinder",
+          "E4-2", 2, barcode="54318861007862"),
     ])
     s.add(RfidAssignment(rfid_id="MMMM0000000000000000000M",
                          shopify_variant_id="t:MM", sku="MISMATCH-1",

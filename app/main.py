@@ -4488,6 +4488,59 @@ def product_label_match(code: str, session: Session = Depends(get_session)):
                 hits.setdefault(key, (field, value, row))
                 break
     if not hits:
+        # Tier 3, SUGGESTION only (Nick, 2026-08-31 - RigelQF-Synta vs
+        # Synta-RigelQuikfinder): every token of the scan must be
+        # accounted for by a candidate token - exactly, or by a shared
+        # prefix of 5+ characters (word order free, abbreviated tails
+        # allowed). Enough to ASK a human, never to resolve: the sorter
+        # shows it with link/overwrite buttons. Short tokens must match
+        # exactly, so Tilter-I never suggests Tilter-II.
+        scan_tokens = [t for t in re.split(
+            r"[\s\-_./]+", _fold_plain(term)) if t]
+
+        def _tok_match(t: str, c: str) -> bool:
+            if t == c:
+                return True
+            if len(t) < 5 or len(c) < 5:
+                return False
+            n = 0
+            for a, b in zip(t, c):
+                if a != b:
+                    break
+                n += 1
+            return n >= 5
+
+        suggestions: dict[str, BinMapEntry] = {}
+        if scan_tokens:
+            for row in session.scalars(select(BinMapEntry)):
+                cand_tokens = set()
+                for value in (row.sku, row.variant_title):
+                    for t in re.split(r"[\s\-_./]+", _fold_plain(value)):
+                        if t:
+                            cand_tokens.add(t)
+                if all(any(_tok_match(t, c) for c in cand_tokens)
+                       for t in scan_tokens):
+                    key = row.shopify_variant_id or row.sku or ""
+                    suggestions.setdefault(key, row)
+                if len(suggestions) > 3:
+                    break
+        if len(suggestions) == 1:
+            row = next(iter(suggestions.values()))
+            return {
+                "ok": False,
+                "suggestion": {
+                    "sku": row.sku,
+                    "barcode": row.barcode,
+                    "product_title": row.product_title,
+                    "variant_title": row.variant_title,
+                    "bin_location": row.bin,
+                    "image_url": row.image_url,
+                },
+                "why": (
+                    "every part of the scanned label matches this "
+                    "product's SKU or variant name"
+                ),
+            }
         raise HTTPException(404, "No catalog match for that label.")
     if len(hits) > 1:
         return {

@@ -13520,6 +13520,7 @@ async function sortShipScan(code) {
     let product = null;
     let matchNote = null;
     let ambiguous = null;
+    let suggestion = null;
     try {
       product = await apiJson(
         `/api/products/by-barcode/${encodeURIComponent(term)}`
@@ -13528,7 +13529,9 @@ async function sortShipScan(code) {
       // Vendor box labels are often the maker's own item string, not
       // our SKU or barcode (Nick, 2026-08-31, the Buckeye shipment):
       // second try folds separators and matches sku, barcode, and
-      // VARIANT names - unique hits only, ambiguity stays human.
+      // VARIANT names - unique hits only, ambiguity stays human, and a
+      // token-level near-miss comes back as a SUGGESTION with resolve
+      // buttons instead of a silent guess.
       try {
         const m = await apiJson(
           `/api/products/label-match/${encodeURIComponent(term)}`
@@ -13536,6 +13539,8 @@ async function sortShipScan(code) {
         if (m.ok) {
           product = m.product;
           matchNote = `matched by ${m.matched_by} "${m.matched_value}"`;
+        } else if (m.suggestion) {
+          suggestion = m.suggestion;
         } else if (m.ambiguous) {
           ambiguous =
             "could be " +
@@ -13554,18 +13559,22 @@ async function sortShipScan(code) {
     if (!row) {
       row = {
         key,
+        term,
         sku: product ? product.sku : null,
         title: product ? product.product_title : term,
         image_url: product ? product.image_url : null,
         matchNote,
+        suggestion,
         orders: [],
         alloc: {},
         unexplained: 0,
         scanned: 0,
         reason: product
           ? null
-          : ambiguous ||
-            "unknown product - fix the barcode or link it at the Scan Station",
+          : suggestion
+            ? `looks like ${suggestion.sku} ("${suggestion.product_title}") - link or overwrite below to teach the system`
+            : ambiguous ||
+              "unknown product - fix the barcode or link it at the Scan Station",
       };
       if (product && product.sku) {
         try {
@@ -13698,6 +13707,14 @@ function renderSortShip() {
               rowHtml(row, row.unexplained, "unx") +
               (row.reason
                 ? `<div class="recent__meta sortrow__why">${escapeHtml(row.reason)}</div>`
+                : "") +
+              (row.suggestion
+                ? `<div class="sortrow__fix">
+                    <button class="reset" type="button" data-fix="link" data-key="${escapeHtml(row.key)}"
+                      title="Saves the scanned label as a lookup ALIAS for this product (Shopify untouched) - every future scan of it resolves. The pile re-sorts this row right away.">🔗 Link "${escapeHtml(row.term || row.key)}" to ${escapeHtml(row.suggestion.sku)}</button>
+                    <button class="reset" type="button" data-fix="overwrite" data-key="${escapeHtml(row.key)}"
+                      title="REPLACES this product's barcode in Shopify with the scanned label. Its current barcode is dropped (a clean replaced barcode is not auto-linked). Prefer Link unless the stored barcode is wrong.">✎ Set as its Shopify barcode</button>
+                  </div>`
                 : "")
           )
           .join("")}
@@ -13730,6 +13747,75 @@ function renderSortShip() {
       sortShipOpenPlanner(Number(btn.dataset.order))
     )
   );
+  host.querySelectorAll("[data-fix]").forEach((btn) =>
+    btn.addEventListener("click", () =>
+      sortShipResolveSuggestion(btn.dataset.key, btn.dataset.fix)
+    )
+  );
+}
+
+// The RigelQF-Synta flow (Nick, 2026-08-31): a near-miss suggestion is
+// resolved by teaching the system - link the scanned label as an alias
+// (local, Shopify untouched) or write it as the product's barcode in
+// Shopify. Either way the row re-scans itself and re-sorts into its
+// order bucket.
+async function sortShipResolveSuggestion(key, how) {
+  const row = sortShipRows[key];
+  if (!row || !row.suggestion) return;
+  const operator = operatorEl.value;
+  if (!operator) {
+    alert("Pick who's scanning (top right) first.");
+    return;
+  }
+  const term = row.term || row.key;
+  const sug = row.suggestion;
+  try {
+    if (how === "link") {
+      if (
+        !confirm(
+          `Link "${term}" to ${sug.sku}?\n\nIt becomes a lookup alias - ` +
+            `every future scan of that label resolves to ` +
+            `${sug.product_title}. Shopify is not touched.`
+        )
+      )
+        return;
+      await postJson("/api/barcode-aliases", {
+        alias_barcode: term,
+        target: sug.sku,
+        created_by: operator,
+      });
+    } else {
+      if (
+        !confirm(
+          `Write "${term}" to Shopify as the BARCODE of ${sug.sku}?\n\n` +
+            `Its current barcode (${sug.barcode || "none"}) is replaced ` +
+            `and NOT auto-linked (it's a clean value). Prefer Link ` +
+            `unless the stored barcode is wrong. Logged and visible in ` +
+            `History.`
+        )
+      )
+        return;
+      await postJson("/api/barcode-overwrites", {
+        target: sug.sku,
+        new_barcode: term,
+        confirmed: true,
+        changed_by: operator,
+      });
+    }
+    // Re-sort the row through the normal path - the label now resolves.
+    const n = row.scanned;
+    delete sortShipRows[key];
+    sortShipSeq = sortShipSeq.filter((k) => k !== key);
+    sortShipSave();
+    for (let i = 0; i < n; i++) {
+      await sortShipScan(term);
+    }
+    setSortShipStatus(
+      `${term} now resolves to ${sug.sku} - ${n} scan(s) re-sorted.`
+    );
+  } catch (err) {
+    alert(err.message);
+  }
 }
 
 function sortShipOpenPlanner(orderId) {
