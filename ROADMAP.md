@@ -3,6 +3,36 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-08-26.
 
+## 🧵 Receiving-as-pairing round — 🛠 BUILT 2026-08-31, ⚠ NOT DEPLOYED (awaiting Nick's answers)
+
+Second local-only round on top of the planner streamlining (C72 3.66
+code 84 built; ships with the round below):
+
+1. **Web receiving focus**: the focused card jumps to the top of the
+   list over an "everything else in this shipment" divider.
+2. **Web focused-card sweep pairing**: "📶 Use latest C72 sweep" on the
+   focused receiving card pairs every unowned tag from the newest
+   sweep into that product (same /unlinked + /pair mechanics as the
+   gun's held sweep; announces auto-close), with the bulk chip beside
+   it (shared sweepNoteState renderer; green when the sweep matches
+   the labels left).
+3. **C72 receiving = pair-only task**: entry always lands on PAIR
+   (planner collected/printed); NEXT is "CHECK ✓" - a two-button
+   dialog listing expected · printed · tagged per product, red (printed
+   but 0 tagged) / yellow (part) / green (every box paired) - CONFIRM
+   exits straight to the batch list; auto-close does the real closing.
+   Gun-side START RECEIVING, the collect/PRINT pass, and the FINISH
+   RECEIVING exit path are removed (planner-driven end to end).
+4. **C72 card tap = focus**: tapping the product card selects it for
+   pairing like a barcode scan; the new ✎ chip (bottom-right) opens
+   the editor a tap used to.
+5. **C72 verify dialog is two buttons**: NEW SWEEP removed - it
+   duplicated the CLEAR button on the verify screen underneath
+   (that's the answer to Nick's third-button question).
+6. **Web verify**: the "Sweep #N arrived - checking the bin…" line now
+   resolves to "checked ✓ … sweep again or Complete batch" once the
+   check lands.
+
 ## 🚚 Planner streamlining round — 🛠 BUILT 2026-08-31, ⚠ NOT DEPLOYED (Nick: hold all pushes)
 
 Three pieces, tested (47/47 + browser) but sitting in LOCAL commits

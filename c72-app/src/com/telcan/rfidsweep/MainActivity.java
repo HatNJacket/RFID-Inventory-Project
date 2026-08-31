@@ -865,15 +865,44 @@ public class MainActivity extends Activity {
         batchSku = sk[0];
         batchTracker = tr[0];
         batchCard.setVisibility(View.GONE);
-        // Tapping the preview card edits the product it shows — no hunting
-        // for the same item down in the list.
+        // Tapping the card FOCUSES its product for tagging, exactly like
+        // scanning its barcode; the pencil chip (bottom-right) opens the
+        // editor that a tap used to (Nick, 2026-08-31).
         batchCard.setOnClickListener(view -> {
+            BItem it = focusedItem();
+            if (it == null) return;
+            previewItem = it;
+            if (step == STEP_PAIR) {
+                pairActive = it;
+                beep(SOUND_OTHER);
+                status.setText("Pairing " + it.name()
+                        + " - trigger on its stickers.");
+            } else {
+                status.setText(it.name() + " focused.");
+            }
+            updateBatchCard();
+            refreshBatchList();
+        });
+        TextView cardEdit = new TextView(this);
+        cardEdit.setText("✎");
+        cardEdit.setTextSize(17);
+        cardEdit.setTextColor(0xFFFFFFFF);
+        cardEdit.setBackground(rr(C_BLUE, 0, 12));
+        cardEdit.setPadding(dp(11), dp(5), dp(11), dp(5));
+        FrameLayout.LayoutParams cel = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                android.view.Gravity.BOTTOM | android.view.Gravity.END);
+        cel.bottomMargin = dp(6);
+        cel.rightMargin = dp(6);
+        cardEdit.setOnClickListener(x -> {
             BItem it = focusedItem();
             if (it == null) return;
             CheckEntry e = new CheckEntry();
             e.item = it;
             openItemEditor(e);
         });
+        batchCard.addView(cardEdit, cel);
         v.addView(batchCard);
 
         batchListView = new ListView(this);
@@ -5283,10 +5312,13 @@ public class MainActivity extends Activity {
             }
             scanning = false;
         }
+        // Receiving is pair-only: there is nowhere to step back to.
+        if (receivingBatch) {
+            status.setText("Receiving has one step - pair. CHECK shows "
+                    + "what's left; EXIT parks the shipment.");
+            return;
+        }
         step--;
-        // Receiving loops collect <-> pair; there is no Check step to
-        // land on.
-        if (receivingBatch && step == STEP_CHECK) step = STEP_COLLECT;
         // The shelf-sweep step only exists on re-tag bins; everyone
         // else steps straight over it. (Reads are KEPT when landing on
         // it — BACK from check continues the same sweep.)
@@ -5351,25 +5383,12 @@ public class MainActivity extends Activity {
 
     private void stepNext() {
         if (!inBatch()) return;
-        // Receiving: collect -> PRINT -> pair -> back to collect, as many
-        // passes as the pallet takes. Finishing lives behind EXIT.
+        // Receiving is a pair-only task (Nick, 2026-08-31): the planner
+        // collected and printed before this gun opened the batch. NEXT
+        // is the check - expected / printed / tagged per product - and
+        // pairing every box closes the shipment by itself.
         if (receivingBatch) {
-            if (step == STEP_COLLECT) {
-                boolean any = false;
-                for (BItem b : bItems) if (b.qty > 0) any = true;
-                if (!any) {
-                    beep(SOUND_ERR);
-                    status.setText("Scan at least one box first.");
-                    return;
-                }
-                confirmReceivingPrint();
-            } else if (step == STEP_PAIR) {
-                step = STEP_COLLECT;
-                pairActive = null;
-                applyBatchUi();
-                status.setText("Next pass: scan more boxes — or EXIT → "
-                        + "FINISH RECEIVING when the pallet is empty.");
-            }
+            showReceivingCheck();
             return;
         }
         // On a side trip there is no verify step: it covers a few carried
@@ -6577,6 +6596,10 @@ public class MainActivity extends Activity {
 
         ScrollView sc = new ScrollView(this);
         sc.addView(box);
+        // Two buttons only (Nick, 2026-08-31: three stacked vertically
+        // and scrolled). The third - NEW SWEEP, discarding a
+        // wrong-shelf sweep - was a duplicate of the CLEAR button
+        // already on the verify screen underneath.
         dlg()
                 .setTitle("Verify bin " + batchBin)
                 .setView(sc)
@@ -6587,12 +6610,8 @@ public class MainActivity extends Activity {
                     synchronized (tags) { kept = tags.size(); }
                     status.setText("Sweep kept (" + kept + " tag(s))"
                             + " - pull the trigger to add the missed "
-                            + "boxes, then SEND SWEEP again.");
-                })
-                .setNeutralButton("NEW SWEEP", (d, w) -> {
-                    clearVerifySweep();
-                    status.setText("Sweep cleared - pull the trigger to "
-                            + "sweep the bin again, then SEND SWEEP.");
+                            + "boxes, then SEND SWEEP again. CLEAR "
+                            + "starts a fresh sweep.");
                 })
                 .show();
     }
@@ -7181,20 +7200,20 @@ public class MainActivity extends Activity {
         for (BItem b : bItems) paired += b.paired;
         final int n = paired;
         if (receivingBatch) {
+            // No FINISH any more (Nick, 2026-08-31): the shipment closes
+            // ITSELF when every box is paired, so leaving is just leaving.
             dlg()
                     .setTitle("Leave receiving?")
-                    .setMessage("FINISH closes the shipment and files an "
-                            + "inventory-check for every bin that received "
-                            + "stock.\n\nLEAVE OPEN parks it to resume "
-                            + "later; ABANDON closes it for good"
+                    .setMessage("LEAVE OPEN parks the shipment to resume "
+                            + "later - it closes by itself once every box "
+                            + "is paired. ABANDON closes it for good"
                             + (n > 0 ? " and releases its " + n
                                + " tag tie(s)" : "") + ".")
-                    .setPositiveButton("FINISH RECEIVING…", (d, w) ->
-                            confirmFinishReceiving())
-                    .setNeutralButton("LEAVE OPEN", (d, w) ->
+                    .setPositiveButton("LEAVE OPEN", (d, w) ->
                             exitBatch(false))
-                    .setNegativeButton("ABANDON…", (d, w) ->
+                    .setNeutralButton("ABANDON…", (d, w) ->
                             confirmAbandonBatch(n))
+                    .setNegativeButton("Stay", null)
                     .show();
             return;
         }
@@ -7254,142 +7273,58 @@ public class MainActivity extends Activity {
     // ---------------------------------------------------------- receiving --
     /** PRINT for a receiving pass: only boxes not yet labelled queue, in
      *  scan order, each label carrying the product's home bin. */
-    private void confirmReceivingPrint() {
-        dlg()
-                .setTitle("Print this pass?")
-                .setMessage("Queues one label for every box scanned but "
-                        + "not yet labelled. The stack comes off the "
-                        + "printer in scan order — walk your line of "
-                        + "boxes with it.\n\nProducts with NO bin are held "
-                        + "out (assign a bin first: tap the product → "
-                        + "change bin).")
-                .setPositiveButton("PRINT", (d, w) -> receivingPrint())
-                .setNegativeButton("Stay", null)
-                .show();
-    }
-
-    private void receivingPrint() {
-        status.setText("Queueing labels…");
-        new Thread(() -> {
-            try {
-                JSONObject resp = api("POST",
-                        "/api/batches/" + batchId + "/queue-labels",
-                        new JSONObject().put("requested_by",
-                                prefs.getString("device", "C72")));
-                final int count = resp.optInt("count");
-                final List<String> held = new ArrayList<>();
-                JSONArray sk = resp.optJSONArray("skipped_no_bin");
-                if (sk != null) {
-                    for (int i = 0; i < sk.length(); i++) {
-                        held.add(sk.getString(i));
-                    }
-                }
-                ui.post(() -> {
-                    beep(count > 0 ? SOUND_OK : SOUND_OTHER);
-                    StringBuilder m = new StringBuilder();
-                    m.append(count > 0
-                            ? count + " label(s) queued at the printer."
-                            : "Nothing new to print.");
-                    if (!held.isEmpty()) {
-                        m.append("\n\nHELD — no bin assigned:\n• ")
-                         .append(String.join("\n• ", held))
-                         .append("\n\nAssign bins and PRINT again.");
-                    }
-                    dlg()
-                            .setTitle("Print pass")
-                            .setMessage(m.toString())
-                            .setPositiveButton("GO TO PAIR", (d, w) -> {
-                                step = STEP_PAIR;
-                                pairActive = null;
-                                applyBatchUi();
-                            })
-                            .setNegativeButton("KEEP COLLECTING", null)
-                            .show();
-                });
-            } catch (Exception e) {
-                ui.post(() -> {
-                    beep(SOUND_ERR);
-                    status.setText("Print failed: " + e.getMessage());
-                });
-            }
-        }).start();
-    }
-
-    private void confirmFinishReceiving() {
-        java.util.LinkedHashMap<String, Integer> bins =
-                new java.util.LinkedHashMap<>();
-        int unpaired = 0;
+    /** The receiving check (Nick, 2026-08-31): one screen per product -
+     *  expected, printed, tagged - colored red (printed but nothing
+     *  tagged), yellow (part tagged), green (every box paired). CONFIRM
+     *  goes straight back to the batch list with no extra prompt; the
+     *  shipment closes ITSELF the moment every box is paired, so there
+     *  is nothing else to press. */
+    private void showReceivingCheck() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(16), dp(8), dp(16), dp(4));
+        int green = 0, total = 0;
         for (BItem b : bItems) {
-            if (b.resolved && b.paired < b.labelsTotal) {
-                unpaired += b.labelsTotal - b.paired;
+            int want = b.qty + b.caseCount;
+            boolean problem = !b.resolved || b.skipped;
+            TextView t = new TextView(this);
+            String exp = b.expected != null
+                    ? String.valueOf(b.expected) : "?";
+            t.setText((problem
+                        ? (b.title.isEmpty() ? b.scannedCode : b.name())
+                          + " — " + (b.skipReason == null
+                              ? "unresolved" : b.skipReason)
+                        : b.name() + "\n   expected " + exp
+                          + " · printed " + b.printed
+                          + " · tagged " + b.paired + " of " + want));
+            t.setTextSize(13);
+            t.setPadding(0, dp(4), 0, dp(4));
+            int c;
+            if (problem) {
+                c = C_MUTED;
+            } else if (want > 0 && b.paired >= want) {
+                c = C_OK;
+                green++;
+            } else if (b.paired > 0) {
+                c = C_WARN;
+            } else if (b.printed > 0) {
+                c = C_OVER;
+            } else {
+                c = C_MUTED;
             }
-            if (b.resolved && b.qty > 0 && b.binLocation != null
-                    && !"No bin assigned".equalsIgnoreCase(b.binLocation)) {
-                Integer prev = bins.get(b.binLocation);
-                bins.put(b.binLocation,
-                        (prev == null ? 0 : prev) + b.qty);
-            }
+            t.setTextColor(c);
+            box.addView(t);
+            if (!problem && want > 0) total++;
         }
-        StringBuilder m = new StringBuilder(
-                "Files an inventory-check task for every bin that "
-                + "received stock:\n");
-        for (java.util.Map.Entry<String, Integer> e : bins.entrySet()) {
-            m.append("• ").append(e.getKey()).append(" — ")
-             .append(e.getValue()).append(" box(es)\n");
-        }
-        if (unpaired > 0) {
-            m.append("\n⚠ ").append(unpaired).append(" label(s) still "
-                    + "have no tag paired — they'll be flagged for Review.");
-        }
+        ScrollView sc = new ScrollView(this);
+        sc.addView(box);
         dlg()
-                .setTitle("Finish receiving?")
-                .setMessage(m.toString())
-                .setPositiveButton("FINISH", (d, w) -> finishReceiving())
-                .setNegativeButton("Stay", null)
+                .setTitle("Receiving — " + green + " of " + total
+                        + " product(s) fully tagged")
+                .setView(sc)
+                .setPositiveButton("CONFIRM", (d, w) -> exitBatch(false))
+                .setNegativeButton("CONTINUE PAIRING", null)
                 .show();
-    }
-
-    private void finishReceiving() {
-        status.setText("Finishing receiving…");
-        new Thread(() -> {
-            try {
-                JSONObject resp = api("POST",
-                        "/api/batches/" + batchId + "/complete",
-                        new JSONObject()
-                                .put("finalize", true)
-                                .put("created_by",
-                                        prefs.getString("device", "C72")));
-                JSONObject bins = resp.optJSONObject("bins_touched");
-                final StringBuilder m = new StringBuilder(
-                        "Inventory checks filed for:");
-                if (bins != null && bins.length() > 0) {
-                    java.util.Iterator<String> it = bins.keys();
-                    while (it.hasNext()) {
-                        String k = it.next();
-                        m.append("\n• ").append(k).append(" — ")
-                         .append(bins.optInt(k)).append(" box(es)");
-                    }
-                } else {
-                    m.append(" (none — nothing was shelved)");
-                }
-                ui.post(() -> {
-                    beep(SOUND_OK);
-                    exitBatch(true);
-                    dlg()
-                            .setTitle("Receiving done ✓")
-                            .setMessage(m + "\n\nThey're in the Review tab "
-                                    + "— each one is a quick bin-audit "
-                                    + "walk-scan.")
-                            .setPositiveButton("OK", null)
-                            .show();
-                });
-            } catch (Exception e) {
-                ui.post(() -> {
-                    beep(SOUND_ERR);
-                    status.setText("Finish failed: " + e.getMessage());
-                });
-            }
-        }).start();
     }
 
     /** "just now" / "20 min ago" / "2 h ago" from a server UTC timestamp. */
@@ -7640,52 +7575,11 @@ public class MainActivity extends Activity {
                 : emptyBox("Scan a BIN barcode to start a new batch",
                         null), el);
 
-        Button recvBtn = smallBtn("START RECEIVING");
-        LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT);
-        rl.bottomMargin = dp(10);
-        list.addView(recvBtn, rl);
-        recvBtn.setOnClickListener(v -> askStartReceiving());
-    }
-
-    /** Start a shipment batch: no bin — scan whatever the pallet offers,
-     *  PRINT, stick + pair, and loop until the pallet is empty. */
-    private void askStartReceiving() {
-        dlg()
-                .setTitle("Start receiving?")
-                .setMessage("A receiving batch has no bin: scan every box "
-                        + "you can reach, press PRINT (labels come out in "
-                        + "scan order, each printed with the product's HOME "
-                        + "bin), stick + pair, then loop back and scan the "
-                        + "next layer.\n\nFinishing files an inventory-check "
-                        + "for every bin that received stock.")
-                .setPositiveButton("START", (d, w) -> startReceivingBatch())
-                .setNegativeButton("Cancel", null)
-                .show();
-    }
-
-    private void startReceivingBatch() {
-        status.setText("Starting receiving…");
-        new Thread(() -> {
-            try {
-                JSONObject body = new JSONObject()
-                        .put("kind", "receiving")
-                        .put("created_by", prefs.getString("device", "C72"));
-                JSONObject resp = api("POST", "/api/batches", body);
-                final int id = resp.getInt("id");
-                ui.post(() -> {
-                    beep(SOUND_OK);
-                    enterBatch(id);
-                });
-            } catch (Exception e) {
-                ui.post(() -> {
-                    beep(SOUND_ERR);
-                    status.setText("Could not start receiving: "
-                            + e.getMessage());
-                });
-            }
-        }).start();
+        // No START RECEIVING here any more (Nick, 2026-08-31):
+        // receiving is planner-driven end to end - the planner's stock
+        // update creates the batch and prints the labels; the gun only
+        // pairs. Matches the web terminal, whose start button went the
+        // same way on 2026-08-25.
     }
 
     private void enterBatch(int id) {
@@ -7719,7 +7613,11 @@ public class MainActivity extends Activity {
                     strayMove.clear();
                     bItems.clear();
                     bItems.addAll(loaded);
-                    step = "awaiting-verify".equals(st) ? STEP_VERIFY
+                    // Receiving is PAIR-ONLY on the gun (Nick,
+                    // 2026-08-31): the planner collected and printed
+                    // long before this batch is opened here.
+                    step = receiving ? STEP_PAIR
+                            : "awaiting-verify".equals(st) ? STEP_VERIFY
                             : ("printing".equals(st) || "pairing".equals(st))
                               ? STEP_PAIR : STEP_COLLECT;
                     if (step == STEP_VERIFY) startVerifyStep();
@@ -7782,7 +7680,7 @@ public class MainActivity extends Activity {
         }
         phaseChip.setText(in
                 ? (receivingBatch
-                    ? (step == STEP_PAIR ? "PAIR ⟳" : "COLLECT ⟳")
+                    ? "RECEIVING"
                     : STEP_NAMES[step] + "  " + shownStep + "/"
                       + shownTotal)
                 : "PICK");
@@ -7811,17 +7709,14 @@ public class MainActivity extends Activity {
         btnNext.setText(parentBatchId != 0 && step == STEP_PAIR
                 ? "FINISH TRIP"
                 : receivingBatch
-                  ? (step == STEP_COLLECT ? "PRINT →" : "↩ COLLECT")
+                  ? "CHECK ✓"
                   : step == STEP_VERIFY ? "SEND SWEEP"
                   : step == STEP_SHELF ? "RESULTS →" : "NEXT →");
         if (in && receivingBatch) {
-            status.setText(step == STEP_PAIR
-                    ? "PAIR: barcode selects, TRIGGER each sticker. "
-                      + "↩ COLLECT starts the next pass; EXIT → FINISH "
-                      + "when the pallet is empty."
-                    : "RECEIVING: scan every box you can reach, then "
-                      + "PRINT. Labels come out in scan order with each "
-                      + "product's home bin.");
+            status.setText("RECEIVING: scan a product barcode (or tap "
+                    + "its card), TRIGGER each sticker. CHECK shows "
+                    + "expected vs printed vs tagged; pairing every box "
+                    + "closes the shipment by itself.");
         } else if (in) {
             if (step == STEP_COLLECT) {
                 status.setText("COLLECT: scan every box in this bin, then "

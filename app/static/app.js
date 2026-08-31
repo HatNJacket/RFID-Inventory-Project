@@ -3225,31 +3225,12 @@ function renderBulkSweepNote() {
     note.hidden = true;
     return;
   }
-  const s = bulkSweepSummary;
-  const remaining = Math.max(0, bulkPrinted - bulkTagged);
-  let cls = "bulknote--red";
-  let text;
-  if (!s || !s.exists) {
-    text = "no sweep waiting - SWEEP then SEND on the gun";
-  } else if (s.untagged === 0) {
-    // The edge Nick called out: a sweep arrived but every tag in it is
-    // already linked - pulling it would assign nothing.
-    text = `sweep holds 0 untagged of ${s.epc_count} heard`;
-  } else if (remaining > 0 && s.untagged === remaining) {
-    cls = "bulknote--green";
-    text = `${s.untagged} tag(s) waiting - matches the ${remaining} left`;
-  } else {
-    cls = "bulknote--yellow";
-    text =
-      `${s.untagged} untagged tag(s) waiting` +
-      (remaining > 0 ? ` vs ${remaining} left in this bulk` : "");
-  }
-  if (s && s.exists && s.age_seconds > 120) {
-    const m = Math.round(s.age_seconds / 60);
-    text += ` · sweep is ${m}m old`;
-  }
-  note.className = `bulknote ${cls}`;
-  note.textContent = text;
+  const st = sweepNoteState(
+    bulkSweepSummary,
+    Math.max(0, bulkPrinted - bulkTagged)
+  );
+  note.className = `bulknote ${st.cls}`;
+  note.textContent = st.text;
   note.hidden = false;
 }
 
@@ -4512,6 +4493,13 @@ async function checkForIncomingSweep() {
       "ok"
     );
     await runVerifyCheck();
+    // The "checking…" line used to sit there forever (Nick, 2026-08-31)
+    // - once the check lands, say so and point at the next move.
+    setBatchResult(
+      `Sweep #${cap.id} checked ✓ - ${verifyEpcs.size} unique tag(s) ` +
+        `on file. Sweep again to add reads, or Complete batch below.`,
+      "ok"
+    );
     batchSound("ok");
   } catch (err) {
     /* transient; the next tick tries again */
@@ -5058,7 +5046,26 @@ function renderReceivingList() {
   summary.hidden = !items.length;
   empty.hidden = !!items.length;
   list.innerHTML = "";
-  items.forEach((item) => list.append(recvCard(item)));
+  // The focused product leads the list with a divider under it - the
+  // current work sits on top, everything else waits below (Nick,
+  // 2026-08-31).
+  const focusedItem =
+    recvFocusId != null ? items.find((i) => i.id === recvFocusId) : null;
+  if (focusedItem) {
+    list.append(recvCard(focusedItem));
+    const divider = document.createElement("li");
+    divider.className = "recvdivider";
+    divider.textContent = "everything else in this shipment";
+    list.append(divider);
+    items
+      .filter((i) => i.id !== focusedItem.id)
+      .forEach((item) => list.append(recvCard(item)));
+  } else {
+    items.forEach((item) => list.append(recvCard(item)));
+  }
+  syncRecvSweepPoll(
+    !!focusedItem && !recvProblemText(focusedItem) && batch && !batch.completed_at
+  );
 }
 
 function recvCard(item) {
@@ -5149,6 +5156,8 @@ function recvCard(item) {
         openRecvLink(item);
       } else if (btn.dataset.act === "missing") {
         recvPrintMissing(item, missing);
+      } else if (btn.dataset.act === "sweep") {
+        recvPullSweep(item);
       }
     })
   );
@@ -5181,7 +5190,155 @@ function recvFocusBody(item, problem, received, printedN, taggedN, missing) {
             : ""
         }
       </div>
+      <div class="recvcard__sweep">
+        <button class="reset sweep-pull" type="button" data-act="sweep"
+          title="Pair every NEW tag from the most recent C72 sweep (SWEEP tab → SEND on the gun) to this product. Tags already tied to anything are skipped, never stolen.">📶 Use latest C72 sweep</button>
+        <span class="bulknote" id="recv-sweep-note" hidden></span>
+      </div>
     </div>`;
+}
+
+// --- Focused-card sweep pairing (Nick, 2026-08-31) --------------------------
+// The web terminal can now finish a receiving product without the gun's
+// pair screen: pull the newest C72 sweep and every unowned tag in it
+// pairs to the FOCUSED product - same mechanics as the gun's held sweep.
+// The chip beside the button watches for waiting sweeps, colored like
+// the Scan Station's bulk chip: green = matches the labels left to scan,
+// yellow = partial or over-sweep, red = nothing waiting or an
+// all-tagged sweep.
+let recvSweepTimer = null;
+let recvSweepSummary = null;
+
+function sweepNoteState(s, remaining) {
+  if (!s || !s.exists) {
+    return {
+      cls: "bulknote--red",
+      text: "no sweep waiting - SWEEP then SEND on the gun",
+    };
+  }
+  let out;
+  if (s.untagged === 0) {
+    out = {
+      cls: "bulknote--red",
+      text: `sweep holds 0 untagged of ${s.epc_count} heard`,
+    };
+  } else if (remaining > 0 && s.untagged === remaining) {
+    out = {
+      cls: "bulknote--green",
+      text: `${s.untagged} tag(s) waiting - matches the ${remaining} left`,
+    };
+  } else {
+    out = {
+      cls: "bulknote--yellow",
+      text:
+        `${s.untagged} untagged tag(s) waiting` +
+        (remaining > 0 ? ` vs ${remaining} left` : ""),
+    };
+  }
+  if (s.age_seconds > 120) {
+    out.text += ` · sweep is ${Math.round(s.age_seconds / 60)}m old`;
+  }
+  return out;
+}
+
+function syncRecvSweepPoll(active) {
+  if (!active) {
+    if (recvSweepTimer) clearInterval(recvSweepTimer);
+    recvSweepTimer = null;
+    recvSweepSummary = null;
+    return;
+  }
+  renderRecvSweepNote();
+  if (!recvSweepTimer) {
+    pollRecvSweepNote();
+    recvSweepTimer = setInterval(pollRecvSweepNote, 4000);
+  }
+}
+
+async function pollRecvSweepNote() {
+  if (recvFocusId == null || !batch) return;
+  try {
+    recvSweepSummary = await apiJson("/api/epc-captures/latest-summary");
+  } catch (err) {
+    recvSweepSummary = null;
+  }
+  renderRecvSweepNote();
+}
+
+function renderRecvSweepNote() {
+  const note = document.getElementById("recv-sweep-note");
+  if (!note) return;
+  const item = (batchItems || []).find((i) => i.id === recvFocusId);
+  if (!item) {
+    note.hidden = true;
+    return;
+  }
+  const remaining = Math.max(
+    0,
+    (item.qty_scanned || 0) - (item.paired_count || 0)
+  );
+  const st = sweepNoteState(recvSweepSummary, remaining);
+  note.className = `bulknote ${st.cls}`;
+  note.textContent = st.text;
+  note.hidden = false;
+}
+
+async function recvPullSweep(item) {
+  const operator = operatorEl.value;
+  if (!operator) {
+    alert("Pick who's scanning (top right) first.");
+    return;
+  }
+  try {
+    const capRes = await apiFetch("/api/epc-captures/latest");
+    if (capRes.status === 404) {
+      setBatchResult(
+        "No C72 sweeps received yet - SWEEP then SEND on the gun first.",
+        "err"
+      );
+      return;
+    }
+    const cap = await capRes.json();
+    const un = await postJson(`/api/batches/${batch.id}/unlinked`, {
+      epcs: cap.epcs || [],
+    });
+    const orphans = un.unlinked || [];
+    if (!orphans.length) {
+      setBatchResult(
+        `Sweep (${cap.epc_count} tag(s) heard): every one is already ` +
+          `linked - nothing new to pair.`,
+        "err"
+      );
+      return;
+    }
+    let ok = 0;
+    let done = false;
+    let problem = null;
+    for (const epc of orphans) {
+      try {
+        const r = await postJson(`/api/batches/${batch.id}/pair`, {
+          epc,
+          item_id: item.id,
+          created_by: operator,
+        });
+        ok++;
+        if (r.receiving_done) done = true;
+      } catch (err) {
+        problem = err.message;
+      }
+    }
+    setBatchResult(
+      `Sweep: ${ok} tag(s) paired to ${itemDisplayName(item)}` +
+        (problem ? ` · ${problem}` : "") +
+        (done ? " - every box is paired, shipment complete ✓" : "") +
+        ".",
+      ok ? "ok" : "err"
+    );
+    await pullBatch(false);
+    pollRecvSweepNote();
+  } catch (err) {
+    setBatchResult(err.message, "err");
+  }
 }
 
 async function recvPrintMissing(item, missing) {
