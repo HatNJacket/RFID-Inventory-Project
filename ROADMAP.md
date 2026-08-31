@@ -1,7 +1,30 @@
 # RFID Inventory System — Roadmap
 
 Source of truth for project status. Updated by Claude each working session.
-Last updated: 2026-08-26.
+Last updated: 2026-08-31.
+
+## 📥 Shipment sort → planner hand-off — ✅ DEPLOYED 2026-08-31 (both apps)
+
+Nick's mixed BuckeyeStargazer delivery. Batch tab "Sort a shipment":
+scan every box; each scan resolves the product and asks the planner
+bridge which OPEN stock orders expect it, filling the oldest-expected
+order first, spilling to the next, unexplained list for the rest. Each
+bucket opens PRE-FILLED in the TC-Planner (#receive= deep link, capped
+at Remaining, one-shot, survives login) where Save / Update stock /
+Print labels stay manual (Nick's explicit wish). Pile survives reloads
+until cleared; per-row mis-scan minus.
+
+Label matching (his 10 recovered scans drove it): after by-barcode
+misses, /api/products/label-match runs separator folds over sku,
+barcode, and VARIANT titles (EAF-FTF30→EAF-FTF-30; ZWO-Slider-Gen2→
+variant "ZWO Slider Gen2" on ZWO-SliderCase-Gen2) - unique hits only,
+rows labeled "matched by …". A token-level near-miss (RigelQF-Synta→
+Synta-RigelQuikfinder: word order free, 5+ char prefixes, short tokens
+exact so Tilter-I never suggests Tilter-II) returns a SUGGESTION the
+sorter renders with Link (alias) / Set-as-Shopify-barcode buttons that
+re-sort the row on click. Sets/combos stay human (S30Pro-Set's four
+component labels; the NexStar+Tripod combo variant). Suites
+test_labelmatch (8); planner.health carries app_url.
 
 ## 🧵 Receiving-as-pairing round — ✅ DEPLOYED 2026-08-31 (C72 3.66)
 
