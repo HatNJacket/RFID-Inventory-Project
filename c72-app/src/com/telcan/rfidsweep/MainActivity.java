@@ -4707,7 +4707,7 @@ public class MainActivity extends Activity {
         scanning = true;
         holdSweepRunning = true;
         beep(SOUND_OTHER);
-        status.setText("Sweeping… release the trigger to send.");
+        status.setText("Sweeping… 0 tag(s) — release the trigger to send.");
     }
 
     private void restoreHoldSweepPower() {
@@ -5705,7 +5705,16 @@ public class MainActivity extends Activity {
             try {
                 synchronized (tags) { tags.clear(); }
                 reader.startInventoryTag();
-                Thread.sleep(3000);
+                // Count out loud while the burst runs (Nick, 2026-08-31).
+                for (int i = 0; i < 7; i++) {
+                    Thread.sleep(430);
+                    final int n;
+                    synchronized (tags) { n = tags.size(); }
+                    if (btn != null) {
+                        ui.post(() -> btn.setText(
+                                "Sweeping… " + n + " tag(s)"));
+                    }
+                }
             } catch (Exception ignored) {
             } finally {
                 try {
@@ -6130,13 +6139,19 @@ public class MainActivity extends Activity {
                 v -> {
             final java.util.Set<String> before =
                     new java.util.HashSet<>(shelfEpcs);
-            out.setText("Scanning…");
+            out.setText("Scanning… 0 tag(s)");
             new Thread(() -> {
                 final List<String> heard = new ArrayList<>();
                 try {
                     synchronized (tags) { tags.clear(); }
                     reader.startInventoryTag();
-                    Thread.sleep(2500);
+                    for (int i = 0; i < 6; i++) {
+                        Thread.sleep(415);
+                        final int n;
+                        synchronized (tags) { n = tags.size(); }
+                        ui.post(() -> out.setText(
+                                "Scanning… " + n + " tag(s)"));
+                    }
                 } catch (Exception ignored) {
                 } finally {
                     try {
@@ -8011,7 +8026,13 @@ public class MainActivity extends Activity {
                 try {
                     synchronized (tags) { tags.clear(); }
                     reader.startInventoryTag();
-                    Thread.sleep(2500);
+                    for (int i = 0; i < 6; i++) {
+                        Thread.sleep(415);
+                        final int heardNow;
+                        synchronized (tags) { heardNow = tags.size(); }
+                        ui.post(() -> sweepOut.setText(
+                                "Sweeping… " + heardNow + " tag(s) heard"));
+                    }
                 } catch (Exception ignored) {
                 } finally {
                     try {
@@ -10634,6 +10655,13 @@ public class MainActivity extends Activity {
                 status.setText("Shelf sweep… " + shelfEpcs.size()
                         + " unique tag(s) so far. Trigger again to stop, "
                         + "RESULTS when the shelf is done.");
+            } else if (holdSweepRunning) {
+                // The station hold-sweep counts live too (Nick,
+                // 2026-08-31: every scan should say what it's reading).
+                int n;
+                synchronized (tags) { n = tags.size(); }
+                status.setText("Sweeping… " + n + " tag(s) — release "
+                        + "the trigger to send.");
             }
         }
         locateTick();
