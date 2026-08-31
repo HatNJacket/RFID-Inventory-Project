@@ -3,6 +3,16 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-08-31.
 
+## 📌 NEXT SESSION (Nick, 2026-08-31 — noted, NOT built)
+
+Widen the C72 LINK relay's landing zones: it should drive the ENTIRE
+Batch Tagging tab (any batch/step on screen, not just an open
+receiving batch), and also push into "Sort a shipment" (a relayed
+barcode = a sorter scan). Those two surfaces only for now — nothing
+else new. Today's routing precedent: receivingLinkLive() +
+actOnReceivingLinkScan in app.js (barcode focuses, tag pairs); extend
+the same dispatch. Do not start without Nick.
+
 ## 📥 Shipment sort → planner hand-off — ✅ DEPLOYED 2026-08-31 (both apps)
 
 Nick's mixed BuckeyeStargazer delivery. Batch tab "Sort a shipment":
