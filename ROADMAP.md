@@ -3,7 +3,16 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-08-26.
 
-## 🧵 Receiving-as-pairing round — 🛠 BUILT 2026-08-31, ⚠ NOT DEPLOYED (awaiting Nick's answers)
+## 🧵 Receiving-as-pairing round — ✅ DEPLOYED 2026-08-31 (C72 3.66)
+
+Also in this round (Nick's answer, same day): **the C72 LINK relay
+drives an on-screen receiving batch** - while the Batch tab shows an
+open receiving batch, a relayed barcode focuses that product's card
+(server-resolved fallback for aliases/rescued chars) and a relayed tag
+read pairs to the focused product, announcing the auto-close. Desk
+linking completes receiving from the web without the gun's pair
+screen. The verify-dialog third button (NEW SWEEP) was confirmed
+redundant with the on-screen CLEAR and removed.
 
 Second local-only round on top of the planner streamlining (C72 3.66
 code 84 built; ships with the round below):
@@ -33,10 +42,10 @@ code 84 built; ships with the round below):
    resolves to "checked ✓ … sweep again or Complete batch" once the
    check lands.
 
-## 🚚 Planner streamlining round — 🛠 BUILT 2026-08-31, ⚠ NOT DEPLOYED (Nick: hold all pushes)
+## 🚚 Planner streamlining round — ✅ DEPLOYED 2026-08-31 (both apps)
 
-Three pieces, tested (47/47 + browser) but sitting in LOCAL commits
-only — deploy needs Nick's go (RFID: mkdeploy+az; planner: acr-build):
+Three pieces, tested (47/47 + browser), shipped together with the
+receiving-as-pairing round (RFID: mkdeploy+az; planner: acr-build):
 
 1. **Bulk-link sweep chip**: the Scan Station's BULK mode polls
    /api/epc-captures/latest-summary (registered before /{capture_id})
