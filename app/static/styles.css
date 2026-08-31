@@ -2726,3 +2726,7 @@ tr.binaudit-untagged td { opacity: 0.72; }
   gap: 10px;
   margin-top: 8px;
 }
+
+/* Receiving header row: summary text + the undo-last-pair button */
+.recvhead { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.recvhead #recv-summary { margin: 0; }

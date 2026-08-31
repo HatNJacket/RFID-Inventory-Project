@@ -3044,6 +3044,7 @@ async function actOnReceivingLinkScan(s) {
       item_id: item.id,
       created_by: operatorEl.value || null,
     });
+    recvRememberPairs([s.value], item.id, itemDisplayName(item));
     await pullBatch(false);
     const fresh =
       (batchItems || []).find((i) => i.id === item.id) || item;
@@ -5112,6 +5113,80 @@ function recvProblemText(item) {
   return null;
 }
 
+// Pairing actions made FROM THIS TERMINAL (sweep pulls, relayed gun
+// links) stack here so the Undo button can walk them back one action
+// at a time (Nick, 2026-08-31: an accidental tag needed the product
+// window to fix). Each entry: {epcs, itemId, label}.
+let recvPairHistory = [];
+
+function recvRememberPairs(epcs, itemId, label) {
+  if (epcs && epcs.length) {
+    recvPairHistory.push({
+      epcs: [...epcs],
+      itemId,
+      label,
+      batchId: batch && batch.id,
+    });
+  }
+  renderRecvUndo();
+}
+
+function renderRecvUndo() {
+  const btn = document.getElementById("recv-undo");
+  if (!btn) return;
+  // History never crosses batches: switching shipments drops it.
+  if (
+    recvPairHistory.length &&
+    (!batch || recvPairHistory[recvPairHistory.length - 1].batchId !== batch.id)
+  ) {
+    recvPairHistory = [];
+  }
+  const show =
+    batch && isReceivingBatch() && recvPairHistory.length > 0;
+  btn.hidden = !show;
+  if (show) {
+    const last = recvPairHistory[recvPairHistory.length - 1];
+    btn.textContent = `↩ Undo last pair (${last.epcs.length} tag${
+      last.epcs.length === 1 ? "" : "s"
+    } · ${last.label})`;
+  }
+}
+
+async function recvUndoLastPair() {
+  const last = recvPairHistory[recvPairHistory.length - 1];
+  if (!last || !batch) return;
+  const btn = document.getElementById("recv-undo");
+  btn.disabled = true;
+  let ok = 0;
+  let problem = null;
+  try {
+    for (const epc of last.epcs) {
+      try {
+        await postJson(`/api/batches/${batch.id}/pair/undo`, {
+          epc,
+          item_id: last.itemId,
+        });
+        ok++;
+      } catch (err) {
+        problem = err.message;
+      }
+    }
+    recvPairHistory.pop();
+    await pullBatch(false);
+    setBatchResult(
+      `Undid ${ok} tag(s) on ${last.label}` +
+        (problem ? ` · ${problem}` : "") +
+        (recvPairHistory.length
+          ? ` - Undo again walks further back.`
+          : "."),
+      ok ? "ok" : "err"
+    );
+  } finally {
+    btn.disabled = false;
+    renderRecvUndo();
+  }
+}
+
 // Over-pair dismissals survive reloads (localStorage; item ids never
 // repeat). An over-paired product stays LISTED and flagged until the
 // operator dismisses it by hand (Nick, 2026-08-31).
@@ -5201,7 +5276,12 @@ function renderReceivingList() {
   syncRecvSweepPoll(
     !!focusedItem && !recvProblemText(focusedItem) && batch && !batch.completed_at
   );
+  renderRecvUndo();
 }
+
+document
+  .getElementById("recv-undo")
+  .addEventListener("click", recvUndoLastPair);
 
 function recvCard(item) {
   const li = document.createElement("li");
@@ -5489,6 +5569,7 @@ async function recvPullSweep(item) {
     let ok = 0;
     let done = false;
     let problem = null;
+    const landed = [];
     for (const epc of orphans) {
       try {
         const r = await postJson(`/api/batches/${batch.id}/pair`, {
@@ -5497,11 +5578,13 @@ async function recvPullSweep(item) {
           created_by: operator,
         });
         ok++;
+        landed.push(epc);
         if (r.receiving_done) done = true;
       } catch (err) {
         problem = err.message;
       }
     }
+    recvRememberPairs(landed, item.id, itemDisplayName(item));
     setBatchResult(
       `Sweep: ${ok} tag(s) paired to ${itemDisplayName(item)}` +
         (problem ? ` · ${problem}` : "") +

@@ -692,7 +692,11 @@
                (Nick, 2026-08-25) - the shipment closes ITSELF when every
                received box is tagged. -->
           <p class="linkbox__text recvdone" id="recv-done" hidden>✅ Shipment complete - every received box is tagged. This batch closed itself.</p>
-          <p class="linkbox__text" id="recv-summary" hidden></p>
+          <div class="recvhead">
+            <p class="linkbox__text" id="recv-summary" hidden></p>
+            <button class="reset" id="recv-undo" type="button" hidden
+                    title="Un-pairs the tags of the LAST pairing action made from this terminal (a sweep pull, or a relayed gun link). Press again to walk further back. Pairs made on the gun's own screen are undone there.">↩ Undo last pair</button>
+          </div>
           <ul class="batch__items recvlist" id="recv-list"></ul>
           <p class="recvlist__empty" id="recv-empty" hidden>No products set to receive.</p>
         </div>
