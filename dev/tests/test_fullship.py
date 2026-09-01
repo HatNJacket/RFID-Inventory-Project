@@ -237,6 +237,43 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
     check("unknown orders answer printed:false",
           r.json() == {"printed": False}, r.text[:100])
 
+    # ---- vendor nicknames (Nick, 2026-09-01) -------------------------
+    r = cl.post("/api/barcode-aliases",
+                json={"alias_barcode": "Collimating Eyepiece For Newt",
+                      "target": "GOOD-1", "kind": "nickname",
+                      "created_by": "Nick"})
+    check("vendor nickname saves as a nickname alias",
+          r.status_code == 201
+          and r.json()["alias"]["kind"] == "nickname", r.text[:200])
+    r = cl.get("/api/products/by-barcode/collimating eyepiece for newt")
+    check("typing the vendor's name finds the product",
+          r.status_code == 200 and r.json()["sku"] == "GOOD-1",
+          r.text[:200])
+    # One per product: a new nickname replaces the old.
+    r = cl.post("/api/barcode-aliases",
+                json={"alias_barcode": "Newtonian Collimator Box",
+                      "target": "GOOD-1", "kind": "nickname"})
+    check("saving a new nickname replaces the old",
+          r.status_code == 201, r.text[:150])
+    from app.models import BarcodeAlias
+    with Session(get_engine()) as s:
+        nicks = s.query(BarcodeAlias).filter(
+            BarcodeAlias.kind == "nickname").all()
+    check("only ONE nickname row remains",
+          len(nicks) == 1
+          and nicks[0].alias_barcode == "Newtonian Collimator Box",
+          str([n.alias_barcode for n in nicks]))
+    r = cl.get(f"/api/batches/{bid}")
+    it = next(i for i in r.json()["items"] if i.get("sku") == "GOOD-1")
+    check("receiving items carry the nickname",
+          it["nickname"] == "Newtonian Collimator Box",
+          str(it.get("nickname")))
+    r = cl.get("/api/receiving/orders/948")
+    ln = next(l for l in r.json()["items"] if l["sku"] == "GOOD-1")
+    check("the full-shipment preview carries it too",
+          ln.get("nickname") == "Newtonian Collimator Box",
+          str(ln)[:200])
+
     # ---- the picker annotates printed orders -------------------------
     r = cl.get("/api/receiving/orders")
     o = r.json()["orders"][0]

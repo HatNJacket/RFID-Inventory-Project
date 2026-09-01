@@ -2804,6 +2804,16 @@ tr.binaudit-untagged td { opacity: 0.72; }
   border-radius: 8px;
 }
 
+/* Vendor nickname: what the BOX says when the vendor's labelling has
+   nothing to do with our SKU or title (Nick 2026-09-01) */
+.vendorname {
+  background: rgba(230, 160, 50, 0.22);
+  border-radius: 5px;
+  padding: 0 5px;
+  font-weight: 600;
+  white-space: normal;
+}
+
 /* Receive entire shipment: order picker rows (Nick 2026-09-01) */
 .fullship-orderrow {
   display: block;

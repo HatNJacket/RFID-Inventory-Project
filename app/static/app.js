@@ -5443,7 +5443,11 @@ function recvCard(item) {
       <div class="bcell__info">
         <div class="bcell__name">${escapeHtml(
           item.resolved ? itemDisplayName(item) : item.scanned_code || "?"
-        )}</div>
+        )}${
+          item.nickname
+            ? ` <span class="vendorname" title="What the vendor calls this product - the box says THIS, not our SKU or title">(${escapeHtml(item.nickname)})</span>`
+            : ""
+        }</div>
         <div class="bcell__meta">${
           item.sku
             ? "SKU: " + escapeHtml(item.sku)
@@ -5487,6 +5491,12 @@ function recvCard(item) {
           : ""
       }
       ${
+        focused && item.resolved && item.sku
+          ? `<button class="reset" type="button" data-act="nickname"
+              title="What the VENDOR calls this product (the box's own wording) - shown bracketed and highlighted on receiving lists, and typing it finds the product anywhere">🏷 ${item.nickname ? "Vendor name…" : "Add vendor name…"}</button>`
+          : ""
+      }
+      ${
         !item.resolved
           ? `<button class="reset" type="button" data-act="link"
               title="Pick the product this code really is - it becomes a lookup alias (Shopify untouched) and the row rejoins the shipment with labels queued">🔗 Link to product</button>`
@@ -5516,6 +5526,8 @@ function recvCard(item) {
         recvPullSweep(item);
       } else if (btn.dataset.act === "edit") {
         openProductHistory(item.sku || item.barcode);
+      } else if (btn.dataset.act === "nickname") {
+        recvSetNickname(item);
       } else if (btn.dataset.act === "overdismiss") {
         recvDismissOver(item.id);
         recvFocusId = null;
@@ -5533,6 +5545,54 @@ function recvCard(item) {
     renderReceivingList();
   });
   return li;
+}
+
+// Vendor nickname (Nick, 2026-09-01): what the BOX says when the
+// vendor's labelling has nothing to do with our SKU or title ("RN" is
+// "Collimating Eyepiece For Newtonian" on the carton). Stored as a
+// nickname alias - shown bracketed + highlighted, and typing it finds
+// the product anywhere. One per product; saving replaces the old.
+async function recvSetNickname(item) {
+  const cur = item.nickname || "";
+  const name = prompt(
+    "What does the vendor call this product (the box's own wording)?\n\n" +
+      "Shown bracketed and highlighted on receiving lists, and typing " +
+      "it finds the product anywhere. Max 64 characters. Clear the box " +
+      "to remove it.",
+    cur
+  );
+  if (name === null) return;
+  const trimmed = name.trim().slice(0, 64);
+  try {
+    if (!trimmed) {
+      if (cur) {
+        const res = await apiFetch(
+          `/api/barcode-aliases/${encodeURIComponent(cur)}`,
+          { method: "DELETE" }
+        );
+        if (!res.ok && res.status !== 404) {
+          throw new Error("Could not remove the vendor name.");
+        }
+      }
+    } else {
+      await postJson("/api/barcode-aliases", {
+        alias_barcode: trimmed,
+        target: item.sku,
+        created_by: operatorEl.value || null,
+        kind: "nickname",
+      });
+    }
+    await pullBatch(false);
+    setBatchResult(
+      trimmed
+        ? `Vendor name saved - ${itemDisplayName(item)} shows as ` +
+          `(${trimmed}) and the name now finds the product anywhere.`
+        : "Vendor name removed.",
+      "ok"
+    );
+  } catch (err) {
+    alert(err.message);
+  }
 }
 
 function recvFocusBody(item, problem, received, printedN, taggedN, missing, over) {
@@ -14629,7 +14689,11 @@ async function fullshipLoad() {
               `${l.held.where} instead of printing`
           );
         return `<tr>
-          <td>${escapeHtml(l.product_title || l.title || l.sku || "?")}</td>
+          <td>${escapeHtml(l.product_title || l.title || l.sku || "?")}${
+            l.nickname
+              ? ` <span class="vendorname">(${escapeHtml(l.nickname)})</span>`
+              : ""
+          }</td>
           <td class="mono">${escapeHtml(l.sku || "—")}</td>
           <td class="num">${l.remaining}</td>
           <td>${notes.map((n) => escapeHtml(n)).join("<br>") || "✓"}</td>

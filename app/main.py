@@ -2255,6 +2255,12 @@ class AliasIn(BaseModel):
     alias_barcode: str = Field(max_length=64)
     target: str = Field(max_length=100)  # the known/internal barcode or SKU
     created_by: str | None = Field(default=None, max_length=100)
+    # "nickname" (Nick, 2026-09-01): what the VENDOR calls the product -
+    # a box label like "Collimating Eyepiece For Newtonian" on a product
+    # whose SKU is "RN". Shown bracketed + highlighted on receiving
+    # lists, resolves as a lookup alias like any other, and one per
+    # product: saving a new one replaces the old.
+    kind: Literal["manual", "nickname"] = "manual"
 
     @field_validator("alias_barcode", "target")
     @classmethod
@@ -2288,6 +2294,20 @@ def create_alias(payload: AliasIn, session: Session = Depends(get_session)):
     if product is None:
         raise HTTPException(404, "No product found for that barcode or SKU.")
 
+    # One vendor nickname per product: saving a new one replaces the
+    # old (also frees the text if the SAME product's nickname is being
+    # re-typed with different casing).
+    if payload.kind == "nickname" and (product.get("sku") or "").strip():
+        for old in session.scalars(
+            select(BarcodeAlias).where(
+                BarcodeAlias.kind == "nickname",
+                func.upper(BarcodeAlias.sku)
+                == product["sku"].strip().upper(),
+            )
+        ):
+            session.delete(old)
+        session.flush()
+
     # Alias resolution is case-insensitive, so a case-variant duplicate
     # would be unreachable dead weight — refuse it like an exact one.
     if session.scalar(
@@ -2306,6 +2326,7 @@ def create_alias(payload: AliasIn, session: Session = Depends(get_session)):
         barcode=product.get("barcode"),
         product_title=product.get("product_title"),
         created_by=payload.created_by,
+        kind=payload.kind,
     )
     session.add(alias)
     try:
@@ -6389,10 +6410,29 @@ def list_batches(
     return {"count": len(batches), "batches": batches}
 
 
+def _nickname_map(session: Session, skus: list) -> dict[str, str]:
+    """SKU -> the vendor's name for the product ("nickname" aliases):
+    what the box actually says when the vendor's labelling has nothing
+    to do with our SKU or title (Nick, 2026-09-01)."""
+    wanted = {(s or "").strip().upper() for s in skus if s and s.strip()}
+    if not wanted:
+        return {}
+    out: dict[str, str] = {}
+    for a in session.scalars(
+        select(BarcodeAlias).where(
+            BarcodeAlias.kind == "nickname",
+            func.upper(BarcodeAlias.sku).in_(sorted(wanted)),
+        ).order_by(BarcodeAlias.id)
+    ):
+        out[(a.sku or "").strip().upper()] = a.alias_barcode
+    return out
+
+
 @app.get("/api/batches/{batch_id}", dependencies=[Depends(require_user)])
 def get_batch(batch_id: int, session: Session = Depends(get_session)):
     batch = _get_batch(session, batch_id)
     items = _batch_items(session, batch_id)
+    nicknames = _nickname_map(session, [i.sku for i in items if i.sku])
     # How many labels this batch actually printed per product — the pair
     # step compares tags paired against labels printed, not boxes scanned.
     printed: dict = {}
@@ -6412,6 +6452,7 @@ def get_batch(batch_id: int, session: Session = Depends(get_session)):
     for item in items:
         d = item.as_dict()
         d["printed_count"] = printed.get(item.sku or "", 0)
+        d["nickname"] = nicknames.get((item.sku or "").strip().upper())
         d["rfid_incompatible"] = (
             (item.sku or "").strip().upper() in noscan
         )
@@ -9502,6 +9543,9 @@ def receiving_order_preview(
     held = _held_available(
         session, [i.get("sku") for i in out["items"]]
     )
+    nicknames = _nickname_map(
+        session, [i.get("sku") for i in out["items"]]
+    )
     receipt = session.scalar(
         select(OrderReceipt).where(
             OrderReceipt.stock_order_id == out["order"]["order_id"]
@@ -9509,6 +9553,9 @@ def receiving_order_preview(
     )
     for line in out["items"]:
         line["flag"] = None
+        line["nickname"] = nicknames.get(
+            (line.get("sku") or "").strip().upper()
+        )
         product = None
         for term in (line.get("sku"), line.get("barcode")):
             if not (term or "").strip():
