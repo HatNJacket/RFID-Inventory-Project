@@ -235,6 +235,68 @@ class BackorderDebt(Base):
         }
 
 
+class AuditFind(Base):
+    """A tagless box barcode-scanned during an audit walk (Nick,
+    2026-09-01). A find is a WORK ITEM, never audit evidence: it counts
+    nothing until its label is printed and PAIRED — the paired tag then
+    answers the next sweep, and the sweep is the only counter of
+    physical presence. Lifecycle: open → printed (label queued, EPC
+    remembered) → resolved (an assignment with that EPC appeared) /
+    dismissed. Never-printed rows expire after an hour (lazy, on read);
+    printed rows stay flagged until resolved or dismissed so owed
+    labels can't vanish silently. New table needs
+    dev/alter_add_audit_finds.py on prod."""
+
+    __tablename__ = "rfid_audit_finds"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sku: Mapped[str] = mapped_column(String(100), index=True, nullable=False)
+    product_title: Mapped[str | None] = mapped_column(String(255))
+    variant_title: Mapped[str | None] = mapped_column(String(255))
+    shopify_variant_id: Mapped[str | None] = mapped_column(String(64))
+    shopify_product_id: Mapped[str | None] = mapped_column(String(300))
+    barcode: Mapped[str | None] = mapped_column(String(64))
+    # What the gun actually read (may be an alias or a folded rescue).
+    scanned_code: Mapped[str] = mapped_column(String(200), nullable=False)
+    # The product's HOME bin at scan time — where the label sends the box.
+    bin_location: Mapped[str | None] = mapped_column(String(100))
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="open", server_default="open"
+    )
+    print_job_id: Mapped[int | None] = mapped_column(Integer)
+    print_epc: Mapped[str | None] = mapped_column(String(128), index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    created_by: Mapped[str | None] = mapped_column(String(100))
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    resolved_by: Mapped[str | None] = mapped_column(String(100))
+
+    def as_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "sku": self.sku,
+            "product_title": self.product_title,
+            "variant_title": self.variant_title,
+            "barcode": self.barcode,
+            "scanned_code": self.scanned_code,
+            "bin_location": self.bin_location,
+            "status": self.status,
+            "print_job_id": self.print_job_id,
+            "print_epc": self.print_epc,
+            "created_at": (
+                self.created_at.isoformat() if self.created_at else None
+            ),
+            "created_by": self.created_by,
+            "resolved_at": (
+                self.resolved_at.isoformat() if self.resolved_at else None
+            ),
+            "resolved_by": self.resolved_by,
+        }
+
+
 class BarcodeAlias(Base):
     """Maps a foreign ("fake") barcode — e.g. a manufacturer barcode on the
     box — to a known product, after an operator confirmed the link. Lives in

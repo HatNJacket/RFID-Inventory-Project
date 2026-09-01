@@ -40,6 +40,7 @@ from app.database import (
 )
 from app.models import (
     AppSetting,
+    AuditFind,
     AuditSession,
     AuditSessionItem,
     BackorderDebt,
@@ -788,6 +789,9 @@ def create_assignment(
         re.fullmatch(r"[0-9A-Fa-f]{24}", payload.rfid_id) is None
     )
     session.add(assignment)
+    # A pairing answers the oldest open audit find for this SKU (the
+    # tagless-box work queue from the C72 AUDIT tab).
+    _consume_audit_find(session, payload.sku)
     try:
         session.commit()
     except IntegrityError:
@@ -4705,11 +4709,32 @@ def bin_check(
     session: Session = Depends(get_session),
 ):
     """What a sweep says about ANY bin: for every product Shopify expects
-    there, how many of its tags on file were detected. Read-only."""
+    there, how many of its tags on file were detected. Read-only.
+
+    A dash-less location ("F1") is a RACK: every bin on that shelf is
+    audited as ONE zone (Nick, 2026-09-01 - the C72's read field can't
+    localize below a rack anyway; bins are just levels of one shelf)."""
     swept = {(e or "").strip().upper() for e in payload.epcs if e}
+    loc = bin_name.strip()
+    bin_keys = [loc.lower()]
+    rack = False
+    if "-" not in loc and loc:
+        prefixed = sorted({
+            (b or "").strip().lower()
+            for (b,) in session.execute(
+                select(BinMapEntry.bin).where(
+                    func.lower(BinMapEntry.bin).like(loc.lower() + "-%")
+                )
+            )
+            if b
+        })
+        if prefixed:
+            rack = True
+            bin_keys = prefixed
+    bin_key_set = set(bin_keys)
     rows = session.scalars(
         select(BinMapEntry)
-        .where(func.lower(BinMapEntry.bin) == bin_name.strip().lower())
+        .where(func.lower(BinMapEntry.bin).in_(bin_keys))
         .order_by(BinMapEntry.product_title)
     ).all()
     # One query for every tag on file for the bin's products PLUS any
@@ -4734,7 +4759,58 @@ def bin_check(
     sold_map = orders_sync.sold_unretired_map(
         session, sorted(wanted | extra)
     )
-    bin_key = bin_name.strip().lower()
+    # Uncleared backorder debt RAISES what the shelf should hold: those
+    # boxes arrived and stand here, but Shopify's on-hand ran behind.
+    debt_map: dict[str, int] = {}
+    if wanted or extra:
+        for d in session.scalars(
+            select(BackorderDebt).where(
+                BackorderDebt.cleared_at.is_(None),
+                func.upper(BackorderDebt.sku).in_(sorted(wanted | extra)),
+            )
+        ):
+            k = (d.sku or "").strip().upper()
+            debt_map[k] = debt_map.get(k, 0) + (d.units or 0)
+    # Open audit finds (tagless boxes barcode-scanned on a walk): shown
+    # as owed work per product, never counted as evidence.
+    finds_map: dict[str, dict] = {}
+    for f in _active_audit_finds(session):
+        k = (f.sku or "").strip().upper()
+        if k not in wanted and k not in extra:
+            continue
+        d = finds_map.setdefault(k, {"open": 0, "printed": 0})
+        d[f.status] = d.get(f.status, 0) + 1
+    # Retired tags that ANSWER the sweep are ghosts - the box never left.
+    # Marked per product for covered SKUs; the check screen treats them
+    # as one more scan in the end (Nick, 2026-09-01).
+    retired_heard: dict[str, RetiredTag] = {}
+    if swept:
+        retired_heard = {
+            r.rfid_id.upper(): r
+            for r in session.scalars(
+                select(RetiredTag).where(
+                    func.upper(RetiredTag.rfid_id).in_(sorted(swept))
+                )
+            )
+        }
+    ghost_map: dict[str, list[dict]] = {}
+    stray_ghosts: list[dict] = []
+    for epc, r in sorted(retired_heard.items()):
+        g = {
+            "epc": r.rfid_id,
+            "sku": r.sku,
+            "product_title": r.product_title,
+            "kind": r.kind,
+            "retired_at": (
+                r.retired_at.isoformat() if r.retired_at else None
+            ),
+            "retired_by": r.retired_by,
+        }
+        k = (r.sku or "").strip().upper()
+        if k in wanted or k in extra:
+            ghost_map.setdefault(k, []).append(g)
+        else:
+            stray_ghosts.append(g)
     report = []
 
     def _units(tags) -> int:
@@ -4744,11 +4820,11 @@ def bin_check(
 
     def _tag_counts(sku_upper: str) -> dict:
         tags = tags_by_sku.get(sku_upper, [])
-        # Only the tags recorded as living in THIS bin — what a sweep
-        # of this shelf can fairly be expected to hear. Split-shelf
-        # stock elsewhere doesn't count against the sweep.
+        # Only the tags recorded as living in the covered bin(s) — what
+        # a sweep of this shelf can fairly be expected to hear. Split-
+        # shelf stock elsewhere doesn't count against the sweep.
         here = [t for t in tags
-                if (t.bin_location or "").strip().lower() == bin_key]
+                if (t.bin_location or "").strip().lower() in bin_key_set]
         det = [t for t in tags if t.rfid_id.upper() in swept]
         return {
             "tags_on_file": len(tags),
@@ -4762,20 +4838,43 @@ def bin_check(
                 t.rfid_id for t in here if t.rfid_id.upper() not in swept
             ],
             "sold_unretired": sold_map.get(sku_upper, 0),
+            "backorder_debt": debt_map.get(sku_upper, 0),
+            "finds_open": finds_map.get(sku_upper, {}).get("open", 0),
+            "finds_printed": finds_map.get(sku_upper, {}).get("printed", 0),
+            "ghosts": ghost_map.get(sku_upper, []),
         }
 
+    # A rack audit can list one SKU from several of its bins — merged
+    # into ONE row (quantities summed, bins named) because the rack is
+    # a single zone.
+    merged: dict[str, dict] = {}
+    merged_order: list[str] = []
     for e in rows:
         if not e.sku:
             continue
+        key = e.sku.strip().upper()
+        g = merged.get(key)
+        if g is None:
+            g = {"entry": e, "qty": None, "bins": []}
+            merged[key] = g
+            merged_order.append(key)
+        if e.qty is not None:
+            g["qty"] = (g["qty"] or 0) + e.qty
+        if e.bin and e.bin not in g["bins"]:
+            g["bins"].append(e.bin)
+    for key in merged_order:
+        g = merged[key]
+        e = g["entry"]
         report.append({
             "sku": e.sku,
             "product_title": e.product_title,
             "variant_title": e.variant_title,
             "image_url": e.image_url,
-            "expected_qty": e.qty,
-            "rfid_incompatible": e.sku.strip().upper() in noscan,
+            "expected_qty": g["qty"],
+            "bins": g["bins"],
+            "rfid_incompatible": key in noscan,
             "in_bin_map": True,
-            **_tag_counts(e.sku.upper()),
+            **_tag_counts(key),
         })
     # Requested SKUs the bin map doesn't put here (open-box twins, kept
     # strays, map lag): same counts, named from their newest tag, no
@@ -4789,6 +4888,7 @@ def bin_check(
             "variant_title": newest.variant_title if newest else None,
             "image_url": None,
             "expected_qty": None,
+            "bins": [],
             "rfid_incompatible": key in noscan,
             "in_bin_map": False,
             **_tag_counts(key),
@@ -4798,6 +4898,7 @@ def bin_check(
     # into a bin AUDIT: the strays are usually the answer to "why is the
     # count wrong".
     foreign, unknown = [], []
+    printed_labels_heard: list[dict] = []
     if swept:
         covered = wanted | extra
         owners = {
@@ -4811,7 +4912,10 @@ def bin_check(
         for epc in sorted(swept):
             a = owners.get(epc)
             if a is None:
-                unknown.append(epc)
+                # A ghost (retired tag heard) is already reported per
+                # product above, not as an anonymous unknown.
+                if epc not in retired_heard:
+                    unknown.append(epc)
             elif (a.sku or "").strip().upper() not in covered:
                 foreign.append({
                     "epc": a.rfid_id,
@@ -4819,23 +4923,61 @@ def bin_check(
                     "product_title": a.product_title,
                     "bin_location": a.bin_location,
                 })
+        # An "unknown" EPC that matches a print job is a PRINTED LABEL
+        # that was never paired - the strongest owed-pairing signal
+        # (Nick, 2026-09-01: applied but unpaired labels answer sweeps
+        # as productless tags).
+        if unknown:
+            label_jobs = {
+                (j.epc or "").upper(): j
+                for j in session.scalars(
+                    select(PrintJob).where(
+                        func.upper(PrintJob.epc).in_(sorted(unknown))
+                    )
+                )
+            }
+            still_unknown = []
+            for epc in unknown:
+                j = label_jobs.get(epc)
+                if j is None:
+                    still_unknown.append(epc)
+                else:
+                    printed_labels_heard.append({
+                        "epc": epc,
+                        "sku": j.sku,
+                        "product_title": j.product_title,
+                        "job_id": j.id,
+                        "job_status": j.status,
+                    })
+            unknown = still_unknown
     # Does this shelf already count as batch tagged? The audit offers to
-    # record it when it doesn't (the abandoned-after-pairing case).
-    done_batch = session.scalars(
+    # record it when it doesn't (the abandoned-after-pairing case), and
+    # the guarded on-hand LOWER is only offered for previously
+    # batch-tagged bins (Nick, 2026-09-01).
+    done_batches = session.scalars(
         select(Batch).where(
-            func.lower(Batch.bin_name) == bin_key,
+            func.lower(Batch.bin_name).in_(bin_keys),
             Batch.status == "done",
             Batch.parent_batch_id.is_(None),
-        )
-    ).first()
+        ).order_by(Batch.id)
+    ).all()
+    done_bin_keys = {
+        (b.bin_name or "").strip().lower() for b in done_batches
+    }
+    done_batch = done_batches[0] if done_batches else None
     return {
-        "bin": bin_name.strip(),
+        "bin": loc,
+        "rack": rack,
+        "bins_covered": bin_keys,
+        "bins_batch_done": sorted(done_bin_keys),
         "swept": len(swept),
         "count": len(report),
         "items": report,
         "foreign": foreign,
         "unknown_epcs": unknown,
-        "batch_done": done_batch is not None,
+        "printed_labels_heard": printed_labels_heard,
+        "stray_ghosts": stray_ghosts,
+        "batch_done": bool(bin_key_set) and bin_key_set <= done_bin_keys,
         "batch_done_id": done_batch.id if done_batch else None,
         "batch_done_at": (
             done_batch.completed_at.isoformat()
@@ -4847,12 +4989,338 @@ def bin_check(
         "abandoned_batches": [
             b.id for b in session.scalars(
                 select(Batch).where(
-                    func.lower(Batch.bin_name) == bin_key,
+                    func.lower(Batch.bin_name).in_(bin_keys),
                     Batch.status == "abandoned",
                 ).order_by(Batch.id)
             )
         ],
     }
+
+
+# ------------------------------------------------------------ audit tab ----
+# The C72's AUDIT tab (Nick, 2026-09-01): a walk mode (sweep + barcode
+# the tagless boxes) and a directed location mode (bin or rack vs a
+# sweep). The FINAL SWEEP is the only counter of physical presence -
+# barcode finds are work items (label -> pair -> the tag answers the
+# next sweep), never audit evidence.
+
+def _bin_sort_key(name: str):
+    """Natural bin order: F2-1 before F10-1, racks alphabetical.
+    Non-standard names sort after the real bins, alphabetically."""
+    m = re.match(r"^([A-Za-z]+)(\d+)-(\d+)$", (name or "").strip())
+    if m:
+        return (0, m.group(1).upper(), int(m.group(2)), int(m.group(3)),
+                name.upper())
+    return (1, (name or "").upper(), 0, 0, (name or "").upper())
+
+
+@app.get("/api/bins/names", dependencies=[Depends(require_user)])
+def bins_names(session: Session = Depends(get_session)):
+    """Every distinct bin in the bin map, naturally sorted - the
+    prev/next arrows on bin pickers walk this list."""
+    names = sorted(
+        {
+            (b or "").strip()
+            for (b,) in session.execute(
+                select(BinMapEntry.bin)
+                .where(BinMapEntry.bin.isnot(None)).distinct()
+            )
+            if b and (b or "").strip()
+        },
+        key=_bin_sort_key,
+    )
+    return {"count": len(names), "bins": names}
+
+
+def _consume_audit_find(session: Session, sku: str | None) -> None:
+    """A pairing anywhere (Scan Station, batch pair) answers the oldest
+    active find for that SKU. The warehouse ZD220t can't RFID-encode,
+    so a paired sticker carries its FACTORY EPC - the queued label EPC
+    never matches, and the SKU is the only link. Printed finds consume
+    before open ones (the printed label is the box in hand). Fail-soft:
+    an audit bookkeeping miss must never break a pairing."""
+    if not sku or not (sku or "").strip():
+        return
+    try:
+        row = session.scalars(
+            select(AuditFind).where(
+                AuditFind.status.in_(["open", "printed"]),
+                func.upper(AuditFind.sku) == sku.strip().upper(),
+            ).order_by(
+                # 'printed' sorts after 'open' - desc puts printed first.
+                AuditFind.status.desc(), AuditFind.id
+            )
+        ).first()
+        if row is not None:
+            row.status = "resolved"
+            row.resolved_at = datetime.utcnow()
+            row.resolved_by = "pairing"
+    except Exception:  # noqa: BLE001
+        logger.exception("audit-find consume failed (%s)", sku)
+
+
+def _active_audit_finds(session: Session) -> list[AuditFind]:
+    """Open + printed finds after the lazy maintenance pass: a printed
+    find resolves the moment an assignment with its label's EPC exists
+    (pairing ANYWHERE answers it - audit tab, scan station, batch), and
+    a never-printed find quietly expires after an hour (Nick,
+    2026-09-01: it's easy to tag outside audit mode anyway)."""
+    rows = session.scalars(
+        select(AuditFind)
+        .where(AuditFind.status.in_(["open", "printed"]))
+        .order_by(AuditFind.id)
+    ).all()
+    if not rows:
+        return []
+    now = datetime.utcnow()
+    epcs = sorted({f.print_epc.upper() for f in rows if f.print_epc})
+    paired: set[str] = set()
+    if epcs:
+        paired = {
+            (e or "").upper()
+            for e in session.scalars(
+                select(RfidAssignment.rfid_id).where(
+                    func.upper(RfidAssignment.rfid_id).in_(epcs)
+                )
+            )
+        }
+    out: list[AuditFind] = []
+    dirty = False
+    for f in rows:
+        if (
+            f.status == "printed"
+            and f.print_epc
+            and f.print_epc.upper() in paired
+        ):
+            f.status = "resolved"
+            f.resolved_at = now
+            f.resolved_by = "pairing"
+            dirty = True
+            continue
+        if f.status == "open":
+            created = f.created_at
+            # Azure SQL hands timestamps back tz-aware; sqlite naive.
+            if created is not None and created.tzinfo is not None:
+                created = created.astimezone(
+                    timezone.utc
+                ).replace(tzinfo=None)
+            if created is not None and (
+                (now - created).total_seconds() > 3600
+            ):
+                f.status = "expired"
+                dirty = True
+                continue
+        out.append(f)
+    if dirty:
+        session.commit()
+    return out
+
+
+class AuditFindIn(BaseModel):
+    code: str = Field(min_length=1, max_length=200)
+    by: str | None = Field(default=None, max_length=100)
+    auto_print: bool = False
+    printer: str | None = Field(default=None, max_length=100)
+
+
+@app.post(
+    "/api/audit/finds", status_code=201,
+    dependencies=[Depends(require_user)],
+)
+def create_audit_find(
+    payload: AuditFindIn, session: Session = Depends(get_session)
+):
+    """A tagless box found on an audit walk. Resolves the code through
+    the full rescue chain, remembers the product's HOME bin (that's
+    what the label will say), and - in auto-print mode - queues the
+    label right away. A product with no home bin never auto-prints:
+    the gun raises the no-bin alert instead."""
+    product = _product_lookup(payload.code)
+    sku = (product.get("sku") or "").strip()
+    if not sku:
+        raise HTTPException(
+            422, "That product has no SKU - fix it in Shopify first."
+        )
+    if sku.upper() in _non_taggable_skus(session):
+        raise HTTPException(
+            422,
+            f"{sku} is flagged non-taggable - it never gets labels. "
+            "A hand-paired marker tag is the only tag it carries.",
+        )
+    kind, excluded = resolve_product_kind(
+        session, product.get("product_title"), sku,
+        product.get("bin_location"),
+    )
+    if kind == "bundle" or excluded:
+        raise HTTPException(
+            422,
+            f"{sku} is a bundle - its components carry the tags. "
+            "Scan a component box instead.",
+        )
+    bin_location = (product.get("bin_location") or "").strip()
+    if bin_location.lower() == "no bin assigned":
+        bin_location = ""
+    find = AuditFind(
+        sku=sku,
+        product_title=product.get("product_title"),
+        variant_title=product.get("variant_title"),
+        shopify_variant_id=product.get("shopify_variant_id"),
+        shopify_product_id=product.get("shopify_product_id"),
+        barcode=product.get("barcode"),
+        scanned_code=payload.code.strip()[:200],
+        bin_location=bin_location or None,
+        created_by=payload.by,
+    )
+    session.add(find)
+    session.flush()
+    printed = False
+    print_error = None
+    if payload.auto_print:
+        if not bin_location:
+            print_error = "no home bin - assign one, then print"
+        elif not (product.get("shopify_variant_id") or "").strip():
+            print_error = "no Shopify variant id - can't print"
+        else:
+            job = _queue_find_label(session, find, payload.by,
+                                    payload.printer)
+            printed = job is not None
+            if not printed:
+                print_error = "label queue failed - print from the list"
+    session.commit()
+    session.refresh(find)
+    return {
+        "find": find.as_dict(),
+        "product": product,
+        "no_home_bin": not bin_location,
+        "printed": printed,
+        "print_error": print_error,
+        # How many boxes of this product the walk has found so far.
+        "open_for_sku": len([
+            f for f in _active_audit_finds(session)
+            if f.sku.strip().upper() == sku.upper()
+        ]),
+    }
+
+
+def _queue_find_label(
+    session: Session, find: AuditFind, by: str | None,
+    printer: str | None,
+) -> dict | None:
+    """One label for one found box, through the same door Scan Station
+    prints use (saved label lines consulted, home bin on the label)."""
+    try:
+        res = create_print_jobs(PrintJobIn(
+            quantity=1,
+            shopify_variant_id=find.shopify_variant_id,
+            shopify_product_id=find.shopify_product_id,
+            product_title=find.product_title or find.sku,
+            variant_title=find.variant_title,
+            sku=find.sku,
+            barcode=find.barcode,
+            bin_location=find.bin_location,
+            requested_by=by,
+            printer=printer,
+        ), session)
+    except Exception:  # noqa: BLE001 - a bad row must not eat the walk
+        logger.exception("audit find label queue failed (%s)", find.sku)
+        return None
+    job = res["jobs"][0]
+    find.status = "printed"
+    find.print_job_id = job["id"]
+    find.print_epc = job.get("epc")
+    return job
+
+
+@app.get("/api/audit/finds", dependencies=[Depends(require_user)])
+def list_audit_finds(session: Session = Depends(get_session)):
+    rows = _active_audit_finds(session)
+    return {"count": len(rows), "finds": [f.as_dict() for f in rows]}
+
+
+class AuditFindsActIn(BaseModel):
+    by: str | None = Field(default=None, max_length=100)
+    printer: str | None = Field(default=None, max_length=100)
+
+
+@app.post(
+    "/api/audit/finds/print-all", dependencies=[Depends(require_user)]
+)
+def audit_finds_print_all(
+    payload: AuditFindsActIn, session: Session = Depends(get_session)
+):
+    """Batch-print mode: one label per still-open find (home bin on
+    the label). Finds with no bin or no variant id are held out and
+    named, like receiving's held-out rows - fix, then print again."""
+    rows = [f for f in _active_audit_finds(session) if f.status == "open"]
+    queued = 0
+    skipped: list[str] = []
+    for f in rows:
+        if not f.bin_location:
+            skipped.append(f"{f.sku} - no home bin")
+            continue
+        if not (f.shopify_variant_id or "").strip():
+            skipped.append(f"{f.sku} - no Shopify variant id")
+            continue
+        job = _queue_find_label(session, f, payload.by, payload.printer)
+        if job is None:
+            skipped.append(f"{f.sku} - label queue failed")
+        else:
+            queued += 1
+    session.commit()
+    return {
+        "queued": queued,
+        "skipped": skipped,
+        "finds": [f.as_dict() for f in _active_audit_finds(session)],
+    }
+
+
+@app.post(
+    "/api/audit/finds/{find_id}/dismiss",
+    dependencies=[Depends(require_user)],
+)
+def dismiss_audit_find(
+    find_id: int,
+    payload: AuditFindsActIn,
+    session: Session = Depends(get_session),
+):
+    f = session.get(AuditFind, find_id)
+    if f is None:
+        raise HTTPException(404, "No such find.")
+    if f.status not in ("open", "printed"):
+        raise HTTPException(409, f"This find is already {f.status}.")
+    f.status = "dismissed"
+    f.resolved_at = datetime.utcnow()
+    f.resolved_by = payload.by
+    session.commit()
+    return f.as_dict()
+
+
+class AuditCompleteIn(BaseModel):
+    location: str = Field(min_length=1, max_length=100)
+    by: str | None = Field(default=None, max_length=100)
+    summary: str = Field(default="", max_length=200)
+
+
+@app.post(
+    "/api/audit/complete", status_code=201,
+    dependencies=[Depends(require_user)],
+)
+def audit_complete(
+    payload: AuditCompleteIn, session: Session = Depends(get_session)
+):
+    """The completed-audits log (Nick, 2026-09-01: a log, not a live
+    link): one History row per finished audit naming the location and
+    a one-line summary of what the check screen showed."""
+    session.add(BarcodeChange(
+        sku=None,
+        product_title=f"Audit of {payload.location.strip()}",
+        changed_field="bin-audited",
+        old_barcode=None,
+        new_barcode=(payload.summary or "").strip()[:64] or "audited",
+        changed_by=payload.by,
+    ))
+    session.commit()
+    return {"ok": True}
 
 
 class MarkTaggedIn(BaseModel):
@@ -9215,6 +9683,9 @@ def batch_pair(
         re.fullmatch(r"[0-9A-Fa-f]{24}", payload.epc) is None
     )
     session.add(assignment)
+    # A pairing answers the oldest open audit find for this SKU (the
+    # tagless-box work queue from the C72 AUDIT tab).
+    _consume_audit_find(session, item.sku)
     item.paired_count += 1
     if batch.status == "printing":
         batch.status = "pairing"
@@ -12464,6 +12935,10 @@ def history(
                 "old_bin": c.old_barcode,
                 "new_bin": c.new_barcode,
             }
+        # A completed audit logs its location + one-line summary; the
+        # generic "(none) → x" rendering would just add noise.
+        elif c.changed_field == "bin-audited":
+            event["detail"] = c.new_barcode
         # Backorder debt noted at a receiving close: Shopify's on-hand
         # runs N units behind the shelf until an operator write catches
         # it up. Undo clears the note by hand (the check may re-flag).

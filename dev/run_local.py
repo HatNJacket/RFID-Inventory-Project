@@ -22,8 +22,8 @@ os.environ.pop("PRINT_AGENT_KEY", None)
 from app.main import app  # noqa: E402  (env must be set first)
 from app.database import get_engine  # noqa: E402
 from app.models import (  # noqa: E402
-    Base, Batch, BatchItem, BinMapEntry, EpcCapture, PrintJob,
-    ReviewTask, RfidAssignment, RfidIncompatible,
+    AuditFind, Base, Batch, BatchItem, BinMapEntry, EpcCapture, PrintJob,
+    RetiredTag, ReviewTask, RfidAssignment, RfidIncompatible,
 )
 from sqlalchemy.orm import Session  # noqa: E402
 
@@ -236,6 +236,57 @@ with Session(get_engine()) as s:
                                  shopify_variant_id="t:x",
                                  product_title=sku, sku=sku,
                                  bin_location=bin_))
+    # --- Audit tab demo (Nick, 2026-09-01): rack F1 -----------------------
+    # "F1" (no dash) audits F1-1..F1-3 as one zone. RACK-A lives on two
+    # levels (one merged row). The rack sweep (newest capture) hears one
+    # RACK-A tag, a GHOST (retired presumed-sold but still answering), a
+    # printed-label EPC nobody paired, and one unknown. RACK-B also has
+    # an open tagless-box find.
+    s.add_all([
+        m("RACK-A", "Rack Demo Alpha", "F1-1", 3, barcode="401"),
+        m("RACK-B", "Rack Demo Beta", "F1-2", 2, barcode="402"),
+        m("RACK-A", "Rack Demo Alpha", "F1-3", 1, barcode="401"),
+    ])
+    s.add_all([
+        RfidAssignment(rfid_id="AAAA000000000000000000A1",
+                       shopify_variant_id="t:RACK-A", sku="RACK-A",
+                       product_title="Rack Demo Alpha",
+                       bin_location="F1-1"),
+        RfidAssignment(rfid_id="AAAA000000000000000000A2",
+                       shopify_variant_id="t:RACK-A", sku="RACK-A",
+                       product_title="Rack Demo Alpha",
+                       bin_location="F1-3"),
+        RfidAssignment(rfid_id="BBBB000000000000000000B1",
+                       shopify_variant_id="t:RACK-B", sku="RACK-B",
+                       product_title="Rack Demo Beta",
+                       bin_location="F1-2"),
+    ])
+    s.add(RetiredTag(rfid_id="GGGG0000000000000000000G", sku="RACK-B",
+                     product_title="Rack Demo Beta", kind="presumed-sold",
+                     retired_by="Steve"))
+    s.add(PrintJob(epc="LLLL0000000000000000000L", status="done",
+                   sku="RACK-B", product_title="Rack Demo Beta",
+                   shopify_variant_id="t:RACK-B", bin_location="F1-2"))
+    s.add(AuditFind(sku="RACK-B", product_title="Rack Demo Beta",
+                    shopify_variant_id="t:RACK-B", barcode="402",
+                    scanned_code="402", bin_location="F1-2",
+                    created_by="C72-test"))
+    # F1-2 was batch tagged before (enables the guarded lower there).
+    s.add(Batch(bin_name="F1-2", status="done",
+                completed_at=done_at, created_by="Steve"))
+    # An older half-rack sweep for the picker's combine demo, then the
+    # full rack sweep LAST so it's the "latest".
+    s.add(EpcCapture(device="C72-test", note="F1 half sweep",
+                     epc_count=1, epcs="AAAA000000000000000000A2"))
+    s.add(EpcCapture(device="C72-test", note="Rack F1 sweep",
+                     epc_count=4,
+                     epcs="\n".join([
+                         "AAAA000000000000000000A1",
+                         "GGGG0000000000000000000G",
+                         "LLLL0000000000000000000L",
+                         "XXXX0000000000000000000X",
+                     ])))
+
     # --- Receiving batch (the stepless planner-fed list) -----------------
     # One healthy in-progress product, one fully tagged, one with an
     # updated count (labels missing), one unknown-SKU problem row, one

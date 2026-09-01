@@ -102,15 +102,18 @@ public class MainActivity extends Activity {
     private static final int TAB_FIND = 3;
     private static final int TAB_LOCATE = 4;
     private static final int TAB_LINK = 5;
+    private static final int TAB_AUDIT = 6;
     private static final String[] TAB_NAMES =
-            {"BATCH", "STATION", "SWEEP", "FIND BIN", "LOCATE", "LINK"};
+            {"BATCH", "STATION", "SWEEP", "FIND BIN", "LOCATE", "LINK",
+             "AUDIT"};
     // ActionBar titles (title case) and the lowercase names the server's
     // presence endpoint receives (tuning-poll heartbeat).
     private static final String[] TAB_TITLES =
-            {"Batch", "Station", "Sweep", "Find Bin", "Locate", "Link"};
+            {"Batch", "Station", "Sweep", "Find Bin", "Locate", "Link",
+             "Audit"};
     private static final String[] TAB_KEYS =
-            {"batch", "station", "sweep", "find", "locate", "link"};
-    private static final int TAB_COUNT = 6;
+            {"batch", "station", "sweep", "find", "locate", "link", "audit"};
+    private static final int TAB_COUNT = 7;
 
     // ------------------------------------------------------------ colors ----
     // NOT constants any more: the whole palette is derived in
@@ -649,6 +652,7 @@ public class MainActivity extends Activity {
         tabViews[TAB_FIND] = buildFindView();
         tabViews[TAB_LOCATE] = buildLocateView();
         tabViews[TAB_LINK] = buildLinkView();
+        tabViews[TAB_AUDIT] = buildAuditView();
         for (View v : tabViews) content.addView(v);
         root.addView(content, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
@@ -4494,8 +4498,20 @@ public class MainActivity extends Activity {
         // Identify is a station mode; don't let it follow you to another
         // tab and surprise the next trigger pull.
         if (tab != TAB_STATION && identifyArmed) setIdentifyArmed(false);
+        // Leaving the audit tab parks its continuous sweep too.
+        if (tab != TAB_AUDIT && auditScanning) {
+            try {
+                reader.stopInventory();
+            } catch (Exception ignored) {
+            }
+            auditScanning = false;
+            scanning = false;
+            auditMergeTags();
+            if (auditScanBtn != null) auditScanBtn.setText("SWEEP");
+        }
         boolean needsInput = tab == TAB_BATCH || tab == TAB_STATION
-                || tab == TAB_FIND || tab == TAB_LOCATE || tab == TAB_LINK;
+                || tab == TAB_FIND || tab == TAB_LOCATE || tab == TAB_LINK
+                || tab == TAB_AUDIT;
         btInput.setVisibility(needsInput ? View.VISIBLE : View.GONE);
         tabTitle.setVisibility(needsInput ? View.GONE : View.VISIBLE);
         tabTitle.setText(TAB_NAMES[tab]);
@@ -4513,6 +4529,8 @@ public class MainActivity extends Activity {
         } else if (tab == TAB_LINK) {
             status.setText("LINK: barcode scans and trigger reads go to "
                     + "the web terminal (turn its C72 LINK toggle on).");
+        } else if (tab == TAB_AUDIT) {
+            auditEnterTab();
         } else {
             status.setText(locProduct == null
                     ? "LOCATE: scan a product barcode, or LIST… for the "
@@ -4592,6 +4610,8 @@ public class MainActivity extends Activity {
             findLookup(code);
         } else if (activeTab == TAB_LINK) {
             linkSend("barcode", code, null);
+        } else if (activeTab == TAB_AUDIT) {
+            auditBarcode(code);
         } else {
             status.setText("Scanned " + code + " — switch to BATCH, "
                     + "STATION or FIND BIN to use barcodes.");
@@ -4788,6 +4808,12 @@ public class MainActivity extends Activity {
             else toggleLocate();
         } else if (activeTab == TAB_LINK) {
             linkReadTag();
+        } else if (activeTab == TAB_AUDIT) {
+            // Pair mode pairs one sticker per pull; otherwise the
+            // trigger toggles the continuous audit sweep (SWEEP-tab
+            // style - the counters fill live as tags answer).
+            if (auditPairMode) auditReadTag();
+            else auditToggleScan();
         } else {
             status.setText("Nothing to trigger on this tab.");
         }
@@ -10662,12 +10688,1166 @@ public class MainActivity extends Activity {
                 synchronized (tags) { n = tags.size(); }
                 status.setText("Sweeping… " + n + " tag(s) — release "
                         + "the trigger to send.");
+            } else if (auditScanning) {
+                // Audit sweep: fold reads into the collected set as
+                // they arrive so the per-product counters fill live.
+                auditMergeTags();
+                status.setText("Sweeping… " + auditTagSet.size()
+                        + " unique tag(s) collected — trigger to stop.");
             }
         }
         locateTick();
         tuningTick();
         commandTick();
         ui.postDelayed(this::refreshTick, 400);
+    }
+
+    // ------------------------------------------------------------ audit -----
+    // AUDIT (Nick, 2026-09-01): two modes in one tab. WALK - sweep shelves
+    // and barcode every tagless box you find (finds are WORK ITEMS: label
+    // -> pair -> the tag answers the next sweep; they never count as audit
+    // evidence). DIRECTED - type/arrow a bin or a whole rack (no dash:
+    // "F1" = every F1-* bin as ONE zone), LOAD the expected list, sweep
+    // with live per-product counters, then CHECK for verdicts and fixes
+    // (set stock, mark sold, un-retire ghosts, locate list, flags).
+    private EditText auditBin;
+    private TextView auditCount;
+    private LinearLayout auditList;
+    private Button auditScanBtn;
+    private Button auditPrintBtn;
+    private Button auditAutoBtn;
+    private boolean auditAutoPrint = false;   // in-tab setting, off per visit
+    private volatile boolean auditScanning = false;
+    private final java.util.HashSet<String> auditTagSet =
+            new java.util.HashSet<>();
+    private JSONObject auditRep = null;       // last LOAD (expected list)
+    private String auditLoc = null;           // the LOADed location
+    private final java.util.HashMap<String, java.util.HashSet<String>>
+            auditItemEpcs = new java.util.HashMap<>();
+    private JSONArray auditFinds = null;      // active finds, server truth
+    private List<String> auditBinNames = null;
+    private boolean auditPairMode = false;
+    private JSONObject auditPairProduct = null;
+
+    private View buildAuditView() {
+        LinearLayout v = new LinearLayout(this);
+        v.setOrientation(LinearLayout.VERTICAL);
+
+        auditCount = new TextView(this);
+        auditCount.setText("0 tags");
+        auditCount.setTextSize(20);
+        auditCount.setTypeface(null, Typeface.BOLD);
+        auditCount.setTextColor(C_BLUE);
+        v.addView(tabHeader(null, auditCount));
+
+        // Location row: ◀ bin/rack ▶ LOAD.
+        LinearLayout locRow = new LinearLayout(this);
+        Button prev = smallBtn("◀");
+        prev.setOnClickListener(x -> auditStep(-1));
+        locRow.addView(prev);
+        auditBin = themedEdit();
+        auditBin.setHint("Bin or rack (F1-2, F1)");
+        auditBin.setTextSize(15);
+        auditBin.setInputType(InputType.TYPE_CLASS_TEXT
+                | InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS);
+        locRow.addView(auditBin, weight());
+        Button next = smallBtn("▶");
+        next.setOnClickListener(x -> auditStep(1));
+        locRow.addView(next);
+        Button load = smallBtn("LOAD");
+        load.setOnClickListener(x -> auditLoad());
+        locRow.addView(load);
+        v.addView(locRow);
+
+        LinearLayout row2 = new LinearLayout(this);
+        auditScanBtn = smallBtn("SWEEP");
+        auditScanBtn.setOnClickListener(x -> auditToggleScan());
+        row2.addView(auditScanBtn, weight());
+        Button pull = smallBtn("PULL SWEEP");
+        pull.setOnClickListener(x -> auditPullSweep());
+        row2.addView(pull, weight());
+        Button send = smallBtn("SEND");
+        send.setOnClickListener(x -> auditSendSweep());
+        row2.addView(send, weight());
+        Button clear = smallBtn("CLEAR");
+        clear.setOnClickListener(x -> auditClear());
+        row2.addView(clear, weight());
+        v.addView(row2);
+
+        LinearLayout row3 = new LinearLayout(this);
+        auditAutoBtn = smallBtn("AUTO-PRINT: OFF");
+        auditAutoBtn.setOnClickListener(x -> {
+            auditAutoPrint = !auditAutoPrint;
+            auditAutoBtn.setText(auditAutoPrint
+                    ? "AUTO-PRINT: ON" : "AUTO-PRINT: OFF");
+            auditAutoBtn.setTextColor(auditAutoPrint ? C_OK : C_TEXT);
+            status.setText(auditAutoPrint
+                    ? "Auto-print ON: every tagless barcode queues its "
+                      + "label right away (home bin on the label)."
+                    : "Auto-print OFF: tagless barcodes just count up - "
+                      + "PRINT LABELS queues them all at once.");
+        });
+        row3.addView(auditAutoBtn, weight());
+        auditPrintBtn = smallBtn("PRINT LABELS");
+        auditPrintBtn.setOnClickListener(x -> {
+            if (auditPairMode) auditExitPairMode("Pair mode closed.");
+            else auditPrintAll();
+        });
+        row3.addView(auditPrintBtn, weight());
+        Button check = smallBtn("CHECK ✓");
+        check.setOnClickListener(x -> auditCheck());
+        row3.addView(check, weight());
+        v.addView(row3);
+
+        ScrollView scroll = new ScrollView(this);
+        auditList = new LinearLayout(this);
+        auditList.setOrientation(LinearLayout.VERTICAL);
+        auditList.setPadding(0, dp(6), 0, dp(6));
+        scroll.addView(auditList);
+        v.addView(scroll, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        return v;
+    }
+
+    private void auditEnterTab() {
+        status.setText(auditRep != null
+                ? "AUDIT " + auditLoc + " - trigger to sweep, barcode any "
+                  + "tagless box, CHECK when the shelf is done."
+                : "AUDIT: type/arrow a bin or rack and LOAD, or just walk "
+                  + "- sweep shelves and barcode tagless boxes.");
+        auditRefreshFinds();
+        auditRender();
+    }
+
+    // ---- location + arrows -------------------------------------------------
+    private void auditStep(int dir) {
+        if (auditBinNames == null) {
+            new Thread(() -> {
+                try {
+                    JSONObject resp = api("GET", "/api/bins/names", null);
+                    JSONArray arr = resp.optJSONArray("bins");
+                    List<String> names = new ArrayList<>();
+                    for (int i = 0; arr != null && i < arr.length(); i++) {
+                        names.add(arr.getString(i));
+                    }
+                    ui.post(() -> {
+                        auditBinNames = names;
+                        auditStep(dir);
+                    });
+                } catch (Exception e) {
+                    ui.post(() -> status.setText("Bin list failed: "
+                            + e.getMessage()));
+                }
+            }).start();
+            return;
+        }
+        if (auditBinNames.isEmpty()) return;
+        String cur = auditBin.getText().toString().trim()
+                .toUpperCase(java.util.Locale.ROOT);
+        List<String> list = auditBinNames;
+        if (!cur.isEmpty() && !cur.contains("-")) {
+            // Rack mode: step whole racks (distinct prefixes, same order).
+            java.util.LinkedHashSet<String> racks =
+                    new java.util.LinkedHashSet<>();
+            for (String b : auditBinNames) {
+                racks.add(b.split("-")[0].toUpperCase(
+                        java.util.Locale.ROOT));
+            }
+            list = new ArrayList<>(racks);
+        }
+        int idx = -1;
+        for (int i = 0; i < list.size(); i++) {
+            if (list.get(i).toUpperCase(java.util.Locale.ROOT)
+                    .equals(cur)) {
+                idx = i;
+                break;
+            }
+        }
+        if (idx < 0) idx = dir > 0 ? -1 : list.size();
+        idx = ((idx + dir) % list.size() + list.size()) % list.size();
+        auditBin.setText(list.get(idx));
+    }
+
+    private void auditLoad() {
+        final String loc = auditBin.getText().toString().trim();
+        if (loc.isEmpty()) {
+            auditRep = null;
+            auditLoc = null;
+            auditItemEpcs.clear();
+            auditRender();
+            status.setText("Walk mode: sweep shelves and barcode tagless "
+                    + "boxes. Type a bin or rack + LOAD for counters.");
+            return;
+        }
+        status.setText("Loading " + loc + "…");
+        new Thread(() -> {
+            try {
+                JSONObject body = new JSONObject()
+                        .put("epcs", new JSONArray());
+                JSONObject rep = api("POST", "/api/bins/" + encPath(loc)
+                        + "/check", body);
+                ui.post(() -> {
+                    auditRep = rep;
+                    auditLoc = loc;
+                    auditItemEpcs.clear();
+                    JSONArray items = rep.optJSONArray("items");
+                    for (int i = 0; items != null && i < items.length();
+                            i++) {
+                        JSONObject it = items.optJSONObject(i);
+                        java.util.HashSet<String> set =
+                                new java.util.HashSet<>();
+                        JSONArray eps = it.optJSONArray("silent_epcs");
+                        for (int j = 0; eps != null && j < eps.length();
+                                j++) {
+                            set.add(eps.optString(j).toUpperCase(
+                                    java.util.Locale.ROOT));
+                        }
+                        auditItemEpcs.put(it.optString("sku")
+                                .toUpperCase(java.util.Locale.ROOT), set);
+                    }
+                    auditRender();
+                    int n = items == null ? 0 : items.length();
+                    String where = rep.optBoolean("rack")
+                            ? "Rack " + loc + " ("
+                              + rep.optJSONArray("bins_covered").length()
+                              + " bins)"
+                            : "Bin " + loc;
+                    beep(SOUND_OK);
+                    status.setText(where + " - " + n + " product(s). "
+                            + "Trigger to sweep; CHECK when done.");
+                });
+            } catch (Exception e) {
+                ui.post(() -> {
+                    beep(SOUND_ERR);
+                    status.setText("Load failed: " + e.getMessage());
+                });
+            }
+        }).start();
+    }
+
+    // ---- sweeping ----------------------------------------------------------
+    private void auditToggleScan() {
+        if (!readerReady) {
+            Toast.makeText(this, "Reader not ready",
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (auditScanning) {
+            try {
+                reader.stopInventory();
+            } catch (Exception ignored) {
+            }
+            auditScanning = false;
+            scanning = false;
+            auditMergeTags();
+            auditScanBtn.setText("SWEEP");
+            status.setText("Paused - " + auditTagSet.size()
+                    + " unique tag(s) collected. "
+                    + (auditRep != null ? "CHECK when the shelf is done."
+                       : "SEND to keep this sweep, or LOAD a bin to "
+                         + "compare."));
+        } else {
+            if (scanning || sweepRunning || holdSweepRunning) return;
+            synchronized (tags) { tags.clear(); }
+            if (reader.startInventoryTag()) {
+                auditScanning = true;
+                scanning = true;
+                auditScanBtn.setText("STOP");
+                status.setText("Sweeping… walk the shelf. Trigger to stop.");
+            } else {
+                status.setText("Could not start the sweep - try again.");
+            }
+        }
+    }
+
+    private void auditMergeTags() {
+        synchronized (tags) {
+            for (String epc : tags.keySet()) {
+                auditTagSet.add(epc.toUpperCase(java.util.Locale.ROOT));
+            }
+        }
+        auditRender();
+    }
+
+    private void auditPullSweep() {
+        status.setText("Pulling the newest sweep…");
+        new Thread(() -> {
+            try {
+                JSONObject cap = api("GET", "/api/epc-captures/latest",
+                        null);
+                JSONArray eps = cap.optJSONArray("epcs");
+                final int before = auditTagSet.size();
+                for (int i = 0; eps != null && i < eps.length(); i++) {
+                    auditTagSet.add(eps.optString(i).toUpperCase(
+                            java.util.Locale.ROOT));
+                }
+                final int id = cap.optInt("id");
+                ui.post(() -> {
+                    auditRender();
+                    beep(SOUND_OK);
+                    status.setText("Pulled sweep #" + id + " - "
+                            + (auditTagSet.size() - before)
+                            + " new tag(s), " + auditTagSet.size()
+                            + " collected.");
+                });
+            } catch (Exception e) {
+                ui.post(() -> status.setText("Pull failed: "
+                        + e.getMessage()));
+            }
+        }).start();
+    }
+
+    private void auditSendSweep() {
+        if (auditTagSet.isEmpty()) {
+            Toast.makeText(this, "Nothing collected yet",
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (auditScanning) auditToggleScan();
+        final List<String> epcs = new ArrayList<>(auditTagSet);
+        status.setText("Sending " + epcs.size() + " tags…");
+        new Thread(() -> {
+            try {
+                JSONObject body = new JSONObject()
+                        .put("device", prefs.getString("device", "C72"))
+                        .put("epcs", new JSONArray(epcs));
+                JSONObject resp = api("POST", "/api/epc-captures", body);
+                final int id = resp.optInt("id");
+                ui.post(() -> {
+                    beep(SOUND_OK);
+                    status.setText("Sent ✓ sweep #" + id + " ("
+                            + epcs.size() + " tags) - pull it here or on "
+                            + "the web terminal any time.");
+                });
+            } catch (Exception e) {
+                ui.post(() -> status.setText("Send FAILED ("
+                        + e.getMessage() + ") - tags kept, try again "
+                        + "with Wi-Fi."));
+            }
+        }).start();
+    }
+
+    private void auditClear() {
+        if (auditTagSet.isEmpty()) return;
+        dlg().setMessage("Clear " + auditTagSet.size()
+                        + " collected tag(s)? (Finds and labels are kept.)")
+                .setPositiveButton("Clear", (d, w) -> {
+                    auditTagSet.clear();
+                    auditRender();
+                    status.setText("Cleared - ready for the next sweep.");
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    // ---- the live list -----------------------------------------------------
+    private int auditFindsOpen(String skuUpper) {
+        int n = 0;
+        for (int i = 0; auditFinds != null && i < auditFinds.length();
+                i++) {
+            JSONObject f = auditFinds.optJSONObject(i);
+            if (f.optString("sku").toUpperCase(java.util.Locale.ROOT)
+                    .equals(skuUpper)
+                    && "open".equals(f.optString("status"))) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    private int auditFindsPrinted(String skuUpper) {
+        int n = 0;
+        for (int i = 0; auditFinds != null && i < auditFinds.length();
+                i++) {
+            JSONObject f = auditFinds.optJSONObject(i);
+            if ((skuUpper == null || f.optString("sku")
+                    .toUpperCase(java.util.Locale.ROOT).equals(skuUpper))
+                    && "printed".equals(f.optString("status"))) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    private void auditRender() {
+        if (auditList == null) return;
+        auditList.removeAllViews();
+        auditCount.setText(auditTagSet.size() + " tags");
+        int openTotal = countFinds("open");
+        auditPrintBtn.setText(auditPairMode
+                ? "EXIT PAIR MODE"
+                : openTotal > 0 ? "PRINT " + openTotal + " LABELS"
+                                : "PRINT LABELS");
+        if (auditRep == null) {
+            // Walk mode: the collected count + the finds work list.
+            TextView t = auditRowView(
+                    auditTagSet.size() + " unique tag(s) collected this "
+                    + "walk.\nBarcode any box WITHOUT a sticker - it "
+                    + "becomes a label to print and pair.", C_TEXT);
+            auditList.addView(t, auditRowLp());
+            auditRenderFindRows(null);
+            return;
+        }
+        JSONArray items = auditRep.optJSONArray("items");
+        int strays = 0;
+        java.util.HashSet<String> known = new java.util.HashSet<>();
+        for (java.util.HashSet<String> s : auditItemEpcs.values()) {
+            known.addAll(s);
+        }
+        for (String epc : auditTagSet) {
+            if (!known.contains(epc)) strays++;
+        }
+        for (int i = 0; items != null && i < items.length(); i++) {
+            JSONObject it = items.optJSONObject(i);
+            String sku = it.optString("sku");
+            String skuU = sku.toUpperCase(java.util.Locale.ROOT);
+            java.util.HashSet<String> eps = auditItemEpcs.get(skuU);
+            int here = eps == null ? 0 : eps.size();
+            int heard = 0;
+            if (eps != null) {
+                for (String epc : eps) {
+                    if (auditTagSet.contains(epc)) heard++;
+                }
+            }
+            int exp = it.isNull("expected_qty") ? -1
+                    : it.optInt("expected_qty")
+                      + it.optInt("backorder_debt");
+            int fOpen = auditFindsOpen(skuU);
+            int fPrinted = auditFindsPrinted(skuU);
+            StringBuilder sb = new StringBuilder();
+            sb.append(it.optString("product_title", sku));
+            sb.append("\n").append(heard).append("/").append(here)
+                    .append(" tags heard");
+            if (exp >= 0) sb.append(" · expected ").append(exp);
+            if (it.optInt("backorder_debt") > 0) {
+                sb.append(" (incl ").append(it.optInt("backorder_debt"))
+                        .append(" backorder)");
+            }
+            if (fOpen > 0) sb.append("\n").append(fOpen)
+                    .append(" tagless box(es) noted - label owed");
+            if (fPrinted > 0) sb.append("\n").append(fPrinted)
+                    .append(" label(s) printed, not paired yet");
+            if (it.optBoolean("rfid_incompatible")) {
+                sb.append("\n⊘ won't-scan product - count by barcode");
+            }
+            int color = heard == here && here > 0 && fOpen == 0
+                    && fPrinted == 0 ? C_OK
+                    : (fOpen > 0 || fPrinted > 0) ? C_WARN
+                    : heard > 0 ? C_WARN : C_TEXT;
+            auditList.addView(auditRowView(sb.toString(), color),
+                    auditRowLp());
+        }
+        if (strays > 0) {
+            auditList.addView(auditRowView(strays + " other tag(s) heard "
+                    + "(strays, ghosts or unknowns - CHECK sorts them "
+                    + "out).", C_MUTED), auditRowLp());
+        }
+        auditRenderFindRows(null);
+    }
+
+    private int countFinds(String wantStatus) {
+        int n = 0;
+        for (int i = 0; auditFinds != null && i < auditFinds.length();
+                i++) {
+            JSONObject f = auditFinds.optJSONObject(i);
+            if (wantStatus.equals(f.optString("status"))) n++;
+        }
+        return n;
+    }
+
+    /** The finds work list, grouped per product (walk + directed). */
+    private void auditRenderFindRows(String only) {
+        if (auditFinds == null || auditFinds.length() == 0) return;
+        java.util.LinkedHashMap<String, int[]> bySku =
+                new java.util.LinkedHashMap<>();
+        java.util.HashMap<String, String> titles =
+                new java.util.HashMap<>();
+        java.util.HashMap<String, Integer> ids = new java.util.HashMap<>();
+        for (int i = 0; i < auditFinds.length(); i++) {
+            JSONObject f = auditFinds.optJSONObject(i);
+            String key = f.optString("sku");
+            int[] c = bySku.get(key);
+            if (c == null) {
+                c = new int[2];
+                bySku.put(key, c);
+                titles.put(key, f.optString("product_title", key));
+                ids.put(key, f.optInt("id"));
+            }
+            if ("printed".equals(f.optString("status"))) c[1]++;
+            else c[0]++;
+        }
+        TextView head = auditRowView("TAGLESS BOXES FOUND (tap a row to "
+                + "dismiss its oldest note):", C_MUTED);
+        auditList.addView(head, auditRowLp());
+        for (Map.Entry<String, int[]> e : bySku.entrySet()) {
+            final String sku = e.getKey();
+            int open = e.getValue()[0];
+            int printed = e.getValue()[1];
+            String line = titles.get(sku) + " · " + sku + "\n"
+                    + (open > 0 ? open + " label(s) owed" : "")
+                    + (open > 0 && printed > 0 ? " · " : "")
+                    + (printed > 0
+                       ? printed + " printed, pair the sticker(s)" : "");
+            TextView row = auditRowView(line,
+                    printed > 0 ? C_WARN : C_TEXT);
+            row.setOnClickListener(x -> auditDismissFind(sku));
+            auditList.addView(row, auditRowLp());
+        }
+    }
+
+    private TextView auditRowView(String text, int color) {
+        TextView t = new TextView(this);
+        t.setText(text);
+        t.setTextSize(14);
+        t.setTextColor(color);
+        t.setPadding(dp(10), dp(8), dp(10), dp(8));
+        t.setBackground(rr(C_CARD, C_LINE, 10));
+        return t;
+    }
+
+    private LinearLayout.LayoutParams auditRowLp() {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.bottomMargin = dp(6);
+        return lp;
+    }
+
+    // ---- tagless finds -----------------------------------------------------
+    private void auditBarcode(String code) {
+        if (auditPairMode) {
+            auditPairFocus(code);
+            return;
+        }
+        status.setText("Noting " + code + "…");
+        new Thread(() -> {
+            try {
+                JSONObject body = new JSONObject()
+                        .put("code", code)
+                        .put("by", prefs.getString("device", "C72"))
+                        .put("auto_print", auditAutoPrint);
+                JSONObject resp = api("POST", "/api/audit/finds", body);
+                final JSONObject find = resp.optJSONObject("find");
+                final boolean noBin = resp.optBoolean("no_home_bin");
+                final boolean printed = resp.optBoolean("printed");
+                final int nth = resp.optInt("open_for_sku", 1);
+                final String title = find == null ? code
+                        : find.optString("product_title", code);
+                ui.post(() -> {
+                    if (noBin && auditAutoPrint) {
+                        beep(SOUND_ERR);
+                        dlg().setTitle("NO HOME BIN")
+                                .setMessage(title + " has no bin in "
+                                        + "Shopify, so its label can't say "
+                                        + "where the box goes.\n\nThe box "
+                                        + "is NOTED and flagged on the "
+                                        + "list. Set a bin (STATION > "
+                                        + "product options), then PRINT "
+                                        + "LABELS.")
+                                .setPositiveButton("OK", null)
+                                .show();
+                    } else {
+                        beep(printed ? SOUND_OK : SOUND_OTHER);
+                    }
+                    status.setText(title + ": box #" + nth + " noted"
+                            + (printed ? " - label queued ✓"
+                               : noBin ? " - ⚠ NO HOME BIN"
+                               : " - label owed (PRINT LABELS)"));
+                    auditRefreshFinds();
+                });
+            } catch (Exception e) {
+                ui.post(() -> {
+                    beep(SOUND_ERR);
+                    status.setText("Not counted: " + e.getMessage());
+                });
+            }
+        }).start();
+    }
+
+    private void auditRefreshFinds() {
+        new Thread(() -> {
+            try {
+                JSONObject resp = api("GET", "/api/audit/finds", null);
+                final JSONArray rows = resp.optJSONArray("finds");
+                ui.post(() -> {
+                    auditFinds = rows;
+                    if (auditPairMode && auditFindsPrinted(null) == 0
+                            && countFinds("open") == 0) {
+                        auditExitPairMode("Every printed label is "
+                                + "paired ✓ - sweep again so the new tags "
+                                + "count.");
+                    }
+                    auditRender();
+                });
+            } catch (Exception ignored) {
+                // The finds list is decoration on a bad connection.
+            }
+        }).start();
+    }
+
+    private void auditDismissFind(String sku) {
+        // Oldest active find for the tapped product; confirm, then gone.
+        JSONObject target = null;
+        for (int i = 0; auditFinds != null && i < auditFinds.length();
+                i++) {
+            JSONObject f = auditFinds.optJSONObject(i);
+            if (f.optString("sku").equalsIgnoreCase(sku)) {
+                target = f;
+                break;
+            }
+        }
+        if (target == null) return;
+        final int id = target.optInt("id");
+        final String title = target.optString("product_title", sku);
+        dlg().setMessage("Dismiss one noted box of " + title
+                        + "?\n\nUse this for a mis-scan or a box you "
+                        + "handled another way. Pairing a printed label "
+                        + "clears its note by itself.")
+                .setPositiveButton("Dismiss", (d, w) ->
+                        new Thread(() -> {
+                            try {
+                                api("POST", "/api/audit/finds/" + id
+                                        + "/dismiss", new JSONObject().put(
+                                        "by", prefs.getString("device",
+                                                "C72")));
+                                ui.post(this::auditRefreshFinds);
+                            } catch (Exception e) {
+                                ui.post(() -> status.setText(
+                                        "Dismiss failed: "
+                                        + e.getMessage()));
+                            }
+                        }).start())
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void auditPrintAll() {
+        new Thread(() -> {
+            try {
+                JSONObject resp = api("POST", "/api/audit/finds/print-all",
+                        new JSONObject().put("by",
+                                prefs.getString("device", "C72")));
+                final int queued = resp.optInt("queued");
+                final JSONArray skipped = resp.optJSONArray("skipped");
+                ui.post(() -> {
+                    if (queued == 0 && (skipped == null
+                            || skipped.length() == 0)) {
+                        status.setText("Nothing to print - barcode "
+                                + "tagless boxes first.");
+                        return;
+                    }
+                    StringBuilder msg = new StringBuilder();
+                    msg.append(queued).append(" label(s) queued on the "
+                            + "warehouse printer (each says its HOME "
+                            + "bin).");
+                    if (skipped != null && skipped.length() > 0) {
+                        msg.append("\n\nHeld out:");
+                        for (int i = 0; i < skipped.length(); i++) {
+                            msg.append("\n· ").append(
+                                    skipped.optString(i));
+                        }
+                    }
+                    msg.append("\n\nPAIR MODE: when the labels are on "
+                            + "the boxes, scan a product's barcode to "
+                            + "focus it, then trigger on its sticker. "
+                            + "Scan Station works too.");
+                    dlg().setTitle("LABELS QUEUED")
+                            .setMessage(msg.toString())
+                            .setPositiveButton("PAIR NOW", (d, w) -> {
+                                auditPairMode = true;
+                                auditPairProduct = null;
+                                auditRender();
+                                status.setText("PAIR MODE: scan a "
+                                        + "product barcode, then trigger "
+                                        + "on its sticker.");
+                            })
+                            .setNegativeButton("LATER", null)
+                            .show();
+                    auditRefreshFinds();
+                });
+            } catch (Exception e) {
+                ui.post(() -> {
+                    beep(SOUND_ERR);
+                    status.setText("Print failed: " + e.getMessage());
+                });
+            }
+        }).start();
+    }
+
+    private void auditExitPairMode(String msg) {
+        auditPairMode = false;
+        auditPairProduct = null;
+        auditRender();
+        beep(SOUND_OK);
+        status.setText(msg);
+    }
+
+    private void auditPairFocus(String code) {
+        new Thread(() -> {
+            try {
+                final JSONObject p = api("GET", "/api/products/by-barcode/"
+                        + encPath(code), null);
+                ui.post(() -> {
+                    auditPairProduct = p;
+                    beep(SOUND_OK);
+                    status.setText("Focused: "
+                            + p.optString("product_title", code)
+                            + " - trigger on its sticker.");
+                });
+            } catch (Exception e) {
+                ui.post(() -> {
+                    beep(SOUND_ERR);
+                    status.setText("No product for " + code + " - "
+                            + e.getMessage());
+                });
+            }
+        }).start();
+    }
+
+    private void auditReadTag() {
+        if (auditPairProduct == null) {
+            beep(SOUND_ERR);
+            status.setText("Scan the product's barcode first, then "
+                    + "trigger on its sticker.");
+            return;
+        }
+        if (!readerReady) {
+            beep(SOUND_ERR);
+            status.setText("RFID reader not ready.");
+            return;
+        }
+        if (tagReadBusy) return;
+        tagReadBusy = true;
+        status.setText("Reading tag… hold the antenna near ONE sticker");
+        final JSONObject p = auditPairProduct;
+        new Thread(() -> {
+            final TagRead read = readStrongestTag(600);
+            final String epc = read == null ? null : read.epc;
+            if (epc == null || epc.isEmpty()) {
+                ui.post(() -> {
+                    tagReadBusy = false;
+                    beep(SOUND_ERR);
+                    status.setText("No tag read - get closer and trigger "
+                            + "again.");
+                });
+                return;
+            }
+            try {
+                JSONObject body = new JSONObject()
+                        .put("rfid_id", epc)
+                        .put("shopify_variant_id",
+                                p.optString("shopify_variant_id"))
+                        .put("shopify_product_id",
+                                p.isNull("shopify_product_id")
+                                        ? JSONObject.NULL
+                                        : p.optString("shopify_product_id"))
+                        .put("product_title",
+                                p.optString("product_title", "(unknown)"))
+                        .put("variant_title",
+                                p.isNull("variant_title") ? JSONObject.NULL
+                                        : p.optString("variant_title"))
+                        .put("sku", p.isNull("sku") ? JSONObject.NULL
+                                : p.optString("sku"))
+                        .put("barcode", p.isNull("barcode")
+                                ? JSONObject.NULL : p.optString("barcode"))
+                        .put("bin_location",
+                                p.isNull("bin_location") ? JSONObject.NULL
+                                        : p.optString("bin_location"))
+                        .put("assigned_by",
+                                prefs.getString("device", "C72"));
+                api("POST", "/api/rfid-assignments", body);
+                ui.post(() -> {
+                    tagReadBusy = false;
+                    beep(SOUND_OK);
+                    // The new tag counts toward the audit right away -
+                    // it IS on the shelf in front of the operator.
+                    auditTagSet.add(epc.toUpperCase(
+                            java.util.Locale.ROOT));
+                    status.setText("Paired ✓ "
+                            + p.optString("product_title", "")
+                            + " …" + epc.substring(
+                                    Math.max(0, epc.length() - 6)));
+                    auditRefreshFinds();
+                });
+            } catch (Exception e) {
+                ui.post(() -> {
+                    tagReadBusy = false;
+                    beep(SOUND_ERR);
+                    status.setText(e.getMessage());
+                });
+            }
+        }).start();
+    }
+
+    // ---- the check screen --------------------------------------------------
+    private void auditCheck() {
+        final String loc = auditBin.getText().toString().trim();
+        if (loc.isEmpty()) {
+            beep(SOUND_ERR);
+            status.setText("Type (or arrow to) the bin or rack to check "
+                    + "first.");
+            return;
+        }
+        if (auditScanning) auditToggleScan();
+        status.setText("Checking " + loc + "…");
+        new Thread(() -> {
+            try {
+                JSONObject body = new JSONObject().put("epcs",
+                        new JSONArray(new ArrayList<>(auditTagSet)));
+                final JSONObject rep = api("POST", "/api/bins/"
+                        + encPath(loc) + "/check", body);
+                ui.post(() -> showAuditCheck(loc, rep));
+            } catch (Exception e) {
+                ui.post(() -> {
+                    beep(SOUND_ERR);
+                    status.setText("Check failed: " + e.getMessage());
+                });
+            }
+        }).start();
+    }
+
+    private void showAuditCheck(final String loc, final JSONObject rep) {
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        list.setPadding(dp(12), dp(8), dp(12), dp(8));
+
+        JSONArray items = rep.optJSONArray("items");
+        JSONArray foreign = rep.optJSONArray("foreign");
+        JSONArray unknown = rep.optJSONArray("unknown_epcs");
+        JSONArray owed = rep.optJSONArray("printed_labels_heard");
+        int flagged = 0;
+
+        if (owed != null && owed.length() > 0) {
+            StringBuilder sb = new StringBuilder();
+            sb.append("⚠ ").append(owed.length()).append(" printed "
+                    + "label(s) answered but were never PAIRED:");
+            for (int i = 0; i < owed.length(); i++) {
+                JSONObject o = owed.optJSONObject(i);
+                sb.append("\n· ").append(o.optString("sku", "?"));
+            }
+            sb.append("\nPair them, then sweep again.");
+            list.addView(auditRowView(sb.toString(), C_OVER),
+                    auditRowLp());
+            flagged++;
+        }
+        for (int i = 0; items != null && i < items.length(); i++) {
+            final JSONObject it = items.optJSONObject(i);
+            int det = it.optInt("detected");
+            int here = it.optInt("tags_here");
+            int silent = here - det;
+            JSONArray ghosts = it.optJSONArray("ghosts");
+            int gh = ghosts == null ? 0 : ghosts.length();
+            int exp = it.isNull("expected_qty") ? -1
+                    : it.optInt("expected_qty")
+                      + it.optInt("backorder_debt");
+            int heardUnits = it.optInt("detected_units") + gh;
+            int sold = it.optInt("sold_unretired");
+            int fOpen = it.optInt("finds_open");
+            int fPrinted = it.optInt("finds_printed");
+            if (here == 0 && det == 0 && gh == 0 && fOpen == 0
+                    && fPrinted == 0 && exp <= 0) {
+                continue; // not part of this shelf's story
+            }
+            StringBuilder sb = new StringBuilder();
+            sb.append(it.optString("product_title",
+                    it.optString("sku")));
+            sb.append("\n").append(det).append("/").append(here)
+                    .append(" heard");
+            if (exp >= 0) sb.append(" · expected ").append(exp)
+                    .append(" · on shelf ").append(heardUnits);
+            if (gh > 0) sb.append("\n⚠ ").append(gh).append(" tag(s) "
+                    + "marked sold ANSWERED - box never left");
+            if (silent > 0) {
+                sb.append("\n").append(silent).append(" silent");
+                if (sold >= silent) sb.append(" - ").append(sold)
+                        .append(" sold since last audit covers it");
+                else if (sold > 0) sb.append(" vs only ").append(sold)
+                        .append(" sold - count off");
+                else sb.append(" - no sales explain it");
+            }
+            if (fOpen > 0) sb.append("\n").append(fOpen)
+                    .append(" tagless box(es) - label owed");
+            if (fPrinted > 0) sb.append("\n").append(fPrinted)
+                    .append(" label(s) printed, not paired");
+            boolean bad = (silent > 0 && sold < silent) || fPrinted > 0
+                    || gh > 0;
+            boolean warn = silent > 0 || fOpen > 0
+                    || (exp >= 0 && heardUnits != exp);
+            int color = bad ? C_OVER : warn ? C_WARN : C_OK;
+            if (bad || warn) flagged++;
+            TextView row = auditRowView(sb.toString(), color);
+            row.setOnClickListener(x -> auditItemActions(loc, it, rep));
+            list.addView(row, auditRowLp());
+        }
+        int extras = (foreign == null ? 0 : foreign.length())
+                + (unknown == null ? 0 : unknown.length());
+        if (extras > 0) {
+            list.addView(auditRowView(extras + " tag(s) from other "
+                    + "shelves or unknown - normal neighbour noise on a "
+                    + "big antenna; the web terminal lists each one.",
+                    C_MUTED), auditRowLp());
+        }
+        if (flagged == 0) {
+            list.addView(auditRowView("✓ ALL CLEAR - every product is "
+                    + "exactly as the system expects.", C_OK), 0,
+                    auditRowLp());
+        }
+        final int flaggedFinal = flagged;
+        final int total = items == null ? 0 : items.length();
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(list);
+        dlg().setTitle("AUDIT CHECK - " + loc
+                        + (rep.optBoolean("rack") ? " (whole rack)" : ""))
+                .setView(scroll)
+                .setPositiveButton("LOG AUDIT ✓", (d, w) ->
+                        auditLogComplete(loc, total, flaggedFinal))
+                .setNegativeButton("BACK", null)
+                .show();
+        status.setText("Tap a product row for fixes: set stock, mark "
+                + "sold, un-retire, locate list.");
+    }
+
+    private void auditItemActions(final String loc, final JSONObject it,
+                                  final JSONObject rep) {
+        final String sku = it.optString("sku");
+        final String device = prefs.getString("device", "C72");
+        int det = it.optInt("detected");
+        int here = it.optInt("tags_here");
+        final int silent = here - det;
+        JSONArray ghostsArr = it.optJSONArray("ghosts");
+        final int gh = ghostsArr == null ? 0 : ghostsArr.length();
+        final int exp = it.isNull("expected_qty") ? -1
+                : it.optInt("expected_qty") + it.optInt("backorder_debt");
+        final int heardUnits = it.optInt("detected_units") + gh;
+        int sold = it.optInt("sold_unretired");
+
+        // Was every bin this product lives in batch tagged before? The
+        // guarded LOWER is only offered then (Nick, 2026-09-01).
+        java.util.HashSet<String> doneBins = new java.util.HashSet<>();
+        JSONArray db = rep.optJSONArray("bins_batch_done");
+        for (int i = 0; db != null && i < db.length(); i++) {
+            doneBins.add(db.optString(i).toLowerCase(
+                    java.util.Locale.ROOT));
+        }
+        boolean binsDone = true;
+        JSONArray myBins = it.optJSONArray("bins");
+        for (int i = 0; myBins != null && i < myBins.length(); i++) {
+            if (!doneBins.contains(myBins.optString(i).toLowerCase(
+                    java.util.Locale.ROOT))) {
+                binsDone = false;
+            }
+        }
+        if (myBins == null || myBins.length() == 0) binsDone = false;
+        final String firstBin = myBins != null && myBins.length() > 0
+                ? myBins.optString(0) : loc;
+
+        final List<String> labels = new ArrayList<>();
+        final List<Runnable> acts = new ArrayList<>();
+
+        if (gh > 0) {
+            final List<String> ghostEpcs = new ArrayList<>();
+            for (int i = 0; i < ghostsArr.length(); i++) {
+                ghostEpcs.add(ghostsArr.optJSONObject(i)
+                        .optString("epc"));
+            }
+            labels.add("UN-RETIRE " + gh + " ANSWERED TAG(S) - box "
+                    + "never left");
+            acts.add(() -> dlg().setMessage("These tag(s) were marked "
+                            + "sold/retired but they ANSWERED this sweep - "
+                            + "the box is still on the shelf. Make the "
+                            + "record live again?")
+                    .setPositiveButton("UN-RETIRE", (d, w) ->
+                            new Thread(() -> {
+                                try {
+                                    api("POST",
+                                            "/api/assignments/unretire",
+                                            new JSONObject()
+                                                    .put("epcs",
+                                                        new JSONArray(
+                                                            ghostEpcs))
+                                                    .put("changed_by",
+                                                            device));
+                                    ui.post(() -> {
+                                        beep(SOUND_OK);
+                                        status.setText("Un-retired ✓ - "
+                                                + "CHECK again for fresh "
+                                                + "numbers.");
+                                    });
+                                } catch (Exception e) {
+                                    ui.post(() -> status.setText(
+                                            e.getMessage()));
+                                }
+                            }).start())
+                    .setNegativeButton("Cancel", null).show());
+        }
+        if (exp >= 0 && heardUnits > exp) {
+            labels.add("SET SHOPIFY STOCK TO " + heardUnits
+                    + " (now " + exp + ")");
+            acts.add(() -> dlg().setMessage("Raise Shopify on-hand for "
+                            + sku + " to " + heardUnits + "? The shelf "
+                            + "physically holds more than Shopify knows. "
+                            + "Logged with an undo in History.")
+                    .setPositiveButton("SET", (d, w) ->
+                            new Thread(() -> {
+                                try {
+                                    api("POST", "/api/onhand-updates",
+                                            new JSONObject()
+                                                    .put("sku", sku)
+                                                    .put("new_qty",
+                                                            heardUnits)
+                                                    .put("changed_by",
+                                                            device)
+                                                    .put("confirmed",
+                                                            true));
+                                    ui.post(() -> {
+                                        beep(SOUND_OK);
+                                        status.setText("Shopify set to "
+                                                + heardUnits + " ✓");
+                                    });
+                                } catch (Exception e) {
+                                    ui.post(() -> status.setText(
+                                            e.getMessage()));
+                                }
+                            }).start())
+                    .setNegativeButton("Cancel", null).show());
+        }
+        if (exp >= 0 && heardUnits < exp && silent > 0 && binsDone) {
+            final List<String> silentEpcs = new ArrayList<>();
+            JSONArray se = it.optJSONArray("silent_epcs");
+            for (int i = 0; se != null && i < se.length(); i++) {
+                silentEpcs.add(se.optString(i));
+            }
+            labels.add("LOWER SHOPIFY STOCK TO " + heardUnits
+                    + " (sales-guarded)");
+            acts.add(() -> dlg().setMessage("Lower Shopify on-hand for "
+                            + sku + " to " + heardUnits + "? Allowed only "
+                            + "when recorded sales cover the drop - the "
+                            + "silent tags retire presumed-sold with it. "
+                            + "One undo in History reverses all of it.")
+                    .setPositiveButton("LOWER", (d, w) ->
+                            new Thread(() -> {
+                                try {
+                                    api("POST",
+                                            "/api/onhand-updates/lower",
+                                            new JSONObject()
+                                                    .put("sku", sku)
+                                                    .put("bin_name",
+                                                            firstBin)
+                                                    .put("new_qty",
+                                                            heardUnits)
+                                                    .put("epcs",
+                                                        new JSONArray(
+                                                            silentEpcs))
+                                                    .put("changed_by",
+                                                            device)
+                                                    .put("confirmed",
+                                                            true));
+                                    ui.post(() -> {
+                                        beep(SOUND_OK);
+                                        status.setText("Lowered to "
+                                                + heardUnits + " ✓ silent "
+                                                + "tags retired against "
+                                                + "sales.");
+                                    });
+                                } catch (Exception e) {
+                                    ui.post(() -> status.setText(
+                                            e.getMessage()));
+                                }
+                            }).start())
+                    .setNegativeButton("Cancel", null).show());
+        }
+        if (silent > 0 && sold >= silent) {
+            final List<String> silentEpcs = new ArrayList<>();
+            JSONArray se = it.optJSONArray("silent_epcs");
+            for (int i = 0; se != null && i < se.length(); i++) {
+                silentEpcs.add(se.optString(i));
+            }
+            labels.add("MARK " + silent + " PRESUMED SOLD (sales "
+                    + "cover it)");
+            acts.add(() -> dlg().setMessage("Retire " + silent
+                            + " silent tag(s) of " + sku + " as presumed "
+                            + "sold? Fulfilled orders account for them. "
+                            + "Shopify untouched; undo in History.")
+                    .setPositiveButton("MARK SOLD", (d, w) ->
+                            new Thread(() -> {
+                                try {
+                                    api("POST",
+                                            "/api/assignments/mark-sold",
+                                            new JSONObject()
+                                                    .put("sku", sku)
+                                                    .put("epcs",
+                                                        new JSONArray(
+                                                            silentEpcs))
+                                                    .put("changed_by",
+                                                            device));
+                                    ui.post(() -> {
+                                        beep(SOUND_OK);
+                                        status.setText(silent + " tag(s) "
+                                                + "retired presumed-sold "
+                                                + "✓");
+                                    });
+                                } catch (Exception e) {
+                                    ui.post(() -> status.setText(
+                                            e.getMessage()));
+                                }
+                            }).start())
+                    .setNegativeButton("Cancel", null).show());
+        }
+        if (silent > 0) {
+            labels.add("ADD TO LOCATE LIST (" + silent + " silent)");
+            acts.add(() -> new Thread(() -> {
+                try {
+                    api("POST", "/api/locate-queue", new JSONObject()
+                            .put("sku", sku)
+                            .put("label", it.optString("product_title",
+                                    sku))
+                            .put("worker", device));
+                    ui.post(() -> {
+                        beep(SOUND_OK);
+                        status.setText(sku + " queued for LOCATE ✓ - its "
+                                + "silent tags are huntable from the "
+                                + "LOCATE tab.");
+                    });
+                } catch (Exception e) {
+                    ui.post(() -> status.setText(e.getMessage()));
+                }
+            }).start());
+        }
+        labels.add("OPEN IN STATION (edit, flags, bin)");
+        acts.add(() -> {
+            selectTab(TAB_STATION);
+            stationLookup(sku);
+        });
+
+        dlg().setTitle(it.optString("product_title", sku))
+                .setItems(labels.toArray(new String[0]),
+                        (d, which) -> acts.get(which).run())
+                .setNegativeButton("BACK", null)
+                .show();
+    }
+
+    private void auditLogComplete(String loc, int total, int flagged) {
+        final String summary = total + " product(s) - "
+                + (flagged == 0 ? "all clear"
+                   : flagged + " flagged");
+        new Thread(() -> {
+            try {
+                api("POST", "/api/audit/complete", new JSONObject()
+                        .put("location", loc)
+                        .put("by", prefs.getString("device", "C72"))
+                        .put("summary", summary));
+                ui.post(() -> {
+                    beep(SOUND_OK);
+                    Toast.makeText(this, "Audit logged ✓",
+                            Toast.LENGTH_LONG).show();
+                    status.setText("Audit of " + loc + " logged: "
+                            + summary + ". Arrow ▶ to the next bin.");
+                });
+            } catch (Exception e) {
+                ui.post(() -> status.setText("Log failed: "
+                        + e.getMessage()));
+            }
+        }).start();
     }
 
     // ------------------------------------------------------------- link -----

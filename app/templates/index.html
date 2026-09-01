@@ -1294,11 +1294,18 @@
         this system only — it never touches Shopify.
       </p>
       <div class="linkbox__actions" style="margin-bottom:10px">
-        <input id="binaudit-bin" class="recent__search" style="max-width:140px"
-               type="text" placeholder="Bin, e.g. D2-2" autocomplete="off" />
+        <button class="reset" id="binaudit-prev" type="button"
+                title="Previous bin in walking order (previous rack when a rack is typed)">◀</button>
+        <input id="binaudit-bin" class="recent__search" style="max-width:150px"
+               type="text" placeholder="Bin or rack: D2-2, D2" autocomplete="off" />
+        <button class="reset" id="binaudit-next" type="button"
+                title="Next bin in walking order (next rack when a rack is typed)">▶</button>
         <button class="reset" id="binaudit-run" type="button"
-                title="Reads the newest sweep sent from the C72 and checks it against this bin">Pull latest C72 sweep &amp; check</button>
+                title="Reads the newest sweep sent from the C72 and checks it against this location. A rack (no dash: D2) checks every one of its bins as one zone.">Pull latest C72 sweep &amp; check</button>
+        <button class="reset" id="binaudit-pick" type="button"
+                title="Pick one or more recent sweeps instead of the newest - ticking several combines them into one check">Recent sweeps ▾</button>
       </div>
+      <div id="binaudit-sweeps" hidden></div>
       <div id="binaudit-report"></div>
       </div>
 

@@ -3,6 +3,64 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-01.
 
+## 🔍 C72 AUDIT tab + rack audits — ✅ DEPLOYED 2026-09-01 (C72 3.68)
+
+Nick's untagged-boxes-broke-my-audit case, designed over three Q&A
+rounds. Core model: **the final sweep is the only counter of physical
+presence** — expected on shelf = Shopify on-hand + uncleared backorder
+debt (sold-unretired explains silent tag RECORDS, not missing boxes);
+barcode "finds" of tagless boxes are WORK ITEMS (label → pair → the tag
+answers the next sweep), never audit evidence.
+
+- **New AUDIT tab on the gun (3.68 code 86)**, two modes in one screen:
+  WALK (trigger toggles a continuous sweep, live unique-tag counter;
+  barcode any tagless box) and DIRECTED (type/arrow a bin or rack,
+  LOAD the expected list, per-product counters fill live from the
+  collected set; PULL SWEEP merges the newest server capture, SEND
+  uploads, CLEAR confirmed). CHECK posts the collected tags and shows
+  the verdict screen — ALWAYS shown, "✓ ALL CLEAR" included (Nick:
+  audit is information, never skip the answer). Tapping a row offers:
+  raise Shopify stock (heard units incl. ghosts), sales-guarded LOWER
+  (only when the product's bins were batch tagged), MARK N PRESUMED
+  SOLD, ADD TO LOCATE LIST, UN-RETIRE answered ghosts, and Open in
+  STATION for flags/edit. LOG AUDIT files a "bin-audited" History
+  event (a log, not a live link — Nick's call).
+- **Tagless-box finds** (`rfid_audit_finds`, migration
+  dev/alter_add_audit_finds.py RUN on prod): POST /api/audit/finds
+  resolves the code through the full rescue chain, remembers the HOME
+  bin (labels say it), flags no-bin products (alert dialog in
+  auto-print mode, list flag otherwise). In-tab AUTO-PRINT toggle
+  queues per scan; PRINT LABELS queues all open finds (no-bin held out
+  and named) and offers PAIR MODE (barcode focuses, trigger pairs,
+  ends on dismiss or when every label is paired — Scan Station always
+  works too). Finds live until paired, dismissed, or 1h old
+  (unprinted); printed ones stay flagged. Resolution is automatic:
+  pairing ANYWHERE consumes the oldest find by SKU
+  (`_consume_audit_find` in both pair endpoints — the ZD220t pairs
+  factory EPCs), and label-EPC matches also resolve (encoder-printer
+  future).
+- **Rack = one zone**: a dash-less location ("F1") expands
+  server-side to every F1-* bin; same-SKU rows on several levels merge
+  (qty summed, bins named). No per-bin RFID attribution — the C72's
+  read field can't localize below a rack (Nick); the barcode gun is
+  the only surgical locator.
+- **bin_check grew the audit annotations** (web + gun share it):
+  per-product backorder_debt, finds open/printed, GHOSTS (retired tags
+  that answered = box never left — flagged, then treated as one more
+  scan), and heard printed-label EPCs called out as "printed label
+  never paired" instead of anonymous unknowns.
+- **Bin arrows + natural order everywhere**: GET /api/bins/names
+  (E1-1 … F2-1 … F10-1; odd names last); ◀ ▶ on the web bin-audit
+  input and the gun's audit tab — stepping RACKS when a rack is typed.
+- **Recent-sweeps picker** (web "Recent sweeps ▾" + gun PULL SWEEP):
+  the last 10 captures listed; ticking several combines them into one
+  union check, so a good sweep survives being overwritten by a newer
+  one.
+- Suite test_auditwalk.py (28); 49/49. EVENT_META "bin-audited"
+  (Audit Done). Rejected by design: misplaced-box catcher and
+  all-green auto-advance (both die on the big-antenna reality),
+  live web link (log only), walk checkpointing (warehouse too small).
+
 ## 🔗 LINK relay drives the whole Batch Tagging tab — ✅ DEPLOYED 2026-09-01
 
 Nick's 2026-08-31 note, built next day (client-only; no gun change —
@@ -1924,6 +1982,11 @@ starting early" actively harmful.
 
 ## 🗓️ Later / backlog
 
+- **Physical map of the warehouse** (Nick, 2026-09-01: "I've always
+  wanted a physical map of all our stuff") — map the racks/bins as a
+  drawn layout the apps can render (audit walk order, locate hints,
+  the bin arrows' TRUE walking order instead of alphabetical). Map it
+  out with Nick another time.
 - **The "1-left check" app** (separate system — Inventory Verification,
   the one that asks a human to confirm 0/1-left counts). Reconnaissance
   written up in [docs/inventory-verification-app.md](docs/inventory-verification-app.md):
