@@ -405,25 +405,6 @@
         </div>
       </section>
 
-      <!-- Printer picker: one card per detected printer. Rows appear on
-           their own when a print agent checks in — nothing is hand-typed. -->
-      <div class="phist-overlay" id="printer-overlay" hidden>
-        <section class="linkbox serialbox phist-modal" style="max-width:520px">
-          <div class="linkbox__title printerpick__head">
-            <span>Choose a printer</span>
-            <button class="reset printerpick__add" id="printer-detect" type="button"
-                    title="Add a printer — start a print agent next to it and press this to detect it">🖨<span class="printerpick__plus">+</span></button>
-          </div>
-          <p class="linkbox__text">Labels queue to the selected printer. A printer adds itself here the moment its print agent checks in.</p>
-          <div class="printerpick__cards" id="printer-cards"></div>
-          <p class="linkbox__text" id="printer-msg"></p>
-          <div class="linkbox__actions">
-            <button class="print__btn" id="printer-confirm" type="button" disabled>Use this printer</button>
-            <button class="reset" id="printer-cancel" type="button">Cancel</button>
-          </div>
-        </section>
-      </div>
-
       <!-- 1-left confirm: live stock tiles + the actual shelf count -->
       <div class="phist-overlay" id="olconfirm-overlay" hidden>
         <section class="linkbox serialbox phist-modal" style="max-width:460px">
@@ -1109,6 +1090,8 @@
                 title="Cancels every label still waiting to print - at most the handful already claimed by the printer still come out. Resume printing brings the whole run back in order.">⏹ Stop printing</button>
         <button class="reset queue-resume" id="printer-resume" type="button" disabled
                 title="Puts every label a Stop press canceled back in the queue - same labels, same original order, printed ahead of anything queued since. Labels from batches that have since finished stay canceled.">▶ Resume printing</button>
+        <button class="reset" id="printer-purge" type="button" disabled
+                title="Deletes every job sitting in the warehouse PC's WINDOWS print queue - the fix when the printer wedges and labels pile up behind a stuck head. Server-side those jobs already read done, so reprint anything that never came out from this tab. Needs print agent v4 on the warehouse PC.">🧹 Clear stuck jobs</button>
       </div>
       <div class="inventory__scroll">
         <table class="inventory__table">
@@ -1361,6 +1344,28 @@
          then PRINT (the everyday action), then the edge-case options
          folded behind one toggle, then the history table. Every control
          keeps its id — only the layout moved. -->
+    <!-- Printer picker: one card per detected printer. Rows appear on
+         their own when a print agent checks in — nothing is hand-typed.
+         Lives OUTSIDE the tab sections so the header 🖨 opens it from
+         ANY tab (it used to sit inside Scan station and only became
+         visible once that tab was opened - Nick, 2026-09-01). -->
+    <div class="phist-overlay" id="printer-overlay" hidden>
+      <section class="linkbox serialbox phist-modal" style="max-width:520px">
+        <div class="linkbox__title printerpick__head">
+          <span>Choose a printer</span>
+          <button class="reset printerpick__add" id="printer-detect" type="button"
+                  title="Add a printer — start a print agent next to it and press this to detect it">🖨<span class="printerpick__plus">+</span></button>
+        </div>
+        <p class="linkbox__text">Labels queue to the selected printer. A printer adds itself here the moment its print agent checks in.</p>
+        <div class="printerpick__cards" id="printer-cards"></div>
+        <p class="linkbox__text" id="printer-msg"></p>
+        <div class="linkbox__actions">
+          <button class="print__btn" id="printer-confirm" type="button" disabled>Use this printer</button>
+          <button class="reset" id="printer-cancel" type="button">Cancel</button>
+        </div>
+      </section>
+    </div>
+
     <div class="phist-overlay" id="phist-overlay" hidden>
       <section class="linkbox serialbox phist-modal" id="phist-panel">
         <div class="linkbox__product phist-head" style="margin-bottom:8px">

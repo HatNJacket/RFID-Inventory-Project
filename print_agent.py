@@ -38,8 +38,14 @@ import time
 import requests
 
 # Reported to the app on every command poll; the web terminal's Queue
+# v4: reports the WINDOWS print queue's health on every poll (jobs
+# waiting + oldest age) so the Queue tab can say "wedged - power-cycle
+# the printer" instead of a false "online", and answers the new
+# "purge" command by deleting every stuck job in the Windows queue
+# (Nick, 2026-09-01: the ZD220 silently wedged overnight and 16
+# labels piled up behind a Printing-Retained head).
 # tab shows it and marks re-align capability. Bump on behavior changes.
-AGENT_VERSION = "3"
+AGENT_VERSION = "4"
 
 # ---------------------------------------------------------------------------
 # Label geometry. Defaults match the warehouse RFID stickers (measured
@@ -253,6 +259,56 @@ def send_network(zpl: str, host: str, port: int) -> None:
         conn.sendall(zpl.encode("utf-8"))
 
 
+def windows_queue_health(printer_name: str):
+    """(jobs waiting, oldest job's age in seconds) for the WINDOWS queue
+    of this printer - the wedge detector. The server marks jobs done the
+    moment they reach Windows, so a printer silently stuck in
+    'Printing, Retained' looks healthy from the app; the queue's oldest
+    age is the truth. (None, None) when it can't be read."""
+    try:
+        import win32print
+        handle = win32print.OpenPrinter(printer_name)
+        try:
+            jobs = win32print.EnumJobs(handle, 0, 999, 1)
+        finally:
+            win32print.ClosePrinter(handle)
+        if not jobs:
+            return 0, 0
+        oldest = None
+        for j in jobs:
+            sub = j.get("Submitted")
+            if sub is None:
+                continue
+            ts = sub.timestamp()
+            if oldest is None or ts < oldest:
+                oldest = ts
+        age = 0 if oldest is None else max(0, int(time.time() - oldest))
+        return len(jobs), age
+    except Exception:  # noqa: BLE001 - health is decoration, never fatal
+        return None, None
+
+
+def purge_windows_queue(printer_name: str) -> int:
+    """Delete every job in this printer's WINDOWS queue (the 'Clear
+    stuck jobs' button). Server-side those jobs are long marked done -
+    anything missing reprints from the Queue tab in seconds."""
+    import win32print
+    deleted = 0
+    handle = win32print.OpenPrinter(printer_name)
+    try:
+        for j in win32print.EnumJobs(handle, 0, 999, 1):
+            try:
+                win32print.SetJob(handle, j["JobId"], 0, None,
+                                  win32print.JOB_CONTROL_DELETE)
+                deleted += 1
+            except Exception as error:  # noqa: BLE001 - best effort
+                print(f"! could not delete Windows job {j['JobId']}: "
+                      f"{error}")
+    finally:
+        win32print.ClosePrinter(handle)
+    return deleted
+
+
 def send_windows(zpl: str, printer_name: str) -> None:
     """Raw ZPL through the installed Windows driver (USB printers)."""
     try:
@@ -299,15 +355,21 @@ class AppClient:
         r.raise_for_status()
         return r.json()["jobs"]
 
-    def claim_commands(self) -> list[dict]:
-        """One-shot printer nudges (re-align feed). Server clears them on
-        claim; an app too old to have the endpoint just yields none. The
-        poll itself is this agent's capability heartbeat - the Queue tab
-        shows whether the warehouse PC runs re-align-capable code."""
+    def claim_commands(self, win_jobs=None, win_oldest_s=None) -> list[dict]:
+        """One-shot printer nudges (re-align feed, purge). Server clears
+        them on claim; an app too old to have the endpoint just yields
+        none. The poll itself is this agent's capability heartbeat - the
+        Queue tab shows whether the warehouse PC runs current code - and
+        v4 rides the Windows queue's health along so a wedged printer
+        shows as wedged, not online."""
         try:
             params: dict = {"agent_version": AGENT_VERSION}
             if self.printer_id:
                 params["printer"] = self.printer_id
+            if win_jobs is not None:
+                params["win_jobs"] = win_jobs
+            if win_oldest_s is not None:
+                params["win_oldest_s"] = win_oldest_s
             r = requests.post(
                 f"{self.base}/api/printer-commands/claim",
                 params=params,
@@ -467,9 +529,26 @@ def main() -> None:
     last_print_at = None
 
     while True:
+        # Windows-queue health rides every command poll (USB mode only:
+        # network printers have no Windows queue to wedge).
+        win_jobs = win_oldest = None
+        if args.printer_name and not args.dry_run:
+            win_jobs, win_oldest = windows_queue_health(args.printer_name)
         # Commands BEFORE jobs: a queued re-align must land ahead of the
         # labels it is meant to straighten.
-        for cmd in client.claim_commands():
+        for cmd in client.claim_commands(win_jobs, win_oldest):
+            if cmd.get("kind") == "purge":
+                if not args.printer_name or args.dry_run:
+                    print("! purge asked but there is no Windows queue "
+                          "here (network/dry-run mode).")
+                    continue
+                try:
+                    n = purge_windows_queue(args.printer_name)
+                    print(f"  purge: deleted {n} Windows job(s) "
+                          f"(asked by {cmd.get('requested_by') or '?'})")
+                except Exception as error:  # noqa: BLE001
+                    print(f"! purge failed: {error}")
+                continue
             if cmd.get("kind") == "feed":
                 try:
                     # Re-assert backfeed-before while at it: a printer

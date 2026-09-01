@@ -8870,6 +8870,42 @@ document
     }
   });
 
+// Clear stuck jobs (Nick, 2026-09-01): the ZD220 can wedge silently -
+// Windows keeps saying "printing" while labels pile up behind a stuck
+// head. This tells the agent to delete EVERY job in its Windows queue;
+// server-side they already read done, so reprints cover anything that
+// never physically came out.
+document
+  .getElementById("printer-purge")
+  .addEventListener("click", async () => {
+    if (
+      !confirm(
+        "Clear every job stuck in the warehouse PC's Windows print " +
+          "queue?\n\nUse this when the printer wedges (agent online " +
+          "but nothing comes out). The labels in that queue are " +
+          "DELETED - reprint anything that never came out from this " +
+          "tab afterwards. Power-cycling the printer usually helps " +
+          "too."
+      )
+    )
+      return;
+    try {
+      await postJson("/api/printer-commands", {
+        printer: selectedPrinter || null,
+        kind: "purge",
+        requested_by: operatorEl.value || null,
+      });
+      alert(
+        "Clear queued ✓ - the agent empties the Windows queue on its " +
+          "next poll (about 3 seconds). Reprint anything that never " +
+          "physically printed."
+      );
+      setTimeout(loadQueue, 4000);
+    } catch (err) {
+      alert(`Could not queue the clear: ${err.message}`);
+    }
+  });
+
 // Queue grouping (Nick, 2026-08-25): jobs collapse under their batch —
 // a batch-tagging run expands to its flat job rows; a RECEIVING batch
 // (TC-Planner "Print labels" or the desk flow) gets a second level, one
@@ -9144,21 +9180,43 @@ async function loadQueue() {
       apiJson("/api/print-agent/status"),
       apiJson("/api/print-jobs?limit=200"),
     ]);
-    pill.textContent = agent.online
-      ? "Printer agent: online ✓" +
-        (agent.realign_capable
-          ? agent.agent_version
-            ? ` · v${agent.agent_version}`
-            : ""
-          : " · NEEDS UPDATE")
-      : "Printer agent: offline";
-    pill.className =
-      "pill " +
-      (agent.online
-        ? agent.realign_capable
-          ? "pill--ok"
-          : "pill--warn"
-        : "pill--bad");
+    // Wedged beats "online": the agent is fine but the PHYSICAL printer
+    // stopped taking data - labels pile up in the Windows queue while
+    // everything server-side reads done (Nick, 2026-09-01).
+    if (agent.wedged) {
+      const mins = Math.round((agent.win_oldest_seconds || 0) / 60);
+      pill.textContent =
+        `⚠ Printer WEDGED - ${agent.win_jobs} label(s) stuck in the ` +
+        `Windows queue for ${mins}m. Power-cycle the printer, or ` +
+        `Clear stuck jobs and reprint.`;
+      pill.className = "pill pill--bad";
+    } else {
+      pill.textContent = agent.online
+        ? "Printer agent: online ✓" +
+          (agent.realign_capable
+            ? agent.agent_version
+              ? ` · v${agent.agent_version}`
+              : ""
+            : " · NEEDS UPDATE")
+        : "Printer agent: offline";
+      pill.className =
+        "pill " +
+        (agent.online
+          ? agent.realign_capable
+            ? "pill--ok"
+            : "pill--warn"
+          : "pill--bad");
+    }
+    // Clear-stuck-jobs is live only with a v4 agent polling (it's the
+    // one who deletes the Windows jobs).
+    const purgeBtn = document.getElementById("printer-purge");
+    purgeBtn.disabled = !agent.purge_capable;
+    if (!agent.purge_capable && agent.online && agent.realign_capable) {
+      purgeBtn.title =
+        "The warehouse PC's print agent is older than v4 - update it " +
+        "(download /api/print-agent/script, replace print_agent.py, " +
+        "restart the task) to clear Windows jobs from here.";
+    }
     // The re-align button is honest about whether pressing it can do
     // anything: only an updated agent polls for commands.
     const realign = document.getElementById("printer-realign");

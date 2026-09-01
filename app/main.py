@@ -1472,7 +1472,11 @@ _printer_commands: dict[str, list[dict]] = {}
 
 class PrinterCommandIn(BaseModel):
     printer: str | None = Field(default=None, max_length=100)
-    kind: Literal["feed"] = "feed"
+    # feed = re-align to the next label's home; purge = delete every
+    # job stuck in the warehouse PC's WINDOWS print queue (the wedge
+    # remedy - server-side jobs are already done, reprints cover any
+    # label that never came out).
+    kind: Literal["feed", "purge"] = "feed"
     requested_by: str | None = Field(default=None, max_length=100)
 
 
@@ -1502,13 +1506,25 @@ def queue_printer_command(payload: PrinterCommandIn):
 # re-aligning" and no way to tell why).
 _commands_last_polled: dict[str, float] = {}
 _agent_versions: dict[str, str] = {}
+# v4 agents report their WINDOWS queue's health on every poll: jobs
+# waiting + the oldest one's age. The server marks a job done the
+# moment it reaches Windows, so this is the only wedge detector
+# (Nick, 2026-09-01: the ZD220 sat "online" all morning while 16
+# labels piled behind a Printing-Retained head).
+_printer_win_queue: dict[str, dict] = {}
+# A Windows job older than this while the queue is non-empty = wedged.
+# The head normally clears in seconds; 90s absorbs a long burst.
+PRINTER_WEDGE_SECONDS = 90
 
 
 @app.post(
     "/api/printer-commands/claim", dependencies=[Depends(require_agent_key)]
 )
 def claim_printer_commands(
-    printer: str | None = None, agent_version: str | None = None
+    printer: str | None = None,
+    agent_version: str | None = None,
+    win_jobs: int | None = None,
+    win_oldest_s: int | None = None,
 ):
     """Agent: take (and clear) any pending commands for this printer.
     Commands older than 10 minutes are dropped - a stale re-align from a
@@ -1518,6 +1534,12 @@ def claim_printer_commands(
     _commands_last_polled[name] = now
     if agent_version:
         _agent_versions[name] = agent_version.strip()[:20]
+    if win_jobs is not None:
+        _printer_win_queue[name] = {
+            "jobs": max(0, win_jobs),
+            "oldest_s": max(0, win_oldest_s or 0),
+            "at": now,
+        }
     cmds = [
         c for c in _printer_commands.pop(name, [])
         if now - c["at"] < 600
@@ -1529,6 +1551,16 @@ def claim_printer_commands(
 def print_agent_status():
     seen = _agent_last_seen
     cmd_seen = max(_commands_last_polled.values(), default=None)
+    version = (
+        next(iter(_agent_versions.values()), None)
+        if _agent_versions else None
+    )
+    # Freshest Windows-queue report (v4 agents; None until one polls).
+    win = None
+    for w in _printer_win_queue.values():
+        if win is None or w["at"] > win["at"]:
+            win = w
+    win_fresh = win is not None and time.time() - win["at"] < 35
     return {
         "online": seen is not None and time.time() - seen < 35,
         "last_seen_seconds": (
@@ -1540,9 +1572,23 @@ def print_agent_status():
         "realign_capable": (
             cmd_seen is not None and time.time() - cmd_seen < 35
         ),
-        "agent_version": (
-            next(iter(_agent_versions.values()), None)
-            if _agent_versions else None
+        "agent_version": version,
+        # Purge (clear the Windows queue) needs a v4+ agent polling now.
+        "purge_capable": (
+            win_fresh or (
+                cmd_seen is not None and time.time() - cmd_seen < 35
+                and (version or "").isdigit() and int(version) >= 4
+            )
+        ),
+        "win_jobs": win["jobs"] if win_fresh else None,
+        "win_oldest_seconds": win["oldest_s"] if win_fresh else None,
+        # Wedged = labels sitting in the WINDOWS queue far longer than a
+        # burst takes: the physical printer stopped taking data while
+        # everything server-side reads "done". Power-cycle the printer,
+        # or clear the stuck jobs and reprint.
+        "wedged": (
+            win_fresh and win["jobs"] > 0
+            and win["oldest_s"] > PRINTER_WEDGE_SECONDS
         ),
     }
 
