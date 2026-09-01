@@ -3,6 +3,27 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-01.
 
+## 🎛 Audit tab decluttered — ✅ DEPLOYED 2026-09-01 (C72 3.70)
+
+Nick: "the audit tab is pretty full of buttons." Preview approved in
+the "Audit Tab, Decluttered" artifact; 10 always-visible controls down
+to 5, zero features removed:
+
+- SWEEP button gone - the trigger is the sweep (chip + status show
+  state). LOAD gone - Enter on the bin field or an ◀ ▶ tap loads the
+  location immediately (arrows auto-load, Nick's answer #1).
+- PULL / SEND / CLEAR / AUTO-PRINT moved into one ⋯ tools sheet,
+  which gained "Pick recent sweeps…" - the last 10 server captures,
+  tick several to merge (parity with the web picker).
+- PRINT LABELS is now a contextual banner: amber with the owed count
+  while finds exist, the pair-mode exit while pairing, hidden
+  otherwise. CHECK ✓ is the one big bottom action next to ⋯.
+- CHECK also SAVES the collected sweep server-side (note "AUDIT
+  {loc}", deduped on repeat checks), so the web terminal can re-run
+  the same audit later from Recent sweeps - Nick's answer #3.
+
+Take the gun update (3.70, code 88).
+
 ## 🧭 Side trips, streamlined — ✅ DEPLOYED 2026-09-01 (C72 3.69)
 
 Nick's five-part rework of the wrong-shelf flow (all gun-side except

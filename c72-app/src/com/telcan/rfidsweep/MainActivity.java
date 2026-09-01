@@ -4507,7 +4507,6 @@ public class MainActivity extends Activity {
             auditScanning = false;
             scanning = false;
             auditMergeTags();
-            if (auditScanBtn != null) auditScanBtn.setText("SWEEP");
         }
         boolean needsInput = tab == TAB_BATCH || tab == TAB_STATION
                 || tab == TAB_FIND || tab == TAB_LOCATE || tab == TAB_LINK
@@ -10879,10 +10878,9 @@ public class MainActivity extends Activity {
     private EditText auditBin;
     private TextView auditCount;
     private LinearLayout auditList;
-    private Button auditScanBtn;
-    private Button auditPrintBtn;
-    private Button auditAutoBtn;
-    private boolean auditAutoPrint = false;   // in-tab setting, off per visit
+    private Button auditBanner;   // contextual: print-owed / pair-mode
+    private boolean auditAutoPrint = false;   // in ⋯ tools, off per visit
+    private int auditLastSentHash = 0;        // dedup for CHECK auto-send
     private volatile boolean auditScanning = false;
     private final java.util.HashSet<String> auditTagSet =
             new java.util.HashSet<>();
@@ -10906,7 +10904,8 @@ public class MainActivity extends Activity {
         auditCount.setTextColor(C_BLUE);
         v.addView(tabHeader(null, auditCount));
 
-        // Location row: ◀ bin/rack ▶ LOAD.
+        // Location row: ◀ bin/rack ▶ (Nick, 2026-09-01: LOAD is gone -
+        // Enter on the field or an arrow tap loads the location).
         LinearLayout locRow = new LinearLayout(this);
         Button prev = smallBtn("◀");
         prev.setOnClickListener(x -> auditStep(-1));
@@ -10916,54 +10915,32 @@ public class MainActivity extends Activity {
         auditBin.setTextSize(15);
         auditBin.setInputType(InputType.TYPE_CLASS_TEXT
                 | InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS);
+        auditBin.setImeOptions(
+                android.view.inputmethod.EditorInfo.IME_ACTION_GO);
+        auditBin.setOnEditorActionListener((tv, actionId, ev) -> {
+            auditLoad();
+            hideSoftKeyboard();
+            return true;
+        });
         locRow.addView(auditBin, weight());
         Button next = smallBtn("▶");
         next.setOnClickListener(x -> auditStep(1));
         locRow.addView(next);
-        Button load = smallBtn("LOAD");
-        load.setOnClickListener(x -> auditLoad());
-        locRow.addView(load);
         v.addView(locRow);
 
-        LinearLayout row2 = new LinearLayout(this);
-        auditScanBtn = smallBtn("SWEEP");
-        auditScanBtn.setOnClickListener(x -> auditToggleScan());
-        row2.addView(auditScanBtn, weight());
-        Button pull = smallBtn("PULL SWEEP");
-        pull.setOnClickListener(x -> auditPullSweep());
-        row2.addView(pull, weight());
-        Button send = smallBtn("SEND");
-        send.setOnClickListener(x -> auditSendSweep());
-        row2.addView(send, weight());
-        Button clear = smallBtn("CLEAR");
-        clear.setOnClickListener(x -> auditClear());
-        row2.addView(clear, weight());
-        v.addView(row2);
-
-        LinearLayout row3 = new LinearLayout(this);
-        auditAutoBtn = smallBtn("AUTO-PRINT: OFF");
-        auditAutoBtn.setOnClickListener(x -> {
-            auditAutoPrint = !auditAutoPrint;
-            auditAutoBtn.setText(auditAutoPrint
-                    ? "AUTO-PRINT: ON" : "AUTO-PRINT: OFF");
-            auditAutoBtn.setTextColor(auditAutoPrint ? C_OK : C_TEXT);
-            status.setText(auditAutoPrint
-                    ? "Auto-print ON: every tagless barcode queues its "
-                      + "label right away (home bin on the label)."
-                    : "Auto-print OFF: tagless barcodes just count up - "
-                      + "PRINT LABELS queues them all at once.");
-        });
-        row3.addView(auditAutoBtn, weight());
-        auditPrintBtn = smallBtn("PRINT LABELS");
-        auditPrintBtn.setOnClickListener(x -> {
+        // Contextual banner: PRINT while labels are owed, the pair-mode
+        // exit while pairing, hidden otherwise (Nick, 2026-09-01).
+        auditBanner = smallBtn("");
+        auditBanner.setVisibility(View.GONE);
+        auditBanner.setOnClickListener(x -> {
             if (auditPairMode) auditExitPairMode("Pair mode closed.");
             else auditPrintAll();
         });
-        row3.addView(auditPrintBtn, weight());
-        Button check = smallBtn("CHECK ✓");
-        check.setOnClickListener(x -> auditCheck());
-        row3.addView(check, weight());
-        v.addView(row3);
+        LinearLayout.LayoutParams abl = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        abl.topMargin = dp(6);
+        v.addView(auditBanner, abl);
 
         ScrollView scroll = new ScrollView(this);
         auditList = new LinearLayout(this);
@@ -10972,15 +10949,139 @@ public class MainActivity extends Activity {
         scroll.addView(auditList);
         v.addView(scroll, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        // Bottom bar: sweep plumbing behind ⋯, CHECK as the one big
+        // primary action. Sweeping itself is trigger-only now.
+        LinearLayout bottom = new LinearLayout(this);
+        Button tools = smallBtn("⋯");
+        tools.setOnClickListener(x -> auditToolsSheet());
+        LinearLayout.LayoutParams tl = new LinearLayout.LayoutParams(
+                dp(56), LinearLayout.LayoutParams.MATCH_PARENT);
+        bottom.addView(tools, tl);
+        Button check = smallBtn("CHECK ✓");
+        check.setTextSize(16);
+        check.setTextColor(C_BLUE);
+        check.setPadding(dp(8), dp(12), dp(8), dp(12));
+        check.setOnClickListener(x -> auditCheck());
+        bottom.addView(check, weight());
+        LinearLayout.LayoutParams bl2 = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        bl2.topMargin = dp(6);
+        v.addView(bottom, bl2);
         return v;
+    }
+
+    /** The ⋯ tools sheet: pull / pick / send / clear / auto-print - the
+     *  a-few-times-a-day plumbing, one tap away (Nick, 2026-09-01). */
+    private void auditToolsSheet() {
+        final String[] items = {
+                "⬇ Pull latest sweep",
+                "🕘 Pick recent sweeps…",
+                "⬆ Send sweep (" + auditTagSet.size() + " tags)",
+                "✕ Clear collected (" + auditTagSet.size() + ")",
+                "Auto-print labels: "
+                        + (auditAutoPrint ? "ON" : "OFF"),
+        };
+        dlg().setTitle("SWEEP TOOLS")
+                .setItems(items, (d, which) -> {
+                    if (which == 0) auditPullSweep();
+                    else if (which == 1) auditPickSweeps();
+                    else if (which == 2) auditSendSweep();
+                    else if (which == 3) auditClear();
+                    else if (which == 4) {
+                        auditAutoPrint = !auditAutoPrint;
+                        status.setText(auditAutoPrint
+                                ? "Auto-print ON: every tagless barcode "
+                                  + "queues its label right away (home "
+                                  + "bin on the label)."
+                                : "Auto-print OFF: tagless barcodes count "
+                                  + "up; PRINT queues them all at once.");
+                    }
+                })
+                .setNegativeButton("CLOSE", null)
+                .show();
+    }
+
+    /** The last few sweeps on the server - tick several to merge them
+     *  into the collected set (parity with the web's picker). */
+    private void auditPickSweeps() {
+        status.setText("Loading recent sweeps…");
+        new Thread(() -> {
+            try {
+                JSONObject resp = api("GET", "/api/epc-captures?limit=10",
+                        null);
+                final JSONArray caps = resp.optJSONArray("captures");
+                if (caps == null || caps.length() == 0) {
+                    ui.post(() -> status.setText(
+                            "No sweeps on the server yet."));
+                    return;
+                }
+                final String[] labels = new String[caps.length()];
+                final int[] ids = new int[caps.length()];
+                for (int i = 0; i < caps.length(); i++) {
+                    JSONObject c = caps.optJSONObject(i);
+                    ids[i] = c.optInt("id");
+                    String note = c.isNull("note") ? ""
+                            : c.optString("note", "");
+                    labels[i] = "#" + c.optInt("id") + " · "
+                            + c.optString("device", "C72") + " · "
+                            + c.optInt("epc_count") + " tag(s)"
+                            + (note.isEmpty() ? "" : " · " + note);
+                }
+                final boolean[] ticked = new boolean[caps.length()];
+                ui.post(() -> dlg()
+                        .setTitle("PICK SWEEPS TO MERGE")
+                        .setMultiChoiceItems(labels, ticked,
+                                (d, w, on) -> ticked[w] = on)
+                        .setPositiveButton("MERGE TICKED", (d, w) ->
+                                auditMergeCaptures(ids, ticked))
+                        .setNegativeButton("CANCEL", null)
+                        .show());
+            } catch (Exception e) {
+                ui.post(() -> status.setText("Sweep list failed: "
+                        + e.getMessage()));
+            }
+        }).start();
+    }
+
+    private void auditMergeCaptures(int[] ids, boolean[] ticked) {
+        status.setText("Merging…");
+        new Thread(() -> {
+            int merged = 0;
+            final int before = auditTagSet.size();
+            for (int i = 0; i < ids.length; i++) {
+                if (!ticked[i]) continue;
+                try {
+                    JSONObject cap = api("GET",
+                            "/api/epc-captures/" + ids[i], null);
+                    JSONArray eps = cap.optJSONArray("epcs");
+                    for (int j = 0; eps != null && j < eps.length(); j++) {
+                        auditTagSet.add(eps.optString(j).toUpperCase(
+                                java.util.Locale.ROOT));
+                    }
+                    merged++;
+                } catch (Exception ignored) {
+                    // A missing capture shouldn't kill the merge.
+                }
+            }
+            final int m = merged;
+            ui.post(() -> {
+                auditRender();
+                beep(SOUND_OK);
+                status.setText(m + " sweep(s) merged - "
+                        + (auditTagSet.size() - before) + " new tag(s), "
+                        + auditTagSet.size() + " collected.");
+            });
+        }).start();
     }
 
     private void auditEnterTab() {
         status.setText(auditRep != null
                 ? "AUDIT " + auditLoc + " - trigger to sweep, barcode any "
                   + "tagless box, CHECK when the shelf is done."
-                : "AUDIT: type/arrow a bin or rack and LOAD, or just walk "
-                  + "- sweep shelves and barcode tagless boxes.");
+                : "AUDIT: trigger to sweep, barcode tagless boxes. Type "
+                  + "or ◀ ▶ a bin/rack to compare against it.");
         auditRefreshFinds();
         auditRender();
     }
@@ -11032,6 +11133,9 @@ public class MainActivity extends Activity {
         if (idx < 0) idx = dir > 0 ? -1 : list.size();
         idx = ((idx + dir) % list.size() + list.size()) % list.size();
         auditBin.setText(list.get(idx));
+        // An arrow tap IS the intent - load right away (Nick,
+        // 2026-09-01; LOAD button retired).
+        auditLoad();
     }
 
     private void auditLoad() {
@@ -11042,7 +11146,7 @@ public class MainActivity extends Activity {
             auditItemEpcs.clear();
             auditRender();
             status.setText("Walk mode: sweep shelves and barcode tagless "
-                    + "boxes. Type a bin or rack + LOAD for counters.");
+                    + "boxes. Type or ◀ ▶ a bin or rack for counters.");
             return;
         }
         status.setText("Loading " + loc + "…");
@@ -11106,19 +11210,17 @@ public class MainActivity extends Activity {
             auditScanning = false;
             scanning = false;
             auditMergeTags();
-            auditScanBtn.setText("SWEEP");
             status.setText("Paused - " + auditTagSet.size()
                     + " unique tag(s) collected. "
                     + (auditRep != null ? "CHECK when the shelf is done."
-                       : "SEND to keep this sweep, or LOAD a bin to "
-                         + "compare."));
+                       : "Type or ◀ ▶ a bin to compare, or ⋯ for sweep "
+                         + "tools."));
         } else {
             if (scanning || sweepRunning || holdSweepRunning) return;
             synchronized (tags) { tags.clear(); }
             if (reader.startInventoryTag()) {
                 auditScanning = true;
                 scanning = true;
-                auditScanBtn.setText("STOP");
                 status.setText("Sweeping… walk the shelf. Trigger to stop.");
             } else {
                 status.setText("Could not start the sweep - try again.");
@@ -11180,6 +11282,7 @@ public class MainActivity extends Activity {
                 JSONObject resp = api("POST", "/api/epc-captures", body);
                 final int id = resp.optInt("id");
                 ui.post(() -> {
+                    auditLastSentHash = auditTagSet.hashCode();
                     beep(SOUND_OK);
                     status.setText("Sent ✓ sweep #" + id + " ("
                             + epcs.size() + " tags) - pull it here or on "
@@ -11240,10 +11343,21 @@ public class MainActivity extends Activity {
         auditList.removeAllViews();
         auditCount.setText(auditTagSet.size() + " tags");
         int openTotal = countFinds("open");
-        auditPrintBtn.setText(auditPairMode
-                ? "EXIT PAIR MODE"
-                : openTotal > 0 ? "PRINT " + openTotal + " LABELS"
-                                : "PRINT LABELS");
+        // Contextual banner: pair mode wins, then owed labels, else gone.
+        if (auditBanner != null) {
+            if (auditPairMode) {
+                auditBanner.setVisibility(View.VISIBLE);
+                auditBanner.setText("PAIRING PRINTED LABELS — TAP TO EXIT");
+                auditBanner.setTextColor(C_BLUE);
+            } else if (openTotal > 0) {
+                auditBanner.setVisibility(View.VISIBLE);
+                auditBanner.setText("🏷 PRINT " + openTotal
+                        + " LABEL(S) FOR TAGLESS BOXES");
+                auditBanner.setTextColor(C_WARN);
+            } else {
+                auditBanner.setVisibility(View.GONE);
+            }
+        }
         if (auditRep == null) {
             // Walk mode: the collected count + the finds work list.
             TextView t = auditRowView(
@@ -11658,6 +11772,25 @@ public class MainActivity extends Activity {
         status.setText("Checking " + loc + "…");
         new Thread(() -> {
             try {
+                // CHECK saves the collected sweep server-side too (Nick,
+                // 2026-09-01) - the web terminal can re-run this exact
+                // audit later from "Recent sweeps" without a Send press.
+                // Deduped so repeated CHECKs of the same set save once;
+                // fail-soft, the check itself never waits on it.
+                if (!auditTagSet.isEmpty()
+                        && auditTagSet.hashCode() != auditLastSentHash) {
+                    try {
+                        api("POST", "/api/epc-captures", new JSONObject()
+                                .put("device",
+                                        prefs.getString("device", "C72"))
+                                .put("note", "AUDIT " + loc)
+                                .put("epcs", new JSONArray(
+                                        new ArrayList<>(auditTagSet))));
+                        auditLastSentHash = auditTagSet.hashCode();
+                    } catch (Exception ignored) {
+                        // The capture is a convenience copy.
+                    }
+                }
                 JSONObject body = new JSONObject().put("epcs",
                         new JSONArray(new ArrayList<>(auditTagSet)));
                 final JSONObject rep = api("POST", "/api/bins/"
