@@ -14548,6 +14548,7 @@ function fsStatus(msg, err) {
 document.getElementById("fullship-open").addEventListener("click", async () => {
   document.getElementById("fullship").hidden = false;
   document.getElementById("fullship-preview").innerHTML = "";
+  document.getElementById("fullship-orders").hidden = false;
   fsStatus("Loading open stock orders…");
   document.getElementById("fullship-order").focus();
   try {
@@ -14615,6 +14616,9 @@ async function fullshipLoad() {
       );
       return;
     }
+    // The loaded order REPLACES the order list (Nick, 2026-09-01) -
+    // one thing on screen at a time.
+    document.getElementById("fullship-orders").hidden = true;
     const rows = body.items
       .map((l) => {
         const notes = [];
@@ -14633,12 +14637,27 @@ async function fullshipLoad() {
       })
       .join("");
     const printable = body.items.filter((l) => !l.flag);
+    const flaggedLines = body.items.filter((l) => l.flag);
     const labelGuess = printable.reduce(
       (n, l) =>
         n + Math.max(0, l.remaining - (l.held ? l.held.count : 0)),
       0
     );
+    // The verdict, up front (Nick, 2026-09-01): every line was checked
+    // against the system - say plainly whether the check passed.
+    const verdict = flaggedLines.length
+      ? `<p class="result result--err">⚠ Check found problems: ` +
+        `${flaggedLines.length} of ${body.items.length} line(s) are ` +
+        `flagged below. Flagged lines print NOTHING until fixed - ` +
+        `the other ${printable.length} print normally.</p>`
+      : `<p class="result result--ok">✓ Check passed - all ` +
+        `${body.items.length} line(s) match products in the system ` +
+        `and can print.</p>`;
     out.innerHTML = `
+      <div class="linkbox__actions" style="margin-bottom:6px">
+        <button class="reset" id="fullship-back" type="button">← All open orders</button>
+      </div>
+      ${verdict}
       <div class="inventory__scroll"><table class="inventory__table">
         <thead><tr><th>Product</th><th>SKU</th>
           <th class="num" title="Units still owed on this order - already-received units don't reload">Remaining</th>
@@ -14672,6 +14691,12 @@ document
 document
   .getElementById("fullship-preview")
   .addEventListener("click", async (e) => {
+    if (e.target.closest("#fullship-back")) {
+      document.getElementById("fullship-preview").innerHTML = "";
+      document.getElementById("fullship-orders").hidden = false;
+      fsStatus("Pick an open order, or type its SO number.");
+      return;
+    }
     const go = e.target.closest("#fullship-go");
     if (!go) return;
     if (!operatorEl.value) {
