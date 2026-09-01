@@ -5911,6 +5911,20 @@ def _maybe_close_receiving(session: Session, batch: Batch) -> bool:
         _note_backorder_debt(session, batch)
     except Exception:  # noqa: BLE001 — bookkeeping must never block a close
         logger.exception("backorder-debt check failed (batch %s)", batch.id)
+    # A FULLY-arrived full-shipment receive auto-closes before anyone
+    # can press the settle button (Nick, 2026-09-01, SO 946): pairing
+    # is complete, so the 1-hour Shopify-update clock starts HERE - the
+    # watchdog and the Continue-to-TC-Planner path both key off it.
+    try:
+        receipt = session.scalar(
+            select(OrderReceipt)
+            .where(OrderReceipt.batch_id == batch.id)
+            .order_by(OrderReceipt.id.desc())
+        )
+        if receipt is not None and receipt.settled_at is None:
+            receipt.settled_at = datetime.now(timezone.utc)
+    except Exception:  # noqa: BLE001
+        logger.exception("auto-settle failed (batch %s)", batch.id)
     return True
 
 
@@ -9359,6 +9373,31 @@ def receiving_unprinted(
     instead ONE open Review task per batch tracks how many units are
     waiting, and resolving it queues the missing labels (mechanically
     identical to Print labels). Repeat pushes fold into the same task."""
+    # An order received via Receive entire shipment already printed AND
+    # paired everything - the planner's frontend just doesn't hold those
+    # line-ids in its printed set, so it relays them as unprinted (Nick,
+    # 2026-09-01, SO 946: spurious task + duplicate label-less batch).
+    # The relay reference is "SO {planner order id} · vendor".
+    so_part = (payload.reference or "").split("·")[0].strip()
+    so_num = so_part.upper().removeprefix("SO").strip()
+    if so_num.isdigit():
+        receipt = session.scalar(
+            select(OrderReceipt).where(
+                OrderReceipt.stock_order_id == int(so_num)
+            ).order_by(OrderReceipt.id.desc())
+        )
+        if receipt is not None:
+            return {
+                "batch": None,
+                "added": [],
+                "labels_waiting": 0,
+                "task_id": None,
+                "message": (
+                    f"{so_part} was received via Receive entire "
+                    "shipment - its labels are already printed and "
+                    "paired, nothing is owed."
+                ),
+            }
     out = _receiving_intake(session, payload, queue_labels=False)
     batch, tag = out["batch"], out["tag"]
     session.flush()

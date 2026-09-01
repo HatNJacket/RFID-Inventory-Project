@@ -5357,12 +5357,19 @@ function renderReceivingList() {
   );
   // Full-shipment receives get the settle button (Nick, 2026-09-01):
   // "every box that arrived is labelled" - count the unused labels.
+  // A FULLY-arrived shipment auto-closes before the press (SO 946), so
+  // the button survives on done batches as the planner hand-off, until
+  // the planner reports the stock update.
   const settleBtn = document.getElementById("recv-settle");
   if (settleBtn) {
+    const rec = batch && batch.order_receipt;
     settleBtn.hidden = !(
-      batch && batch.order_receipt && batch.status !== "done"
-      && batch.status !== "abandoned"
+      rec && !rec.stock_updated_at && batch.status !== "abandoned"
     );
+    settleBtn.textContent =
+      batch && batch.status === "done"
+        ? "➡ Continue to TC-Planner"
+        : "✅ All boxes labelled - count unused";
   }
   const dismissed = recvOverDismissedSet();
   const done = items.filter((i) => recvItemDone(i, dismissed));
@@ -14670,10 +14677,31 @@ async function fullshipLoad() {
     );
     const o = body.order;
     if (body.receipt && body.receipt.settled_at) {
-      fsStatus(
-        `SO ${o.reference_number} was already received via Receive ` +
-          `entire shipment (batch #${body.receipt.batch_id}).`, true
-      );
+      // Already received: the panel becomes the road BACK to the
+      // planner instead of a dead end (Nick, 2026-09-01, SO 946).
+      const updated = !!body.receipt.stock_updated_at;
+      document.getElementById("fullship-orders").hidden = true;
+      out.innerHTML = `
+        <div class="linkbox__actions" style="margin-bottom:6px">
+          <button class="reset" id="fullship-back" type="button">← All open orders</button>
+        </div>
+        <p class="result ${updated ? "result--ok" : ""}">SO ${escapeHtml(
+          String(o.reference_number)
+        )} was received via Receive entire shipment (batch
+        #${body.receipt.batch_id})${
+          updated
+            ? " and Shopify stock is updated ✓ - nothing left to do."
+            : " - Shopify stock is NOT updated yet."
+        }</p>
+        ${
+          updated
+            ? ""
+            : `<div class="linkbox__actions">
+                <button class="print__btn" id="fullship-continue" type="button"
+                  data-oid="${o.order_id}">➡ Continue to TC-Planner (pre-filled)</button>
+              </div>`
+        }`;
+      fsStatus("");
       return;
     }
     // The loaded order REPLACES the order list (Nick, 2026-09-01) -
@@ -14759,6 +14787,25 @@ document
       document.getElementById("fullship-preview").innerHTML = "";
       document.getElementById("fullship-orders").hidden = false;
       fsStatus("Pick an open order, or type its SO number.");
+      return;
+    }
+    const cont = e.target.closest("#fullship-continue");
+    if (cont) {
+      cont.disabled = true;
+      try {
+        const st = await apiJson(
+          `/api/receiving/order-status/${cont.dataset.oid}`
+        );
+        if (!st.printed || !st.planner) {
+          alert("No receipt on file for that order any more.");
+          return;
+        }
+        await openPlannerReceive(st.planner.order_id, st.planner.items);
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        cont.disabled = false;
+      }
       return;
     }
     const go = e.target.closest("#fullship-go");

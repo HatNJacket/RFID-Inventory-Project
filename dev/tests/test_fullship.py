@@ -37,10 +37,19 @@ LINES = [
      "ordered": 1, "received": 0, "remaining": 1},
 ]
 
+ORDER2 = {"order_id": 78, "reference_number": "946", "vendor": "Antares",
+          "status": "open", "expected_date": "2026-09-02"}
+LINES2 = [{"sku": "CLEAN-1", "barcode": "503", "title": "Clean One",
+           "ordered": 2, "received": 0, "remaining": 2}]
+
 def fake_order_lines(ref, operator=None):
-    if (ref or "").strip().upper().replace("SO", "").strip() == "948":
+    key = (ref or "").strip().upper().replace("SO", "").strip()
+    if key == "948":
         return {"configured": True, "ok": True, "order": ORDER,
                 "items": [dict(x) for x in LINES]}
+    if key == "946":
+        return {"configured": True, "ok": True, "order": ORDER2,
+                "items": [dict(x) for x in LINES2]}
     return {"configured": True, "ok": True, "order": None, "items": []}
 
 def fake_open_orders(operator=None):
@@ -60,6 +69,9 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
         s.add(BinMapEntry(sku="GOOD-2", barcode="502",
                           product_title="Good Two", bin="A1-2", qty=0,
                           shopify_variant_id="t:G2"))
+        s.add(BinMapEntry(sku="CLEAN-1", barcode="503",
+                          product_title="Clean One", bin="A1-3", qty=0,
+                          shopify_variant_id="t:C1"))
         s.commit()
 
     # ---- preview -----------------------------------------------------
@@ -273,6 +285,66 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
     check("the full-shipment preview carries it too",
           ln.get("nickname") == "Newtonian Collimator Box",
           str(ln)[:200])
+
+    # ---- SO 946: everything arrives, batch auto-closes ---------------
+    # (Nick, 2026-09-01: the auto-close beat the settle button, so the
+    # planner hand-off vanished. Auto-close now settles the receipt -
+    # the 1h clock starts at completion - and settle/held-list still
+    # work on the done batch for the Continue-to-planner path.)
+    r = cl.post("/api/receiving/full-shipment",
+                json={"order": "946", "requested_by": "Nick"})
+    bid2 = r.json()["batch"]["id"]
+    r = cl.get(f"/api/batches/{bid2}")
+    it2 = next(i for i in r.json()["items"] if i.get("sku") == "CLEAN-1")
+    for epc in ["E200000000000000000000C1", "E200000000000000000000C2"]:
+        r = cl.post(f"/api/batches/{bid2}/pair",
+                    json={"epc": epc, "item_id": it2["id"],
+                          "created_by": "C72"})
+    check("fully-arrived shipment auto-closes on the last pair",
+          r.json()["receiving_done"] is True, r.text[:200])
+    with Session(get_engine()) as s:
+        rec2 = s.query(OrderReceipt).filter(
+            OrderReceipt.stock_order_id == 78).one()
+    check("auto-close settles the receipt (the 1h clock starts)",
+          rec2.settled_at is not None, str(rec2.as_dict()))
+    r = cl.post(f"/api/batches/{bid2}/settle-shipment",
+                json={"created_by": "Nick"})
+    check("settle still answers on the done batch (0 unpaired)",
+          r.status_code == 200 and r.json()["total_unpaired"] == 0
+          and {i["sku"]: i["qty"] for i in r.json()["planner"]["items"]}
+          == {"CLEAN-1": 2}, r.text[:250])
+    r = cl.post(f"/api/batches/{bid2}/held-list",
+                json={"epcs": [], "created_by": "Nick"})
+    check("finishing the done batch holds nothing and hands off",
+          r.status_code == 201 and r.json()["total_unpaired"] == 0
+          and r.json()["list"] is None, r.text[:200])
+
+    # ---- the planner's unprinted relay is a no-op for full shipments -
+    # (Nick, 2026-09-01: the planner frontend doesn't hold RFID-printed
+    # line ids, so it relayed them as unprinted - spurious task +
+    # duplicate label-less batch. The reference carries the planner's
+    # internal order id.)
+    from app.models import Batch as _B
+    with Session(get_engine()) as s:
+        batches_before = s.query(_B).count()
+    r = cl.post("/api/receiving/unprinted",
+                json={"items": [{"sku": "CLEAN-1", "quantity": 2}],
+                      "requested_by": "planner",
+                      "reference": "SO 78 · Antares"})
+    check("unprinted relay answers nothing-owed for a full shipment",
+          r.status_code == 201 and r.json()["task_id"] is None
+          and r.json()["batch"] is None
+          and "already printed and paired" in r.json()["message"],
+          r.text[:250])
+    with Session(get_engine()) as s:
+        batches_after = s.query(_B).count()
+    check("no duplicate batch was booked", batches_after == batches_before,
+          f"{batches_before} -> {batches_after}")
+    r = cl.get("/api/review-tasks")
+    check("no labels-not-printed task filed",
+          not [t for t in r.json()["tasks"]
+               if t.get("category") == "labels-not-printed"],
+          str([t.get("category") for t in r.json()["tasks"]])[:200])
 
     # ---- the picker annotates printed orders -------------------------
     r = cl.get("/api/receiving/orders")
