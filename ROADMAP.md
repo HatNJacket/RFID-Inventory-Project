@@ -2054,6 +2054,23 @@ starting early" actively harmful.
 
 ## 🗓️ Later / backlog
 
+- **Gyro for the locate radar** (Nick, 2026-09-01 — parked, revisit
+  before any purchase). The C72 has no gyro/magnetometer (light,
+  proximity and gravity sensors only), which is why RADAR was
+  retired: no way to know which way the gun points. Best candidate:
+  WitMotion BWT901CL (~$40) — cased Bluetooth 9-axis IMU with its own
+  battery, strapped RIGIDLY to the gun body (rigid mounting is the
+  one hard requirement); the C72's built-in Bluetooth is the
+  receiver, USB port stays free. BT lag (~20-40ms at up to 200Hz) is
+  negligible for bucketing RSSI by heading over a multi-second arc
+  sweep. Use gyro-relative heading only — NEVER the magnetometer
+  (steel racking). No finished "sensor-in-a-USB-dongle" product
+  exists (mouse dongles are just radios); the DIY port-dongle route
+  is a Seeed XIAO nRF52840 Sense + custom firmware, but it blocks
+  charging and props the port flap open. Build plan when bought:
+  settings pairing row, hold-level trigger calibration, LOCATE radar
+  mode that buckets RSSI by bearing. Nick's open concerns: BT delay
+  and mounting (both assessed minor, recorded above).
 - **Physical map of the warehouse** (Nick, 2026-09-01: "I've always
   wanted a physical map of all our stuff") — map the racks/bins as a
   drawn layout the apps can render (audit walk order, locate hints,
