@@ -2981,19 +2981,107 @@ function stopLink(msg) {
   linkRelease();
 }
 
-// The relay can serve an on-screen RECEIVING batch (Nick, 2026-08-31:
-// boxes get linked at a desk, and after a few boxes you sweep anyway).
-// While the Batch tab shows an open receiving batch, gun LINK scans
-// drive it instead of the station: a barcode focuses that product's
-// card, a tag read pairs to the focused product.
-function receivingLinkLive() {
-  return (
-    !document.getElementById("tab-batch").hidden &&
-    batch &&
-    isReceivingBatch() &&
-    batch.status !== "done" &&
-    batch.status !== "abandoned"
-  );
+// The relay serves whatever the screen shows (Nick's 2026-08-31 note):
+// the Scan station, or the WHOLE Batch Tagging tab - an open batch at
+// any step, a receiving list (barcode focuses the card, tag pairs to
+// it), or the shipment sorter (a barcode is a sorter scan). Which
+// surface acts is decided fresh for every scan from what is on screen.
+function batchLinkMode() {
+  if (document.getElementById("tab-batch").hidden) return null;
+  if (
+    !document.getElementById("batch-start").hidden &&
+    !document.getElementById("sortship").hidden
+  ) {
+    return "sorter";
+  }
+  if (batch && batch.status !== "done" && batch.status !== "abandoned") {
+    return isReceivingBatch() ? "receiving" : "batch";
+  }
+  return null;
+}
+
+function batchOutcome() {
+  const cls = bEl.result.className || "";
+  if (cls.includes("result--err")) {
+    return { ok: false, text: bEl.result.textContent };
+  }
+  if (cls.includes("result--ok")) {
+    return { ok: true, text: bEl.result.textContent };
+  }
+  // Still "busy" (or blank): a window opened mid-scan. Human needed.
+  return {
+    ok: false,
+    text: "Needs attention on the terminal screen (a window opened).",
+  };
+}
+
+async function actOnSorterLinkScan(s) {
+  if (s.kind !== "barcode") {
+    return {
+      ok: false,
+      text: "The sorter reads BARCODES - the tag read stayed on the gun.",
+    };
+  }
+  const out = await sortShipScan(s.value);
+  return out || { ok: false, text: "Scan skipped - the sorter was busy." };
+}
+
+// A relayed scan lands on whatever step the batch screen shows, through
+// the same paths wedge input takes there - every guard intact.
+async function actOnBatchLinkScan(s) {
+  if (batchStage === "collect") {
+    if (s.kind !== "barcode") {
+      const t =
+        "Collect counts boxes by BARCODE - the tag read stayed on the gun.";
+      setBatchResult(t, "err");
+      return { ok: false, text: t };
+    }
+    await batchCollectScan(s.value.trim());
+    return batchOutcome();
+  }
+  if (batchStage === "pair") {
+    if (s.kind === "barcode") {
+      const item = matchBatchItem(s.value.trim());
+      if (!item) {
+        const t = `${s.value} doesn't match a product in this batch.`;
+        setBatchResult(t, "err");
+        return { ok: false, text: t };
+      }
+      pairActiveItemId = item.id;
+      renderPairItems();
+      renderPairCard();
+      batchSound("ok");
+      const t = `Active product: ${itemDisplayName(item)}`;
+      setBatchResult(t, "ok");
+      return { ok: true, text: t };
+    }
+    if (!pairActiveItemId) {
+      const t =
+        "Scan a product barcode from this batch first - then its tags.";
+      setBatchResult(t, "err");
+      return { ok: false, text: t };
+    }
+    await batchPairTag(s.value.trim());
+    return batchOutcome();
+  }
+  if (batchStage === "verify") {
+    if (s.kind === "barcode") {
+      const t = "Verify collects TAG reads - the barcode stayed on the gun.";
+      setBatchResult(t, "err");
+      return { ok: false, text: t };
+    }
+    verifyEpcs.add(s.value.trim().toUpperCase());
+    bEl.verifyCount.textContent = `${verifyEpcs.size} unique tags collected.`;
+    const t = `Tag collected - ${verifyEpcs.size} unique tag(s) so far.`;
+    setBatchResult(t, "ok");
+    return { ok: true, text: t };
+  }
+  // labels (Check) and print have no scan action.
+  const t =
+    `No scan action on the ${batchStage === "labels" ? "Check" : "Print"} ` +
+    "step - move the screen to Collect, Pair or Verify.";
+  setBatchResult(t, "err");
+  return { ok: false, text: t };
 }
 
 async function actOnReceivingLinkScan(s) {
@@ -3062,8 +3150,13 @@ async function actOnReceivingLinkScan(s) {
 
 async function actOnLinkScan(s) {
   let out;
-  if (receivingLinkLive()) {
+  const mode = batchLinkMode();
+  if (mode === "sorter") {
+    out = await actOnSorterLinkScan(s);
+  } else if (mode === "receiving") {
     out = await actOnReceivingLinkScan(s);
+  } else if (mode === "batch") {
+    out = await actOnBatchLinkScan(s);
   } else if (s.kind === "barcode") {
     el.barcode.value = s.value;
     await stationBarcodeScan(s.value);
@@ -3098,11 +3191,12 @@ async function pollLink() {
   // would be spooky (and print with nobody watching). Skipping also stops
   // presence stamping, so this terminal drops off other terminals'
   // listener counts within the TTL.
-  // The Batch tab counts as "on screen" too while it shows an open
-  // receiving batch - relayed scans drive that list (Nick, 2026-08-31).
+  // The Batch tab counts as "on screen" too while it shows something a
+  // relayed scan can drive - an open batch at any step, receiving's
+  // list, or the sorter (Nick, 2026-08-31).
   if (
     document.hidden ||
-    (tabSections.scan[0].hidden && !receivingLinkLive())
+    (tabSections.scan[0].hidden && !batchLinkMode())
   ) {
     linkSuspended = true;
     return;
@@ -3207,6 +3301,27 @@ if (linkToggle) {
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden && linkOn) pollLink();
   });
+}
+
+// The Batch tab carries a mirrored copy of the LINK bar (Nick,
+// 2026-08-31): same state, same click. The Scan tab's bar stays the
+// single source of truth; this one reflects it via observers.
+const linkToggleB = document.getElementById("link-toggle-b");
+const linkStatusB = document.getElementById("link-status-b");
+if (linkToggle && linkToggleB) {
+  const mirrorLinkBar = () => {
+    linkToggleB.textContent = linkToggle.textContent;
+    linkToggleB.className = linkToggle.className;
+    linkStatusB.textContent = linkStatus.textContent;
+  };
+  const watch = { childList: true, characterData: true, subtree: true };
+  new MutationObserver(mirrorLinkBar).observe(linkToggle, {
+    ...watch,
+    attributes: true,
+  });
+  new MutationObserver(mirrorLinkBar).observe(linkStatus, watch);
+  linkToggleB.addEventListener("click", () => linkToggle.click());
+  mirrorLinkBar();
 }
 
 // --- Bulk scan --------------------------------------------------------------
@@ -4946,6 +5061,12 @@ bEl.scan.addEventListener("keydown", async (event) => {
   if (event.key !== "Enter") return;
   const code = bEl.scan.value.trim();
   bEl.scan.value = "";
+  await batchCollectScan(code);
+  bEl.scan.focus();
+});
+
+// Shared by the wedge input above and the C72 LINK relay.
+async function batchCollectScan(code) {
   if (!code || !batch) return;
   setBatchResult("Looking up…", "busy");
   try {
@@ -5018,8 +5139,7 @@ bEl.scan.addEventListener("keydown", async (event) => {
     batchSound("err");
     setBatchResult(err.message, "err");
   }
-  bEl.scan.focus();
-});
+}
 
 function renderBatchItems() {
   const summary = document.getElementById("bcollect-summary");
@@ -7574,6 +7694,13 @@ bEl.pairInput.addEventListener("keydown", async (event) => {
     );
     return;
   }
+  await batchPairTag(code);
+  bEl.pairInput.focus();
+});
+
+// Pair one tag read to the active product. Shared by the wedge input
+// above and the C72 LINK relay; the caller checks pairActiveItemId.
+async function batchPairTag(code) {
   try {
     const data = await postJson(`/api/batches/${batch.id}/pair`, {
       epc: code,
@@ -7600,8 +7727,7 @@ bEl.pairInput.addEventListener("keydown", async (event) => {
   } catch (err) {
     setBatchResult(err.message, "err");
   }
-  bEl.pairInput.focus();
-});
+}
 
 // --- Reprint label(s) -------------------------------------------------------
 // The labels printed wrong — usually a preferred name saved onto the wrong
@@ -13602,9 +13728,13 @@ function setSortShipStatus(text) {
   document.getElementById("sortship-status").textContent = text || "";
 }
 
+// Returns {ok, text} so the LINK relay can answer the gun; the wedge
+// input ignores the return value.
 async function sortShipScan(code) {
   const term = (code || "").trim();
-  if (!term || sortShipBusy) return;
+  if (!term || sortShipBusy) {
+    return { ok: false, text: "Scan skipped - the sorter was busy." };
+  }
   sortShipBusy = true;
   try {
     let product = null;
@@ -13707,11 +13837,11 @@ async function sortShipScan(code) {
       renderSortShip();
       const def = sortShipDefs[row.bundleKey];
       const units = sortShipBundleUnits(row.bundleKey);
-      setSortShipStatus(
+      const msg =
         `${row.title}: +1 component of ${def.setSku} - set count now ` +
-          `${units}.`
-      );
-      return;
+        `${units}.`;
+      setSortShipStatus(msg);
+      return { ok: true, text: msg };
     }
     const target = row.orders.find(
       (o) => (row.alloc[o.order_id] || 0) < o.remaining
@@ -13724,16 +13854,16 @@ async function sortShipScan(code) {
     row.scanned += 1;
     sortShipSave();
     renderSortShip();
-    setSortShipStatus(
-      target
-        ? `${row.title}: +1 to SO ${
-            target.reference_number != null
-              ? target.reference_number
-              : target.order_id
-          } (${row.alloc[target.order_id]} of ${target.remaining} expected)`
-        : `${row.title}: +1 unexplained` +
-            (row.reason ? ` - ${row.reason}` : "")
-    );
+    const msg = target
+      ? `${row.title}: +1 to SO ${
+          target.reference_number != null
+            ? target.reference_number
+            : target.order_id
+        } (${row.alloc[target.order_id]} of ${target.remaining} expected)`
+      : `${row.title}: +1 unexplained` +
+          (row.reason ? ` - ${row.reason}` : "");
+    setSortShipStatus(msg);
+    return { ok: !!target, text: msg };
   } finally {
     sortShipBusy = false;
   }

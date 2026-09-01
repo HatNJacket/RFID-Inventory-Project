@@ -1,17 +1,33 @@
 # RFID Inventory System — Roadmap
 
 Source of truth for project status. Updated by Claude each working session.
-Last updated: 2026-08-31.
+Last updated: 2026-09-01.
 
-## 📌 NEXT SESSION (Nick, 2026-08-31 — noted, NOT built)
+## 🔗 LINK relay drives the whole Batch Tagging tab — ✅ DEPLOYED 2026-09-01
 
-Widen the C72 LINK relay's landing zones: it should drive the ENTIRE
-Batch Tagging tab (any batch/step on screen, not just an open
-receiving batch), and also push into "Sort a shipment" (a relayed
-barcode = a sorter scan). Those two surfaces only for now — nothing
-else new. Today's routing precedent: receivingLinkLive() +
-actOnReceivingLinkScan in app.js (barcode focuses, tag pairs); extend
-the same dispatch. Do not start without Nick.
+Nick's 2026-08-31 note, built next day (client-only; no gun change —
+the C72's LINK tab just forwards scans). One dispatcher
+(batchLinkMode in app.js) decides per scan what the screen shows:
+
+- **Sorter open** → a relayed barcode is a sorter scan (same
+  by-barcode → label-match → bundle routing); tag reads are refused
+  with a message. The sorter's status line answers the gun's ding.
+- **Open receiving batch** → unchanged (barcode focuses the card, tag
+  pairs to the focused product).
+- **Open regular batch, ANY step** → Collect: barcode adds a box
+  through the same path as wedge input (case-decision dialog and all);
+  Pair: barcode switches the active product, tag pairs to it; Verify:
+  tag reads collect into the sweep set; Check/Print: clear "no scan
+  action" answer. Tag-vs-barcode mixups all get explicit refusals.
+- **Batch tab with nothing actionable** (bin list, batch done) →
+  relay suspends exactly like a hidden tab: scans are skipped, never
+  burst-replayed.
+- **The LINK bar now appears ON the Batch tab** (mirrored copy of the
+  Scan tab's bar via MutationObserver — one shared state, click either).
+
+Wedge handlers were extracted (batchCollectScan, batchPairTag) so the
+relay reuses them with every guard intact. Browser-verified end to end
+(every mode + both regressions); 48/48 suites.
 
 ## 📥 Shipment sort → planner hand-off — ✅ DEPLOYED 2026-08-31 (both apps)
 

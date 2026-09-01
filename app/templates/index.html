@@ -585,6 +585,13 @@
 
     <!-- Batch tagging tab -->
     <section class="batch" id="tab-batch" hidden>
+      <!-- C72 LINK, mirrored from the Scan tab's bar (one shared state):
+           relayed gun scans drive whatever this tab shows - an open batch
+           at any step, a receiving list, or the shipment sorter. -->
+      <div class="linkbar">
+        <button id="link-toggle-b" type="button" class="linkbar__btn">C72 LINK: OFF</button>
+        <span class="linkbar__status" id="link-status-b">Gun scans stay on the gun. Turn this on (and open LINK on the C72) to scan for this tab.</span>
+      </div>
       <!-- Start / resume -->
       <div class="linkbox serialbox" id="batch-start">
         <div class="linkbox__title">Batch tagging — one bin at a time</div>
