@@ -3,6 +3,41 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-01.
 
+## 📦 Receive entire shipment + held vendor strips — ✅ DEPLOYED 2026-09-01 (both apps)
+
+Nick's RFID-first receiving (Q&A'd, replaces nothing). Batch tab →
+"Receive entire shipment" → pick/type an SO → REMAINING lines load
+with catalog checks (unknown / non-taggable / bundle / no-bin flagged
+like receiving always has) → every label prints up front → normal
+label + pair work → "✅ All boxes labelled - count unused" (starts the
+1-HOUR clock) → the leftover labels stay ON the liner, get swept as a
+strip, and become a HELD LIST in a vendor container → the batch closes
+and TC-Planner opens pre-filled with what actually PAIRED (Save, then
+Update stock there - Print labels is grayed, the labels are on boxes).
+
+- Held labels count in NOTHING (not stock, audits, or expected tags):
+  rfid_held_lists (EPC pool per strip - labels aren't per-product
+  encoded, the strip sweep is one pool; accounting is per-SKU counts
+  in rfid_held_items). EVERY receiving label pass prints fewer when a
+  product has strip labels and says "take N from the {vendor} strip";
+  pairing a pooled EPC consumes it.
+- Full-shipment batches are their own animal ("Full shipment · SO n ·
+  vendor"): never vendor-merged (the settle math reads the batch as
+  one order's story), reused live, refused once done. Old-style
+  receiving is untouched.
+- Watchdog: settle + 1h with no planner stock update files ONE
+  "stock-not-updated" Review task (lazy, on inbox reads); resolving
+  opens the pre-filled planner page; the planner's stock push pings
+  /api/receiving/stock-updated which auto-resolves it
+  (planner-update ∈ AUTO_CLOSERS).
+- Planner touches (c38dba5, acr-deployed): apply-stock-update pings
+  the RFID app; the PO detail asks /api/receiving/order-status/{id}
+  (4s, fail-soft) for rfid_labels_printed → Print labels grays.
+- Migration dev/alter_add_order_receipts.py RUN on prod. Suite
+  test_fullship.py (24); 52/52.
+- Nick's note for later: "in the future we'll have printed labels for
+  all remaining products" - not built, remaining-only for now.
+
 ## 🎛 Audit tab decluttered — ✅ DEPLOYED 2026-09-01 (C72 3.70)
 
 Nick: "the audit tab is pretty full of buttons." Preview approved in
