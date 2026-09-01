@@ -588,6 +588,25 @@
           <button class="print__btn" id="batch-create" type="button">Start batch</button>
           <button class="reset" id="sortship-open" type="button"
                   title="A shipment arrived and you're not sure which stock orders the boxes belong to: scan every box and this sorts them into per-order lists (asking the TC-Planner which open orders expect each product), with an extra list for boxes no order explains. Each list then opens pre-filled in the planner, ready to save, update stock and print from there.">📥 Sort a shipment</button>
+          <button class="reset" id="fullship-open" type="button"
+                  title="Load a whole TC-Planner stock order, print every remaining label up front, then label and pair the shipment. Whatever didn't physically arrive goes on a held vendor strip; the paired counts open pre-filled in the planner to save and update stock.">📦 Receive entire shipment</button>
+        </div>
+        <!-- Receive entire shipment (Nick, 2026-09-01): the RFID-first
+             receive. Labels print BEFORE the planner receive is saved;
+             unused labels go on a held vendor strip; paired counts hand
+             off to the planner (its Print labels grays out). -->
+        <div class="linkbox serialbox" id="fullship" hidden>
+          <div class="linkbox__title">Receive entire shipment
+            <button class="reset sortship__close" id="fullship-exit" type="button" title="Close - nothing is created until you confirm a shipment">✕</button>
+          </div>
+          <div class="linkbox__form">
+            <input id="fullship-order" class="linkbox__input linkbox__short" type="text" maxlength="20"
+                   autocomplete="off" placeholder="SO number…" />
+            <button class="print__btn" id="fullship-load" type="button">Load order</button>
+          </div>
+          <p class="linkbox__text" id="fullship-status"></p>
+          <div id="fullship-orders"></div>
+          <div id="fullship-preview"></div>
         </div>
         <!-- Shipment sort (Nick, 2026-08-31): scan a mixed delivery and
              bucket the boxes by the stock order that expects them, then
@@ -717,6 +736,8 @@
             <p class="linkbox__text" id="recv-summary" hidden></p>
             <button class="reset" id="recv-undo" type="button" hidden
                     title="Un-pairs the tags of the LAST pairing action made from this terminal (a sweep pull, or a relayed gun link). Press again to walk further back. Pairs made on the gun's own screen are undone there.">↩ Undo last pair</button>
+            <button class="reset" id="recv-settle" type="button" hidden
+                    title="Every box that physically arrived is labelled and paired. Counts the leftover labels (products the order listed that never shipped), holds them on a vendor strip, closes the batch, and opens the order pre-filled in TC-Planner. Starts the 1-hour Shopify-update clock.">✅ All boxes labelled - count unused</button>
           </div>
           <ul class="batch__items recvlist" id="recv-list"></ul>
           <p class="recvlist__empty" id="recv-empty" hidden>No products set to receive.</p>
@@ -1362,6 +1383,22 @@
         <div class="linkbox__actions">
           <button class="print__btn" id="printer-confirm" type="button" disabled>Use this printer</button>
           <button class="reset" id="printer-cancel" type="button">Cancel</button>
+        </div>
+      </section>
+    </div>
+
+    <!-- Full-shipment settle: count the unused labels, hold the strip,
+         hand the paired counts to TC-Planner (Nick, 2026-09-01). -->
+    <div class="phist-overlay" id="fs-overlay" hidden>
+      <section class="linkbox serialbox phist-modal" style="max-width:560px">
+        <div class="linkbox__title">Count the unused labels</div>
+        <div id="fs-body"></div>
+        <div class="linkbox__actions" id="fs-actions" style="margin-top:10px">
+          <button class="print__btn" id="fs-sweep" type="button"
+                  title="Sweep the leftover strip with the C72 (SWEEP tab, SEND), then press this - the strip's tag EPCs become the held pool, so a held label pairs cleanly when its product finally arrives.">📶 Pull latest C72 sweep as the strip</button>
+          <button class="reset" id="fs-nosweep" type="button"
+                  title="Hold the strip by per-product counts only - the labels still work later, the system just can't recognize their tags until they're paired.">Hold by counts only</button>
+          <button class="reset" id="fs-cancel" type="button">Back</button>
         </div>
       </section>
     </div>

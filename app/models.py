@@ -297,6 +297,134 @@ class AuditFind(Base):
         }
 
 
+class OrderReceipt(Base):
+    """One "Receive entire shipment" run (Nick, 2026-09-01): the RFID
+    side loaded a whole TC-Planner stock order, printed every remaining
+    label, and the operator paired what physically arrived. Tracks the
+    lifecycle the 1-hour watchdog needs: printed_at (labels queued),
+    settled_at (operator pressed "all boxes labelled - counting unused
+    labels"; the clock starts here), stock_updated_at (TC-Planner
+    reported the Shopify stock update; clears/forestalls the Review
+    task). New table needs dev/alter_add_order_receipts.py on prod."""
+
+    __tablename__ = "rfid_order_receipts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    stock_order_id: Mapped[int] = mapped_column(
+        Integer, index=True, nullable=False
+    )
+    reference: Mapped[str | None] = mapped_column(String(60))
+    vendor: Mapped[str | None] = mapped_column(String(100))
+    batch_id: Mapped[int] = mapped_column(Integer, index=True,
+                                          nullable=False)
+    created_by: Mapped[str | None] = mapped_column(String(100))
+    printed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    settled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    stock_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    review_task_id: Mapped[int | None] = mapped_column(Integer)
+
+    def as_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "stock_order_id": self.stock_order_id,
+            "reference": self.reference,
+            "vendor": self.vendor,
+            "batch_id": self.batch_id,
+            "created_by": self.created_by,
+            "printed_at": (
+                self.printed_at.isoformat() if self.printed_at else None
+            ),
+            "settled_at": (
+                self.settled_at.isoformat() if self.settled_at else None
+            ),
+            "stock_updated_at": (
+                self.stock_updated_at.isoformat()
+                if self.stock_updated_at else None
+            ),
+            "review_task_id": self.review_task_id,
+        }
+
+
+class HeldLabelList(Base):
+    """A strip of printed-but-unpaired labels, kept on the liner in a
+    vendor-labelled container (Nick, 2026-09-01): products a stock order
+    listed that didn't physically ship. The strip is swept as ONE pool
+    of EPCs (labels aren't RFID-encoded per product, so the pool covers
+    the whole strip; product accounting lives in the per-SKU counts).
+    Held labels are labels-in-a-bag, never boxes: they count in nothing.
+    Pairing an EPC from the pool later - sticking the label on the box
+    that finally arrived - removes it from the pool and decrements its
+    product's count."""
+
+    __tablename__ = "rfid_held_lists"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    batch_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    stock_order_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    reference: Mapped[str | None] = mapped_column(String(60))
+    vendor: Mapped[str | None] = mapped_column(String(100), index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    created_by: Mapped[str | None] = mapped_column(String(100))
+    # Newline-joined EPC pool from sweeping the strip.
+    epcs: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
+
+    def epc_set(self) -> set:
+        return {
+            e.strip().upper() for e in (self.epcs or "").split("\n")
+            if e.strip()
+        }
+
+    def as_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "batch_id": self.batch_id,
+            "stock_order_id": self.stock_order_id,
+            "reference": self.reference,
+            "vendor": self.vendor,
+            "created_at": (
+                self.created_at.isoformat() if self.created_at else None
+            ),
+            "created_by": self.created_by,
+            "epc_count": len(self.epc_set()),
+        }
+
+
+class HeldLabelItem(Base):
+    """Per-product count on a held-label strip: how many unused labels
+    of this SKU are on it. Decremented when a held label is paired to a
+    real box; a zero row means every one of that product's labels found
+    its box."""
+
+    __tablename__ = "rfid_held_items"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    list_id: Mapped[int] = mapped_column(Integer, index=True,
+                                         nullable=False)
+    sku: Mapped[str] = mapped_column(String(100), index=True,
+                                     nullable=False)
+    product_title: Mapped[str | None] = mapped_column(String(255))
+    count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    def as_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "list_id": self.list_id,
+            "sku": self.sku,
+            "product_title": self.product_title,
+            "count": self.count,
+        }
+
+
 class BarcodeAlias(Base):
     """Maps a foreign ("fake") barcode — e.g. a manufacturer barcode on the
     box — to a known product, after an operator confirmed the link. Lives in

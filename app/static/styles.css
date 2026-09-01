@@ -2804,6 +2804,18 @@ tr.binaudit-untagged td { opacity: 0.72; }
   border-radius: 8px;
 }
 
+/* Receive entire shipment: order picker rows (Nick 2026-09-01) */
+.fullship-orderrow {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
 /* Recent-sweep picker rows (bin audit, Nick 2026-09-01) */
 .binaudit-sweeprow {
   display: flex;

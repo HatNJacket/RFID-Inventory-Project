@@ -56,6 +56,8 @@ from app.models import (
     CaseCode,
     EpcCapture,
     FlaggedBin,
+    HeldLabelItem,
+    HeldLabelList,
     HiddenBin,
     LabelName,
     LinkScan,
@@ -63,6 +65,7 @@ from app.models import (
     MismatchDismissal,
     NonTaggable,
     OneLeftCheck,
+    OrderReceipt,
     Printer,
     PrintJob,
     ProductKind,
@@ -790,8 +793,10 @@ def create_assignment(
     )
     session.add(assignment)
     # A pairing answers the oldest open audit find for this SKU (the
-    # tagless-box work queue from the C72 AUDIT tab).
+    # tagless-box work queue from the C72 AUDIT tab), and an EPC off a
+    # vendor strip retires its held-label note (the label found its box).
     _consume_audit_find(session, payload.sku)
+    _consume_held_label(session, payload.rfid_id, payload.sku)
     try:
         session.commit()
     except IntegrityError:
@@ -6416,6 +6421,13 @@ def get_batch(batch_id: int, session: Session = Depends(get_session)):
         d["prior_tags"] = prior.get((item.sku or "").strip().upper(), 0)
         payload.append(d)
     b = batch.as_dict()
+    # A "Receive entire shipment" batch carries its order receipt, so
+    # the web can show the settle / count-unused flow (Nick, 2026-09-01).
+    receipt = session.scalar(
+        select(OrderReceipt).where(OrderReceipt.batch_id == batch_id)
+        .order_by(OrderReceipt.id.desc())
+    )
+    b["order_receipt"] = receipt.as_dict() if receipt else None
     if batch.status != "done":
         b["prev_done_at"] = _prev_done_map(
             session, [batch.bin_name]
@@ -7885,7 +7897,7 @@ def _queue_receiving_labels_after_fix(
 ) -> int:
     """Queue whatever a just-fixed receiving row now needs. The builder
     only ever prints unlabelled boxes, so this is safe to run batch-wide."""
-    jobs, _held = _build_receiving_label_jobs(
+    jobs, _no_bin, _held_notes = _build_receiving_label_jobs(
         session, batch, batch.created_by
     )
     session.add_all(jobs)
@@ -8575,10 +8587,10 @@ def batch_queue_labels(
     if _is_receiving(batch):
         if batch.status in ("done", "abandoned"):
             raise HTTPException(409, f"This batch is {batch.status}.")
-        jobs, skipped_no_bin = _build_receiving_label_jobs(
+        jobs, skipped_no_bin, held_notes = _build_receiving_label_jobs(
             session, batch, payload.requested_by
         )
-        if not jobs and not skipped_no_bin:
+        if not jobs and not skipped_no_bin and not held_notes:
             raise HTTPException(
                 422, "Nothing new to label — every scanned box already "
                      "has a label queued or printed.",
@@ -8592,6 +8604,9 @@ def batch_queue_labels(
             # Held out, not silently dropped: these need a bin before a
             # label can tell the shelver where the box goes.
             "skipped_no_bin": skipped_no_bin,
+            # Products covered by unused labels on a vendor strip - take
+            # those instead of printing (Nick, 2026-09-01).
+            "held_notes": held_notes,
         }
     if batch.status != "collecting":
         raise HTTPException(
@@ -8886,17 +8901,83 @@ def _build_label_jobs(
     return jobs, skipped_bundles
 
 
+def _held_available(session: Session, skus: list[str]) -> dict[str, dict]:
+    """Unused held labels per SKU, across every vendor strip: label(s)
+    printed for an order the product never actually shipped with (Nick,
+    2026-09-01). {SKU: {"count": n, "where": "ZWO strip (SO 948)"}}."""
+    wanted = {(s or "").strip().upper() for s in skus if s and s.strip()}
+    if not wanted:
+        return {}
+    out: dict[str, dict] = {}
+    lists = {
+        hl.id: hl for hl in session.scalars(select(HeldLabelList))
+    }
+    for it in session.scalars(
+        select(HeldLabelItem).where(
+            HeldLabelItem.count > 0,
+            func.upper(HeldLabelItem.sku).in_(sorted(wanted)),
+        )
+    ):
+        key = it.sku.strip().upper()
+        hl = lists.get(it.list_id)
+        where = (
+            f"{hl.vendor or 'vendor'} strip"
+            + (f" ({hl.reference})" if hl and hl.reference else "")
+        ) if hl else "held strip"
+        d = out.setdefault(key, {"count": 0, "where": where})
+        d["count"] += it.count
+    return out
+
+
+def _consume_held_label(session: Session, epc: str | None,
+                        sku: str | None) -> None:
+    """A pairing whose EPC came off a held strip: remove it from the
+    pool and decrement its product's unused count - the label found its
+    box at last. Fail-soft: bookkeeping must never break a pairing."""
+    if not epc or not (epc or "").strip():
+        return
+    try:
+        up = epc.strip().upper()
+        for hl in session.scalars(select(HeldLabelList)):
+            pool = hl.epc_set()
+            if up not in pool:
+                continue
+            pool.discard(up)
+            hl.epcs = "\n".join(sorted(pool))
+            if sku:
+                row = session.scalar(
+                    select(HeldLabelItem).where(
+                        HeldLabelItem.list_id == hl.id,
+                        func.upper(HeldLabelItem.sku)
+                        == sku.strip().upper(),
+                        HeldLabelItem.count > 0,
+                    )
+                )
+                if row is not None:
+                    row.count -= 1
+            return
+    except Exception:  # noqa: BLE001
+        logger.exception("held-label consume failed (%s)", epc)
+
+
 def _build_receiving_label_jobs(
     session: Session, batch: Batch, requested_by: str | None
-) -> tuple[list[PrintJob], list[str]]:
+) -> tuple[list[PrintJob], list[str], list[str]]:
     """Print jobs for a receiving pass: only boxes NOT yet labelled (the
     loop repeats PRINT per pass), each label carrying the ITEM's home bin —
     a received box's label is its shelving instruction. Items without a bin
     are held out and named so the operator can assign one and re-print;
-    cancelled jobs free their box to be re-queued next pass."""
+    cancelled jobs free their box to be re-queued next pass.
+
+    Held labels (Nick, 2026-09-01): a product with unused labels on a
+    vendor strip prints that many FEWER - the third return value names
+    each ("take 2 from the ZWO strip (SO 948)")."""
     jobs: list[PrintJob] = []
     skipped_no_bin: list[str] = []
-    for item in _items_in_scan_order(session, batch.id):
+    held_notes: list[str] = []
+    items_all = _items_in_scan_order(session, batch.id)
+    held = _held_available(session, [i.sku for i in items_all if i.sku])
+    for item in items_all:
         if not item.resolved or not item.shopify_variant_id:
             continue
         if item.skipped or item.kind == "bundle":
@@ -8914,6 +8995,19 @@ def _build_receiving_label_jobs(
         delta = want - have
         if delta <= 0:
             continue
+        h = held.get((item.sku or "").strip().upper())
+        if h and h["count"] > 0:
+            use = min(h["count"], delta)
+            delta -= use
+            # Reserve locally so two items of one SKU can't both claim
+            # the same held label in one pass.
+            h["count"] -= use
+            held_notes.append(
+                f"{item.sku}: take {use} label(s) from the {h['where']} "
+                "instead of printing"
+            )
+            if delta <= 0:
+                continue
         bin_ = (item.bin_location or "").strip()
         if not bin_ or bin_.lower() == "no bin assigned":
             skipped_no_bin.append(item.product_title or item.sku or "?")
@@ -8946,7 +9040,7 @@ def _build_receiving_label_jobs(
                     requested_by=requested_by or batch.created_by,
                 )
             )
-    return jobs, skipped_no_bin
+    return jobs, skipped_no_bin, held_notes
 
 
 class ReceivingPrintItemIn(BaseModel):
@@ -8964,7 +9058,8 @@ class ReceivingPrintsIn(BaseModel):
 
 
 def _receiving_intake(
-    session: Session, payload: ReceivingPrintsIn, queue_labels: bool
+    session: Session, payload: ReceivingPrintsIn, queue_labels: bool,
+    tag_prefix: str = "TC-Planner", merge_vendor: bool = True,
 ) -> dict:
     """Shared body of the planner bridge: create/reuse the stock order's
     receiving batch, add the received quantities to its rows (problem
@@ -8972,13 +9067,18 @@ def _receiving_intake(
     the not-yet-labelled boxes exactly like a receiving print pass. The
     no-labels path (the Update-stock safety net) books the SAME rows so
     the boxes are never lost; their labels queue later from the Review
-    task. Caller commits."""
+    task. Caller commits.
+
+    Full-shipment receives pass their own tag_prefix and merge_vendor
+    False (Nick, 2026-09-01): their settle step reads the WHOLE batch as
+    one order's story, so folding them into a same-vendor planner batch
+    would count that batch's unpaired boxes as never-shipped."""
     ref = (payload.reference or "").strip()
     parts = [p.strip() for p in ref.split("·")] if ref else []
     vendor = parts[1] if len(parts) > 1 and parts[1] else None
     so_part = parts[0] if parts else ""
     batch = None
-    if vendor:
+    if vendor and merge_vendor:
         # One receiving batch per VENDOR (Nick, 2026-08-31): same-vendor
         # stock orders arrive on one pallet, so their labels and pairing
         # belong together. The batch name keeps EVERY stock order it
@@ -8987,7 +9087,7 @@ def _receiving_intake(
             select(Batch).where(
                 Batch.kind == "receiving",
                 Batch.status.notin_(("done", "abandoned")),
-                Batch.created_by.like("TC-Planner ·%"),
+                Batch.created_by.like(f"{tag_prefix} ·%"),
             ).order_by(Batch.id.desc())
         ):
             cparts = [p.strip() for p in (cand.created_by or "").split("·")]
@@ -8999,14 +9099,14 @@ def _receiving_intake(
                 if so_part and so_part not in sos:
                     sos.append(so_part)
                     cand.created_by = (
-                        "TC-Planner · " + ", ".join(sos)
+                        f"{tag_prefix} · " + ", ".join(sos)
                         + " · " + cparts[-1]
                     )[:100]
                 break
         tag = (batch.created_by if batch is not None
-               else "TC-Planner · " + ref)[:100]
+               else f"{tag_prefix} · " + ref)[:100]
     else:
-        tag = ("TC-Planner" + (f" · {ref}" if ref else ""))[:100]
+        tag = (tag_prefix + (f" · {ref}" if ref else ""))[:100]
         batch = session.scalar(
             select(Batch).where(
                 Batch.kind == "receiving",
@@ -9137,8 +9237,9 @@ def _receiving_intake(
     session.flush()
     jobs: list[PrintJob] = []
     skipped_no_bin: list[str] = []
+    held_notes: list[str] = []
     if queue_labels:
-        jobs, skipped_no_bin = _build_receiving_label_jobs(
+        jobs, skipped_no_bin, held_notes = _build_receiving_label_jobs(
             session, batch, payload.requested_by or tag
         )
         session.add_all(jobs)
@@ -9150,6 +9251,7 @@ def _receiving_intake(
         "skipped_no_bin": skipped_no_bin,
         "skipped_unknown": skipped_unknown,
         "skipped_non_taggable": skipped_non_taggable,
+        "held_notes": held_notes,
     }
 
 
@@ -9184,6 +9286,7 @@ def receiving_prints(
         "skipped_no_bin": skipped_no_bin,
         "skipped_unknown": skipped_unknown,
         "skipped_non_taggable": skipped_non_taggable,
+        "held_notes": out["held_notes"],
         "message": (
             f"{len(jobs)} label(s) queued on receiving batch {batch.id}"
             + (f" ({tag})" if payload.reference else "")
@@ -9193,6 +9296,8 @@ def receiving_prints(
                if skipped_non_taggable else "")
             + (f"; held for a bin: {', '.join(skipped_no_bin)}"
                if skipped_no_bin else "")
+            + (f"; {'; '.join(out['held_notes'])}"
+               if out["held_notes"] else "")
             + "."
         ),
     }
@@ -9217,7 +9322,7 @@ def receiving_unprinted(
     batch, tag = out["batch"], out["tag"]
     session.flush()
     # What a print pass WOULD queue right now = the labels outstanding.
-    would, would_no_bin = _build_receiving_label_jobs(
+    would, would_no_bin, _would_held = _build_receiving_label_jobs(
         session, batch, payload.requested_by or tag
     )
     pushed_units = sum(a["quantity"] for a in out["added"])
@@ -9308,7 +9413,7 @@ def queue_missing_labels(
             "nothing left to print for it.",
         )
     by = (payload.changed_by or "").strip()[:100] or None
-    jobs, skipped_no_bin = _build_receiving_label_jobs(
+    jobs, skipped_no_bin, held_notes = _build_receiving_label_jobs(
         session, batch, by or batch.created_by
     )
     session.add_all(jobs)
@@ -9337,6 +9442,539 @@ def queue_missing_labels(
                  "resolved."
         ),
     }
+
+
+# --------------------------------------------- receive entire shipment ----
+# Nick's 2026-09-01 flow: pull a whole TC-Planner stock order into ONE
+# receiving batch, print every remaining label up front, pair what
+# physically arrived, then sweep the strip of unused labels into a
+# vendor container (a HELD list). The paired counts hand off to the
+# planner pre-filled (Print labels grayed there - labels already
+# exist); a Review task opens if Shopify stock isn't updated within an
+# hour of the operator settling the batch.
+
+@app.get("/api/receiving/orders", dependencies=[Depends(require_user)])
+def receiving_open_orders(
+    operator: str | None = None, session: Session = Depends(get_session)
+):
+    """Open stock orders for the picker, annotated with whether a
+    full-shipment receive already printed them."""
+    out = planner.open_orders(operator)
+    if out.get("ok"):
+        ids = [o["order_id"] for o in out["orders"] if o.get("order_id")]
+        receipts = {
+            r.stock_order_id: r
+            for r in session.scalars(
+                select(OrderReceipt).where(
+                    OrderReceipt.stock_order_id.in_(ids or [0])
+                )
+            )
+        }
+        for o in out["orders"]:
+            r = receipts.get(o.get("order_id"))
+            o["already_printed"] = r is not None
+            o["batch_id"] = r.batch_id if r else None
+    return out
+
+
+@app.get(
+    "/api/receiving/orders/{order_ref}",
+    dependencies=[Depends(require_user)],
+)
+def receiving_order_preview(
+    order_ref: str,
+    operator: str | None = None,
+    session: Session = Depends(get_session),
+):
+    """One order's remaining lines, checked against the catalog: every
+    line resolves to a product or gets a flag (unknown, non-taggable,
+    bundle, no bin) - the confirm screen shows the whole story before a
+    single label prints. Held labels per SKU ride along."""
+    out = planner.order_lines(order_ref, operator)
+    if not out.get("ok"):
+        raise HTTPException(502, out.get("error")
+                            or "The planner bridge isn't configured.")
+    if not out.get("order"):
+        raise HTTPException(
+            404, f"No open stock order matches '{order_ref}'."
+        )
+    no_tag = _non_taggable_skus(session)
+    held = _held_available(
+        session, [i.get("sku") for i in out["items"]]
+    )
+    receipt = session.scalar(
+        select(OrderReceipt).where(
+            OrderReceipt.stock_order_id == out["order"]["order_id"]
+        ).order_by(OrderReceipt.id.desc())
+    )
+    for line in out["items"]:
+        line["flag"] = None
+        product = None
+        for term in (line.get("sku"), line.get("barcode")):
+            if not (term or "").strip():
+                continue
+            try:
+                product = product_by_barcode(term.strip())
+                break
+            except HTTPException as error:
+                if error.status_code >= 500:
+                    raise
+        if product is None:
+            line["flag"] = "unknown - no product matches this SKU or " \
+                           "barcode"
+            continue
+        sku_ci = (product.get("sku") or "").strip().upper()
+        line["product_title"] = product.get("product_title")
+        line["bin_location"] = product.get("bin_location")
+        if sku_ci in no_tag:
+            line["flag"] = "non-taggable - no labels print for it"
+        else:
+            kind, excluded = resolve_product_kind(
+                session, product.get("product_title"),
+                product.get("sku"), product.get("bin_location"),
+            )
+            if kind == "bundle" or excluded:
+                line["flag"] = "bundle - components carry the tags"
+            elif not (product.get("bin_location") or "").strip() or (
+                product.get("bin_location") or ""
+            ).strip().lower() == "no bin assigned":
+                line["flag"] = "no home bin - assign one before printing"
+        h = held.get(sku_ci)
+        if h and h["count"] > 0:
+            line["held"] = {"count": h["count"], "where": h["where"]}
+    return {**out, "receipt": receipt.as_dict() if receipt else None}
+
+
+class FullShipmentIn(BaseModel):
+    order: str = Field(min_length=1, max_length=60)
+    requested_by: str | None = Field(default=None, max_length=100)
+
+
+@app.post(
+    "/api/receiving/full-shipment",
+    status_code=201,
+    dependencies=[Depends(require_user)],
+)
+def receiving_full_shipment(
+    payload: FullShipmentIn, session: Session = Depends(get_session)
+):
+    """Load the whole stock order (remaining quantities) into a
+    receiving batch and print every label up front. Re-running for the
+    same order REUSES the live batch instead of creating a twin; a
+    settled/done full-shipment receive refuses with its history."""
+    out = planner.order_lines(payload.order, payload.requested_by)
+    if not out.get("ok"):
+        raise HTTPException(502, out.get("error")
+                            or "The planner bridge isn't configured.")
+    order = out.get("order")
+    if not order:
+        raise HTTPException(
+            404, f"No open stock order matches '{payload.order}'."
+        )
+    receipt = session.scalar(
+        select(OrderReceipt).where(
+            OrderReceipt.stock_order_id == order["order_id"]
+        ).order_by(OrderReceipt.id.desc())
+    )
+    if receipt is not None:
+        prior = session.get(Batch, receipt.batch_id)
+        if prior is not None and prior.status not in ("done", "abandoned"):
+            return {
+                "reused": True,
+                "batch": prior.as_dict(),
+                "receipt": receipt.as_dict(),
+                "queued": 0,
+                "held_notes": [],
+                "skipped_no_bin": [],
+                "skipped_unknown": [],
+                "skipped_non_taggable": [],
+                "message": (
+                    f"SO {order['reference_number']} already has a live "
+                    f"full-shipment batch (#{prior.id}) - picking it up "
+                    "where it left off."
+                ),
+            }
+        if prior is not None and prior.status == "done":
+            raise HTTPException(
+                409,
+                f"SO {order['reference_number']} was already received "
+                f"via Receive entire shipment (batch #{prior.id}, done). "
+                "Use the planner's normal Print labels flow for anything "
+                "extra.",
+            )
+    if not out["items"]:
+        raise HTTPException(
+            422,
+            f"SO {order['reference_number']} has nothing left to "
+            "receive - every line is already fully received.",
+        )
+    ref = f"SO {order['reference_number']}"
+    intake = _receiving_intake(session, ReceivingPrintsIn(
+        items=[ReceivingPrintItemIn(
+            sku=(line.get("sku") or "?")[:100],
+            quantity=max(1, min(500, line["remaining"])),
+            barcode=(line.get("barcode") or None),
+        ) for line in out["items"]],
+        requested_by=payload.requested_by,
+        reference=f"{ref} · {order.get('vendor') or ''}".strip(" ·"),
+    ), queue_labels=True, tag_prefix="Full shipment",
+        merge_vendor=False)
+    batch = intake["batch"]
+    session.add(OrderReceipt(
+        stock_order_id=order["order_id"],
+        reference=ref,
+        vendor=order.get("vendor"),
+        batch_id=batch.id,
+        created_by=payload.requested_by,
+    ))
+    session.commit()
+    session.refresh(batch)
+    jobs = intake["jobs"]
+    return {
+        "reused": False,
+        "batch": batch.as_dict(),
+        "queued": len(jobs),
+        "held_notes": intake["held_notes"],
+        "skipped_no_bin": intake["skipped_no_bin"],
+        "skipped_unknown": intake["skipped_unknown"],
+        "skipped_non_taggable": intake["skipped_non_taggable"],
+        "message": (
+            f"{ref}: {len(jobs)} label(s) queued on receiving batch "
+            f"#{batch.id}"
+            + (f"; {'; '.join(intake['held_notes'])}"
+               if intake["held_notes"] else "")
+            + (f"; held for a bin: {', '.join(intake['skipped_no_bin'])}"
+               if intake["skipped_no_bin"] else "")
+            + (f"; {len(intake['skipped_unknown'])} unknown SKU(s) "
+               "flagged" if intake["skipped_unknown"] else "")
+            + ". Label and pair the shipment, then press "
+            "\"All boxes labelled\" to count what didn't arrive."
+        ),
+    }
+
+
+def _unpaired_label_counts(session: Session, batch: Batch) -> list[dict]:
+    """Per product: labels printed for this batch minus tags paired -
+    the physical leftover strip, by arithmetic (Nick, 2026-09-01)."""
+    printed: dict[str, int] = {}
+    for job in session.scalars(
+        select(PrintJob).where(
+            PrintJob.batch_id == batch.id,
+            PrintJob.status.in_(("pending", "printing", "done")),
+        )
+    ):
+        key = (job.sku or "").strip().upper()
+        if key:
+            printed[key] = printed.get(key, 0) + 1
+    out = []
+    for item in _batch_items(session, batch.id):
+        key = (item.sku or "").strip().upper()
+        if not key:
+            continue
+        n = printed.get(key, 0) - (item.paired_count or 0)
+        if n > 0:
+            out.append({
+                "sku": item.sku,
+                "product_title": item.product_title,
+                "count": n,
+            })
+    return out
+
+
+class SettleShipmentIn(BaseModel):
+    created_by: str | None = Field(default=None, max_length=100)
+
+
+@app.post(
+    "/api/batches/{batch_id}/settle-shipment",
+    dependencies=[Depends(require_user)],
+)
+def settle_shipment(
+    batch_id: int,
+    payload: SettleShipmentIn,
+    session: Session = Depends(get_session),
+):
+    """The operator says: every box that physically arrived is labelled
+    and paired - now counting the unused labels. Starts the 1-hour
+    Shopify-update clock (Nick, 2026-09-01: the clock starts HERE, even
+    if they go back and fix labels) and answers with the per-product
+    unpaired counts plus the planner hand-off payload."""
+    batch = _get_batch(session, batch_id)
+    receipt = session.scalar(
+        select(OrderReceipt).where(OrderReceipt.batch_id == batch_id)
+        .order_by(OrderReceipt.id.desc())
+    )
+    if receipt is None:
+        raise HTTPException(
+            422, "This batch didn't come from Receive entire shipment."
+        )
+    if receipt.settled_at is None:
+        receipt.settled_at = datetime.now(timezone.utc)
+        session.commit()
+    unpaired = _unpaired_label_counts(session, batch)
+    paired_items = [
+        {"sku": i.sku, "qty": i.paired_count}
+        for i in _batch_items(session, batch_id)
+        if i.sku and (i.paired_count or 0) > 0
+    ]
+    return {
+        "receipt": receipt.as_dict(),
+        "unpaired": unpaired,
+        "total_unpaired": sum(u["count"] for u in unpaired),
+        "planner": {
+            "order_id": receipt.stock_order_id,
+            "items": paired_items,
+        },
+    }
+
+
+class HeldListIn(BaseModel):
+    epcs: list[str] = Field(default_factory=list, max_length=5000)
+    created_by: str | None = Field(default=None, max_length=100)
+
+
+@app.post(
+    "/api/batches/{batch_id}/held-list",
+    status_code=201,
+    dependencies=[Depends(require_user)],
+)
+def create_held_list(
+    batch_id: int,
+    payload: HeldListIn,
+    session: Session = Depends(get_session),
+):
+    """Sweep of the unused-label strip: the leftover labels stay on the
+    liner, go in a vendor container, and their EPCs become the strip's
+    POOL (product accounting = printed minus paired, per SKU). Closes
+    the batch - the shipment is settled; what didn't arrive waits on
+    the strip. EPCs already assigned (shelf tags the sweep over-heard)
+    or already on another strip are excluded, never stolen."""
+    batch = _get_batch(session, batch_id)
+    receipt = session.scalar(
+        select(OrderReceipt).where(OrderReceipt.batch_id == batch_id)
+        .order_by(OrderReceipt.id.desc())
+    )
+    if receipt is None:
+        raise HTTPException(
+            422, "This batch didn't come from Receive entire shipment."
+        )
+    if receipt.settled_at is None:
+        receipt.settled_at = datetime.now(timezone.utc)
+    unpaired = _unpaired_label_counts(session, batch)
+    total = sum(u["count"] for u in unpaired)
+    swept = {(e or "").strip().upper() for e in payload.epcs if e}
+    excluded_assigned = 0
+    excluded_held = 0
+    pool: set[str] = set()
+    if swept:
+        owned = {
+            (e or "").upper() for e in session.scalars(
+                select(RfidAssignment.rfid_id).where(
+                    func.upper(RfidAssignment.rfid_id).in_(sorted(swept))
+                )
+            )
+        }
+        other_pools: set[str] = set()
+        for hl in session.scalars(select(HeldLabelList)):
+            other_pools |= hl.epc_set()
+        for epc in swept:
+            if epc in owned:
+                excluded_assigned += 1
+            elif epc in other_pools:
+                excluded_held += 1
+            else:
+                pool.add(epc)
+    held_list = None
+    if total > 0:
+        held_list = HeldLabelList(
+            batch_id=batch.id,
+            stock_order_id=receipt.stock_order_id,
+            reference=receipt.reference,
+            vendor=receipt.vendor,
+            created_by=payload.created_by,
+            epcs="\n".join(sorted(pool)),
+        )
+        session.add(held_list)
+        session.flush()
+        for u in unpaired:
+            session.add(HeldLabelItem(
+                list_id=held_list.id,
+                sku=u["sku"],
+                product_title=u["product_title"],
+                count=u["count"],
+            ))
+    # The shipment is settled: close the batch (a receiving batch with
+    # unpaired labels would otherwise never auto-close).
+    if batch.status not in ("done", "abandoned"):
+        batch.status = "done"
+        batch.completed_at = datetime.now(timezone.utc)
+    session.commit()
+    mismatch = pool and len(pool) != total
+    return {
+        "list": held_list.as_dict() if held_list else None,
+        "items": unpaired,
+        "total_unpaired": total,
+        "pool_count": len(pool),
+        "excluded_assigned": excluded_assigned,
+        "excluded_held": excluded_held,
+        "planner": {
+            "order_id": receipt.stock_order_id,
+            "items": [
+                {"sku": i.sku, "qty": i.paired_count}
+                for i in _batch_items(session, batch_id)
+                if i.sku and (i.paired_count or 0) > 0
+            ],
+        },
+        "message": (
+            (f"{total} unused label(s) held on the "
+             f"{receipt.vendor or 'vendor'} strip"
+             + (f" - {len(pool)} tag(s) in its pool" if pool else
+                " - no sweep captured, the strip still counts by SKU")
+             + (f" ({excluded_assigned} swept tag(s) belonged to real "
+                "boxes and were excluded)" if excluded_assigned else "")
+             + (f" (⚠ pool size doesn't match the {total} unused "
+                "label(s) - strays excluded or labels missed)"
+                if mismatch else "")
+             if total > 0 else
+             "Every printed label found its box - nothing to hold")
+            + f". Batch #{batch.id} closed. Save the receive in "
+            "TC-Planner and update Shopify stock there."
+        ),
+    }
+
+
+class StockUpdatedIn(BaseModel):
+    stock_order_id: int
+    updated_by: str | None = Field(default=None, max_length=100)
+
+
+@app.post(
+    "/api/receiving/stock-updated", dependencies=[Depends(require_user)]
+)
+def receiving_stock_updated(
+    payload: StockUpdatedIn, session: Session = Depends(get_session)
+):
+    """TC-Planner reports a Shopify stock update for this stock order.
+    Stamps the receipt and auto-resolves the stock-not-updated Review
+    task if the watchdog already filed one."""
+    receipts = session.scalars(
+        select(OrderReceipt).where(
+            OrderReceipt.stock_order_id == payload.stock_order_id
+        )
+    ).all()
+    closed = 0
+    for r in receipts:
+        if r.stock_updated_at is None:
+            r.stock_updated_at = datetime.now(timezone.utc)
+        if r.review_task_id:
+            task = session.get(ReviewTask, r.review_task_id)
+            if task is not None and task.status == "open":
+                task.status = "resolved"
+                task.resolved_by = "planner-update"
+                task.resolved_at = datetime.now(timezone.utc)
+                closed += 1
+    session.commit()
+    return {"ok": True, "receipts": len(receipts),
+            "tasks_closed": closed}
+
+
+@app.get(
+    "/api/receiving/order-status/{stock_order_id}",
+    dependencies=[Depends(require_user)],
+)
+def receiving_order_status(
+    stock_order_id: int, session: Session = Depends(get_session)
+):
+    """Lifecycle of a full-shipment receive, for the planner's gray-out
+    (labels already printed) and the Review task's planner hand-off."""
+    receipt = session.scalar(
+        select(OrderReceipt).where(
+            OrderReceipt.stock_order_id == stock_order_id
+        ).order_by(OrderReceipt.id.desc())
+    )
+    if receipt is None:
+        return {"printed": False}
+    paired_items = [
+        {"sku": i.sku, "qty": i.paired_count}
+        for i in _batch_items(session, receipt.batch_id)
+        if i.sku and (i.paired_count or 0) > 0
+    ]
+    return {
+        "printed": True,
+        "receipt": receipt.as_dict(),
+        "planner": {
+            "order_id": receipt.stock_order_id,
+            "items": paired_items,
+        },
+    }
+
+
+@app.get(
+    "/api/receiving/batch-order-status/{batch_id}",
+    dependencies=[Depends(require_user)],
+)
+def receiving_batch_order_status(
+    batch_id: int, session: Session = Depends(get_session)
+):
+    """Same lifecycle payload, looked up by BATCH - the Review task only
+    knows its batch_id."""
+    receipt = session.scalar(
+        select(OrderReceipt).where(OrderReceipt.batch_id == batch_id)
+        .order_by(OrderReceipt.id.desc())
+    )
+    if receipt is None:
+        return {"printed": False}
+    return receiving_order_status(receipt.stock_order_id, session)
+
+
+def _check_stock_update_tasks(session: Session) -> None:
+    """The 1-hour watchdog (lazy, run when the Review inbox is read):
+    a settled full-shipment receive whose Shopify stock never updated
+    gets ONE open Review task; resolving it opens the pre-filled
+    planner page. Fail-soft."""
+    try:
+        now = datetime.utcnow()
+        dirty = False
+        for r in session.scalars(
+            select(OrderReceipt).where(
+                OrderReceipt.settled_at.isnot(None),
+                OrderReceipt.stock_updated_at.is_(None),
+                OrderReceipt.review_task_id.is_(None),
+            )
+        ):
+            settled = r.settled_at
+            # Azure SQL hands timestamps back tz-aware; sqlite naive.
+            if settled is not None and settled.tzinfo is not None:
+                settled = settled.astimezone(
+                    timezone.utc
+                ).replace(tzinfo=None)
+            if settled is None or (
+                (now - settled).total_seconds() < 3600
+            ):
+                continue
+            task = ReviewTask(
+                category="stock-not-updated",
+                product_title=(
+                    f"{r.reference or 'Stock order'}"
+                    + (f" · {r.vendor}" if r.vendor else "")
+                )[:255],
+                detail=(
+                    f"{r.reference or 'A stock order'} was labelled and "
+                    "paired over an hour ago, but Shopify stock was "
+                    "never updated in TC-Planner. Resolve to open the "
+                    "order pre-filled with what actually arrived - Save "
+                    "the receive there, then Update stock."
+                )[:500],
+                batch_id=r.batch_id,
+            )
+            session.add(task)
+            session.flush()
+            r.review_task_id = task.id
+            dirty = True
+        if dirty:
+            session.commit()
+    except Exception:  # noqa: BLE001 — the inbox must still load
+        logger.exception("stock-update watchdog failed")
 
 
 class DivertIn(BaseModel):
@@ -9742,8 +10380,10 @@ def batch_pair(
     )
     session.add(assignment)
     # A pairing answers the oldest open audit find for this SKU (the
-    # tagless-box work queue from the C72 AUDIT tab).
+    # tagless-box work queue from the C72 AUDIT tab), and an EPC off a
+    # vendor strip retires its held-label note (the label found its box).
     _consume_audit_find(session, item.sku)
+    _consume_held_label(session, payload.epc, item.sku)
     item.paired_count += 1
     if batch.status == "printing":
         batch.status = "pairing"
@@ -10387,7 +11027,8 @@ class CompleteIn(BaseModel):
 # Resolver names that mean the SYSTEM closed a task — History wears a
 # distinct Auto-Resolved tag for these, never a person's click (Nick,
 # 2026-08-26).
-AUTO_CLOSERS = {"orders-sync", "dupe-check", "batch-count"}
+AUTO_CLOSERS = {"orders-sync", "dupe-check", "batch-count",
+                "planner-update"}
 
 
 def _reconcile_inventory_checks(
@@ -11025,6 +11666,9 @@ def list_review_tasks(
     limit: int = 100,
     session: Session = Depends(get_session),
 ):
+    # Lazy watchdog: settled full-shipment receives whose Shopify stock
+    # never updated file their task the next time anyone reads the inbox.
+    _check_stock_update_tasks(session)
     stmt = select(ReviewTask).order_by(ReviewTask.id.desc())
     if status != "all":
         stmt = stmt.where(ReviewTask.status == status.strip())

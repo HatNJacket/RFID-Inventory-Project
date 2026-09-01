@@ -81,6 +81,98 @@ def health(operator: str | None = None) -> dict:
                 "app_url": config.PLANNER_URL}
 
 
+def open_orders(operator: str | None = None) -> dict:
+    """Every open stock order, for the "Receive entire shipment" picker
+    (Nick, 2026-09-01). Read-only, never raises."""
+    base = {"configured": configured(), "ok": False, "orders": []}
+    if not configured():
+        return base
+    try:
+        found = _get("/api/stock-orders", params={"status": "open"},
+                     operator=operator)
+        orders = [{
+            "order_id": o.get("id"),
+            "reference_number": o.get("reference_number"),
+            "vendor": o.get("vendor"),
+            "status": o.get("status"),
+            "expected_date": o.get("expected_date"),
+        } for o in (found.get("orders") or [])]
+        return {**base, "ok": True, "orders": orders}
+    except Exception as exc:  # noqa: BLE001 — the picker fails soft
+        return {**base, "error": str(exc)[:200]}
+
+
+def order_lines(order_ref: str, operator: str | None = None) -> dict:
+    """One stock order's lines with units still expected. order_ref may
+    be the planner's id or the reference number ("948", "SO 948"). Only
+    REMAINING quantities count (Nick, 2026-09-01: partially received
+    orders load what's still owed). Read-only, never raises."""
+    base = {"configured": configured(), "ok": False, "order": None,
+            "items": []}
+    if not configured():
+        return base
+    try:
+        ref = (order_ref or "").strip()
+        if ref.upper().startswith("SO"):
+            ref = ref[2:].strip()
+        if not ref:
+            return {**base, "ok": True}
+        detail = None
+        if ref.isdigit():
+            # Reference numbers are what humans type; try those first,
+            # then fall back to a raw planner id.
+            try:
+                found = _get("/api/stock-orders",
+                             params={"status": "open", "search": ref},
+                             operator=operator)
+                for s in found.get("orders") or []:
+                    if (str(s.get("reference_number") or "") == ref
+                            or str(s.get("id")) == ref):
+                        detail = _get(f"/api/stock-orders/{s['id']}",
+                                      operator=operator)
+                        break
+            except Exception:  # noqa: BLE001 — id fallback below
+                detail = None
+            if detail is None:
+                try:
+                    detail = _get(f"/api/stock-orders/{ref}",
+                                  operator=operator)
+                except Exception:  # noqa: BLE001 — not found
+                    detail = None
+        if detail is None:
+            return {**base, "ok": True}
+        items = []
+        for item in detail.get("items") or []:
+            ordered = int(item.get("ordered_qty") or 0)
+            received = int(item.get("received_qty") or 0)
+            if ordered - received <= 0:
+                continue
+            items.append({
+                "item_id": item.get("id"),
+                "sku": item.get("sku"),
+                "barcode": item.get("barcode"),
+                "title": (item.get("title")
+                          or item.get("product_title")
+                          or item.get("name")),
+                "ordered": ordered,
+                "received": received,
+                "remaining": ordered - received,
+            })
+        return {
+            **base, "ok": True,
+            "order": {
+                "order_id": detail.get("id"),
+                "reference_number": detail.get("reference_number"),
+                "vendor": detail.get("vendor"),
+                "status": detail.get("status"),
+                "expected_date": detail.get("expected_date"),
+            },
+            "items": items,
+        }
+    except Exception as exc:  # noqa: BLE001 — the flow reports, not crashes
+        return {**base, "error": str(exc)[:200]}
+
+
 def on_order_for_sku(sku: str, operator: str | None = None) -> dict:
     """Every open-PO line for this SKU with units still expected.
 

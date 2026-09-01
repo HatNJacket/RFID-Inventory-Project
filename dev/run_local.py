@@ -526,6 +526,36 @@ def _fake_on_order(sku, operator=None):
     return base
 _pl.on_order_for_sku = _fake_on_order
 
+# Receive entire shipment demo (Nick, 2026-09-01): SO 970 · ZWO with a
+# clean line, a short-ship candidate, and an unknown SKU to flag.
+_FULLSHIP_ORDER = {
+    "order_id": 20, "reference_number": "970", "vendor": "ZWO",
+    "status": "open", "expected_date": "2026-09-03",
+}
+_FULLSHIP_LINES = [
+    {"item_id": 1, "sku": "NORMAL-1", "barcode": "111",
+     "title": "Baader UHC Filter 2in", "ordered": 3, "received": 0,
+     "remaining": 3},
+    {"item_id": 2, "sku": "RACK-A", "barcode": "401",
+     "title": "Rack Demo Alpha", "ordered": 2, "received": 0,
+     "remaining": 2},
+    {"item_id": 3, "sku": "GHOST-99", "barcode": None,
+     "title": "Never Shipped Widget", "ordered": 1, "received": 0,
+     "remaining": 1},
+]
+def _fake_open_orders(operator=None):
+    return {"configured": True, "ok": True,
+            "orders": [dict(_FULLSHIP_ORDER)]}
+def _fake_order_lines(ref, operator=None):
+    r = (ref or "").strip().upper().replace("SO", "").strip()
+    if r == "970":
+        return {"configured": True, "ok": True,
+                "order": dict(_FULLSHIP_ORDER),
+                "items": [dict(x) for x in _FULLSHIP_LINES]}
+    return {"configured": True, "ok": True, "order": None, "items": []}
+_pl.open_orders = _fake_open_orders
+_pl.order_lines = _fake_order_lines
+
 # Fake 1-left dashboard: an in-memory pending queue shaped exactly like
 # the Inventory Verification app's /pending answer, so the Audits panel
 # (verdicts, auto-clear, confirm, re-queue) runs end to end offline.

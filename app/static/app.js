@@ -401,6 +401,7 @@ const EVENT_META = {
   // never a person's click, so they wear their own tag.
   "review-autoclosed": ["Auto-Resolved", "#57748c"],
   "labels-not-printed": ["Labels Not Printed", "#c05717"],
+  "stock-not-updated": ["Stock Not Updated", "#8250df"],
   "inventory-check": ["Inventory Check", "#8a6116"],
   "pairing-incomplete": ["Pairing Incomplete", "#d72c0d"],
   "unresolved-barcode": ["Unresolved Barcode", "#d72c0d"],
@@ -5354,6 +5355,15 @@ function renderReceivingList() {
   document.getElementById("recv-done").hidden = !(
     batch && batch.status === "done"
   );
+  // Full-shipment receives get the settle button (Nick, 2026-09-01):
+  // "every box that arrived is labelled" - count the unused labels.
+  const settleBtn = document.getElementById("recv-settle");
+  if (settleBtn) {
+    settleBtn.hidden = !(
+      batch && batch.order_receipt && batch.status !== "done"
+      && batch.status !== "abandoned"
+    );
+  }
   const dismissed = recvOverDismissedSet();
   const done = items.filter((i) => recvItemDone(i, dismissed));
   const shown = items.filter((i) => !recvItemDone(i, dismissed));
@@ -9869,6 +9879,14 @@ function openResolveWindow(t) {
         Queue the missing labels
         <span class="rvw-choice__sub">Prints one label per unlabelled box on the receiving batch, each with its home bin - identical to the planner's Print labels. No-bin products are held out and named.</span>
       </button>`;
+  } else if (t.category === "stock-not-updated") {
+    // The full-shipment watchdog (Nick, 2026-09-01): labels paired
+    // over an hour ago but the planner never updated Shopify stock.
+    middle = `
+      <button class="reset rvw-wide rvw-choice rvw-choice--amber" id="rvw-openplanner" type="button">
+        Open the order in TC-Planner (pre-filled)
+        <span class="rvw-choice__sub">Opens the stock order with what actually arrived already filled in - Save the receive there, then Update stock. Print labels stays grayed (the labels are on the boxes). This task closes itself when the planner reports the update.</span>
+      </button>`;
   } else if (t.category === "tag-onhand-mismatch") {
     // The sold-out shortcut (Nick, 2026-08-26): when the LIVE on-hand
     // is 0, every remaining box has sold - the context loader offers
@@ -10080,6 +10098,27 @@ function openResolveWindow(t) {
   }
 
   // Queue-labels: the Update-stock safety net's one-click resolution.
+  const openPlannerBtn = document.getElementById("rvw-openplanner");
+  if (openPlannerBtn)
+    openPlannerBtn.addEventListener("click", async () => {
+      openPlannerBtn.disabled = true;
+      try {
+        const st = await apiJson(
+          `/api/receiving/batch-order-status/${t.batch_id}`
+        );
+        if (!st.printed || !st.planner) {
+          alert("This task's batch has no order receipt on file - " +
+            "open the planner by hand.");
+          return;
+        }
+        await openPlannerReceive(st.planner.order_id, st.planner.items);
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        openPlannerBtn.disabled = false;
+      }
+    });
+
   const queueLabelsBtn = document.getElementById("rvw-queuelabels");
   if (queueLabelsBtn)
     queueLabelsBtn.addEventListener("click", async () => {
@@ -14460,6 +14499,328 @@ function sortShipOpenPlanner(orderId) {
       `Print labels over there. The pile here stays until you Clear it.`
   );
 }
+
+// === Receive entire shipment (Nick, 2026-09-01) =============================
+// RFID-first receiving: load a whole stock order, print every remaining
+// label up front, pair what physically arrived, hold the leftovers on a
+// vendor strip, and hand the PAIRED counts to the planner pre-filled
+// (its Print labels grays out there - the labels already exist).
+
+async function plannerAppUrl() {
+  if (sortShipPlannerUrl) return sortShipPlannerUrl;
+  try {
+    const st = await apiJson("/api/planner/status");
+    sortShipPlannerUrl = st.app_url || null;
+  } catch (err) {
+    /* caller reports */
+  }
+  return sortShipPlannerUrl;
+}
+
+async function openPlannerReceive(orderId, items) {
+  const base = await plannerAppUrl();
+  if (!base) {
+    alert(
+      "The planner bridge doesn't report its address - open the " +
+        "planner by hand and type the counts."
+    );
+    return false;
+  }
+  const payload = { order_id: orderId, items };
+  const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(payload))))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+  window.open(
+    `${base.replace(/\/+$/, "")}/#receive=${b64}`,
+    "_blank",
+    "noopener"
+  );
+  return true;
+}
+
+function fsStatus(msg, err) {
+  const el = document.getElementById("fullship-status");
+  el.textContent = msg || "";
+  el.style.color = err ? "var(--red, #c0392b)" : "";
+}
+
+document.getElementById("fullship-open").addEventListener("click", async () => {
+  document.getElementById("fullship").hidden = false;
+  document.getElementById("fullship-preview").innerHTML = "";
+  fsStatus("Loading open stock orders…");
+  document.getElementById("fullship-order").focus();
+  try {
+    const body = await apiJson("/api/receiving/orders");
+    const box = document.getElementById("fullship-orders");
+    if (!body.ok) {
+      fsStatus(
+        "⚠ The planner bridge isn't answering - type the SO number " +
+          "once it's back.", true
+      );
+      box.innerHTML = "";
+      return;
+    }
+    fsStatus("Pick an open order, or type its SO number.");
+    box.innerHTML = (body.orders || [])
+      .map(
+        (o) => `<button class="reset fullship-orderrow" type="button"
+          data-ref="${escapeHtml(String(o.reference_number ?? o.order_id))}"
+          data-batch="${o.already_printed && o.batch_id ? o.batch_id : ""}">
+          SO ${escapeHtml(String(o.reference_number ?? o.order_id))} ·
+          ${escapeHtml(o.vendor || "?")}${
+            o.expected_date
+              ? ` · expected ${escapeHtml(o.expected_date)}`
+              : ""
+          }${o.already_printed ? " · ✓ already printed" : ""}
+        </button>`
+      )
+      .join("") || `<p class="linkbox__text">No open stock orders.</p>`;
+  } catch (err) {
+    fsStatus(err.message, true);
+  }
+});
+
+document.getElementById("fullship-exit").addEventListener("click", () => {
+  document.getElementById("fullship").hidden = true;
+});
+
+document
+  .getElementById("fullship-orders")
+  .addEventListener("click", (e) => {
+    const row = e.target.closest(".fullship-orderrow");
+    if (!row) return;
+    document.getElementById("fullship-order").value = row.dataset.ref;
+    fullshipLoad();
+  });
+
+async function fullshipLoad() {
+  const ref = document.getElementById("fullship-order").value.trim();
+  const out = document.getElementById("fullship-preview");
+  if (!ref) {
+    fsStatus("Type the SO number first.", true);
+    return;
+  }
+  fsStatus(`Loading SO ${ref}…`);
+  out.innerHTML = "";
+  try {
+    const body = await apiJson(
+      `/api/receiving/orders/${encodeURIComponent(ref)}`
+    );
+    const o = body.order;
+    if (body.receipt && body.receipt.settled_at) {
+      fsStatus(
+        `SO ${o.reference_number} was already received via Receive ` +
+          `entire shipment (batch #${body.receipt.batch_id}).`, true
+      );
+      return;
+    }
+    const rows = body.items
+      .map((l) => {
+        const notes = [];
+        if (l.flag) notes.push(`⚠ ${l.flag}`);
+        if (l.held)
+          notes.push(
+            `🏷 take ${Math.min(l.held.count, l.remaining)} from the ` +
+              `${l.held.where} instead of printing`
+          );
+        return `<tr>
+          <td>${escapeHtml(l.product_title || l.title || l.sku || "?")}</td>
+          <td class="mono">${escapeHtml(l.sku || "—")}</td>
+          <td class="num">${l.remaining}</td>
+          <td>${notes.map((n) => escapeHtml(n)).join("<br>") || "✓"}</td>
+        </tr>`;
+      })
+      .join("");
+    const printable = body.items.filter((l) => !l.flag);
+    const labelGuess = printable.reduce(
+      (n, l) =>
+        n + Math.max(0, l.remaining - (l.held ? l.held.count : 0)),
+      0
+    );
+    out.innerHTML = `
+      <div class="inventory__scroll"><table class="inventory__table">
+        <thead><tr><th>Product</th><th>SKU</th>
+          <th class="num" title="Units still owed on this order - already-received units don't reload">Remaining</th>
+          <th></th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>
+      <div class="linkbox__actions" style="margin-top:8px">
+        <button class="print__btn" id="fullship-go" type="button"
+          data-ref="${escapeHtml(ref)}">
+          Print ~${labelGuess} label(s) &amp; start receiving
+        </button>
+      </div>`;
+    fsStatus(
+      `SO ${o.reference_number} · ${o.vendor || "?"} - ` +
+        `${body.items.length} line(s) remaining.`
+    );
+  } catch (err) {
+    fsStatus(err.message, true);
+  }
+}
+
+document
+  .getElementById("fullship-load")
+  .addEventListener("click", fullshipLoad);
+document
+  .getElementById("fullship-order")
+  .addEventListener("keydown", (e) => {
+    if (e.key === "Enter") fullshipLoad();
+  });
+
+document
+  .getElementById("fullship-preview")
+  .addEventListener("click", async (e) => {
+    const go = e.target.closest("#fullship-go");
+    if (!go) return;
+    if (!operatorEl.value) {
+      alert("Pick who's scanning (top right) first.");
+      return;
+    }
+    go.disabled = true;
+    try {
+      const res = await postJson("/api/receiving/full-shipment", {
+        order: go.dataset.ref,
+        requested_by: operatorEl.value,
+      });
+      alert(res.message);
+      document.getElementById("fullship").hidden = true;
+      resumeBatch(res.batch.id);
+    } catch (err) {
+      go.disabled = false;
+      alert(err.message);
+    }
+  });
+
+// --- the settle flow: count unused labels, hold the strip -------------------
+let fsSettleData = null; // {batchId, planner, totalUnpaired}
+
+document
+  .getElementById("recv-settle")
+  .addEventListener("click", async () => {
+    if (!batch) return;
+    if (!operatorEl.value) {
+      alert("Pick who's scanning (top right) first.");
+      return;
+    }
+    try {
+      const res = await postJson(
+        `/api/batches/${batch.id}/settle-shipment`,
+        { created_by: operatorEl.value }
+      );
+      fsSettleData = {
+        batchId: batch.id,
+        planner: res.planner,
+        totalUnpaired: res.total_unpaired,
+      };
+      const body = document.getElementById("fs-body");
+      if (res.total_unpaired === 0) {
+        body.innerHTML = `<p class="linkbox__text">✓ Every printed label
+          found its box - nothing to hold. Finish up and the order opens
+          pre-filled in TC-Planner (Save the receive, then Update
+          stock).</p>`;
+        document.getElementById("fs-sweep").textContent =
+          "Finish & open TC-Planner";
+        document.getElementById("fs-nosweep").hidden = true;
+      } else {
+        body.innerHTML = `
+          <p class="linkbox__text">These labels printed but never found
+          a box - the order listed products that didn't actually ship.
+          Leave them ON the liner, write
+          <b>${escapeHtml(batch.order_receipt?.vendor || "the vendor")}
+          · ${escapeHtml(batch.order_receipt?.reference || "")}</b> on
+          the strip, and keep it in the vendor container.</p>
+          <ul class="recent__list">${res.unpaired
+            .map(
+              (u) => `<li>${escapeHtml(u.product_title || u.sku)}
+                <span class="mono">${escapeHtml(u.sku)}</span> ·
+                ${u.count} unused label(s)</li>`
+            )
+            .join("")}</ul>
+          <p class="linkbox__text">Best: sweep the strip with the C72
+          (SWEEP tab → SEND) so its tags are recognized when the
+          products finally arrive - then pull it below. The 1-hour
+          Shopify-update clock is running either way.</p>`;
+        document.getElementById("fs-sweep").textContent =
+          "📶 Pull latest C72 sweep as the strip";
+        document.getElementById("fs-nosweep").hidden = false;
+      }
+      document.getElementById("fs-overlay").hidden = false;
+    } catch (err) {
+      alert(err.message);
+    }
+  });
+
+async function fsFinish(epcs) {
+  if (!fsSettleData) return;
+  try {
+    const res = await postJson(
+      `/api/batches/${fsSettleData.batchId}/held-list`,
+      { epcs, created_by: operatorEl.value || null }
+    );
+    document.getElementById("fs-overlay").hidden = true;
+    alert(
+      res.message +
+        "\n\nUpdate Shopify stock in the planner within the hour, or " +
+        "a Review task will chase it."
+    );
+    await openPlannerReceive(res.planner.order_id, res.planner.items);
+    fsSettleData = null;
+    // The batch closed with the strip - back to the bin board.
+    batch = null;
+    batchItems = [];
+    stopBatchLive();
+    enterBatchTab();
+    setBatchResult(
+      "Shipment settled - finish the receive in TC-Planner.",
+      "ok"
+    );
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+document.getElementById("fs-sweep").addEventListener("click", async () => {
+  if (!fsSettleData) return;
+  if (fsSettleData.totalUnpaired === 0) {
+    fsFinish([]);
+    return;
+  }
+  try {
+    const cap = await apiJson("/api/epc-captures/latest");
+    if (
+      !confirm(
+        `Use sweep #${cap.id} (${cap.epc_count} tag(s), ` +
+          `${fmtWhen(cap.created_at)}) as the strip's tags?\n\n` +
+          `Expected about ${fsSettleData.totalUnpaired} unused ` +
+          `label(s). Tags already paired to real boxes are excluded ` +
+          `automatically.`
+      )
+    )
+      return;
+    fsFinish(cap.epcs || []);
+  } catch (err) {
+    alert("No sweep on file yet - sweep the strip with the C72 " +
+      "(SWEEP → SEND) first, or hold by counts only.");
+  }
+});
+
+document.getElementById("fs-nosweep").addEventListener("click", () => {
+  if (!fsSettleData) return;
+  if (
+    !confirm(
+      "Hold the strip by counts only?\n\nThe labels still work later, " +
+        "but their tags answer sweeps as unknown until they're paired."
+    )
+  )
+    return;
+  fsFinish([]);
+});
+
+document.getElementById("fs-cancel").addEventListener("click", () => {
+  document.getElementById("fs-overlay").hidden = true;
+});
 
 document.getElementById("sortship-open").addEventListener("click", async () => {
   document.getElementById("sortship").hidden = false;
