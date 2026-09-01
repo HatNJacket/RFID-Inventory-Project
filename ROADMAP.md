@@ -3,6 +3,34 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-01.
 
+## 🧭 Side trips, streamlined — ✅ DEPLOYED 2026-09-01 (C72 3.69)
+
+Nick's five-part rework of the wrong-shelf flow (all gun-side except
+one server change):
+
+1. **SET ALL TO MOVE HOME** on the stray-review window marks every
+   stray for its home bin in one tap - nothing moves until the START
+   button is pressed (never auto-starts).
+2. **Trips chain**: with strays bound for several bins, START creates
+   ALL the trips up front (every label prints in ONE burst) and FINISH
+   on one trip drops straight into the next - no detour through the
+   parent batch. startSideTrips + pendingTrips queue in MainActivity.
+3. **Already-tagged strays just get carried**: divert now accepts
+   tagged_before-only rows (they were invisible to the movers filter
+   AND the gun's stray list) and allows a ZERO-label trip (status
+   "pairing", message says carry). The gun greets such a trip with
+   "ALREADY TAGGED - JUST CARRY" and one MOVED ✓ confirm closes it.
+   Bundles-only trips stay refused.
+4. **A lone product focuses itself** on trip entry - no barcode scan
+   before the trigger.
+5. **A one-product trip closes itself** when its last printed label is
+   paired (exact landing only - an overshoot never auto-closes), then
+   chains to the next trip or back to the parent.
+
+Also: resuming a side trip from the batch picker now restores its
+parent link (it used to be lost, stranding FINISH TRIP). Suite
+test_tripflow.py (7); 51/51. Take the gun update (3.69, code 87).
+
 ## 🖨 Printer wedge watchdog + purge — ✅ DEPLOYED 2026-09-01 (agent v4)
 
 The ZD220 silently stopped taking data overnight: Windows said

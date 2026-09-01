@@ -9383,11 +9383,13 @@ def divert_to_bin(
         )
 
     # Everything in this batch whose saved home is that shelf, together —
-    # one trip carries them all.
+    # one trip carries them all. tagged_before counts: a box tagged in an
+    # earlier session still physically moves (Nick, 2026-09-01), it just
+    # needs no label.
     movers = [
         i for i in _batch_items(session, batch_id)
         if i.resolved
-        and (i.qty_scanned or i.case_count)
+        and (i.qty_scanned or i.case_count or i.tagged_before)
         and bin_contains(i.bin_location, wanted)
     ]
     if not movers:
@@ -9445,7 +9447,12 @@ def divert_to_bin(
     jobs, skipped = _build_label_jobs(
         session, side, payload.created_by or parent.created_by
     )
-    if not jobs:
+    # A trip with no labels is still a real trip when the boxes were
+    # tagged in an earlier session (tagged_before): nothing prints,
+    # nothing pairs - the operator just carries them over and confirms
+    # (Nick, 2026-09-01). Bundles-only stays refused: there is no box.
+    tagged_before_units = sum((i.tagged_before or 0) for i in movers)
+    if not jobs and not tagged_before_units:
         session.rollback()
         raise HTTPException(
             422,
@@ -9453,7 +9460,7 @@ def divert_to_bin(
             "their own.",
         )
     session.add_all(jobs)
-    side.status = "printing"
+    side.status = "printing" if jobs else "pairing"
     side.ui_step = "pair"
     session.commit()
     session.refresh(side)
@@ -9465,8 +9472,13 @@ def divert_to_bin(
         "skipped_bundles": skipped,
         "message": (
             f"{len(movers)} product(s) moved to a side trip for {wanted} — "
-            f"{len(jobs)} label(s) queued. Pair them, then close it to get "
-            f"back to {parent.bin_name}."
+            + (
+                f"{len(jobs)} label(s) queued. Pair them, then close it"
+                if jobs else
+                "already tagged, so no labels are needed. Carry the "
+                "box(es) over and close it"
+            )
+            + f" to get back to {parent.bin_name}."
         ),
     }
 

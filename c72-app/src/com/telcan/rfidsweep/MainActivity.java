@@ -6926,6 +6926,7 @@ public class MainActivity extends Activity {
                             prevId == null ? null : itemById(prevId);
                     pairActive =
                             activeId == null ? null : itemById(activeId);
+                    autoTripEntry();
                     refreshBatchList();
                     updateBatchCard();
                 });
@@ -7063,6 +7064,10 @@ public class MainActivity extends Activity {
                 // sticks. Overshooting sweeps still never advance.
                 if (done > 0) {
                     target.paired += done;
+                    // A one-product side trip that just landed exactly
+                    // on target closes itself - otherwise the normal
+                    // auto-advance hop.
+                    if (maybeAutoFinishTrip(target)) return;
                     maybeAutoAdvance(target);
                 }
                 reloadBatchOnly();
@@ -7642,6 +7647,11 @@ public class MainActivity extends Activity {
                         ? null : b.optString("prev_done_at", null);
                 final String shelfSw = b.isNull("shelf_swept_at")
                         ? null : b.optString("shelf_swept_at", null);
+                // Resuming a SIDE TRIP from the picker keeps its parent
+                // link, so FINISH TRIP (and the trip conveniences) work
+                // the same as arriving from the stray review.
+                final int pid = b.isNull("parent_batch_id") ? 0
+                        : b.optInt("parent_batch_id", 0);
                 ui.post(() -> {
                     if (scanning) toggleScan();
                     batchId = id;
@@ -7649,6 +7659,11 @@ public class MainActivity extends Activity {
                     batchPrevDoneAt = prevDone;
                     batchShelfSweptAt = shelfSw;
                     receivingBatch = receiving;
+                    parentBatchId = pid;
+                    if (pid == 0) parentBinName = null;
+                    else if (parentBinName == null) parentBinName = "?";
+                    pendingTrips.clear();
+                    tripCarryAsked = false;
                     loadScanOrder();
                     loadPriorAsked();
                     strayMove.clear();
@@ -7668,6 +7683,7 @@ public class MainActivity extends Activity {
                     checkEntries.clear();
                     checkFlagText.clear();
                     verifySkuState.clear();
+                    autoTripEntry();
                     applyBatchUi();
                 });
             } catch (Exception e) {
@@ -8805,7 +8821,7 @@ public class MainActivity extends Activity {
                             + " tags)" + pickNote(read));
                     updateBatchCard();
                     refreshBatchList();
-                    maybeAutoAdvance(item);
+                    if (!maybeAutoFinishTrip(item)) maybeAutoAdvance(item);
                 });
             } catch (Exception e) {
                 ui.post(() -> {
@@ -8843,6 +8859,62 @@ public class MainActivity extends Activity {
      *  labels owed when the printed count isn't on hand. */
     private int pairTarget(BItem b) {
         return b.printed > 0 ? b.printed : b.labelsTotal;
+    }
+
+    /** Side-trip conveniences on entry (Nick, 2026-09-01): a lone
+     *  product focuses itself (no barcode scan needed), and a trip with
+     *  NOTHING to pair - boxes tagged in an earlier session - is just a
+     *  carry: one confirm closes it. */
+    private void autoTripEntry() {
+        if (parentBatchId == 0 || step != STEP_PAIR || bItems.isEmpty()) {
+            return;
+        }
+        if (bItems.size() == 1 && pairActive == null) {
+            BItem it = bItems.get(0);
+            pairActive = it;
+            previewItem = it;
+            if (pairTarget(it) > 0) {
+                status.setText(it.name() + " focused — trigger on its "
+                        + "sticker(s) (" + it.paired + "/"
+                        + pairTarget(it) + ").");
+            }
+        }
+        int labels = 0;
+        for (BItem b : bItems) labels += pairTarget(b);
+        if (labels == 0 && !tripCarryAsked) {
+            tripCarryAsked = true;
+            int boxes = 0;
+            for (BItem b : bItems) boxes += b.unitsTotal;
+            beep(SOUND_OTHER);
+            dlg().setTitle("ALREADY TAGGED — JUST CARRY")
+                    .setMessage(boxes + " box(es) here are already "
+                            + "tagged from an earlier session — no "
+                            + "labels print and nothing pairs. Carry "
+                            + "them to " + batchBin + " and confirm.")
+                    .setPositiveButton("MOVED TO " + batchBin + " ✓",
+                            (d, w) -> finishSideTrip())
+                    .setNegativeButton("LATER", null)
+                    .show();
+        }
+    }
+
+    /** A one-product side trip closes itself the moment its last printed
+     *  label is paired (Nick, 2026-09-01). Exact landing only — an
+     *  overshooting sweep deserves eyes, not an auto-close. */
+    private boolean maybeAutoFinishTrip(BItem it) {
+        if (parentBatchId == 0 || step != STEP_PAIR || it == null) {
+            return false;
+        }
+        if (bItems.size() != 1) return false;
+        int target = pairTarget(it);
+        if (target <= 0 || it.paired != target) return false;
+        beep(SOUND_OK);
+        Toast.makeText(this, "Side trip complete ✓",
+                Toast.LENGTH_SHORT).show();
+        status.setText("✓ " + it.name() + " fully paired (" + it.paired
+                + "/" + target + ") — closing the trip.");
+        finishSideTrip();
+        return true;
     }
 
     /** After a successful pair: when the product just reached EXACTLY its
@@ -9011,6 +9083,10 @@ public class MainActivity extends Activity {
         batchId = -1;
         batchBin = null;
         receivingBatch = false;
+        parentBatchId = 0;
+        parentBinName = null;
+        pendingTrips.clear();
+        tripCarryAsked = false;
         scanOrder.clear();
         scanSeq = 0;
         priorAsked.clear();
@@ -9929,7 +10005,8 @@ public class MainActivity extends Activity {
                         + "belongs in " + bin + " comes along too.")
                 .setPositiveButton("Start the trip", (d, w) -> {
                     closeItemEditor();
-                    startSideTrip(bin);
+                    startSideTrips(java.util.Collections
+                            .singletonList(bin));
                 })
                 .setNegativeButton("Cancel", null)
                 .show();
@@ -9943,7 +10020,10 @@ public class MainActivity extends Activity {
         for (CheckEntry e : checkEntries) {
             if (!e.flags.contains("wrong-bin")) continue;
             if (!e.item.resolved || e.item.paired > 0) continue;
-            if (e.item.qty <= 0 && e.item.caseCount <= 0) continue;
+            // tagged_before-only rows still physically move - they just
+            // need no label (the carry-confirm trip).
+            if (e.item.qty <= 0 && e.item.caseCount <= 0
+                    && e.item.taggedBefore <= 0) continue;
             out.add(e);
         }
         return out;
@@ -10028,12 +10108,28 @@ public class MainActivity extends Activity {
             box.addView(row);
         }
 
-        ScrollView sc = new ScrollView(this);
-        sc.addView(box);
         int undecided = 0;
         for (CheckEntry e : strays) {
             if (!strayMove.contains(e.item.id)) undecided++;
         }
+        // One tap marks EVERY stray for its home bin (Nick, 2026-09-01) -
+        // nothing moves yet, START below stays the explicit confirm.
+        if (undecided > 0 && strays.size() > 1) {
+            Button all = smallBtn("SET ALL TO MOVE HOME");
+            LinearLayout.LayoutParams al = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            al.topMargin = dp(8);
+            final boolean fn = fromNext;
+            all.setOnClickListener(vw -> {
+                for (CheckEntry e : strays) strayMove.add(e.item.id);
+                if (dlg[0] != null) dlg[0].dismiss();
+                showStrayReview(fn);
+            });
+            box.addView(all, al);
+        }
+        ScrollView sc = new ScrollView(this);
+        sc.addView(box);
         AlertDialog.Builder b = dlg()
                 .setTitle(strays.size() + " box(es) on the wrong shelf")
                 .setView(sc)
@@ -10041,9 +10137,19 @@ public class MainActivity extends Activity {
                                 ? "NOT NOW — LABELS PRINT HERE" : "LATER",
                         fromNext ? (dg, w) -> askPrintOrSkip() : null);
         if (undecided == 0) {
-            String dest = firstBin(strays.get(0).item.binLocation);
-            b.setPositiveButton("START TRIP TO " + dest,
-                    (dg, w) -> startSideTrip(dest));
+            // Every decided stray goes home - one trip per distinct home
+            // bin, labels for ALL of them queued up front, trips walked
+            // one after another (Nick, 2026-09-01).
+            final List<String> dests = new ArrayList<>();
+            for (CheckEntry e : strays) {
+                String d = firstBin(e.item.binLocation);
+                if (!dests.contains(d)) dests.add(d);
+            }
+            String label = dests.size() == 1
+                    ? "START TRIP TO " + dests.get(0)
+                    : "START " + dests.size() + " TRIPS, ONE AFTER "
+                      + "ANOTHER";
+            b.setPositiveButton(label, (dg, w) -> startSideTrips(dests));
         }
         dlg[0] = b.show();
     }
@@ -10168,49 +10274,99 @@ public class MainActivity extends Activity {
         }).start();
     }
 
-    private void startSideTrip(String bin) {
-        status.setText("Setting up " + bin + "…");
+    /** Trips created up front and walked in sequence (Nick, 2026-09-01):
+     *  all the labels print in ONE burst, and FINISH on one trip drops
+     *  straight into the next instead of a detour through the parent. */
+    private static class PendingTrip {
+        final int id;
+        final String bin;
+        final int labels;
+        PendingTrip(int id, String bin, int labels) {
+            this.id = id;
+            this.bin = bin;
+            this.labels = labels;
+        }
+    }
+
+    private final java.util.ArrayDeque<PendingTrip> pendingTrips =
+            new java.util.ArrayDeque<>();
+    private boolean tripCarryAsked = false;
+
+    private void startSideTrips(final List<String> bins) {
+        status.setText("Setting up " + bins.size() + " trip(s)…");
+        final int fromId = batchId;
+        final String fromBin = batchBin;
         new Thread(() -> {
-            try {
-                JSONObject body = new JSONObject().put("bin", bin)
-                        .put("created_by", prefs.getString("device", "C72"));
-                JSONObject resp = api("POST",
-                        "/api/batches/" + batchId + "/divert", body);
-                JSONObject side = resp.getJSONObject("batch");
-                final int newId = side.optInt("id");
-                final String newBin = side.optString("bin_name", bin);
-                final int labels = resp.optInt("labels");
-                final int oldId = batchId;
-                final String oldBin = batchBin;
-                ui.post(() -> {
-                    parentBatchId = oldId;
-                    parentBinName = oldBin;
-                    batchId = newId;
-                    batchBin = newBin;
-                    loadScanOrder();
-                    loadPriorAsked();
-                    strayMove.clear();
-                    bItems.clear();
-                    checkEntries.clear();
-                    checkFlagText.clear();
-                    verifySkuState.clear();
-                    previewItem = null;
-                    pairActive = null;
-                    step = STEP_PAIR;
-                    beep(SOUND_OK);
-                    status.setText("SIDE TRIP " + newBin + " — " + labels
-                            + " label(s) queued. Pair them, then FINISH to "
-                            + "get back to " + oldBin + ".");
-                    applyBatchUi();
-                    reloadBatchOnly();
-                });
-            } catch (Exception e) {
-                ui.post(() -> {
-                    beep(SOUND_ERR);
-                    status.setText("Side trip failed: " + e.getMessage());
-                });
+            final List<PendingTrip> made = new ArrayList<>();
+            final StringBuilder errs = new StringBuilder();
+            for (String bin : bins) {
+                try {
+                    JSONObject body = new JSONObject().put("bin", bin)
+                            .put("created_by",
+                                    prefs.getString("device", "C72"));
+                    JSONObject resp = api("POST",
+                            "/api/batches/" + fromId + "/divert", body);
+                    JSONObject side = resp.getJSONObject("batch");
+                    made.add(new PendingTrip(side.optInt("id"),
+                            side.optString("bin_name", bin),
+                            resp.optInt("labels")));
+                } catch (Exception e) {
+                    errs.append("\n").append(bin).append(": ")
+                            .append(e.getMessage());
+                }
             }
+            ui.post(() -> {
+                if (made.isEmpty()) {
+                    beep(SOUND_ERR);
+                    status.setText("Side trip failed:" + errs);
+                    return;
+                }
+                if (errs.length() > 0) {
+                    Toast.makeText(this, "Some trips failed:" + errs,
+                            Toast.LENGTH_LONG).show();
+                }
+                pendingTrips.clear();
+                for (int i = 1; i < made.size(); i++) {
+                    pendingTrips.add(made.get(i));
+                }
+                int totalLabels = 0;
+                for (PendingTrip t : made) totalLabels += t.labels;
+                if (made.size() > 1) {
+                    Toast.makeText(this, made.size() + " trips set up - "
+                            + totalLabels + " label(s) printing together",
+                            Toast.LENGTH_LONG).show();
+                }
+                enterSideTrip(made.get(0), fromId, fromBin);
+            });
         }).start();
+    }
+
+    private void enterSideTrip(PendingTrip t, int fromId, String fromBin) {
+        parentBatchId = fromId;
+        parentBinName = fromBin;
+        batchId = t.id;
+        batchBin = t.bin;
+        loadScanOrder();
+        loadPriorAsked();
+        strayMove.clear();
+        bItems.clear();
+        checkEntries.clear();
+        checkFlagText.clear();
+        verifySkuState.clear();
+        previewItem = null;
+        pairActive = null;
+        tripCarryAsked = false;
+        step = STEP_PAIR;
+        beep(SOUND_OK);
+        status.setText("SIDE TRIP " + t.bin + " — " + t.labels
+                + " label(s) queued. "
+                + (pendingTrips.isEmpty()
+                   ? "Pair them, then FINISH to get back to " + fromBin
+                     + "."
+                   : "Pair them, then FINISH — " + pendingTrips.size()
+                     + " more trip(s) follow."));
+        applyBatchUi();
+        reloadBatchOnly();
     }
 
     private void finishSideTrip() {
@@ -10242,6 +10398,16 @@ public class MainActivity extends Activity {
                 final int nextParentId = gpId;
                 final String nextParentBin = gpBin;
                 ui.post(() -> {
+                    // More trips queued from the same stray review? Walk
+                    // straight into the next one - the detour through
+                    // the parent batch was pure friction (Nick,
+                    // 2026-09-01).
+                    if (!pendingTrips.isEmpty()) {
+                        beep(SOUND_OK);
+                        enterSideTrip(pendingTrips.poll(), backId,
+                                backBin);
+                        return;
+                    }
                     parentBatchId = nextParentId;
                     parentBinName = nextParentBin;
                     batchId = backId;
