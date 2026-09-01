@@ -3,6 +3,29 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-01.
 
+## 🖨 Printer wedge watchdog + purge — ✅ DEPLOYED 2026-09-01 (agent v4)
+
+The ZD220 silently stopped taking data overnight: Windows said
+"no error, printing" while 16 labels piled behind a Printing-Retained
+head, and the app said "agent online" because jobs are marked done at
+Windows hand-off. Power cycle fixed it; nothing could see it.
+
+- **print_agent v4** (RUNNING - updated in place and task restarted):
+  reports the WINDOWS queue's depth + oldest-job age on every command
+  poll, and answers a new "purge" command by deleting every Windows
+  job. The Queue pill goes red "Printer WEDGED - N label(s) stuck for
+  Xm - power-cycle or Clear stuck jobs" when the oldest job outlives
+  90s; new confirmed "Clear stuck jobs" button (disabled with update
+  instructions on pre-v4 agents). Server-side those jobs already read
+  done - reprints cover anything that never came out.
+- **Printer picker opens from any tab**: the overlay markup lived
+  inside the Scan station section, so the header 🖨 from another tab
+  unhid a window nobody could see until Scan station opened. Moved to
+  body level. Suite test_printerwedge.py (11); 50/50.
+- Field note: the wedge predates yesterday's prints and is NOT tied
+  to the tearing test (that was ~Aug 26); cause unknown - the
+  watchdog exists precisely because Windows reports nothing.
+
 ## 🔍 C72 AUDIT tab + rack audits — ✅ DEPLOYED 2026-09-01 (C72 3.68)
 
 Nick's untagged-boxes-broke-my-audit case, designed over three Q&A
