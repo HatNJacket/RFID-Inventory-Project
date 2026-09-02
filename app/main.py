@@ -7766,8 +7766,16 @@ def batch_scan(
         )
         if item.sku else 0
     )
+    # Multi-box mark rides every scan answer so the collect step can
+    # ask the two-cartons-one-unit question the moment the second box
+    # is counted (Nick, 2026-09-02) - load-time seeding misses products
+    # first scanned mid-batch.
+    mb = _multibox_map(session, [item.sku]).get(
+        (item.sku or "").strip().upper()
+    ) if item.sku else None
     return {
         "item": item_dict,
+        "boxes_per_unit": mb.boxes_per_unit if mb else None,
         "bin_mismatch": bin_mismatch,
         "serial_note": (product or {}).get("serial_note"),
         # Present whenever a case was scanned, so the note shows here too.

@@ -62,7 +62,9 @@ with patch("app.shopify.lookup_barcode", side_effect=look), \
     # ---- label expansion --------------------------------------------
     bid = cl.post("/api/batches",
                   json={"bin":"B11-1","created_by":"Nick"}).json()["id"]
-    cl.post(f"/api/batches/{bid}/scan", json={"code":"117"})
+    r = cl.post(f"/api/batches/{bid}/scan", json={"code":"117"})
+    check("scan answer carries the mark for the collect-step question",
+          r.json().get("boxes_per_unit") == 2, r.text[:200])
     r = cl.post(f"/api/batches/{bid}/queue-labels", json={})
     check("1 unit queues 2 physical labels", r.json()["count"] == 2,
           r.text[:200])

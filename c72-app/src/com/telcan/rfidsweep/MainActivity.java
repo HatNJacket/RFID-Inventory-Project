@@ -8549,6 +8549,36 @@ public class MainActivity extends Activity {
                 .show();
     }
 
+    // Which items already got the two-cartons-one-unit question this
+    // batch - asked once per product, like the already-tagged prompt.
+    private final java.util.HashSet<Integer> mbCountAsked =
+            new java.util.HashSet<>();
+
+    /** Collect-step guard (Nick, 2026-09-02: "the collect count isn't
+     *  gated"): the moment a marked product's box count reaches 2, ask
+     *  whether those are separate units or cartons of the same unit -
+     *  the exact instinct that double-counted the 11740. */
+    private void maybeMultiboxCountAlert(final BItem it) {
+        if (!inBatch() || step != STEP_COLLECT || !it.resolved) return;
+        Integer n = recvUnitBoxes.get(it.id);
+        if (n == null || n <= 1) return;
+        if (it.qty < 2 || mbCountAsked.contains(it.id)) return;
+        mbCountAsked.add(it.id);
+        saveRecvMarks();
+        final int units = Math.max(1, it.qty / n);
+        dlg()
+                .setTitle("MULTI-BOX PRODUCT")
+                .setMessage(it.name() + ": 1 unit = " + n + " boxes.\n\n"
+                        + "You've counted " + it.qty + " box(es). If "
+                        + "those are cartons of the SAME unit(s), the "
+                        + "true count is " + units + " unit(s) - one "
+                        + "counting label each, on box 1.")
+                .setPositiveButton("COUNT AS " + units + " UNIT(S)",
+                        (d, w) -> setItemQty(it, units))
+                .setNegativeButton("THEY'RE " + it.qty + " UNITS", null)
+                .show();
+    }
+
     /** The unit-split mark is durable and store-wide (Nick, 2026-09-02:
      *  the S11740 is ALWAYS two cartons): saving it here means labels
      *  print "BOX X OF Y" and audits recognize the extra cartons from
@@ -8583,10 +8613,13 @@ public class MainActivity extends Activity {
                     : recvUnitBoxes.entrySet()) {
                 units.put(String.valueOf(e.getKey()), e.getValue());
             }
+            org.json.JSONArray asked = new org.json.JSONArray();
+            for (Integer id : mbCountAsked) asked.put(id);
             prefs.edit().putString("recv_marks_json", new JSONObject()
                     .put("batch", batchId)
                     .put("codes", codes)
-                    .put("units", units).toString()).apply();
+                    .put("units", units)
+                    .put("asked", asked).toString()).apply();
         } catch (Exception ignored) {
         }
     }
@@ -8594,11 +8627,16 @@ public class MainActivity extends Activity {
     private void loadRecvMarks() {
         recvBundleCodes.clear();
         recvUnitBoxes.clear();
+        mbCountAsked.clear();
         bundleTargetId = 0;
         try {
             JSONObject saved = new JSONObject(
                     prefs.getString("recv_marks_json", "{}"));
             if (saved.optInt("batch", -1) != batchId) return;
+            org.json.JSONArray asked = saved.optJSONArray("asked");
+            for (int i = 0; asked != null && i < asked.length(); i++) {
+                mbCountAsked.add(asked.getInt(i));
+            }
             JSONObject codes = saved.optJSONObject("codes");
             if (codes != null) {
                 java.util.Iterator<String> keys = codes.keys();
@@ -9878,6 +9916,11 @@ public class MainActivity extends Activity {
                     updateBatchCard();
                     refreshBatchList();
                     maybePriorTagAlert(item, true);
+                    // The mark rides the scan answer - a product first
+                    // scanned mid-batch gets its guidance immediately.
+                    int bpu = resp.optInt("boxes_per_unit", 0);
+                    if (bpu > 1) recvUnitBoxes.put(item.id, bpu);
+                    maybeMultiboxCountAlert(item);
                     if (receivingBatch && item.resolved
                             && item.sku != null && !item.sku.isEmpty()) {
                         fetchPlannerHint(item);
@@ -10443,6 +10486,7 @@ public class MainActivity extends Activity {
         bundleTargetId = 0;
         recvBundleCodes.clear();
         recvUnitBoxes.clear();
+        mbCountAsked.clear();
         parentBatchId = 0;
         parentBinName = null;
         pendingTrips.clear();
