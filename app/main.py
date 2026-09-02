@@ -10658,6 +10658,33 @@ def _sync_label_aliases(
         ))
 
 
+def _two_line_fields(
+    sku: str | None, top_text: str | None, sku_line: str | None
+) -> tuple | None:
+    """The (label_name, placement, label_sku) the two typed lines ask
+    for, or None when both sit at their defaults. Used to drive a print
+    run DIRECTLY from the dialog - the store-wide save is keyed by SKU
+    and silently skips SKU-less products, which made their reprints
+    ignore the typed lines entirely (Nick, 2026-09-02: edited SKU line
+    printed as "-")."""
+    top = (top_text or "").strip()
+    centre = (sku_line or "").strip()
+    default_centre = (sku or "").strip()
+    top_custom = top if top and top != STORE_HEADER else None
+    centre_custom = (
+        centre if centre and centre != default_centre else None
+    )
+    if not top_custom and not centre_custom:
+        return None
+    if top_custom and centre_custom:
+        if top_custom == centre_custom:
+            return top_custom, "both", None
+        return top_custom, "header", centre_custom
+    if top_custom:
+        return top_custom, "header", None
+    return centre_custom, "sku", None
+
+
 def _save_two_line_label(
     session: Session,
     sku: str,
@@ -10668,7 +10695,11 @@ def _save_two_line_label(
     """Map the two edited label lines onto the saved preferred name. Text
     equal to the defaults (store header on top, the SKU in the centre)
     means "standard"; both at default clears the saved name entirely.
-    Custom lines double as ephemeral lookup aliases (_sync_label_aliases)."""
+    Custom lines double as ephemeral lookup aliases (_sync_label_aliases).
+
+    SKU-less products can't save here (the store is keyed by SKU) - the
+    reprint endpoints apply their typed lines straight to the print run
+    via _two_line_fields instead."""
     sku = (sku or "").strip()
     if not sku:
         return
@@ -10780,9 +10811,19 @@ def batch_item_reprint(
             voided += 1
     session.flush()
 
-    # 4. Fresh labels, picking up the corrected name. Sealed-case labels
-    # are rebuilt at the tail, same order the original run used.
-    label_name, label_placement, label_sku = _label_name_for(session, item)
+    # 4. Fresh labels, picking up the corrected name. The typed lines
+    # drive THIS run directly (Nick, 2026-09-02: a SKU-less product
+    # can't save to the store, so reading the store back printed "-"
+    # again); the store-wide save above still covers future prints for
+    # products that CAN save. Sealed-case labels are rebuilt at the
+    # tail, same order the original run used.
+    typed = _two_line_fields(item.sku, payload.top_text, payload.sku_line)
+    if typed is not None:
+        label_name, label_placement, label_sku = typed
+    else:
+        label_name, label_placement, label_sku = _label_name_for(
+            session, item
+        )
     cases = min(item.case_count, payload.count) if item.case_units else 0
     per_label_units = (
         [None] * (payload.count - cases) + [item.case_units] * cases

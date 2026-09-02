@@ -22,8 +22,13 @@ def check(l,c,x=""):
 P = {"shopify_variant_id":"t:1","shopify_product_id":"gid://p/1",
      "product_title":"ZWO USB2.0 Type-C 2Pack","variant_title":None,
      "sku":"ZWO-USB2","barcode":"777","bin_location":"A1-1"}
+P2 = {"shopify_variant_id":"t:2","shopify_product_id":"gid://p/2",
+      "product_title":"No-SKU Widget","variant_title":None,
+      "sku":None,"barcode":"888","bin_location":"A1-1"}
 def look(t):
-    return dict(P) if t in ("777","ZWO-USB2") else None
+    if t in ("777","ZWO-USB2"): return dict(P)
+    if t == "888": return dict(P2)
+    return None
 ROWS=[{"shopify_variant_id":P["shopify_variant_id"],"shopify_product_id":P["shopify_product_id"],
        "product_title":P["product_title"],"variant_title":None,"sku":P["sku"],
        "barcode":P["barcode"],"bin":"A1-1","qty":4,"image_url":None,"vendor":"ZWO"}]
@@ -142,6 +147,30 @@ with patch("app.shopify.lookup_barcode", side_effect=look), \
           len(pend3)==4 and all(j.label_sku is None and j.label_name is None
                                 for j in pend3),
           [(j.label_sku, j.label_name) for j in pend3])
+
+    # --- SKU-less product: typed lines drive the run DIRECTLY -----------
+    # (Nick, 2026-09-02: the store-wide save is keyed by SKU and silently
+    # skips SKU-less products, so the reprint read the empty store back
+    # and printed "-" on the SKU line again.)
+    bid2 = cl.post("/api/batches",
+                   json={"bin":"A1-1","created_by":"Nick"}).json()["id"]
+    cl.post(f"/api/batches/{bid2}/scan", json={"code":"888"})
+    r = cl.post(f"/api/batches/{bid2}/queue-labels", json={})
+    check("SKU-less product queues its label", r.status_code==201,
+          r.text[:200])
+    it2 = next(i for i in cl.get(f"/api/batches/{bid2}").json()["items"]
+               if i["barcode"]=="888")
+    r = cl.post(f"/api/batches/{bid2}/items/{it2['id']}/reprint-labels",
+                json={"count":1,"top_text":"Telescopes Canada",
+                      "sku_line":"WIDGET NO 5"})
+    check("SKU-less reprint accepted", r.status_code==200, r.text[:200])
+    with S(get_engine()) as s:
+        j2 = [j for j in s.query(PrintJob).all()
+              if j.status=="pending" and j.barcode=="888"]
+    check("the typed SKU line rides the fresh job (no store round-trip)",
+          len(j2)==1 and j2[0].label_name=="WIDGET NO 5"
+          and j2[0].label_placement=="sku",
+          [(j.label_name, j.label_placement, j.label_sku) for j in j2])
 
 print()
 print("FAILED: "+", ".join(fails) if fails else "ALL CHECKS PASSED")
