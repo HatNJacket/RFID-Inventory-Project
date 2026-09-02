@@ -13,6 +13,20 @@ item is marked MOVING so the side trip carries the box to the NEW
 home with labels printed for it. No server changes. Take the gun
 update (3.76, code 94).
 
+## 📦 Multi-box pairing + strip-sweep fix — ✅ DEPLOYED 2026-09-02 (C72 3.84)
+
+Round 3 of the S11740: companion labels now have a real pairing
+story - trigger-reading box 2's sticker answers "Box 2 of 2 confirmed
+- the unit counts by Box 1's tag" (no tie, no count; wrong product =
+loud 409), and pairing a marked product's counting tag replies "Box 1
+of N paired - stick the other box label(s) on and trigger each".
+Station links and sweep-assigns of companion EPCs are refused/skipped
+by name. 3.84 on top: the full-shipment STRIP SWEEP no longer falls
+into the pair hold-sweep (a held trigger once bulk-assigned the
+leftover strip to the focused product) - strip mode outranks it, and
+the sweep is hold-to-sweep: pull starts, release stops and confirms.
+Take the gun update (3.84, code 102).
+
 ## ⚠ KNOWN DATA ISSUE: the 11740 has TWO counting tags on one unit
 
 Nick, 2026-09-02: the first 11740 was received BEFORE companion
