@@ -788,6 +788,23 @@ def tags_for_product(
 def create_assignment(
     payload: AssignmentIn, session: Session = Depends(get_session)
 ):
+    # A companion label (box 2..N of a multi-box unit) never becomes a
+    # counting tie - not even by a deliberate Scan Station link.
+    comp = session.scalar(
+        select(CompanionTag).where(
+            func.upper(CompanionTag.epc)
+            == (payload.rfid_id or "").strip().upper()
+        )
+    )
+    if comp is not None:
+        raise HTTPException(
+            409,
+            f"That tag is the companion label for Box "
+            f"{comp.box_no or '?'} of {comp.box_count or '?'} of "
+            f"{comp.product_title or comp.sku or '?'} - it counts "
+            "nowhere by design (the unit's tag is on Box 1). Nothing "
+            "to link.",
+        )
     assignment = RfidAssignment(**payload.model_dump())
     # Every real tag is a 96-bit EPC = 24 hex chars. Anything else is
     # probably a mangled read (e.g. Bluetooth relay dropping characters):
@@ -863,9 +880,19 @@ def sweep_assign(
         )
     }
     own_sku = (payload.sku or "").strip().upper()
+    # Companion labels answer sweeps like any sticker; they're excluded
+    # by name, never silently tied.
+    _comp_rows, comp_epcs = _companions_heard(session, cleaned)
     assigned: list[RfidAssignment] = []
     duplicates: list[dict] = []
+    companions_skipped: list[dict] = []
     for epc in cleaned:
+        if epc.upper() in comp_epcs:
+            companions_skipped.append(next(
+                c for c in _comp_rows
+                if (c["epc"] or "").upper() == epc.upper()
+            ))
+            continue
         row = existing.get(epc.upper())
         if row is not None:
             duplicates.append({
@@ -906,6 +933,7 @@ def sweep_assign(
         "count": len(assigned),
         "assigned": [a.as_dict() for a in assigned],
         "duplicates": duplicates,
+        "companions_skipped": companions_skipped,
     }
 
 
@@ -11201,6 +11229,39 @@ def batch_pair(
     if not item.resolved:
         raise HTTPException(422, "That item never resolved to a product.")
 
+    # A companion label (box 2..N of a multi-box unit) trigger-reads
+    # like any sticker, but it must never become a counting tie (Nick,
+    # 2026-09-02: "I need to pair 2 labels to one product"). Same
+    # product -> confirmed and done, nothing counted; different
+    # product -> the sticker is on the wrong box.
+    comp = session.scalar(
+        select(CompanionTag).where(
+            func.upper(CompanionTag.epc)
+            == (payload.epc or "").strip().upper()
+        )
+    )
+    if comp is not None:
+        if ((comp.sku or "").strip().upper()
+                != (item.sku or "").strip().upper()):
+            raise HTTPException(
+                409,
+                f"That sticker is Box {comp.box_no or '?'} of "
+                f"{comp.box_count or '?'} of "
+                f"{comp.product_title or comp.sku or '?'} - a companion "
+                "label for a DIFFERENT product.",
+            )
+        return {
+            "assignment": None,
+            "companion": comp.as_dict(),
+            "item": item.as_dict(),
+            "receiving_done": False,
+            "message": (
+                f"Box {comp.box_no or '?'} of {comp.box_count or '?'} "
+                f"confirmed ✓ - companion label, the unit counts by "
+                "Box 1's tag."
+            ),
+        }
+
     # Labels were queued loose boxes first, then sealed cases; pairing walks
     # the same order, so once the loose ones are tied the remaining tags are
     # the case labels and each stands for `case_units` units.
@@ -11217,12 +11278,14 @@ def batch_pair(
     # per-box bin was printed on the label whose EPC this is - inherit
     # it so the tag records the carton's real shelf (Nick, 2026-09-02,
     # the 11740). Falls back to the item bin for a hand-applied tag.
-    if _is_receiving(batch) and item.kind == "multi_box":
+    # The label's ", Box 1 of 2" note is sticker text, never record.
+    mb_marked = bool(_multibox_map(session, [item.sku]))
+    if _is_receiving(batch) and (item.kind == "multi_box" or mb_marked):
         job = session.scalar(
             select(PrintJob).where(PrintJob.epc == payload.epc)
         )
         if job is not None and (job.bin_location or "").strip():
-            tag_bin = job.bin_location
+            tag_bin = _strip_box_note(job.bin_location) or tag_bin
     assignment = RfidAssignment(
         rfid_id=payload.epc,
         shopify_variant_id=item.shopify_variant_id,
@@ -11268,10 +11331,26 @@ def batch_pair(
         )
     session.refresh(assignment)
     session.refresh(item)
+    # Multi-box guidance (Nick, 2026-09-02: read the labels in 1 by 1):
+    # the counting tag just paired, so the remaining box labels are the
+    # companions - name the next step right on the pair confirmation.
+    message = None
+    if mb_marked:
+        mark = _multibox_map(session, [item.sku]).get(
+            (item.sku or "").strip().upper()
+        )
+        if mark is not None and mark.boxes_per_unit > 1:
+            message = (
+                f"Box 1 of {mark.boxes_per_unit} paired ✓ - stick the "
+                f"other {mark.boxes_per_unit - 1} box label(s) on and "
+                "trigger each to confirm (they don't count, the unit "
+                "already did)."
+            )
     return {
         "assignment": assignment.as_dict(),
         "item": item.as_dict(),
         "receiving_done": receiving_done,
+        "message": message,
     }
 
 

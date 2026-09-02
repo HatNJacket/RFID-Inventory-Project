@@ -3135,14 +3135,22 @@ async function actOnReceivingLinkScan(s) {
       item_id: item.id,
       created_by: operatorEl.value || null,
     });
+    // A companion label (box 2..N of a multi-box unit) confirms, never
+    // counts - the unit already paired by box 1's tag.
+    if (r.companion) {
+      const t = r.message || "Companion label confirmed ✓ - not counted.";
+      setBatchResult(t, "ok");
+      return { ok: true, text: t };
+    }
     recvRememberPairs([s.value], item.id, itemDisplayName(item));
     await pullBatch(false);
     const fresh =
       (batchItems || []).find((i) => i.id === item.id) || item;
     const t =
+      r.message ||
       `paired to ${itemDisplayName(item)} ` +
-      `(${fresh.paired_count}/${fresh.qty_scanned})` +
-      (r.receiving_done ? " - shipment complete ✓" : "");
+        `(${fresh.paired_count}/${fresh.qty_scanned})` +
+        (r.receiving_done ? " - shipment complete ✓" : "");
     setBatchResult(t, "ok");
     return { ok: true, text: t };
   } catch (err) {
@@ -5865,6 +5873,7 @@ async function recvPullSweep(item) {
           item_id: item.id,
           created_by: operator,
         });
+        if (r.companion) continue; // confirmed, never counted
         ok++;
         landed.push(epc);
         if (r.receiving_done) done = true;
@@ -7878,6 +7887,13 @@ async function batchPairTag(code) {
       item_id: pairActiveItemId,
       created_by: operatorEl.value || null,
     });
+    if (data.companion) {
+      setBatchResult(
+        data.message || "Companion label confirmed ✓ - not counted.",
+        "ok"
+      );
+      return { ok: true, text: data.message || "companion confirmed" };
+    }
     const idx = batchItems.findIndex((i) => i.id === data.item.id);
     if (idx >= 0) {
       const flags = batchItems[idx]._binMismatch;

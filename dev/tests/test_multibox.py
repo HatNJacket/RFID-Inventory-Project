@@ -137,6 +137,76 @@ with patch("app.shopify.lookup_barcode", side_effect=look), \
     check("explicit override still notes a real separate unit",
           r.status_code == 201, r.text[:200])
 
+    # ---- pairing the dual labels (Nick round 3) ---------------------
+    # The companion sticker trigger-reads like any label: it must
+    # CONFIRM, never count - and a hand-applied counting tag on a
+    # marked product answers with the "now the other boxes" guidance.
+    r = cl.post(f"/api/batches/{bid}/pair",
+                json={"epc": jobs[1].epc, "item_id": it["id"],
+                      "created_by": "Nick"})
+    d = r.json()
+    check("companion pair = confirmed, not counted",
+          r.status_code == 201 and d["assignment"] is None
+          and d["companion"]["box_no"] == 2
+          and "counts by Box 1" in d["message"], r.text[:300])
+    it2 = next(i for i in cl.get(f"/api/batches/{bid}").json()["items"]
+               if i["id"] == it["id"])
+    check("paired count untouched by the companion confirm",
+          it2["paired_count"] == it["paired_count"], it2["paired_count"])
+    r = cl.post(f"/api/batches/{bid}/pair",
+                json={"epc": "AAAA00000000000000000MB1",
+                      "item_id": it["id"], "created_by": "Nick"})
+    check("counting pair answers with the next-boxes guidance",
+          r.status_code == 201
+          and "Box 1 of 2 paired" in (r.json().get("message") or ""),
+          r.text[:300])
+
+    # Wrong product: the companion sticker is on somebody else's box.
+    with Session(get_engine()) as s:
+        s.add(BinMapEntry(sku="OTHER-1", barcode="909",
+                          product_title="Other Thing", bin="B11-1",
+                          qty=1, shopify_variant_id="t:OT"))
+        s.commit()
+    def look2(t):
+        if t in ("909","OTHER-1"):
+            return {"shopify_variant_id":"t:OT",
+                    "shopify_product_id":"gid://p/OT",
+                    "product_title":"Other Thing","variant_title":None,
+                    "sku":"OTHER-1","barcode":"909",
+                    "bin_location":"B11-1"}
+        return look(t)
+    with patch("app.shopify.lookup_barcode", side_effect=look2), \
+         patch("app.shopify.lookup_barcode_all",
+               side_effect=lambda t:([look2(t)] if look2(t) else [])):
+        cl.post(f"/api/batches/{bid}/scan", json={"code":"909"})
+        other = next(i for i in cl.get(f"/api/batches/{bid}")
+                     .json()["items"] if i["barcode"] == "909")
+        r = cl.post(f"/api/batches/{bid}/pair",
+                    json={"epc": jobs[1].epc, "item_id": other["id"],
+                          "created_by": "Nick"})
+        check("companion on the wrong product refuses loudly",
+              r.status_code == 409
+              and "DIFFERENT product" in r.json()["detail"],
+              r.text[:300])
+
+    # Station link + sweep-assign can't tie a companion either.
+    r = cl.post("/api/rfid-assignments", json={
+        "rfid_id": jobs[1].epc, "shopify_variant_id": "t:MB",
+        "product_title": "Big Scope S11740", "sku": "S11740",
+        "assigned_by": "Nick"})
+    check("station link of a companion refuses", r.status_code == 409
+          and "counts nowhere" in r.json()["detail"], r.text[:300])
+    r = cl.post("/api/rfid-assignments/sweep", json={
+        "epcs": [jobs[1].epc, "AAAA00000000000000000MB2"],
+        "shopify_variant_id": "t:MB",
+        "product_title": "Big Scope S11740", "sku": "S11740",
+        "bin_location": "B11-1", "assigned_by": "Nick"})
+    d = r.json()
+    check("sweep-assign skips the companion by name",
+          d["count"] == 1
+          and len(d["companions_skipped"]) == 1
+          and d["companions_skipped"][0]["box_no"] == 2, r.text[:300])
+
     # ---- clearing the mark ------------------------------------------
     r = cl.put("/api/multibox/S11740", json={"boxes_per_unit": 1,
                                              "updated_by": "Nick"})

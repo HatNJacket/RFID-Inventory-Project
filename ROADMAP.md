@@ -13,6 +13,18 @@ item is marked MOVING so the side trip carries the box to the NEW
 home with labels printed for it. No server changes. Take the gun
 update (3.76, code 94).
 
+## ⚠ KNOWN DATA ISSUE: the 11740 has TWO counting tags on one unit
+
+Nick, 2026-09-02: the first 11740 was received BEFORE companion
+labels existed, so its single unit got two normal labels and both
+were paired - two counting RfidAssignments for one physical unit.
+Every count (audits, verify, expected math) reads it one high until
+fixed. Nick's call: leave it for now, fix later. The fix when he's
+ready: unlink one of the two ties (product window > its tag row, or
+tag-unlink), peel or replace that sticker with a companion-label
+reprint from the product window. Do NOT "fix" it by lowering
+on-hand - the stock is right, the tag count is wrong.
+
 ## 📦 Multi-box units — ✅ DEPLOYED 2026-09-02 (C72 3.82)
 
 The S11740 (one telescope, two cartons): durable mark in

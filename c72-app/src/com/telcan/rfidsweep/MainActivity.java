@@ -7140,6 +7140,7 @@ public class MainActivity extends Activity {
         if (epcs.isEmpty()) return;
         new Thread(() -> {
             int ok = 0;
+            int comps = 0;
             String err = null;
             for (String epc : epcs) {
                 try {
@@ -7148,7 +7149,14 @@ public class MainActivity extends Activity {
                             .put("item_id", target.id)
                             .put("created_by",
                                     prefs.getString("device", "C72"));
-                    api("POST", "/api/batches/" + batchId + "/pair", body);
+                    JSONObject resp = api("POST",
+                            "/api/batches/" + batchId + "/pair", body);
+                    // Companion labels confirm, never count (multi-box
+                    // units - Nick, 2026-09-02).
+                    if (resp.optJSONObject("companion") != null) {
+                        comps++;
+                        continue;
+                    }
                     pairHistory.push(new String[]{epc,
                             String.valueOf(target.id)});
                     ok++;
@@ -7157,11 +7165,14 @@ public class MainActivity extends Activity {
                 }
             }
             final int done = ok;
+            final int companions = comps;
             final String problem = err;
             ui.post(() -> {
-                beep(done > 0 ? SOUND_OK : SOUND_ERR);
+                beep(done > 0 || companions > 0 ? SOUND_OK : SOUND_ERR);
                 status.setText(done + " tag(s) assigned to "
                         + target.name()
+                        + (companions > 0 ? " · " + companions
+                          + " companion box label(s) confirmed" : "")
                         + (problem != null ? " · " + problem : ""));
                 // Sweep pairs feed auto-advance too (Nick, 2026-08-26:
                 // most pairing IS sweeps, and the hop only fired on
@@ -10092,6 +10103,22 @@ public class MainActivity extends Activity {
                         .put("created_by", prefs.getString("device", "C72"));
                 JSONObject resp = api("POST",
                         "/api/batches/" + batchId + "/pair", body);
+                // Box 2..N of a multi-box unit: the sticker is
+                // CONFIRMED, not counted - the unit already paired by
+                // Box 1's tag (Nick, 2026-09-02).
+                final JSONObject comp = resp.optJSONObject("companion");
+                if (comp != null) {
+                    final String cmsg = resp.optString("message",
+                            "Companion label confirmed ✓ - not counted.");
+                    ui.post(() -> {
+                        tagReadBusy = false;
+                        beep(SOUND_OTHER);
+                        status.setText(cmsg);
+                    });
+                    return;
+                }
+                final String hint = resp.isNull("message") ? null
+                        : resp.optString("message", null);
                 final BItem item = BItem.from(resp.getJSONObject("item"));
                 final boolean suspect = resp.getJSONObject("assignment")
                         .optBoolean("suspect");
@@ -10114,12 +10141,13 @@ public class MainActivity extends Activity {
                     pairHistory.push(new String[]{epc,
                             String.valueOf(item.id)});
                     beep(SOUND_OK);
-                    status.setText((suspect ? "SUSPECT read saved — " : "")
-                            + "Tag ✓ …" + epc.substring(
-                                    Math.max(0, epc.length() - 6))
-                            + "  (" + item.paired
-                            + (item.qty > 0 ? "/" + item.qty : "")
-                            + " tags)" + pickNote(read));
+                    status.setText(hint != null ? hint
+                            : (suspect ? "SUSPECT read saved — " : "")
+                              + "Tag ✓ …" + epc.substring(
+                                      Math.max(0, epc.length() - 6))
+                              + "  (" + item.paired
+                              + (item.qty > 0 ? "/" + item.qty : "")
+                              + " tags)" + pickNote(read));
                     updateBatchCard();
                     refreshBatchList();
                     if (!maybeAutoFinishTrip(item)) maybeAutoAdvance(item);
