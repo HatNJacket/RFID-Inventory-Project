@@ -15259,6 +15259,18 @@ public class MainActivity extends Activity {
                                 PackageInstaller.SessionParams
                                         .MODE_FULL_INSTALL);
                 params.setAppPackageName(getPackageName());
+                // Android 12+: a self-update by the app that installed
+                // itself can skip the "Do you want to update this
+                // app?" tap entirely (Nick, 2026-09-02). Older Android
+                // ignores this and keeps its one confirm dialog.
+                if (Build.VERSION.SDK_INT >= 31) {
+                    try {
+                        params.setRequireUserAction(
+                                PackageInstaller.SessionParams
+                                        .USER_ACTION_NOT_REQUIRED);
+                    } catch (Exception ignored) {
+                    }
+                }
                 int sid = pi.createSession(params);
                 session = pi.openSession(sid);
                 try (InputStream in = conn.getInputStream();
@@ -15310,7 +15322,19 @@ public class MainActivity extends Activity {
                     confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                     context.startActivity(confirm);
                 }
-            } else if (status != PackageInstaller.STATUS_SUCCESS) {
+            } else if (status == PackageInstaller.STATUS_SUCCESS) {
+                // A silent update killed and replaced the app - reopen
+                // it so the gun lands back on the new version without a
+                // hunt for the icon. Best-effort: newer Android may
+                // block activity starts from the background; then the
+                // operator opens it as before.
+                try {
+                    Intent open = new Intent(context, MainActivity.class);
+                    open.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    context.startActivity(open);
+                } catch (Exception ignored) {
+                }
+            } else {
                 String msg = intent.getStringExtra(
                         PackageInstaller.EXTRA_STATUS_MESSAGE);
                 Toast.makeText(context, "App update failed: "
