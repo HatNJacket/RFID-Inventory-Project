@@ -3,6 +3,16 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-01.
 
+## 🔍 Audit check polish — ✅ DEPLOYED 2026-09-01 (C72 3.71)
+
+Nick's J2 rack audit: the check cards now lead with the product's
+BIN(s) ("BIN J2-3 · 2/3 heard · …" - a rack audit lists several bins'
+products, so each card says which level), and a MARK ALL SOLD (n)
+button on the check dialog retires EVERY sales-covered silent tag in
+one confirmed pass (same eligibility rule as the per-row button; one
+undo per product in History; re-checks automatically after). Take the
+gun update (3.71, code 89).
+
 ## 📦 Receive entire shipment + held vendor strips — ✅ DEPLOYED 2026-09-01 (both apps)
 
 Nick's RFID-first receiving (Q&A'd, replaces nothing). Batch tab →

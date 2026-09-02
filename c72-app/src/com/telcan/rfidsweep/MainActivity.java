@@ -11815,6 +11815,9 @@ public class MainActivity extends Activity {
         JSONArray unknown = rep.optJSONArray("unknown_epcs");
         JSONArray owed = rep.optJSONArray("printed_labels_heard");
         int flagged = 0;
+        // Every product whose silence is FULLY covered by sales - fed
+        // to the one-tap MARK ALL SOLD button (Nick, 2026-09-01).
+        final List<Object[]> sellable = new ArrayList<>();
 
         if (owed != null && owed.length() > 0) {
             StringBuilder sb = new StringBuilder();
@@ -11850,17 +11853,40 @@ public class MainActivity extends Activity {
             StringBuilder sb = new StringBuilder();
             sb.append(it.optString("product_title",
                     it.optString("sku")));
-            sb.append("\n").append(det).append("/").append(here)
-                    .append(" heard");
+            // The product's bin(s) on the card (Nick, 2026-09-01: a
+            // rack audit lists several bins' products - say which
+            // level each one lives on).
+            JSONArray binsArr = it.optJSONArray("bins");
+            StringBuilder binsTxt = new StringBuilder();
+            for (int j = 0; binsArr != null && j < binsArr.length();
+                    j++) {
+                if (binsTxt.length() > 0) binsTxt.append(", ");
+                binsTxt.append(binsArr.optString(j));
+            }
+            sb.append("\n");
+            if (binsTxt.length() > 0) {
+                sb.append("BIN ").append(binsTxt).append(" · ");
+            }
+            sb.append(det).append("/").append(here).append(" heard");
             if (exp >= 0) sb.append(" · expected ").append(exp)
                     .append(" · on shelf ").append(heardUnits);
             if (gh > 0) sb.append("\n⚠ ").append(gh).append(" tag(s) "
                     + "marked sold ANSWERED - box never left");
             if (silent > 0) {
                 sb.append("\n").append(silent).append(" silent");
-                if (sold >= silent) sb.append(" - ").append(sold)
-                        .append(" sold since last audit covers it");
-                else if (sold > 0) sb.append(" vs only ").append(sold)
+                if (sold >= silent) {
+                    sb.append(" - ").append(sold)
+                            .append(" sold since last audit covers it");
+                    JSONArray se = it.optJSONArray("silent_epcs");
+                    if (se != null && se.length() > 0) {
+                        List<String> eps = new ArrayList<>();
+                        for (int j = 0; j < se.length(); j++) {
+                            eps.add(se.optString(j));
+                        }
+                        sellable.add(new Object[]{
+                                it.optString("sku"), eps});
+                    }
+                } else if (sold > 0) sb.append(" vs only ").append(sold)
                         .append(" sold - count off");
                 else sb.append(" - no sales explain it");
             }
@@ -11895,15 +11921,95 @@ public class MainActivity extends Activity {
         final int total = items == null ? 0 : items.length();
         ScrollView scroll = new ScrollView(this);
         scroll.addView(list);
-        dlg().setTitle("AUDIT CHECK - " + loc
+        AlertDialog.Builder b = dlg()
+                .setTitle("AUDIT CHECK - " + loc
                         + (rep.optBoolean("rack") ? " (whole rack)" : ""))
                 .setView(scroll)
                 .setPositiveButton("LOG AUDIT ✓", (d, w) ->
                         auditLogComplete(loc, total, flaggedFinal))
-                .setNegativeButton("BACK", null)
-                .show();
+                .setNegativeButton("BACK", null);
+        // One tap instead of a per-product crawl (Nick, 2026-09-01):
+        // retire EVERY sales-covered silent tag at once. Only products
+        // whose silence is FULLY covered by recorded sales qualify -
+        // same rule as the per-row button.
+        if (!sellable.isEmpty()) {
+            int units = 0;
+            for (Object[] e : sellable) {
+                units += ((List<?>) e[1]).size();
+            }
+            b.setNeutralButton("MARK ALL SOLD (" + units + ")",
+                    (d, w) -> auditMarkAllSold(loc, sellable));
+        }
+        b.show();
         status.setText("Tap a product row for fixes: set stock, mark "
                 + "sold, un-retire, locate list.");
+    }
+
+    /** Bulk mark-sold: every product whose silent tags are fully
+     *  covered by recorded sales, retired in one confirmed pass. */
+    private void auditMarkAllSold(final String loc,
+                                  final List<Object[]> entries) {
+        final String device = prefs.getString("device", "C72");
+        StringBuilder msg = new StringBuilder();
+        int units = 0;
+        for (Object[] e : entries) {
+            int n = ((List<?>) e[1]).size();
+            units += n;
+            msg.append("\n· ").append(e[0]).append(" × ").append(n);
+        }
+        final int totalUnits = units;
+        dlg().setTitle("MARK " + units + " TAG(S) PRESUMED SOLD")
+                .setMessage("Fulfilled orders account for every one of "
+                        + "these silent tags:" + msg
+                        + "\n\nRetire them all? Shopify is untouched; "
+                        + "each product gets its own undo in History.")
+                .setPositiveButton("MARK ALL SOLD", (d, w) ->
+                        new Thread(() -> {
+                            int ok = 0;
+                            StringBuilder errs = new StringBuilder();
+                            for (Object[] e : entries) {
+                                try {
+                                    JSONArray eps = new JSONArray();
+                                    for (Object epc : (List<?>) e[1]) {
+                                        eps.put(String.valueOf(epc));
+                                    }
+                                    api("POST",
+                                            "/api/assignments/mark-sold",
+                                            new JSONObject()
+                                                    .put("sku", e[0])
+                                                    .put("epcs", eps)
+                                                    .put("changed_by",
+                                                            device));
+                                    ok++;
+                                } catch (Exception ex) {
+                                    errs.append("\n").append(e[0])
+                                            .append(": ")
+                                            .append(ex.getMessage());
+                                }
+                            }
+                            final int okF = ok;
+                            final String errText = errs.toString();
+                            ui.post(() -> {
+                                if (errText.isEmpty()) {
+                                    beep(SOUND_OK);
+                                    status.setText("✓ " + totalUnits
+                                            + " tag(s) across " + okF
+                                            + " product(s) retired "
+                                            + "presumed-sold. "
+                                            + "Re-checking…");
+                                } else {
+                                    beep(SOUND_ERR);
+                                    status.setText(okF + " product(s) "
+                                            + "done, some failed:"
+                                            + errText);
+                                }
+                                // Fresh numbers - the silent rows
+                                // should now read clear.
+                                auditCheck();
+                            });
+                        }).start())
+                .setNegativeButton("CANCEL", null)
+                .show();
     }
 
     private void auditItemActions(final String loc, final JSONObject it,
