@@ -462,6 +462,8 @@ _sh.set_product_bin = (
 _sh.fetch_all_variant_bins = lambda: []
 _sh.get_stock_info_by_skus = lambda skus: {}
 _sh.get_quantities_by_skus = lambda skus: {}
+_sh.get_quantity_pairs_by_skus = lambda skus: {}
+_sh.get_shelf_on_hand = _fake_get
 _sh.get_on_hand_by_skus = lambda skus: {
     s: _FAKE[s] for s in skus if s in _FAKE}
 # The broken-SKU demo: live Shopify still holds the real character our

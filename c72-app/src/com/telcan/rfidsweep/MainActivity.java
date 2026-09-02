@@ -5959,6 +5959,19 @@ public class MainActivity extends Activity {
                         + "neighboring shelf or uncollected stock");
                 col.addView(over);
             }
+            int overUnavail = r.optInt("over_unavailable");
+            if (overUnavail > 0) {
+                // More on the shelf than expected, but Shopify's
+                // UNAVAILABLE bucket accounts for it (Nick, 2026-09-01,
+                // W9160A): explained, not an error.
+                TextView ou = new TextView(this);
+                ou.setTextSize(11.5f);
+                ou.setTextColor(C_OK);
+                ou.setText("✓ " + overUnavail + " more than expected - "
+                        + "matches its UNAVAILABLE stock in Shopify "
+                        + "(reserved/damaged), so the extra is explained");
+                col.addView(ou);
+            }
             row.addView(col, weight());
 
             if ("unheard".equals(state) || "silent".equals(state)) {
@@ -11929,11 +11942,21 @@ public class MainActivity extends Activity {
             // rack audit lists several bins' products - say which
             // level each one lives on).
             String bins = auditBinsText(it);
+            int unavail = it.optInt("unavailable");
+            boolean overExplained = exp >= 0 && heardUnits > exp
+                    && heardUnits - exp <= unavail;
             StringBuilder sb = new StringBuilder();
             if (!bins.isEmpty()) sb.append(bins).append(" · ");
             sb.append(det).append("/").append(here).append(" heard");
             if (exp >= 0) sb.append(" · expected ").append(exp)
                     .append(" · on shelf ").append(heardUnits);
+            if (overExplained) {
+                // More than expected but Shopify's Unavailable bucket
+                // accounts for it (Nick, 2026-09-01, W9160A).
+                sb.append("\n✓ ").append(heardUnits - exp)
+                        .append(" over - matches its unavailable stock "
+                                + "in Shopify (reserved/damaged)");
+            }
             if (gh > 0) sb.append("\n⚠ ").append(gh).append(" tag(s) "
                     + "marked sold ANSWERED - box never left");
             if (silent > 0) {
@@ -11961,7 +11984,7 @@ public class MainActivity extends Activity {
             boolean bad = (silent > 0 && sold < silent) || fPrinted > 0
                     || gh > 0;
             boolean warn = silent > 0 || fOpen > 0
-                    || (exp >= 0 && heardUnits != exp);
+                    || (exp >= 0 && heardUnits != exp && !overExplained);
             int color = bad ? C_OVER : warn ? C_WARN : C_OK;
             if (bad || warn) flagged++;
             LinearLayout row = auditCard(

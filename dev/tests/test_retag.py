@@ -57,6 +57,12 @@ with patch("app.shopify.lookup_barcode", side_effect=fake_lookup), \
                for k in [s.upper().replace("RETAG", "RETAG")]
                if k in ONHAND
            }), \
+     patch("app.shopify.get_quantity_pairs_by_skus",
+           side_effect=lambda skus: {
+               s: (ONHAND[s.upper()], 0)
+               for s in skus if s.upper() in ONHAND
+           }), \
+     patch("app.shopify.get_shelf_on_hand", return_value=2), \
      patch("app.main._kick_orders_sync_soon"):
   with TestClient(app) as cl:
     from sqlalchemy import select
@@ -274,7 +280,7 @@ with patch("app.shopify.lookup_barcode", side_effect=fake_lookup), \
         s.add(BinMapEntry(sku="RETAG-B", bin="F1-1", qty=3,
                           product_title="Telrad Finder"))
         s.commit()
-    with patch("app.shopify.get_quantities_by_skus",
+    with patch("app.shopify.get_quantity_pairs_by_skus",
                side_effect=RuntimeError("cold start")):
         r = cl.post(f"/api/batches/{bid}/shelf-sweep",
                     json={"epcs": swept, "device": "C72",

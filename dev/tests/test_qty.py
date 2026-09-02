@@ -52,9 +52,24 @@ def fake_query(q, variables=None):
 with patch("app.shopify.query_shopify", side_effect=fake_query):
     got = shopify.get_quantities_by_skus([n["sku"] for n in NODES])
 
-check("the query actually asks Shopify for on_hand",
-      'quantities(names: ["on_hand"])' in captured.get("query", ""),
-      captured.get("query", "")[:120])
+check("the query asks Shopify for on_hand AND the unavailable bucket",
+      '"on_hand"' in captured.get("query", "")
+      and '"reserved"' in captured.get("query", "")
+      and '"damaged"' in captured.get("query", ""),
+      captured.get("query", "")[:160])
+# Unavailable stock subtracts from the shelf expectation (Nick,
+# 2026-09-01, W9160A: on-hand 1, unavailable 1 -> expect 0 on shelf).
+W_NODE = {"sku": "W9160A", "inventoryQuantity": 1,
+          "inventoryItem": {"inventoryLevels": {"nodes": [
+              {"quantities": [{"name": "on_hand", "quantity": 1},
+                              {"name": "reserved", "quantity": 1}]}
+          ]}}}
+with patch("app.shopify.query_shopify",
+           side_effect=lambda q, variables=None:
+           {"productVariants": {"nodes": [W_NODE]}}):
+    w = shopify.get_quantity_pairs_by_skus(["W9160A"])
+check("unavailable stock subtracts from the shelf expectation",
+      w["W9160A"] == (0, 1), w.get("W9160A"))
 check("oversold product reports its real shelf count, not -3",
       got["44135"] == 2, got.get("44135"))
 check("available 0 vs on-hand 0 still agrees", got["22016"] == 0,

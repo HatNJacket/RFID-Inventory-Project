@@ -5206,7 +5206,96 @@ function renderBatchItems() {
       // name instead of under it.
       li.classList.add("bcell--stacked");
     }
+    // Multi-select (Nick, 2026-09-01, ⚙ toggle): tick several products,
+    // set all their bins in one pass - each write goes through the same
+    // audited /api/bin-updates, logged per product with its undo.
+    if (multibinOn() && item.resolved && item.sku) {
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.className = "multibin__cb";
+      cb.checked = multibinSel.has(item.sku);
+      cb.title = "Select for a bulk bin update";
+      cb.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        if (cb.checked) multibinSel.add(item.sku);
+        else multibinSel.delete(item.sku);
+        renderMultibinBar();
+      });
+      li.prepend(cb);
+    }
     bEl.items.append(li);
+  });
+  renderMultibinBar();
+}
+
+// --- Bulk bin updates (Nick, 2026-09-01) ------------------------------------
+const multibinEl = document.getElementById("multibin-select");
+if (multibinEl) {
+  multibinEl.checked = localStorage.getItem("multibinSelect") === "1";
+  multibinEl.addEventListener("change", () => {
+    localStorage.setItem("multibinSelect", multibinEl.checked ? "1" : "0");
+    multibinSel.clear();
+    if (batch && !isReceivingBatch()) renderBatchItems();
+  });
+}
+const multibinSel = new Set();
+
+function multibinOn() {
+  return !!(multibinEl && multibinEl.checked);
+}
+
+function renderMultibinBar() {
+  let bar = document.getElementById("multibin-bar");
+  if (!multibinOn() || multibinSel.size === 0) {
+    if (bar) bar.remove();
+    return;
+  }
+  if (!bar) {
+    bar = document.createElement("div");
+    bar.id = "multibin-bar";
+    bar.className = "sortselbar";
+    bEl.items.parentElement.insertBefore(bar, bEl.items);
+  }
+  bar.innerHTML = `
+    <span>${multibinSel.size} product(s) selected</span>
+    <button class="print__btn" id="multibin-go" type="button">Set bin for selected…</button>
+    <button class="reset" id="multibin-clear" type="button">Clear selection</button>`;
+  bar.querySelector("#multibin-clear").addEventListener("click", () => {
+    multibinSel.clear();
+    renderBatchItems();
+  });
+  bar.querySelector("#multibin-go").addEventListener("click", async () => {
+    const skus = [...multibinSel];
+    const bin = prompt(
+      `Move ${skus.length} product(s) to which bin?\n\n` +
+        skus.join(", ").slice(0, 300) +
+        `\n\nEach write goes to Shopify AND the local records, logged ` +
+        `per product with its own undo in History.`
+    );
+    if (bin === null || !bin.trim()) return;
+    const target = bin.trim();
+    let ok = 0;
+    const errs = [];
+    for (const sku of skus) {
+      try {
+        await postJson("/api/bin-updates", {
+          target: sku,
+          bin: target,
+          changed_by: operatorEl.value || null,
+        });
+        ok++;
+      } catch (err) {
+        errs.push(`${sku}: ${err.message}`);
+      }
+    }
+    multibinSel.clear();
+    await refreshBatch();
+    setBatchResult(
+      `${ok} of ${skus.length} product(s) moved to ${target}` +
+        (errs.length ? ` — failed: ${errs.join("; ").slice(0, 200)}` : "") +
+        `.`,
+      errs.length ? "err" : "ok"
+    );
   });
 }
 
@@ -6373,6 +6462,9 @@ function renderCheckList() {
             (sh.presumed_sold ? ` (${sh.presumed_sold} presumed sold)` : "") +
             (sh.over_heard
               ? ` · heard ${sh.over_heard} more tag(s) than boxes collected, check for a neighboring shelf or uncollected stock`
+              : "") +
+            (sh.over_unavailable
+              ? ` · ${sh.over_unavailable} more on the shelf than expected - matches its UNAVAILABLE stock in Shopify (reserved/damaged), so the extra is explained`
               : "")
           : "");
       li.querySelector(".bcell__info").append(flags);
@@ -11458,6 +11550,20 @@ function renderBinAudit() {
       } else if (silent > 0) {
         flags.push([`${silent} tagged box(es) silent`, "chip--warn"]);
       }
+      // Extra units explained by Shopify's Unavailable bucket (Nick,
+      // 2026-09-01, W9160A): expected already subtracts unavailable,
+      // so an over-count within that bucket is the "unavailable" unit
+      // sitting on the shelf after all - explained, not an error.
+      if (r.expected_qty != null) {
+        const overBy =
+          r.units_here - (r.expected_qty + (r.backorder_debt || 0));
+        if (overBy > 0 && overBy <= (r.unavailable || 0)) {
+          flags.push([
+            `${overBy} over - matches its unavailable stock in Shopify`,
+            "chip--ok",
+          ]);
+        }
+      }
       // Ghosts: presumed-sold (or replaced/dead) tags that ANSWERED -
       // the box never left. Treated as one more scan in the end; the
       // chip says why the numbers moved (Nick, 2026-09-01).
@@ -12684,6 +12790,48 @@ let phistData = null;
 // The product panel's prints get their own session per open.
 let phistPrintSession = null;
 
+// Inline bin edit in the parent product window (Nick, 2026-09-01):
+// click the bin, type, Enter saves (Escape cancels) - through the same
+// audited /api/bin-updates every other bin write uses.
+function phistEditBin(sku, span) {
+  const inp = document.createElement("input");
+  inp.className = "product__bin-input";
+  inp.type = "text";
+  inp.maxLength = 100;
+  inp.autocomplete = "off";
+  inp.spellcheck = false;
+  inp.value = span.textContent === "—" ? "" : span.textContent;
+  let closed = false;
+  const done = async (commit) => {
+    if (closed) return;
+    closed = true;
+    const v = inp.value.trim();
+    inp.replaceWith(span);
+    if (!commit || !v || v === span.textContent) return;
+    try {
+      await postJson("/api/bin-updates", {
+        target: sku,
+        bin: v,
+        changed_by: operatorEl.value || null,
+      });
+      span.textContent = v;
+      document.getElementById("phist-msg").textContent =
+        `Bin set to ${v} ✓ - Shopify and the local records moved ` +
+        `together. Undo lives in History.`;
+    } catch (err) {
+      alert(err.message);
+    }
+  };
+  inp.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") done(true);
+    else if (e.key === "Escape") done(false);
+  });
+  inp.addEventListener("blur", () => done(true));
+  span.replaceWith(inp);
+  inp.focus();
+  inp.select();
+}
+
 async function openProductHistory(term) {
   phistPrintSession = makePrintSession();
   const overlay = document.getElementById("phist-overlay");
@@ -12784,11 +12932,39 @@ async function openProductHistory(term) {
     } else {
       titleEl.textContent = titleText;
     }
-    document.getElementById("phist-meta").textContent =
-      `SKU: ${data.sku || "—"} · Barcode: ${data.barcode || "—"}` +
-      (p ? ` · Bin: ${p.bin_location || "—"}` : "") +
-      ` · ${data.tag_count} tag(s) on file` +
-      (data.on_hand != null ? ` · on-hand ${data.on_hand}` : "");
+    // The bin is editable RIGHT HERE (Nick, 2026-09-01) - same
+    // click-to-edit the Scan Station card has, no Edit Product detour.
+    // Writes through the audited /api/bin-updates (Shopify + local
+    // records + open-batch snapshots in one commit).
+    const metaEl = document.getElementById("phist-meta");
+    metaEl.innerHTML = "";
+    metaEl.append(
+      document.createTextNode(
+        `SKU: ${data.sku || "—"} · Barcode: ${data.barcode || "—"}`
+      )
+    );
+    if (p) {
+      metaEl.append(document.createTextNode(" · Bin: "));
+      const binSpan = document.createElement("span");
+      binSpan.className = "product__bin product__bin--edit";
+      binSpan.title =
+        "Click to set the bin - writes to Shopify and moves the " +
+        "local records, no Edit Product needed";
+      binSpan.textContent = p.bin_location || "—";
+      const binSku = data.sku || p.sku;
+      if (binSku) {
+        binSpan.addEventListener("click", () =>
+          phistEditBin(binSku, binSpan)
+        );
+      }
+      metaEl.append(binSpan);
+    }
+    metaEl.append(
+      document.createTextNode(
+        ` · ${data.tag_count} tag(s) on file` +
+          (data.on_hand != null ? ` · on-hand ${data.on_hand}` : "")
+      )
+    );
     renderPhistTags(data, term);
     const img = document.getElementById("phist-img");
     if (data.image_url) {

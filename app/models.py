@@ -1029,7 +1029,14 @@ class BinMapEntry(Base):
     # One row per bin: a product split across shelves ("G2-1 & B17") gets a
     # row for each, and each row names the others here.
     other_bins: Mapped[str | None] = mapped_column(String(255))
+    # SHELF-expected units: Shopify on_hand MINUS the Unavailable bucket
+    # (reserved/damaged/safety/QC) since 2026-09-01 (Nick, W9160A) - the
+    # unavailable count rides along so audits can EXPLAIN an over-count.
+    # Prod needs dev/alter_add_binmap_unavailable.py.
     qty: Mapped[int | None] = mapped_column(Integer)
+    unavailable: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     image_url: Mapped[str | None] = mapped_column(String(500))
     # Shopify's product vendor — the brand, for filtering/sorting.
     vendor: Mapped[str | None] = mapped_column(String(150), index=True)

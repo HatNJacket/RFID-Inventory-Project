@@ -53,6 +53,7 @@ with patch("app.shopify.lookup_barcode", side_effect=fake_lookup), \
      patch("app.shopify.get_stock_info_by_skus", return_value={}), \
      patch("app.shopify.get_quantities_by_skus", return_value={}), \
      patch("app.shopify.get_on_hand", return_value=7), \
+     patch("app.shopify.get_shelf_on_hand", return_value=7), \
      patch("app.main._kick_orders_sync_soon"):
   with TestClient(app) as cl:
     # Saved two-line label for ALPHA-1.

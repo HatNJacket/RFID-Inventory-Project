@@ -3,6 +3,36 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-01.
 
+## 📉 Unavailable stock + product-window polish — ✅ DEPLOYED 2026-09-01 (C72 3.73)
+
+Nick's W9160A case (on-hand 1, unavailable 1, not on the shelf):
+
+- **Shelf math subtracts Shopify's Unavailable bucket everywhere**
+  (reserved + damaged + safety stock + QC): the bin map's qty is now
+  effective (new rfid_bin_map.unavailable column, migration RUN on
+  prod; values land on the next map rebuild), get_quantities/
+  stock-info/expected-qty all subtract, and get_shelf_on_hand serves
+  display/gate paths. ON-HAND WRITE FLOWS STAY RAW (get_on_hand
+  untouched) - Shopify's own on-hand field includes unavailable, so
+  raise/lower/undo bookkeeping must not shift.
+- **Over-counts explained**: shelf > expected but within the
+  unavailable bucket = the "unavailable" unit was on the shelf after
+  all. Verify rows (web + C72, server-computed over_unavailable), the
+  web bin audit chip, and the C72 audit check card all say
+  "matches its unavailable stock" in green instead of flagging red.
+- **Parent product window**: the bin is click-to-edit right in the
+  head (Enter saves through /api/bin-updates - Shopify + local
+  records + open-batch snapshots; Escape cancels) - no Edit Product
+  detour. This brings the window in line with the Scan Station card's
+  bin chip.
+- **Multi-select bulk bin moves** (⚙ "Multi-select in batch tagging"):
+  checkboxes on every resolved batch-list product; a selection bar
+  offers "Set bin for selected…" - one prompt, one audited
+  /api/bin-updates write per product (each with its own History
+  undo), per-SKU failures named.
+
+Take the gun update (3.73, code 91).
+
 ## 🔍 Audit check round 2 — ✅ DEPLOYED 2026-09-01 (C72 3.72)
 
 Nick's three: (1) "printed label answered but never paired" warnings

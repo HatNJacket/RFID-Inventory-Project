@@ -2804,6 +2804,15 @@ tr.binaudit-untagged td { opacity: 0.72; }
   border-radius: 8px;
 }
 
+/* Multi-select bulk bin updates (Nick 2026-09-01) */
+.multibin__cb {
+  width: 20px;
+  height: 20px;
+  margin-right: 8px;
+  flex: none;
+  cursor: pointer;
+}
+
 /* Vendor nickname: what the BOX says when the vendor's labelling has
    nothing to do with our SKU or title (Nick 2026-09-01) */
 .vendorname {

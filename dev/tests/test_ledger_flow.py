@@ -70,6 +70,13 @@ with patch("app.shopify.lookup_barcode", side_effect=fake_lookup), \
            side_effect=lambda skus: {
                s: ONHAND[s.upper()] for s in skus if s.upper() in ONHAND
            }), \
+     patch("app.shopify.get_quantity_pairs_by_skus",
+           side_effect=lambda skus: {
+               s: (ONHAND[s.upper()], 0)
+               for s in skus if s.upper() in ONHAND
+           }), \
+     patch("app.shopify.get_shelf_on_hand",
+           side_effect=lambda sku: ONHAND.get(str(sku).upper())), \
      patch("app.shopify.set_on_hand",
            side_effect=lambda sku, qty: ONHAND.get(str(sku).upper())), \
      patch("app.main._kick_orders_sync_soon"):

@@ -220,6 +220,14 @@ def update_product_vendor(product_gid: str, vendor: str) -> dict:
     return result["product"]
 
 
+# Shelf math needs on_hand MINUS the admin's "Unavailable" bucket
+# (reserved + damaged + safety stock + quality control): those units are
+# in Shopify's on-hand but deliberately not sellable and usually not on
+# the shelf (Nick, 2026-09-01, W9160A). Every shelf-expectation query
+# fetches the components; on-hand WRITE flows keep using raw on_hand.
+_SHELF_QTY_NAMES = ('["on_hand", "reserved", "damaged", '
+                    '"safety_stock", "quality_control"]')
+
 _QTY_QUERY = """
 query Quantities($search: String!) {
   productVariants(first: 50, query: $search) {
@@ -228,13 +236,13 @@ query Quantities($search: String!) {
       inventoryQuantity
       inventoryItem {
         inventoryLevels(first: 10) {
-          nodes { quantities(names: ["on_hand"]) { name quantity } }
+          nodes { quantities(names: NAMES) { name quantity } }
         }
       }
     }
   }
 }
-"""
+""".replace("NAMES", _SHELF_QTY_NAMES)
 
 
 def _search_term(term: str) -> str:
@@ -247,16 +255,12 @@ def _search_term(term: str) -> str:
     return term.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def get_quantities_by_skus(skus: list[str]) -> dict[str, int]:
-    """Live ON-HAND per SKU, batched ~25 per query — what's physically on
-    the shelf, which is the only number worth comparing tag counts to.
-
-    This used to return `inventoryQuantity`, i.e. AVAILABLE, which is
-    on-hand minus committed: it sinks whenever orders are placed and goes
-    negative on oversells, so the Inventory tab showed 0 (or -1) for
-    products sitting right there on the shelf. Everything else in the app
-    was migrated to on_hand back in July; this call was missed."""
-    quantities: dict[str, int] = {}
+def get_quantity_pairs_by_skus(skus: list[str]) -> dict[str, tuple]:
+    """Live (shelf-expected, unavailable) per SKU, batched ~25 per
+    query. shelf-expected = on_hand minus the Unavailable bucket
+    (reserved/damaged/safety/QC) — units on-hand but deliberately not
+    sellable are usually not on the shelf (Nick, 2026-09-01)."""
+    quantities: dict[str, tuple] = {}
     cleaned = [_search_term(s) for s in skus if s]
     for i in range(0, len(cleaned), 25):
         chunk = cleaned[i:i + 25]
@@ -265,12 +269,25 @@ def get_quantities_by_skus(skus: list[str]) -> dict[str, int]:
         for node in data["productVariants"]["nodes"]:
             if not node["sku"]:
                 continue
-            on_hand = _sum_on_hand(node)
+            on_hand, unavail = _sum_quantities(node)
             # Fallback only when the store exposes no levels at all.
-            quantities[node["sku"]] = (
-                on_hand if on_hand is not None else node["inventoryQuantity"]
-            )
+            if on_hand is None:
+                quantities[node["sku"]] = (node["inventoryQuantity"], 0)
+            else:
+                quantities[node["sku"]] = (on_hand - unavail, unavail)
     return quantities
+
+
+def get_quantities_by_skus(skus: list[str]) -> dict[str, int]:
+    """Live SHELF-EXPECTED count per SKU (on_hand minus Unavailable) —
+    the only number worth comparing tag counts to.
+
+    History: this returned AVAILABLE, then raw on_hand (July), and now
+    subtracts the Unavailable bucket too (Nick, 2026-09-01)."""
+    return {
+        sku: pair[0]
+        for sku, pair in get_quantity_pairs_by_skus(skus).items()
+    }
 
 
 _SET_BIN_MUTATION = """
@@ -365,7 +382,9 @@ query AllBins($cursor: String) {
       inventoryQuantity
       inventoryItem {
         inventoryLevels(first: 5) {
-          nodes { quantities(names: ["on_hand"]) { name quantity } }
+          nodes { quantities(names: ["on_hand", "reserved", "damaged",
+                                     "safety_stock", "quality_control"])
+                  { name quantity } }
         }
       }
       bin: metafield(namespace: "stock", key: "bin") { value }
@@ -390,18 +409,30 @@ def _sum_on_hand(variant_node: dict) -> int | None:
     when the store exposes no levels. On-hand is the shelf truth —
     inventoryQuantity is "available", which drops as orders commit stock
     and goes negative on oversells."""
+    return _sum_quantities(variant_node)[0]
+
+
+def _sum_quantities(variant_node: dict) -> tuple:
+    """(on_hand, unavailable) across locations from an inventoryItem
+    node, (None, 0) when the store exposes no levels. Unavailable is the
+    admin's bucket: reserved + damaged + safety stock + QC — in on-hand
+    but deliberately unsellable and usually not on the shelf (Nick,
+    2026-09-01). Works with queries that only fetched on_hand too."""
     try:
         levels = variant_node["inventoryItem"]["inventoryLevels"]["nodes"]
     except (KeyError, TypeError):
-        return None
+        return None, 0
     if not levels:
-        return None
-    total = 0
+        return None, 0
+    on_hand = 0
+    unavail = 0
     for lvl in levels:
         for q in lvl["quantities"]:
             if q["name"] == "on_hand":
-                total += q["quantity"]
-    return total
+                on_hand += q["quantity"]
+            else:
+                unavail += q["quantity"]
+    return on_hand, unavail
 
 
 def fetch_all_variant_bins() -> list[dict]:
@@ -427,7 +458,7 @@ def fetch_all_variant_bins() -> list[dict]:
                 (v["image"] or {}).get("url")
                 or (v["product"]["featuredImage"] or {}).get("url")
             )
-            on_hand = _sum_on_hand(v)
+            on_hand, unavail = _sum_quantities(v)
             results.append({
                 "shopify_variant_id": v["id"],
                 "shopify_product_id": v["product"]["id"],
@@ -438,8 +469,12 @@ def fetch_all_variant_bins() -> list[dict]:
                 "sku": v["sku"],
                 "barcode": v["barcode"],
                 "bin": bin_value,
-                "qty": on_hand if on_hand is not None
+                # Shelf-expected: on-hand minus the Unavailable bucket
+                # (Nick, 2026-09-01) - unavailable rides along so audits
+                # can EXPLAIN an over-count instead of flagging it.
+                "qty": (on_hand - unavail) if on_hand is not None
                        else v["inventoryQuantity"],
+                "unavailable": unavail,
                 "image_url": image,
                 "vendor": (v["product"].get("vendor") or "").strip() or None,
             })
@@ -514,7 +549,7 @@ query StockInfo($search: String!) {
       bin: metafield(namespace: "stock", key: "bin") { value }
       inventoryItem {
         inventoryLevels(first: 5) {
-          nodes { quantities(names: ["on_hand"]) { name quantity } }
+          nodes { quantities(names: NAMES) { name quantity } }
         }
       }
       product {
@@ -525,7 +560,7 @@ query StockInfo($search: String!) {
     }
   }
 }
-"""
+""".replace("NAMES", _SHELF_QTY_NAMES)
 
 
 def get_stock_info_by_skus(skus: list[str]) -> dict[str, dict]:
@@ -544,14 +579,18 @@ def get_stock_info_by_skus(skus: list[str]) -> dict[str, dict]:
         for v in data["productVariants"]["nodes"]:
             if not v["sku"]:
                 continue
-            on_hand = _sum_on_hand(v)
+            on_hand, unavail = _sum_quantities(v)
             bin_value = (v["bin"] or {}).get("value") or (
                 v["product"]["easyScanBin"] or {}
             ).get("value")
             result[v["sku"]] = {
+                # Shelf-expected: on-hand minus the Unavailable bucket
+                # (Nick, 2026-09-01).
                 "on_hand": (
-                    on_hand if on_hand is not None else v["inventoryQuantity"]
+                    (on_hand - unavail) if on_hand is not None
+                    else v["inventoryQuantity"]
                 ),
+                "unavailable": unavail,
                 "bin": (bin_value or "").strip(),
             }
     return result
@@ -578,6 +617,17 @@ query stockBreakdown($search: String!) {
   }
 }
 """
+
+
+def get_shelf_on_hand(sku: str) -> int | None:
+    """SHELF-expected count for one SKU: on_hand minus the Unavailable
+    bucket (Nick, 2026-09-01). Display and expectation paths use this;
+    on-hand WRITE flows keep get_on_hand (raw), because Shopify's
+    on-hand field itself includes the unavailable units."""
+    bd = get_quantity_breakdown(sku)
+    if bd is None:
+        return None
+    return bd["on_hand"] - bd["unavailable"]
 
 
 def get_quantity_breakdown(sku: str) -> dict | None:

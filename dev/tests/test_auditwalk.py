@@ -39,7 +39,8 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
         s.add(BinMapEntry(sku="AAA-1", barcode="7001", product_title="Alpha",
                           bin="F1-1", qty=3, shopify_variant_id="t:A"))
         s.add(BinMapEntry(sku="BBB-1", barcode="7002", product_title="Beta",
-                          bin="F1-2", qty=2, shopify_variant_id="t:B"))
+                          bin="F1-2", qty=2, unavailable=1,
+                          shopify_variant_id="t:B"))
         # Same SKU on TWO levels of the rack - one merged row expected.
         s.add(BinMapEntry(sku="AAA-1", barcode="7001", product_title="Alpha",
                           bin="F1-3", qty=1, shopify_variant_id="t:A"))
@@ -102,6 +103,10 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
           str(rows.get("BBB-1")))
     check("backorder debt rides the product row",
           rows["BBB-1"]["backorder_debt"] == 1, str(rows.get("BBB-1")))
+    check("unavailable stock rides the row too (over-count explainer)",
+          rows["BBB-1"]["unavailable"] == 1
+          and rows["AAA-1"]["unavailable"] == 0,
+          str(rows.get("BBB-1"))[:150])
     check("a heard printed-label EPC is named, not an anonymous unknown",
           rep["printed_labels_heard"]
           and rep["printed_labels_heard"][0]["epc"] == "EPCLABEL"

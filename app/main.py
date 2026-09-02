@@ -4167,6 +4167,7 @@ def _rebuild_bin_map() -> None:
                         bin=name[:100],
                         other_bins=(", ".join(others))[:255] or None,
                         qty=e["qty"],
+                        unavailable=e.get("unavailable") or 0,
                         image_url=(e.get("image_url") or "")[:500] or None,
                         vendor=(e.get("vendor") or "")[:150] or None,
                     ))
@@ -4928,11 +4929,12 @@ def bin_check(
         key = e.sku.strip().upper()
         g = merged.get(key)
         if g is None:
-            g = {"entry": e, "qty": None, "bins": []}
+            g = {"entry": e, "qty": None, "bins": [], "unavail": 0}
             merged[key] = g
             merged_order.append(key)
         if e.qty is not None:
             g["qty"] = (g["qty"] or 0) + e.qty
+        g["unavail"] += e.unavailable or 0
         if e.bin and e.bin not in g["bins"]:
             g["bins"].append(e.bin)
     for key in merged_order:
@@ -4944,6 +4946,7 @@ def bin_check(
             "variant_title": e.variant_title,
             "image_url": e.image_url,
             "expected_qty": g["qty"],
+            "unavailable": g["unavail"],
             "bins": g["bins"],
             "rfid_incompatible": key in noscan,
             "in_bin_map": True,
@@ -4961,6 +4964,7 @@ def bin_check(
             "variant_title": newest.variant_title if newest else None,
             "image_url": None,
             "expected_qty": None,
+            "unavailable": 0,
             "bins": [],
             "rfid_incompatible": key in noscan,
             "in_bin_map": False,
@@ -5745,15 +5749,16 @@ def _batch_items(session: Session, batch_id: int) -> list[BatchItem]:
 
 
 def _expected_qty(session: Session, sku: str | None) -> int | None:
-    """Expected shelf count for one SKU: LIVE Shopify on-hand first, the
-    bin map's live-sourced snapshot (rebuilt every few hours) when the API
-    is unreachable. The TELCAN mirror used to be the fallback here —
-    removed 2026-08-07, its quantities were stale by months."""
+    """Expected shelf count for one SKU: LIVE Shopify on-hand MINUS the
+    Unavailable bucket (Nick, 2026-09-01) first, the bin map's
+    live-sourced snapshot (already effective, rebuilt every few hours)
+    when the API is unreachable. The TELCAN mirror used to be the
+    fallback here — removed 2026-08-07, stale by months."""
     if not sku:
         return None
     if not config.check_shopify_env():
         try:
-            live = shopify.get_on_hand(sku)
+            live = shopify.get_shelf_on_hand(sku)
             if live is not None:
                 return live
         except Exception as error:
@@ -6673,13 +6678,14 @@ def _shelf_reconcile(
             per_sku.setdefault(t.sku.strip().upper(), []).append(t)
 
     on_hand: dict[str, int] = {}
+    unavail_map: dict[str, int] = {}
     try:
-        raw = shopify.get_quantities_by_skus(sorted(skus_upper))
-        on_hand = {
-            (k or "").strip().upper(): v
-            for k, v in (raw or {}).items()
-            if v is not None
-        }
+        raw = shopify.get_quantity_pairs_by_skus(sorted(skus_upper))
+        for k, pair in (raw or {}).items():
+            key2 = (k or "").strip().upper()
+            if pair[0] is not None:
+                on_hand[key2] = pair[0]
+                unavail_map[key2] = pair[1] or 0
     except Exception as error:
         logger.warning("shelf-sweep on-hand lookup failed: %s", error)
     # Offline fallback = the bin-map SNAPSHOT (the house rule), never
@@ -6701,6 +6707,8 @@ def _shelf_reconcile(
                 continue
             key = (bm.sku or "").strip().upper()
             snapshot[key] = snapshot.get(key, 0) + bm.qty
+            unavail_map.setdefault(key, 0)
+            unavail_map[key] += bm.unavailable or 0
     # "Won't RFID scan" products are EXPECTED silent: no red/yellow, and
     # apply must never zero their already-tagged count (that would print
     # doubles for stickered-but-mute Astronomik boxes).
@@ -6836,6 +6844,11 @@ def _shelf_reconcile(
             presumed = max(0, on_file - expected)
         else:
             presumed = 0
+        boxes_over = max(
+            0,
+            ((item.qty_scanned or 0) + (item.tagged_before or 0))
+            - expected,
+        ) if basis in ("on-hand", "snapshot") else 0
         out_items.append({
             "item_id": item.id,
             "sku": item.sku,
@@ -6867,6 +6880,17 @@ def _shelf_reconcile(
                 heard - (
                     (item.qty_scanned or 0) + (item.tagged_before or 0)
                 ),
+            ),
+            # Shelf holds MORE than expected but Shopify's Unavailable
+            # bucket accounts for it (Nick, 2026-09-01, W9160A): the
+            # damaged/reserved unit turned out to be on the shelf after
+            # all. Both UIs flag it as EXPLAINED, not an error.
+            "unavailable": unavail_map.get(key, 0),
+            "over_unavailable": (
+                boxes_over
+                if boxes_over > 0
+                and boxes_over <= unavail_map.get(key, 0)
+                else 0
             ),
         })
 
@@ -11964,7 +11988,9 @@ def retire_all_sold(
     if not sku:
         raise HTTPException(422, "This task has no SKU.")
     try:
-        live = shopify.get_on_hand(sku)
+        # Shelf-expected (on-hand minus Unavailable): a damaged/reserved
+        # unit off the shelf must not block the sold-out shortcut.
+        live = shopify.get_shelf_on_hand(sku)
     except Exception as error:  # noqa: BLE001 — surfaced, not swallowed
         raise HTTPException(
             502, f"Couldn't read the live on-hand: {str(error)[:200]}"
@@ -12228,9 +12254,10 @@ def review_task_context(
     elif task.category == "tag-onhand-mismatch" and sku:
         # The sold-out shortcut (Nick, 2026-08-26): live on-hand at 0
         # means every remaining box has sold, so the window can offer
-        # retiring ALL tags presumed-sold in one click.
+        # retiring ALL tags presumed-sold in one click. Shelf-expected
+        # since 2026-09-01 (on-hand minus Unavailable).
         try:
-            ctx["live_on_hand"] = shopify.get_on_hand(sku)
+            ctx["live_on_hand"] = shopify.get_shelf_on_hand(sku)
         except Exception:  # noqa: BLE001 — live extras fail soft
             ctx["live_on_hand"] = None
         ctx["units_on_file"] = _tag_units_for_sku(session, sku)
