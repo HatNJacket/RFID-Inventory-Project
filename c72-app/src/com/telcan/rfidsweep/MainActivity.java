@@ -10272,6 +10272,24 @@ public class MainActivity extends Activity {
         keepHint.setTextColor(C_MUTED);
         box.addView(keepHint);
 
+        // Third option (Nick, 2026-09-02): neither shelf is right - the
+        // box belongs on some OTHER bin entirely. Sets the product's
+        // bin there (same audited write as KEEP) and marks it MOVING,
+        // so the side trip carries it to the new home.
+        Button third = smallBtn("SEND TO A DIFFERENT BIN…");
+        LinearLayout.LayoutParams tl3 = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        tl3.topMargin = dp(8);
+        box.addView(third, tl3);
+        TextView thirdHint = new TextView(this);
+        thirdHint.setText("Neither " + batchBin + " nor " + home
+                + ": type the bin it SHOULD live in - Shopify and the "
+                + "records update, and the trip carries the box there.");
+        thirdHint.setTextSize(11);
+        thirdHint.setTextColor(C_MUTED);
+        box.addView(thirdHint);
+
         ScrollView sc = new ScrollView(this);
         sc.addView(box);
         AlertDialog d = dlg()
@@ -10285,6 +10303,75 @@ public class MainActivity extends Activity {
             d.dismiss();
             postBinKeep(e);
         });
+        third.setOnClickListener(vw -> {
+            d.dismiss();
+            askThirdBin(e);
+        });
+    }
+
+    /** Third bin (Nick, 2026-09-02): the box belongs on neither the
+     *  batch shelf nor its recorded home. Ask where, write the bin
+     *  through the audited update, and mark the item MOVING so the
+     *  side trip routes to the NEW home. */
+    private void askThirdBin(final CheckEntry e) {
+        final EditText in = themedEdit();
+        in.setHint("Bin (like D1-3)");
+        in.setTextSize(16);
+        in.setInputType(InputType.TYPE_CLASS_TEXT
+                | InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS);
+        LinearLayout wrap = new LinearLayout(this);
+        wrap.setOrientation(LinearLayout.VERTICAL);
+        wrap.setPadding(dp(20), dp(8), dp(20), dp(4));
+        wrap.addView(in);
+        dlg().setTitle("SEND " + e.item.name() + " WHERE?")
+                .setView(wrap)
+                .setPositiveButton("SET BIN + MOVE", (d2, w) -> {
+                    String bin = in.getText().toString().trim()
+                            .toUpperCase(java.util.Locale.ROOT);
+                    if (bin.isEmpty()) {
+                        showStrayReview(false);
+                        return;
+                    }
+                    postThirdBin(e, bin);
+                })
+                .setNegativeButton("CANCEL", (d2, w) ->
+                        showStrayReview(false))
+                .show();
+    }
+
+    private void postThirdBin(final CheckEntry e, final String bin) {
+        final String target = e.item.sku != null ? e.item.sku
+                : e.item.barcode;
+        if (target == null) {
+            status.setText("No SKU or barcode to update the bin with.");
+            return;
+        }
+        status.setText("Setting bin to " + bin + "…");
+        new Thread(() -> {
+            try {
+                JSONObject body = new JSONObject()
+                        .put("target", target)
+                        .put("bin", bin)
+                        .put("changed_by",
+                                prefs.getString("device", "C72"));
+                api("POST", "/api/bin-updates", body);
+                ui.post(() -> {
+                    beep(SOUND_OK);
+                    e.item.binLocation = bin;
+                    strayMove.add(e.item.id);
+                    status.setText(e.item.name() + " now lives in " + bin
+                            + " ✓ - the side trip will carry it there.");
+                    reloadBatchAndReview();
+                });
+            } catch (Exception ex) {
+                ui.post(() -> {
+                    beep(SOUND_ERR);
+                    status.setText("Bin update failed: "
+                            + ex.getMessage());
+                    showStrayReview(false);
+                });
+            }
+        }).start();
     }
 
     /** KEEP: the recorded bin becomes this shelf, via the same audited
