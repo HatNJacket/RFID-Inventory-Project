@@ -3,6 +3,16 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-01.
 
+## 🎯 Trigger = CONFIRM on dialogs — ✅ DEPLOYED 2026-09-01 (C72 3.74)
+
+Settings → Trigger read → "Trigger = CONFIRM on dialogs" (opt-in,
+default OFF): with a dialog up that HAS an enabled confirm button, a
+trigger pull presses it - and ONLY then; dialogs without one (lists,
+info boxes, the shelf-sweep results pane) leave the trigger to its
+normal job. Built on the shared dlg() builder registering the current
+dialog, so every confirmable dialog gets it for free. Take the gun
+update (3.74, code 92).
+
 ## 📉 Unavailable stock + product-window polish — ✅ DEPLOYED 2026-09-01 (C72 3.73)
 
 Nick's W9160A case (on-hand 1, unavailable 1, not on the shelf):
