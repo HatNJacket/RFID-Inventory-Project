@@ -8063,12 +8063,22 @@ public class MainActivity extends Activity {
                 t2.setText("matching…");
                 t2.setTextColor(C_MUTED);
             } else {
+                String sku = p.isNull("sku") ? null
+                        : p.optString("sku", null);
+                boolean noSku = sku == null || sku.isEmpty();
                 JSONArray wb = p.optJSONArray("wanted_by");
                 if (wb == null || wb.length() == 0) {
-                    t2.setText("no open order wants this");
+                    // No SKU usually means the box label isn't a
+                    // catalog barcode at all - that's the web sorter's
+                    // job (label-match), not a dead end.
+                    t2.setText(noSku
+                            ? "not in the catalog - SEND TO WEB "
+                              + "TERMINAL matches it by label"
+                            : sku + " · no open order wants this");
                     t2.setTextColor(C_WARN);
                 } else {
-                    StringBuilder sb = new StringBuilder("wanted by ");
+                    StringBuilder sb = new StringBuilder(
+                            noSku ? "wanted by " : sku + " · wanted by ");
                     for (int i = 0; i < wb.length(); i++) {
                         if (i > 0) sb.append(", ");
                         sb.append("SO ").append(wb.optString(i));
@@ -8105,6 +8115,22 @@ public class MainActivity extends Activity {
                 LinearLayout.LayoutParams.WRAP_CONTENT);
         bl.topMargin = dp(8);
         list.addView(done, bl);
+        // Box labels the gun can't resolve get the WEB sorter's
+        // label-match tooling: hand the whole counted pass over
+        // (Nick, 2026-09-02 round 4).
+        Button web = smallBtn("SEND TO WEB TERMINAL");
+        web.setOnClickListener(x -> {
+            if (sortCounts.isEmpty()) {
+                status.setText("Scan at least one box first.");
+                return;
+            }
+            sortSendHandoff();
+        });
+        LinearLayout.LayoutParams blw = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        blw.topMargin = dp(6);
+        list.addView(web, blw);
         Button cancel = smallBtn("CANCEL SORT");
         cancel.setOnClickListener(x -> sortExit());
         LinearLayout.LayoutParams bl2 = new LinearLayout.LayoutParams(
@@ -8112,6 +8138,52 @@ public class MainActivity extends Activity {
                 LinearLayout.LayoutParams.WRAP_CONTENT);
         bl2.topMargin = dp(6);
         list.addView(cancel, bl2);
+    }
+
+    /** POST the counted pass to the server; the web sorter's banner
+     *  offers it pre-filled. Labels + planner run from the desk; this
+     *  gun then just pairs the batch the planner creates. */
+    private void sortSendHandoff() {
+        final JSONArray counts = new JSONArray();
+        try {
+            for (java.util.Map.Entry<String, Integer> e
+                    : sortCounts.entrySet()) {
+                counts.put(new JSONObject().put("code", e.getKey())
+                        .put("count", e.getValue()));
+            }
+        } catch (Exception ignored) {
+        }
+        status.setText("Sending the pass to the web terminal…");
+        new Thread(() -> {
+            try {
+                api("POST", "/api/receiving/sort-handoff",
+                        new JSONObject()
+                                .put("counts", counts)
+                                .put("created_by",
+                                        prefs.getString("device", "C72")));
+                ui.post(() -> {
+                    beep(SOUND_OK);
+                    dlg()
+                            .setTitle("SENT TO THE WEB TERMINAL ✓")
+                            .setMessage("Open Batch tab → Sort a "
+                                    + "shipment on the web terminal - a "
+                                    + "banner offers this pass, one "
+                                    + "click loads it through label-"
+                                    + "match. Print labels and send "
+                                    + "each bucket to TC-Planner from "
+                                    + "there; the receiving batch then "
+                                    + "shows up HERE for pairing.")
+                            .setPositiveButton("OK", (d, w) -> sortExit())
+                            .setCancelable(false)
+                            .show();
+                });
+            } catch (Exception e) {
+                ui.post(() -> {
+                    beep(SOUND_ERR);
+                    alertStatus("Hand-off failed: " + e.getMessage());
+                });
+            }
+        }).start();
     }
 
     private void showSortVerdict() {
@@ -8122,23 +8194,31 @@ public class MainActivity extends Activity {
         JSONArray unmatched = verdict.optJSONArray("unmatched");
         boolean consolidated = verdict.optBoolean("consolidated");
         StringBuilder sb = new StringBuilder();
+        JSONArray skipped = verdict.optJSONArray("skipped");
         if (orders == null || orders.length() == 0) {
-            sb.append("No open stock order wants anything you scanned. "
-                    + "Update the stock by hand in Shopify admin.");
-            dlg().setTitle("NO MATCH")
+            sb.append("No open stock order wants anything you scanned "
+                    + "- but the web sorter matches vendor box labels "
+                    + "the gun can't. Send the pass over?");
+            dlg().setTitle("NO MATCH HERE")
                     .setMessage(sb.toString())
-                    .setPositiveButton("BACK", null)
+                    .setPositiveButton("SEND TO WEB TERMINAL", (d, w) ->
+                            sortSendHandoff())
+                    .setNegativeButton("BACK", null)
                     .show();
             return;
         }
         if (consolidated) {
             JSONObject o = orders.optJSONObject(0);
             final String ref = o.optString("reference_number");
-            sb.append("Everything fits SO ").append(ref)
-                    .append(" alone.");
+            boolean soft = skipped != null && skipped.length() > 0;
+            sb.append(soft
+                    ? "Almost everything fits SO " + ref + "."
+                    : "Everything fits SO " + ref + " alone.");
             appendOverflow(sb, o);
+            appendSkipped(sb, skipped);
             appendUnmatched(sb, unmatched);
-            dlg().setTitle("ONE ORDER COVERS IT")
+            dlg().setTitle(soft ? "SO " + ref + " (MOSTLY)"
+                            : "ONE ORDER COVERS IT")
                     .setMessage(sb.toString())
                     .setPositiveButton("RECEIVE AS SO " + ref, (d, w) ->
                             beginSortReceiveSingle(o))
@@ -8189,6 +8269,27 @@ public class MainActivity extends Activity {
     }
 
     private static final String PILE_UNRESOLVED = "CANNOT RESOLVE";
+
+    /** Strays a soft consolidation left off the chosen order: they DO
+     *  belong to other open orders - sorted separately, never silently
+     *  folded in. */
+    private void appendSkipped(StringBuilder sb, JSONArray skipped) {
+        for (int i = 0; skipped != null && i < skipped.length(); i++) {
+            JSONObject u = skipped.optJSONObject(i);
+            JSONArray wb = u.optJSONArray("wanted_by");
+            StringBuilder who = new StringBuilder();
+            for (int j = 0; wb != null && j < wb.length(); j++) {
+                if (j > 0) who.append(", ");
+                who.append("SO ").append(wb.optString(j));
+            }
+            sb.append("\n⚠ ").append(u.optString("title",
+                    u.optString("sku", u.optString("code"))))
+                    .append(" ×").append(u.optInt("count"))
+                    .append(": skipped - it belongs to ")
+                    .append(who.length() > 0 ? who : "another order")
+                    .append(", set it aside.");
+        }
+    }
 
     private void appendUnmatched(StringBuilder sb, JSONArray unmatched) {
         for (int i = 0; unmatched != null && i < unmatched.length();

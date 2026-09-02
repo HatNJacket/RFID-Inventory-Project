@@ -399,6 +399,58 @@ class HeldLabelList(Base):
         }
 
 
+class SortHandoff(Base):
+    """A C72 sort-a-shipment scan pass handed to the web terminal
+    (Nick, 2026-09-02): the gun's matcher couldn't place the pallet
+    (vendor box labels often aren't catalog barcodes), so the counted
+    codes travel here and the web sorter - with its label-match and
+    near-miss tooling - picks them up pre-filled. Payload is the JSON
+    counts list; consumed_at stamps the web pickup so the banner only
+    ever offers a pass once."""
+
+    __tablename__ = "rfid_sort_handoffs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    created_by: Mapped[str | None] = mapped_column(String(100))
+    # JSON: [{"code": str, "count": int}, ...] in scan order.
+    payload: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    consumed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    consumed_by: Mapped[str | None] = mapped_column(String(100))
+
+    def counts(self) -> list:
+        import json
+
+        try:
+            rows = json.loads(self.payload or "[]")
+            return rows if isinstance(rows, list) else []
+        except Exception:  # noqa: BLE001 — a bad payload reads as empty
+            return []
+
+    def as_dict(self) -> dict:
+        rows = self.counts()
+        return {
+            "id": self.id,
+            "created_by": self.created_by,
+            "created_at": (
+                self.created_at.isoformat() if self.created_at else None
+            ),
+            "counts": rows,
+            "products": len(rows),
+            "boxes": sum(int(r.get("count") or 0) for r in rows
+                         if isinstance(r, dict)),
+            "consumed_at": (
+                self.consumed_at.isoformat() if self.consumed_at else None
+            ),
+        }
+
+
 class HeldLabelItem(Base):
     """Per-product count on a held-label strip: how many unused labels
     of this SKU are on it. Decremented when a held label is paired to a

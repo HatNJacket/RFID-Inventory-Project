@@ -14328,6 +14328,63 @@ function setSortShipStatus(text) {
   document.getElementById("sortship-status").textContent = text || "";
 }
 
+// ---- C72 sort pass hand-off (Nick, 2026-09-02) ------------------------
+// The gun scans a pallet whose box labels its matcher can't resolve and
+// sends the counts here; the sorter loads them through the SAME scan
+// path every wedge scan uses, so label-match, suggestions, bundles and
+// planner buckets all just work.
+async function sortShipCheckHandoff() {
+  const host = document.getElementById("sortship-handoff");
+  host.hidden = true;
+  try {
+    const r = await apiJson("/api/receiving/sort-handoff/pending");
+    const h = r.handoff;
+    if (!h) return;
+    host.innerHTML = "";
+    const span = document.createElement("span");
+    span.textContent =
+      `📥 C72 sort pass${h.created_by ? " from " + h.created_by : ""}` +
+      ` - ${h.boxes} box(es), ${h.products} product(s). `;
+    const btn = document.createElement("button");
+    btn.className = "print__btn";
+    btn.type = "button";
+    btn.textContent = "Load it into the sorter";
+    btn.addEventListener("click", () => sortShipLoadHandoff(h));
+    host.appendChild(span);
+    host.appendChild(btn);
+    host.hidden = false;
+  } catch (err) {
+    /* the banner is decoration - the sorter works without it */
+  }
+}
+
+async function sortShipLoadHandoff(h) {
+  const host = document.getElementById("sortship-handoff");
+  host.hidden = true;
+  setSortShipStatus("Loading the C72 pass…");
+  let boxes = 0;
+  for (const row of h.counts || []) {
+    for (let i = 0; i < (row.count || 0); i++) {
+      await sortShipScan(row.code);
+      boxes++;
+      setSortShipStatus(`Loading the C72 pass… ${boxes} box(es) in.`);
+    }
+  }
+  try {
+    await postJson(`/api/receiving/sort-handoff/${h.id}/consume`, {
+      consumed_by: operatorEl.value || null,
+    });
+  } catch (err) {
+    /* consuming is bookkeeping - the pile is already here */
+  }
+  renderSortShip();
+  setSortShipStatus(
+    `Loaded the C72 pass - ${boxes} box(es) matched. Resolve anything ` +
+      "flagged, then print labels and send each bucket to the planner; " +
+      "the gun pairs once labels print."
+  );
+}
+
 // Returns {ok, text} so the LINK relay can answer the gun; the wedge
 // input ignores the return value.
 async function sortShipScan(code) {
@@ -15195,6 +15252,7 @@ document.getElementById("sortship-open").addEventListener("click", async () => {
   document.getElementById("sortship").hidden = false;
   sortShipRestore();
   renderSortShip();
+  sortShipCheckHandoff();
   if (sortShipSeq.length) {
     setSortShipStatus("Picked up the pile from last time - Clear pile starts fresh.");
   }

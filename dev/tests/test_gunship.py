@@ -35,6 +35,8 @@ ORDERS_LINES = {
               "remaining": 2},
              {"sku": "SORT-C", "barcode": "603", "title": "Sort C",
               "remaining": 3},
+             {"sku": "SORT-E", "barcode": "605", "title": "Sort E",
+              "remaining": 1},
          ]},
         {"order_id": 51, "reference_number": "951", "vendor": "Svbony",
          "items": [
@@ -69,10 +71,15 @@ def fake_order_lines(ref, operator=None):
 
 # Vendor scoping (Nick, 2026-09-02 round 3): the matcher must hand the
 # scanned products' vendor(s) to the planner walk so only that vendor's
-# orders get the slow detail fetches.
+# orders get the slow detail fetches. VENDOR_BLIND simulates the SO 941
+# failure (round 4): planner vendor spellings past containment, so the
+# scoped walk answers empty and the matcher must retry unfiltered.
 seen_vendors = []
+VENDOR_BLIND = []
 def fake_orders_lines(operator=None, vendors=None):
     seen_vendors.append(vendors)
+    if vendors and VENDOR_BLIND:
+        return {"configured": True, "ok": True, "orders": []}
     return ORDERS_LINES
 
 with patch("app.shopify.lookup_barcode", return_value=None), \
@@ -97,6 +104,9 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
         s.add(BinMapEntry(sku="SORT-D", barcode="604",
                           product_title="Sort D", bin="B4-1", qty=0,
                           shopify_variant_id="t:SD"))
+        s.add(BinMapEntry(sku="SORT-E", barcode="605",
+                          product_title="Sort E", bin="C1-4", qty=0,
+                          vendor="Svbony", shopify_variant_id="t:SE"))
         s.commit()
 
     # ---- consolidation: one order contains everything ---------------
@@ -163,6 +173,62 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
     check("a SKU (case-insensitive) matches like a barcode",
           v["consolidated"] is True
           and v["orders"][0]["reference_number"] == "962", str(v)[:300])
+
+    # ---- soft consolidation (round 4: "all but one in SO 941") ------
+    # A, B, C, E sit on SO 962; D belongs to SO 958 only. 4 of 5
+    # matched products (80%) fit one order -> consolidate on it and
+    # SKIP the stray with a note, instead of a two-order split.
+    r = cl.post("/api/receiving/sort-match", json={"counts": [
+        {"code": "601", "count": 1}, {"code": "602", "count": 1},
+        {"code": "603", "count": 1}, {"code": "605", "count": 1},
+        {"code": "604", "count": 1}]})
+    v = r.json()["verdict"]
+    check("80% in one order -> soft consolidation",
+          v["consolidated"] is True
+          and v["orders"][0]["reference_number"] == "962", str(v)[:400])
+    check("the stray is skipped with its own order named",
+          len(v["skipped"]) == 1 and v["skipped"][0]["sku"] == "SORT-D"
+          and v["skipped"][0]["wanted_by"] == ["958"], str(v)[:400])
+
+    # ---- vendor-blind planner -> unfiltered retry (the SO 941 bug) --
+    VENDOR_BLIND.append(1)
+    seen_vendors.clear()
+    r = cl.post("/api/receiving/sort-match", json={"counts": [
+        {"code": "601", "count": 2}]})
+    v = r.json()["verdict"]
+    check("scoped walk empty -> retries unfiltered and still matches",
+          v["consolidated"] is True
+          and v["orders"][0]["reference_number"] == "962"
+          and seen_vendors == [{"Svbony"}, None], (str(v)[:200],
+                                                   seen_vendors))
+    VENDOR_BLIND.clear()
+
+    # ---- C72 -> web sort hand-off -----------------------------------
+    r = cl.post("/api/receiving/sort-handoff", json={
+        "counts": [{"code": "XR-100", "count": 3},
+                   {"code": "605", "count": 1}],
+        "created_by": "C72-Nick"})
+    h1 = r.json()["handoff"]
+    check("hand-off stored with box math", r.status_code == 201
+          and h1["boxes"] == 4 and h1["products"] == 2, r.text[:300])
+    r = cl.get("/api/receiving/sort-handoff/pending")
+    check("pending answers the newest pass",
+          (r.json()["handoff"] or {}).get("id") == h1["id"],
+          r.text[:200])
+    r = cl.post("/api/receiving/sort-handoff", json={
+        "counts": [{"code": "XR-200", "count": 1}]})
+    h2 = r.json()["handoff"]
+    r = cl.get("/api/receiving/sort-handoff/pending")
+    check("a new pass supersedes the old one",
+          (r.json()["handoff"] or {}).get("id") == h2["id"], r.text[:200])
+    r = cl.post(f"/api/receiving/sort-handoff/{h2['id']}/consume",
+                json={"consumed_by": "Nick"})
+    check("consume stamps the pass", r.status_code == 200
+          and r.json()["handoff"]["consumed_at"] is not None,
+          r.text[:200])
+    r = cl.get("/api/receiving/sort-handoff/pending")
+    check("consumed pass leaves pending empty",
+          r.json()["handoff"] is None, r.text[:200])
 
     # ---- scan-order printing ----------------------------------------
     # The pallet was scanned C, A, B -> the label jobs must queue in

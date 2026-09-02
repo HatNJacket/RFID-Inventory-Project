@@ -80,6 +80,7 @@ from app.models import (
     ScanNote,
     SerialPrefix,
     SoldRecord,
+    SortHandoff,
 )
 
 logger = logging.getLogger("rfid")
@@ -9925,23 +9926,40 @@ def receiving_sort_match(
         raise HTTPException(502, plan.get("error")
                             or "The planner bridge isn't configured.")
 
-    # Order matching tables: every remaining line under its SKU and
-    # barcode keys (case-insensitive, like all SKU compares).
-    orders = []
-    for o in plan["orders"]:
-        keys: dict[str, dict] = {}
-        for line in o["items"]:
-            for term in (line.get("sku"), line.get("barcode")):
-                key = (term or "").strip().upper()
-                if key:
-                    keys.setdefault(key, line)
-        orders.append({**o, "keys": keys})
+    def order_tables(plan_out: dict) -> list[dict]:
+        """Every remaining line under its SKU and barcode keys
+        (case-insensitive, like all SKU compares)."""
+        out = []
+        for o in plan_out["orders"]:
+            keys: dict[str, dict] = {}
+            for line in o["items"]:
+                for term in (line.get("sku"), line.get("barcode")):
+                    key = (term or "").strip().upper()
+                    if key:
+                        keys.setdefault(key, line)
+            out.append({**o, "keys": keys})
+        return out
 
-    for row in products:
-        row["wanted_by"] = [
-            o["reference_number"] for o in orders
-            if any(k in o["keys"] for k in row["keys"])
-        ]
+    def rematch(order_rows: list[dict]) -> None:
+        for row in products:
+            row["wanted_by"] = [
+                o["reference_number"] for o in order_rows
+                if any(k in o["keys"] for k in row["keys"])
+            ]
+
+    orders = order_tables(plan)
+    rematch(orders)
+
+    # The vendor-scoped walk found NOTHING: vendor spellings between
+    # Shopify and the planner can diverge past containment ("SO 941",
+    # 2026-09-02) - retry once against every open order before calling
+    # the pallet unmatched.
+    if vendors and not any(p["wanted_by"] for p in products):
+        wide = planner.open_orders_lines(payload.requested_by)
+        if wide.get("ok"):
+            plan = wide
+            orders = order_tables(plan)
+            rematch(orders)
 
     matched = [p for p in products if p["wanted_by"]]
     unmatched = [{"code": p["code"], "sku": p["sku"],
@@ -9972,6 +9990,26 @@ def receiving_sort_match(
             "products": order_products(order, rows),
         }
 
+    def split_verdict() -> dict:
+        # Greedy split: repeatedly take the order covering the most
+        # still-unassigned products (ties to the most boxes absorbed).
+        left = list(matched)
+        split = []
+        while left:
+            def coverage(o: dict) -> tuple[int, int]:
+                rows = [p for p in left
+                        if any(k in o["keys"] for k in p["keys"])]
+                return (len(rows), sum(p["count"] for p in rows))
+
+            best = max(orders, key=coverage, default=None)
+            if best is None or coverage(best)[0] == 0:
+                break
+            rows = [p for p in left
+                    if any(k in best["keys"] for k in p["keys"])]
+            split.append(order_out(best, rows))
+            left = [p for p in left if p not in rows]
+        return {"consolidated": False, "skipped": [], "orders": split}
+
     verdict: dict
     covering = [
         o for o in orders
@@ -9993,27 +10031,38 @@ def receiving_sort_match(
             return (got, int(o.get("order_id") or 0))
 
         best = max(covering, key=fit)
-        verdict = {"consolidated": True,
+        verdict = {"consolidated": True, "skipped": [],
                    "orders": [order_out(best, matched)]}
-    else:
-        # Greedy split: repeatedly take the order covering the most
-        # still-unassigned products (ties to the most boxes absorbed).
-        left = list(matched)
-        split = []
-        while left:
-            def coverage(o: dict) -> tuple[int, int]:
-                rows = [p for p in left
-                        if any(k in o["keys"] for k in p["keys"])]
-                return (len(rows), sum(p["count"] for p in rows))
+    elif matched and orders:
+        # Soft consolidation (Nick, 2026-09-02 round 4): when one order
+        # holds MOST of what matched (>= 80%), the pallet is that order
+        # - the few strays are SKIPPED with a note naming where they
+        # actually belong, instead of forcing a multi-order split.
+        def soft_cover(o: dict) -> tuple[int, int, int]:
+            rows = [p for p in matched
+                    if any(k in o["keys"] for k in p["keys"])]
+            return (len(rows), sum(p["count"] for p in rows),
+                    int(o.get("order_id") or 0))
 
-            best = max(orders, key=coverage, default=None)
-            if best is None or coverage(best)[0] == 0:
-                break
-            rows = [p for p in left
-                    if any(k in best["keys"] for k in p["keys"])]
-            split.append(order_out(best, rows))
-            left = [p for p in left if p not in rows]
-        verdict = {"consolidated": False, "orders": split}
+        best = max(orders, key=soft_cover)
+        rows = [p for p in matched
+                if any(k in best["keys"] for k in p["keys"])]
+        if rows and len(rows) * 5 >= len(matched) * 4:
+            strays = [p for p in matched if p not in rows]
+            verdict = {
+                "consolidated": True,
+                "orders": [order_out(best, rows)],
+                "skipped": [
+                    {"code": p["code"], "sku": p["sku"],
+                     "title": p["title"], "count": p["count"],
+                     "wanted_by": p["wanted_by"]}
+                    for p in strays
+                ],
+            }
+        else:
+            verdict = split_verdict()
+    else:
+        verdict = split_verdict()
 
     return {
         "ok": True,
@@ -10024,6 +10073,87 @@ def receiving_sort_match(
         ],
         "verdict": {**verdict, "unmatched": unmatched},
     }
+
+
+class SortHandoffIn(BaseModel):
+    counts: list[SortCountIn] = Field(min_length=1, max_length=200)
+    created_by: str | None = Field(default=None, max_length=100)
+
+
+@app.post(
+    "/api/receiving/sort-handoff",
+    status_code=201,
+    dependencies=[Depends(require_user)],
+)
+def create_sort_handoff(
+    payload: SortHandoffIn, session: Session = Depends(get_session)
+):
+    """The gun's sort pass, handed to the web terminal (Nick,
+    2026-09-02): box labels the gun couldn't resolve get the web
+    sorter's label-match tooling instead. One pending pass at a time -
+    a new hand-off replaces any unconsumed older one."""
+    for old in session.scalars(
+        select(SortHandoff).where(SortHandoff.consumed_at.is_(None))
+    ):
+        old.consumed_at = datetime.now(timezone.utc)
+        old.consumed_by = "superseded"
+    row = SortHandoff(
+        created_by=payload.created_by,
+        payload=json.dumps([
+            {"code": c.code.strip(), "count": c.count}
+            for c in payload.counts
+        ]),
+    )
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return {"handoff": row.as_dict(),
+            "message": "Sent - open Batch tab → Sort a shipment on the "
+                       "web terminal to load it."}
+
+
+@app.get(
+    "/api/receiving/sort-handoff/pending",
+    dependencies=[Depends(require_user)],
+)
+def pending_sort_handoff(session: Session = Depends(get_session)):
+    """Newest unconsumed C72 sort pass (fresh passes only - a day-old
+    one is stale pallet history, not work)."""
+    row = session.scalar(
+        select(SortHandoff).where(SortHandoff.consumed_at.is_(None))
+        .order_by(SortHandoff.id.desc())
+    )
+    if row is not None and row.created_at is not None:
+        age = datetime.now(timezone.utc) - (
+            row.created_at if row.created_at.tzinfo
+            else row.created_at.replace(tzinfo=timezone.utc)
+        )
+        if age.total_seconds() > 24 * 3600:
+            row = None
+    return {"handoff": row.as_dict() if row else None}
+
+
+class SortHandoffConsumeIn(BaseModel):
+    consumed_by: str | None = Field(default=None, max_length=100)
+
+
+@app.post(
+    "/api/receiving/sort-handoff/{handoff_id}/consume",
+    dependencies=[Depends(require_user)],
+)
+def consume_sort_handoff(
+    handoff_id: int,
+    payload: SortHandoffConsumeIn,
+    session: Session = Depends(get_session),
+):
+    row = session.get(SortHandoff, handoff_id)
+    if row is None:
+        raise HTTPException(404, "No such sort hand-off.")
+    if row.consumed_at is None:
+        row.consumed_at = datetime.now(timezone.utc)
+        row.consumed_by = payload.consumed_by
+        session.commit()
+    return {"handoff": row.as_dict()}
 
 
 def _unpaired_label_counts(session: Session, batch: Batch) -> list[dict]:
