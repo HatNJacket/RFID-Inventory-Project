@@ -13,6 +13,22 @@ item is marked MOVING so the side trip carries the box to the NEW
 home with labels printed for it. No server changes. Take the gun
 update (3.76, code 94).
 
+## 📦 Full-shipment receives stay open until the planner saves — ✅ DEPLOYED 2026-09-02 (C72 3.86)
+
+Nick's SO 941/938 reports: the close kept beating the planner
+hand-off. New rule (his words): the count stays open until the
+inventory planner order is checked off. Full pairing SETTLES (1h
+clock) and shows the gun's planner hand-off dialog; the stock-updated
+ping CLOSES the batch (backorder debt noted there). held-list is
+replace-on-repost, never closes, and names swept tags that are
+recorded as PAIRED boxes of the shipment's own products - the
+"are these on the strip in your hand?" question re-posts with
+unpair_owned to roll the mis-counted pairings back onto the strip
+(the recovery for pair sweeps over-hearing the leftover strip).
+Prod cleanup: SO 941's junk duplicate strip deleted, good 3-label
+strip kept. 3.85 in between: collect-step multi-box count gate.
+Take the gun update (3.86, code 104).
+
 ## 📦 Multi-box pairing + strip-sweep fix — ✅ DEPLOYED 2026-09-02 (C72 3.84)
 
 Round 3 of the S11740: companion labels now have a real pairing
