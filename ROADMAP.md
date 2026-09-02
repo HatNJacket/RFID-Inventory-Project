@@ -13,17 +13,29 @@ item is marked MOVING so the side trip carries the box to the NEW
 home with labels printed for it. No server changes. Take the gun
 update (3.76, code 94).
 
-## 📦 Pallet receiving on the C72 alone — 🧪 PREVIEW, awaiting Nick
+## 📦 Pallet receiving + shipment sorter on the C72 — ✅ DEPLOYED 2026-09-02 (C72 3.77)
 
-Nick's too-big-for-the-desk pallet: the full-shipment receive flow
-driven entirely from the gun (order picker → check + one-burst print
-→ pallet-walk pairing → strip sweep → planner hand-off note). Preview
-artifact: https://claude.ai/code/artifact/d7d2cfb4-1cd5-4cf2-bf28-a756df654331
-Server side already exists (full-shipment endpoints); the build is
-~3 C72 screens. **DO NOT BUILD until Nick finishes iterating on the
-preview** (his explicit ask, 2026-09-02). Open questions live on the
-artifact (label-stack ordering, print-done confirmation, shared live
-batch with the web, typed short-count fallback).
+Nick's too-big-for-the-desk pallet, approved from the preview
+artifact (https://claude.ai/code/artifact/d7d2cfb4-1cd5-4cf2-bf28-a756df654331,
+now the reference doc). BATCH tab, no batch loaded:
+
+- **RECEIVE A SHIPMENT…** — order picker → preview with flags →
+  PRINT ALL + START (same full-shipment batch as the web, shared
+  live) → waits at the printer via new GET
+  /api/batches/{id}/print-progress with CONTINUE ANYWAY → existing
+  pair UI. Wrap-up on full-shipment batches (order_receipt on the
+  batch): ALL BOXES LABELLED → settle (1 h clock) → trigger strip
+  sweep → HOLD STRIP + CLOSE (held-list) → desk hand-off note.
+- **SORT A SHIPMENT…** — no-order-number pallet: barcode scan pass
+  (counts + live "wanted by" per product, nothing written), then
+  POST /api/receiving/sort-match verdict: one covering order
+  consolidates (overflow flagged, not blocking; labels print in
+  SCAN order via full-shipment's new scan_order); otherwise the gun
+  becomes a pile sorter and the receives chain one after another.
+  Unmatched boxes = "update by hand in Shopify admin".
+- planner.open_orders_lines (120 s cache) feeds the matcher.
+  dev/tests/test_gunship.py covers it all. Take the gun update
+  (3.77, code 95).
 
 ## 🎯 Trigger = CONFIRM on dialogs — ✅ DEPLOYED 2026-09-01 (C72 3.74)
 
