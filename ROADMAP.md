@@ -13,6 +13,22 @@ item is marked MOVING so the side trip carries the box to the NEW
 home with labels printed for it. No server changes. Take the gun
 update (3.76, code 94).
 
+## 📦 Multi-box units — ✅ DEPLOYED 2026-09-02 (C72 3.82)
+
+The S11740 (one telescope, two cartons): durable mark in
+rfid_multibox_products (boxes_per_unit + per-box bins, editable from
+the product window's "📦" chip; the C72 receiving mark saves it too
+and batch payloads seed the gun's guidance). Labels for a marked
+product print "BOX 1 OF Y" (counting label, box 1's bin) + companion
+labels "BOX 2 OF Y · {bin}" behind it - companion tags live in
+rfid_companion_tags, counted NOWHERE (never RfidAssignments),
+recognized by bin audits/verify/tag-info as "companion boxes heard".
+Audit finds refuse a multibox code with the double-count question
+(gun asks, multibox_ok retries). Migration RUN on prod (2 tables +
+rfid_print_jobs.kind). One tag per unit stays the invariant.
+3.81 in between: silent self-update on Android 12+ + auto-reopen;
+Play Protect must be off on the gun for warning-free updates.
+
 ## 📦 Sorter round 4: retry, soft consolidation, C72→web hand-off — ✅ DEPLOYED 2026-09-02 (C72 3.80)
 
 Nick's SO 941 test (nothing matched, no SKUs on cards): sort-match
