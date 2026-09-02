@@ -1,7 +1,29 @@
 # RFID Inventory System — Roadmap
 
 Source of truth for project status. Updated by Claude each working session.
-Last updated: 2026-09-01.
+Last updated: 2026-09-02.
+
+## 🔀 Stray decision: third bin — ✅ DEPLOYED 2026-09-02 (C72 3.76)
+
+The wrong-bin window during batch-tag CHECK now has a third choice
+beside MOVE IT TO {home} and KEEP IT HERE: **SEND TO A DIFFERENT
+BIN…** - type the bin, the product's recorded bin updates through the
+audited /api/bin-updates (Shopify + records, undo-logged), and the
+item is marked MOVING so the side trip carries the box to the NEW
+home with labels printed for it. No server changes. Take the gun
+update (3.76, code 94).
+
+## 📦 Pallet receiving on the C72 alone — 🧪 PREVIEW, awaiting Nick
+
+Nick's too-big-for-the-desk pallet: the full-shipment receive flow
+driven entirely from the gun (order picker → check + one-burst print
+→ pallet-walk pairing → strip sweep → planner hand-off note). Preview
+artifact: https://claude.ai/code/artifact/d7d2cfb4-1cd5-4cf2-bf28-a756df654331
+Server side already exists (full-shipment endpoints); the build is
+~3 C72 screens. **DO NOT BUILD until Nick finishes iterating on the
+preview** (his explicit ask, 2026-09-02). Open questions live on the
+artifact (label-stack ordering, print-done confirmation, shared live
+batch with the web, typed short-count fallback).
 
 ## 🎯 Trigger = CONFIRM on dialogs — ✅ DEPLOYED 2026-09-01 (C72 3.74)
 
