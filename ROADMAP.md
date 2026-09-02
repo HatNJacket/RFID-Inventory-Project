@@ -13,6 +13,19 @@ item is marked MOVING so the side trip carries the box to the NEW
 home with labels printed for it. No server changes. Take the gun
 update (3.76, code 94).
 
+## 📦 Receiving box marks on the C72 — ✅ DEPLOYED 2026-09-02 (C72 3.79)
+
+Nick's S30-collection and 11740 cases: the receiving item editor
+gains BUNDLE OTHER BOXES ONTO THIS… (scan the other boxes of a SET;
+trigger finishes; any bundled box then opens the set's card - one
+label per set) and ONE UNIT = SEVERAL BOXES… (the 11740: two cartons,
+one unit, one label - focusing the product says so). Gun-kept marks
+(prefs keyed to batch, like scan order), no server changes; the
+receiving check lists them per product. Take the gun update (3.79,
+code 97). 3.78 in between: vendor-scoped sort-match (products name
+their vendor, only that vendor's orders get detail fetches; recency
+tie-break) + the CANNOT RESOLVE pile in pile mode.
+
 ## 📦 Pallet receiving + shipment sorter on the C72 — ✅ DEPLOYED 2026-09-02 (C72 3.77)
 
 Nick's too-big-for-the-desk pallet, approved from the preview
