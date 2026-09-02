@@ -7151,6 +7151,7 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             int ok = 0;
             int comps = 0;
+            boolean sweepRecvDone = false;
             String err = null;
             for (String epc : epcs) {
                 try {
@@ -7167,6 +7168,9 @@ public class MainActivity extends Activity {
                         comps++;
                         continue;
                     }
+                    if (resp.optBoolean("receiving_done")) {
+                        sweepRecvDone = true;
+                    }
                     pairHistory.push(new String[]{epc,
                             String.valueOf(target.id)});
                     ok++;
@@ -7176,6 +7180,7 @@ public class MainActivity extends Activity {
             }
             final int done = ok;
             final int companions = comps;
+            final boolean recvDoneF = sweepRecvDone;
             final String problem = err;
             ui.post(() -> {
                 beep(done > 0 || companions > 0 ? SOUND_OK : SOUND_ERR);
@@ -7184,6 +7189,11 @@ public class MainActivity extends Activity {
                         + (companions > 0 ? " · " + companions
                           + " companion box label(s) confirmed" : "")
                         + (problem != null ? " · " + problem : ""));
+                if (recvDoneF && batchOrderReceipt != null
+                        && !recvHandoffShown) {
+                    recvHandoffShown = true;
+                    showFullyPairedHandoff();
+                }
                 // Sweep pairs feed auto-advance too (Nick, 2026-08-26:
                 // most pairing IS sweeps, and the hop only fired on
                 // single trigger reads). Bump the local count by what
@@ -7883,6 +7893,11 @@ public class MainActivity extends Activity {
     }
 
     private void postHeldList(final java.util.List<String> epcs) {
+        postHeldList(epcs, false);
+    }
+
+    private void postHeldList(final java.util.List<String> epcs,
+                              final boolean unpairOwned) {
         final int id = batchId;
         final JSONObject receipt = batchOrderReceipt;
         status.setText("Holding the strip…");
@@ -7890,32 +7905,48 @@ public class MainActivity extends Activity {
             try {
                 JSONObject body = new JSONObject()
                         .put("epcs", new JSONArray(epcs))
+                        .put("unpair_owned", unpairOwned)
                         .put("created_by",
                                 prefs.getString("device", "C72"));
                 JSONObject resp = api("POST", "/api/batches/" + id
                         + "/held-list", body);
                 final String msg = resp.optString("message", "Held.");
+                final JSONArray cands =
+                        resp.optJSONArray("owned_candidates");
                 ui.post(() -> {
-                    beep(SOUND_OK);
-                    stripSweepMode = false;
-                    String ref = receipt == null ? "the stock order"
-                            : receipt.optString("reference",
-                                    "the stock order");
-                    dlg()
-                            .setTitle("SHIPMENT SETTLED")
-                            .setMessage(msg + "\n\nFinish at the desk: "
-                                    + "open " + ref + " in TC-Planner "
-                                    + "and run the stock update - Print "
-                                    + "labels is already handled there. "
-                                    + "The 1-hour reminder clock is "
-                                    + "running.")
-                            .setPositiveButton("DONE", (d, w) -> {
-                                exitBatch(true);
-                                status.setText(ref + " settled ✓");
-                                maybeNextSortOrder();
-                            })
-                            .setCancelable(false)
-                            .show();
+                    // Swept tags recorded as PAIRED boxes of this
+                    // shipment: the sticker answered from the strip in
+                    // hand, so a pair sweep almost certainly over-heard
+                    // it (Nick, 2026-09-02, SO 941). Ask, then re-post
+                    // with the rollback.
+                    if (cands != null && cands.length() > 0) {
+                        StringBuilder sb = new StringBuilder(
+                                cands.length() + " swept tag(s) are "
+                                + "recorded as PAIRED boxes of this "
+                                + "shipment:\n");
+                        for (int i = 0; i < cands.length(); i++) {
+                            JSONObject c = cands.optJSONObject(i);
+                            sb.append("\n· ").append(c.optString(
+                                    "product_title",
+                                    c.optString("sku", "?")));
+                        }
+                        sb.append("\n\nIf those stickers are on the "
+                                + "strip in your hand, they were "
+                                + "counted by mistake - unpair them "
+                                + "and hold the labels?");
+                        dlg()
+                                .setTitle("MIS-COUNTED PAIRINGS?")
+                                .setMessage(sb.toString())
+                                .setPositiveButton("UNPAIR + HOLD THEM",
+                                        (d, w) -> postHeldList(epcs,
+                                                true))
+                                .setNegativeButton("THEY'RE REAL BOXES",
+                                        (d, w) -> showStripDone(msg,
+                                                receipt))
+                                .show();
+                        return;
+                    }
+                    showStripDone(msg, receipt);
                 });
             } catch (Exception e) {
                 ui.post(() -> {
@@ -7924,6 +7955,53 @@ public class MainActivity extends Activity {
                 });
             }
         }).start();
+    }
+
+    // Shown once per batch: the pair that completed the shipment names
+    // the road (Nick, 2026-09-02, SO 938: "did not let me move to the
+    // planner" - the old auto-close said nothing).
+    private boolean recvHandoffShown = false;
+
+    private void showFullyPairedHandoff() {
+        final JSONObject receipt = batchOrderReceipt;
+        String ref = receipt == null ? "the stock order"
+                : receipt.optString("reference", "the stock order");
+        beep(SOUND_OK);
+        dlg()
+                .setTitle("SHIPMENT FULLY PAIRED ✓")
+                .setMessage("Every box is tagged. If labels are left "
+                        + "on the strip, press NEXT then ALL BOXES "
+                        + "LABELLED to hold them first.\n\nOtherwise "
+                        + "finish at the desk: open " + ref + " in "
+                        + "TC-Planner and save the received stock - "
+                        + "this batch STAYS OPEN and closes itself the "
+                        + "moment the planner saves.")
+                .setPositiveButton("OK", null)
+                .show();
+    }
+
+    private void showStripDone(String msg, JSONObject receipt) {
+        beep(SOUND_OK);
+        stripSweepMode = false;
+        final String ref = receipt == null ? "the stock order"
+                : receipt.optString("reference", "the stock order");
+        dlg()
+                .setTitle("SHIPMENT SETTLED")
+                .setMessage(msg + "\n\nFinish at the desk: open " + ref
+                        + " in TC-Planner and save the received stock - "
+                        + "Print labels is already handled there. This "
+                        + "batch STAYS OPEN and closes itself the "
+                        + "moment the planner saves; the 1-hour "
+                        + "reminder clock is running.")
+                .setPositiveButton("DONE", (d, w) -> {
+                    exitBatch(false);
+                    status.setText(ref + " waiting on TC-Planner - the "
+                            + "batch closes itself when the order is "
+                            + "saved there.");
+                    maybeNextSortOrder();
+                })
+                .setCancelable(false)
+                .show();
     }
 
     // ------------------------------------------- sort a shipment ---------
@@ -8992,6 +9070,7 @@ public class MainActivity extends Activity {
                     batchOrderReceipt = receipt;
                     stripSweepMode = false;
                     stripEpcs.clear();
+                    recvHandoffShown = false;
                     batchPrevDoneAt = prevDone;
                     batchShelfSweptAt = shelfSw;
                     receivingBatch = receiving;
@@ -10179,6 +10258,8 @@ public class MainActivity extends Activity {
                 }
                 final String hint = resp.isNull("message") ? null
                         : resp.optString("message", null);
+                final boolean recvDone =
+                        resp.optBoolean("receiving_done");
                 final BItem item = BItem.from(resp.getJSONObject("item"));
                 final boolean suspect = resp.getJSONObject("assignment")
                         .optBoolean("suspect");
@@ -10210,6 +10291,11 @@ public class MainActivity extends Activity {
                               + " tags)" + pickNote(read));
                     updateBatchCard();
                     refreshBatchList();
+                    if (recvDone && batchOrderReceipt != null
+                            && !recvHandoffShown) {
+                        recvHandoffShown = true;
+                        showFullyPairedHandoff();
+                    }
                     if (!maybeAutoFinishTrip(item)) maybeAutoAdvance(item);
                 });
             } catch (Exception e) {
@@ -10487,6 +10573,7 @@ public class MainActivity extends Activity {
         recvBundleCodes.clear();
         recvUnitBoxes.clear();
         mbCountAsked.clear();
+        recvHandoffShown = false;
         parentBatchId = 0;
         parentBinName = null;
         pendingTrips.clear();

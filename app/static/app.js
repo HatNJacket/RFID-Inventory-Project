@@ -15293,10 +15293,31 @@ document
 async function fsFinish(epcs) {
   if (!fsSettleData) return;
   try {
-    const res = await postJson(
+    let res = await postJson(
       `/api/batches/${fsSettleData.batchId}/held-list`,
       { epcs, created_by: operatorEl.value || null }
     );
+    // Swept tags recorded as PAIRED boxes of this shipment: the
+    // sticker answered from the strip in hand, so a pair sweep almost
+    // certainly over-heard it (Nick, 2026-09-02, SO 941).
+    if ((res.owned_candidates || []).length) {
+      const names = res.owned_candidates
+        .map((c) => c.product_title || c.sku)
+        .join(", ");
+      if (
+        confirm(
+          `${res.owned_candidates.length} swept tag(s) are recorded ` +
+            `as PAIRED boxes of this shipment (${names}).\n\nIf those ` +
+            "stickers are on the strip in your hand, they were " +
+            "counted by mistake - unpair them and hold the labels?"
+        )
+      ) {
+        res = await postJson(
+          `/api/batches/${fsSettleData.batchId}/held-list`,
+          { epcs, unpair_owned: true, created_by: operatorEl.value || null }
+        );
+      }
+    }
     document.getElementById("fs-overlay").hidden = true;
     alert(
       res.message +
@@ -15305,13 +15326,15 @@ async function fsFinish(epcs) {
     );
     await openPlannerReceive(res.planner.order_id, res.planner.items);
     fsSettleData = null;
-    // The batch closed with the strip - back to the bin board.
+    // The batch STAYS OPEN until the planner saves - locally, back to
+    // the bin board; the open list keeps showing it until then.
     batch = null;
     batchItems = [];
     stopBatchLive();
     enterBatchTab();
     setBatchResult(
-      "Shipment settled - finish the receive in TC-Planner.",
+      "Shipment settled - finish the receive in TC-Planner (the batch " +
+        "closes itself when the planner saves).",
       "ok"
     );
   } catch (err) {

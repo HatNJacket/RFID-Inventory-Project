@@ -154,7 +154,7 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
           and body["planner"]["order_id"] == 77,
           str(body["planner"]))
 
-    # ---- held list: strip sweep, strays excluded, batch closes -------
+    # ---- held list: strip sweep, strays excluded, batch STAYS OPEN ---
     r = cl.post(f"/api/batches/{bid}/held-list",
                 json={"epcs": ["HELD00000000000000000001",
                                "E100000000000000000000A1"],
@@ -164,9 +164,13 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
           r.status_code == 201 and body["pool_count"] == 1
           and body["excluded_assigned"] == 1
           and body["total_unpaired"] == 1, r.text[:300])
+    check("a swept tag paired to THIS shipment is a mis-count candidate",
+          len(body["owned_candidates"]) == 1
+          and body["owned_candidates"][0]["sku"] == "GOOD-1",
+          str(body["owned_candidates"]))
     r = cl.get(f"/api/batches/{bid}")
-    check("the batch closes with the strip",
-          r.json()["batch"]["status"] == "done", r.text[:150])
+    check("the batch STAYS OPEN with the strip (planner closes it)",
+          r.json()["batch"]["status"] != "done", r.text[:150])
     with Session(get_engine()) as s:
         hl = s.query(HeldLabelList).one()
         hi = s.query(HeldLabelItem).one()
@@ -175,10 +179,11 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
           and hi.sku == "GOOD-2" and hi.count == 1,
           f"{hl.as_dict()} {hi.as_dict()}")
 
-    # ---- done shipments refuse a re-run ------------------------------
+    # ---- the still-open shipment reuses on a re-run ------------------
     r = cl.post("/api/receiving/full-shipment", json={"order": "948"})
-    check("a done full-shipment receive refuses a twin",
-          r.status_code == 409, r.status_code)
+    check("a re-run picks the open batch back up, no twin",
+          r.status_code == 201 and r.json()["reused"] is True,
+          r.text[:200])
 
     # ---- held-aware printing everywhere ------------------------------
     r = cl.post("/api/receiving/prints",
@@ -228,8 +233,11 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
     r = cl.post("/api/receiving/stock-updated",
                 json={"stock_order_id": 77, "updated_by": "planner"})
     check("stock-updated stamps and closes the task",
-          r.status_code == 200 and r.json()["tasks_closed"] == 1,
-          r.text[:200])
+          r.status_code == 200 and r.json()["tasks_closed"] == 1
+          and r.json()["batches_closed"] == 1, r.text[:200])
+    r = cl.get(f"/api/batches/{bid}")
+    check("the planner check-off is what closes the batch",
+          r.json()["batch"]["status"] == "done", r.text[:150])
     r = cl.get("/api/review-tasks?status=all")
     t = next(t for t in r.json()["tasks"]
              if t.get("category") == "stock-not-updated")
@@ -300,24 +308,63 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
         r = cl.post(f"/api/batches/{bid2}/pair",
                     json={"epc": epc, "item_id": it2["id"],
                           "created_by": "C72"})
-    check("fully-arrived shipment auto-closes on the last pair",
+    check("fully-arrived shipment reports fully paired on the last pair",
           r.json()["receiving_done"] is True, r.text[:200])
     with Session(get_engine()) as s:
         rec2 = s.query(OrderReceipt).filter(
             OrderReceipt.stock_order_id == 78).one()
-    check("auto-close settles the receipt (the 1h clock starts)",
+    check("full pairing settles the receipt (the 1h clock starts)",
           rec2.settled_at is not None, str(rec2.as_dict()))
+    r = cl.get(f"/api/batches/{bid2}")
+    check("fully-arrived shipment stays OPEN awaiting the planner",
+          r.json()["batch"]["status"] != "done", r.text[:150])
     r = cl.post(f"/api/batches/{bid2}/settle-shipment",
                 json={"created_by": "Nick"})
-    check("settle still answers on the done batch (0 unpaired)",
+    check("settle still answers (0 unpaired)",
           r.status_code == 200 and r.json()["total_unpaired"] == 0
           and {i["sku"]: i["qty"] for i in r.json()["planner"]["items"]}
           == {"CLEAN-1": 2}, r.text[:250])
     r = cl.post(f"/api/batches/{bid2}/held-list",
                 json={"epcs": [], "created_by": "Nick"})
-    check("finishing the done batch holds nothing and hands off",
+    check("finishing the full batch holds nothing and hands off",
           r.status_code == 201 and r.json()["total_unpaired"] == 0
           and r.json()["list"] is None, r.text[:200])
+
+    # ---- strip sweep reclaims a mis-counted pairing ------------------
+    # (Nick, 2026-09-02, SO 941: a pair sweep over-heard the leftover
+    # strip and counted its labels as boxes. The strip sweep now names
+    # those tags, and unpair_owned rolls them back onto the strip.)
+    r = cl.post(f"/api/batches/{bid2}/held-list",
+                json={"epcs": ["E200000000000000000000C2"],
+                      "created_by": "Nick"})
+    check("re-post names the mis-count candidate",
+          len(r.json()["owned_candidates"]) == 1
+          and r.json()["owned_candidates"][0]["sku"] == "CLEAN-1",
+          r.text[:250])
+    r = cl.post(f"/api/batches/{bid2}/held-list",
+                json={"epcs": ["E200000000000000000000C2"],
+                      "unpair_owned": True, "created_by": "Nick"})
+    body = r.json()
+    check("unpair_owned rolls the pairing back onto the strip",
+          body["unpaired_rolled_back"] == 1
+          and body["total_unpaired"] == 1 and body["pool_count"] == 1
+          and {i["sku"]: i["qty"] for i in body["planner"]["items"]}
+          == {"CLEAN-1": 1}, r.text[:350])
+    with Session(get_engine()) as s:
+        lists2 = s.query(HeldLabelList).filter(
+            HeldLabelList.batch_id == bid2).all()
+    check("re-posts REPLACE the strip, never duplicate it",
+          len(lists2) == 1
+          and lists2[0].epc_set() == {"E200000000000000000000C2"},
+          [(h.id, h.epc_set()) for h in lists2])
+
+    # ---- the planner's save closes the fully-arrived batch -----------
+    r = cl.post("/api/receiving/stock-updated",
+                json={"stock_order_id": 78, "updated_by": "planner"})
+    r2 = cl.get(f"/api/batches/{bid2}")
+    check("planner save closes the shipment",
+          r.json()["batches_closed"] == 1
+          and r2.json()["batch"]["status"] == "done", r2.text[:150])
 
     # ---- the planner's unprinted relay is a no-op for full shipments -
     # (Nick, 2026-09-01: the planner frontend doesn't hold RFID-printed

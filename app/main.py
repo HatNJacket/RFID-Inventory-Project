@@ -6258,26 +6258,45 @@ def _maybe_close_receiving(session: Session, batch: Batch) -> bool:
         total += want
     if total <= 0:
         return False
+    # Full-shipment receives STAY OPEN until TC-Planner checks the
+    # order off (Nick, 2026-09-02, SO 938/941: the close kept beating
+    # the planner hand-off). Full pairing SETTLES the receipt - the
+    # 1-hour clock, the watchdog and Continue-to-TC-Planner all key
+    # off it - and the stock-updated ping does the actual closing
+    # (_close_receipt_batch). Returns True either way: the shipment is
+    # fully paired, which is what callers announce.
+    receipt = session.scalar(
+        select(OrderReceipt)
+        .where(OrderReceipt.batch_id == batch.id)
+        .order_by(OrderReceipt.id.desc())
+    )
+    if receipt is not None:
+        if receipt.settled_at is None:
+            receipt.settled_at = datetime.now(timezone.utc)
+        return True
     batch.status = "done"
     batch.completed_at = datetime.now(timezone.utc)
     try:
         _note_backorder_debt(session, batch)
     except Exception:  # noqa: BLE001 — bookkeeping must never block a close
         logger.exception("backorder-debt check failed (batch %s)", batch.id)
-    # A FULLY-arrived full-shipment receive auto-closes before anyone
-    # can press the settle button (Nick, 2026-09-01, SO 946): pairing
-    # is complete, so the 1-hour Shopify-update clock starts HERE - the
-    # watchdog and the Continue-to-TC-Planner path both key off it.
+    return True
+
+
+def _close_receipt_batch(session: Session, receipt: OrderReceipt) -> bool:
+    """TC-Planner saved the order - NOW the full-shipment batch closes
+    (Nick, 2026-09-02: the count stays open until the planner order is
+    checked off). Backorder-debt bookkeeping runs here, where the close
+    actually happens."""
+    batch = session.get(Batch, receipt.batch_id)
+    if batch is None or batch.status in ("done", "abandoned"):
+        return False
+    batch.status = "done"
+    batch.completed_at = datetime.now(timezone.utc)
     try:
-        receipt = session.scalar(
-            select(OrderReceipt)
-            .where(OrderReceipt.batch_id == batch.id)
-            .order_by(OrderReceipt.id.desc())
-        )
-        if receipt is not None and receipt.settled_at is None:
-            receipt.settled_at = datetime.now(timezone.utc)
-    except Exception:  # noqa: BLE001
-        logger.exception("auto-settle failed (batch %s)", batch.id)
+        _note_backorder_debt(session, batch)
+    except Exception:  # noqa: BLE001 — bookkeeping must never block a close
+        logger.exception("backorder-debt check failed (batch %s)", batch.id)
     return True
 
 
@@ -10626,6 +10645,11 @@ def settle_shipment(
 class HeldListIn(BaseModel):
     epcs: list[str] = Field(default_factory=list, max_length=5000)
     created_by: str | None = Field(default=None, max_length=100)
+    # The operator confirmed: swept tags recorded as PAIRED boxes of
+    # this shipment are actually on the strip in hand (a pair sweep
+    # over-heard the strip - Nick, 2026-09-02, SO 941) - roll those
+    # pairings back and hold the labels.
+    unpair_owned: bool = False
 
 
 @app.post(
@@ -10640,10 +10664,14 @@ def create_held_list(
 ):
     """Sweep of the unused-label strip: the leftover labels stay on the
     liner, go in a vendor container, and their EPCs become the strip's
-    POOL (product accounting = printed minus paired, per SKU). Closes
-    the batch - the shipment is settled; what didn't arrive waits on
-    the strip. EPCs already assigned (shelf tags the sweep over-heard)
-    or already on another strip are excluded, never stolen."""
+    POOL (product accounting = printed minus paired, per SKU).
+    RE-POSTING REPLACES the batch's strip (a bad sweep is re-swept, not
+    duplicated), and the batch STAYS OPEN - TC-Planner's stock-updated
+    ping is what closes a full-shipment receive (Nick, 2026-09-02).
+    EPCs already assigned or on another strip are excluded, never
+    stolen - but a swept tag paired to THIS shipment's own products is
+    reported as a candidate mis-count, and unpair_owned rolls those
+    pairings back (the sticker is on the liner, not a box)."""
     batch = _get_batch(session, batch_id)
     receipt = session.scalar(
         select(OrderReceipt).where(OrderReceipt.batch_id == batch_id)
@@ -10655,9 +10683,48 @@ def create_held_list(
         )
     if receipt.settled_at is None:
         receipt.settled_at = datetime.now(timezone.utc)
+    swept = {(e or "").strip().upper() for e in payload.epcs if e}
+
+    # Swept tags recorded as paired boxes of THIS shipment: physically
+    # they answered from the strip in the operator's hand, so they are
+    # almost certainly pair-sweep over-hearings, not shelf boxes.
+    items = _batch_items(session, batch.id)
+    by_sku = {(i.sku or "").strip().upper(): i for i in items if i.sku}
+    owned_candidates: list[dict] = []
+    unpaired_rolled_back = 0
+    if swept:
+        for a in session.scalars(
+            select(RfidAssignment).where(
+                func.upper(RfidAssignment.rfid_id).in_(sorted(swept))
+            )
+        ):
+            item = by_sku.get((a.sku or "").strip().upper())
+            if item is None or (item.paired_count or 0) <= 0:
+                continue
+            if payload.unpair_owned:
+                session.add(BarcodeChange(
+                    sku=a.sku,
+                    product_title=a.product_title,
+                    shopify_variant_id=a.shopify_variant_id,
+                    changed_field="tag-unlinked",
+                    old_barcode=(a.rfid_id or "")[:64] or None,
+                    new_barcode="strip sweep rollback"[:64],
+                    changed_by=(payload.created_by or "")[:100] or None,
+                ))
+                item.paired_count = max(0, (item.paired_count or 0) - 1)
+                session.delete(a)
+                unpaired_rolled_back += 1
+            else:
+                owned_candidates.append({
+                    "epc": a.rfid_id,
+                    "sku": a.sku,
+                    "product_title": a.product_title,
+                })
+    if unpaired_rolled_back:
+        session.flush()
+
     unpaired = _unpaired_label_counts(session, batch)
     total = sum(u["count"] for u in unpaired)
-    swept = {(e or "").strip().upper() for e in payload.epcs if e}
     excluded_assigned = 0
     excluded_held = 0
     pool: set[str] = set()
@@ -10671,6 +10738,8 @@ def create_held_list(
         }
         other_pools: set[str] = set()
         for hl in session.scalars(select(HeldLabelList)):
+            if hl.batch_id == batch.id:
+                continue  # this batch's own strip is being replaced
             other_pools |= hl.epc_set()
         for epc in swept:
             if epc in owned:
@@ -10679,17 +10748,30 @@ def create_held_list(
                 excluded_held += 1
             else:
                 pool.add(epc)
-    held_list = None
+    # Replace-on-repost: one strip per shipment, always the newest
+    # sweep's truth.
+    held_list = session.scalar(
+        select(HeldLabelList).where(HeldLabelList.batch_id == batch.id)
+        .order_by(HeldLabelList.id.desc())
+    )
+    if held_list is not None:
+        session.execute(delete(HeldLabelItem).where(
+            HeldLabelItem.list_id == held_list.id
+        ))
+        if total <= 0:
+            session.delete(held_list)
+            held_list = None
     if total > 0:
-        held_list = HeldLabelList(
-            batch_id=batch.id,
-            stock_order_id=receipt.stock_order_id,
-            reference=receipt.reference,
-            vendor=receipt.vendor,
-            created_by=payload.created_by,
-            epcs="\n".join(sorted(pool)),
-        )
-        session.add(held_list)
+        if held_list is None:
+            held_list = HeldLabelList(
+                batch_id=batch.id,
+                stock_order_id=receipt.stock_order_id,
+                reference=receipt.reference,
+                vendor=receipt.vendor,
+                created_by=payload.created_by,
+            )
+            session.add(held_list)
+        held_list.epcs = "\n".join(sorted(pool))
         session.flush()
         for u in unpaired:
             session.add(HeldLabelItem(
@@ -10698,11 +10780,6 @@ def create_held_list(
                 product_title=u["product_title"],
                 count=u["count"],
             ))
-    # The shipment is settled: close the batch (a receiving batch with
-    # unpaired labels would otherwise never auto-close).
-    if batch.status not in ("done", "abandoned"):
-        batch.status = "done"
-        batch.completed_at = datetime.now(timezone.utc)
     session.commit()
     mismatch = pool and len(pool) != total
     return {
@@ -10712,6 +10789,8 @@ def create_held_list(
         "pool_count": len(pool),
         "excluded_assigned": excluded_assigned,
         "excluded_held": excluded_held,
+        "owned_candidates": owned_candidates,
+        "unpaired_rolled_back": unpaired_rolled_back,
         "planner": {
             "order_id": receipt.stock_order_id,
             "items": _planner_paired_items(session, batch_id),
@@ -10721,6 +10800,8 @@ def create_held_list(
              f"{receipt.vendor or 'vendor'} strip"
              + (f" - {len(pool)} tag(s) in its pool" if pool else
                 " - no sweep captured, the strip still counts by SKU")
+             + (f" ({unpaired_rolled_back} mis-counted pairing(s) "
+                "rolled back)" if unpaired_rolled_back else "")
              + (f" ({excluded_assigned} swept tag(s) belonged to real "
                 "boxes and were excluded)" if excluded_assigned else "")
              + (f" (⚠ pool size doesn't match the {total} unused "
@@ -10728,8 +10809,8 @@ def create_held_list(
                 if mismatch else "")
              if total > 0 else
              "Every printed label found its box - nothing to hold")
-            + f". Batch #{batch.id} closed. Save the receive in "
-            "TC-Planner and update Shopify stock there."
+            + f". Batch #{batch.id} stays open - it closes itself when "
+            "TC-Planner saves the received stock."
         ),
     }
 
@@ -10754,9 +10835,14 @@ def receiving_stock_updated(
         )
     ).all()
     closed = 0
+    batches_closed = 0
     for r in receipts:
         if r.stock_updated_at is None:
             r.stock_updated_at = datetime.now(timezone.utc)
+        # The planner check-off is what closes a full-shipment batch
+        # (Nick, 2026-09-02) - the count stayed open for exactly this.
+        if _close_receipt_batch(session, r):
+            batches_closed += 1
         if r.review_task_id:
             task = session.get(ReviewTask, r.review_task_id)
             if task is not None and task.status == "open":
@@ -10766,7 +10852,7 @@ def receiving_stock_updated(
                 closed += 1
     session.commit()
     return {"ok": True, "receipts": len(receipts),
-            "tasks_closed": closed}
+            "tasks_closed": closed, "batches_closed": batches_closed}
 
 
 @app.get(
