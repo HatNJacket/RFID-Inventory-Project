@@ -8583,6 +8583,19 @@ async function runVerifyCheck() {
         }
       }
       const flaggedRow = (red || yel || !paired) && !na;
+      // Below-expected filter (Nick, 2026-09-02, the 8h11h6 case):
+      // counted 1, every tag heard, but Shopify expects 2 - a clean
+      // candidate for lowering the count. Deliberately EXCLUDES any
+      // row with unheard tags or other flags: those are different
+      // problems with their own flows.
+      const lowClean =
+        !na &&
+        r.expected_qty != null &&
+        found < r.expected_qty &&
+        !red &&
+        !yel &&
+        paired &&
+        !(r.shelf && (r.shelf.unheard_epcs || []).length);
       // A flagged row expands (like the Review inbox) into the item's
       // preview, what the sweep actually said, and the two counts whose
       // sum is checked against Shopify — corrected here, never written
@@ -8629,7 +8642,7 @@ async function runVerifyCheck() {
             </div>
           </td></tr>`
         : "";
-      return `<tr${
+      return `<tr${lowClean ? ' data-low="1"' : ""}${
         flaggedRow
           ? ` class="bvx-flag${yel && !red ? " bvx-flag--yel" : ""}" data-item="${r.item_id}" title="Click to review — what the sweep heard vs this batch's counts"`
           : ""
@@ -8788,12 +8801,21 @@ async function runVerifyCheck() {
         .join(" · ")}</p>`
     : "";
 
+  const lowCount = (rows.match(/data-low="1"/g) || []).length;
   bEl.verifyReport.innerHTML = `
     ${verdict}${yellowNote}${retiredNote}${naNote}${tbNote}${unresolvedNote}
     <div class="inventory__scroll"><table class="inventory__table">
       <thead><tr><th>Product</th><th>SKU</th><th class="num" title="Boxes physically collected this batch (new + already tagged)">Counted</th><th class="num" title="Shopify on-hand for this shelf; brackets show counted-vs-expected">Expected</th><th class="num">Detected</th><th></th></tr></thead>
       <tbody>${rows}</tbody>
     </table></div>${fixAll}
+    ${
+      lowCount
+        ? `<div class="linkbox__actions" style="margin-top:8px">
+             <button class="reset" id="bverify-lowfilter" type="button"
+               title="Products where every tag answered and the counts agree, but the shelf simply holds FEWER than Shopify expects - the ⇩ lower-count candidates. Rows with unheard tags are a different problem and stay out of this filter.">Show only below-expected (${lowCount})</button>
+           </div>`
+        : ""
+    }
     ${
       otherCount
         ? `<div class="linkbox__actions" style="margin-top:8px">
@@ -8811,7 +8833,42 @@ async function runVerifyCheck() {
         ? `See other detected items (${otherCount})`
         : "Hide other detected items";
     });
+  // Below-expected filter (Nick, 2026-09-02): survives re-renders (every
+  // sweep and count-save rebuilds this report).
+  const lowBtn = document.getElementById("bverify-lowfilter");
+  if (lowBtn) {
+    lowBtn.addEventListener("click", () => {
+      verifyLowOnly = !verifyLowOnly;
+      applyVerifyLowFilter(lowCount);
+    });
+    applyVerifyLowFilter(lowCount);
+  } else {
+    verifyLowOnly = false;
+  }
   return rep;
+}
+
+// When ON, only the clean below-expected rows show; flagged rows'
+// expandable detail rows collapse with their parents.
+let verifyLowOnly = false;
+
+function applyVerifyLowFilter(lowCount) {
+  const btn = document.getElementById("bverify-lowfilter");
+  if (!btn) return;
+  btn.textContent = verifyLowOnly
+    ? "Show all items"
+    : `Show only below-expected (${lowCount})`;
+  bEl.verifyReport
+    .querySelectorAll("tbody tr")
+    .forEach((tr) => {
+      if (tr.classList.contains("bvx-detail")) {
+        // Detail rows manage their own hidden state when the filter is
+        // off; the filter forces them closed while on.
+        if (verifyLowOnly) tr.hidden = true;
+        return;
+      }
+      tr.hidden = verifyLowOnly && tr.dataset.low !== "1";
+    });
 }
 
 // "Check bin" is now a lookup: point the current sweep at ANY bin and see
