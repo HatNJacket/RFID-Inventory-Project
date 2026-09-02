@@ -51,6 +51,7 @@ from app.models import (
     BinMapEntry,
     BundleContent,
     C72Command,
+    CompanionTag,
     C72DebugEvent,
     C72Tuning,
     CaseCode,
@@ -64,6 +65,7 @@ from app.models import (
     LinkScan,
     LocateQueueEntry,
     MismatchDismissal,
+    MultiboxProduct,
     NonTaggable,
     OneLeftCheck,
     OrderReceipt,
@@ -1191,6 +1193,28 @@ def tag_info(rfid_id: str, session: Session = Depends(get_session)):
     )
     notes: list[str] = []
     if row is None:
+        # A companion tag (box 2..N of a multi-box unit) is a known
+        # sticker with a name - it counts nowhere on purpose.
+        comp = session.scalar(
+            select(CompanionTag).where(
+                func.upper(CompanionTag.epc) == epc.upper()
+            )
+        )
+        if comp is not None:
+            notes.append(
+                f"Companion label: box {comp.box_no or '?'} of "
+                f"{comp.box_count or '?'} of "
+                f"{comp.product_title or comp.sku or '?'}"
+                + (f", lives in {comp.bin_location}"
+                   if comp.bin_location else "")
+                + ". The unit's counting tag is on box 1 - this one "
+                "counts nowhere, by design."
+            )
+            return {
+                "found": False, "printed_only": False, "epc": epc,
+                "companion": comp.as_dict(), "print_job": None,
+                "notes": notes,
+            }
         # Printed but never paired: the label exists, the tie doesn't.
         job = session.scalar(
             select(PrintJob).where(func.upper(PrintJob.epc) == epc.upper())
@@ -1324,6 +1348,176 @@ def _new_epc() -> str:
     return secrets.token_hex(12).upper()
 
 
+# ------------------------------------------------------- multi-box units ---
+# One sellable unit, several cartons (Nick, 2026-09-02, the S11740).
+# The invariant everything counts on is ONE tag per unit, so box 1 gets
+# the counting label and boxes 2..N get COMPANION labels: printed with
+# "BOX X OF Y" and that box's own bin, registered as CompanionTags
+# (recognized by sweeps, counted nowhere), never RfidAssignments.
+
+def _multibox_map(
+    session: Session, skus: list[str | None]
+) -> dict[str, MultiboxProduct]:
+    wanted = sorted({
+        (s or "").strip().upper() for s in skus if (s or "").strip()
+    })
+    if not wanted:
+        return {}
+    return {
+        (r.sku or "").strip().upper(): r
+        for r in session.scalars(
+            select(MultiboxProduct).where(
+                func.upper(MultiboxProduct.sku).in_(wanted)
+            )
+        )
+    }
+
+
+def _expand_multibox(
+    session: Session, jobs: list[PrintJob]
+) -> list[PrintJob]:
+    """Give every counting label of a multi-box product its "BOX 1 OF
+    Y" header and per-box bin, and append the companion labels for
+    boxes 2..Y right behind it (label order = sticking order). Jobs
+    that are already companions, or case labels, pass through."""
+    marks = _multibox_map(session, [j.sku for j in jobs])
+    if not marks:
+        return jobs
+    out: list[PrintJob] = []
+    for job in jobs:
+        out.append(job)
+        mark = marks.get((job.sku or "").strip().upper())
+        if (mark is None or mark.boxes_per_unit <= 1
+                or job.kind == "companion" or job.case_units):
+            continue
+        bins = mark.bin_list()
+
+        def box_bin(i: int) -> str | None:
+            b = bins[i - 1] if len(bins) >= i else None
+            return (b or "").strip() or job.bin_location
+
+        total = mark.boxes_per_unit
+        job.label_name = f"BOX 1 OF {total}"
+        job.label_placement = "header"
+        job.bin_location = box_bin(1)
+        for i in range(2, total + 1):
+            out.append(PrintJob(
+                epc=_new_epc(),
+                status="pending",
+                kind="companion",
+                barcode=job.barcode,
+                sku=job.sku,
+                product_title=job.product_title,
+                variant_title=job.variant_title,
+                bin_location=box_bin(i),
+                other_bins=job.other_bins,
+                shopify_variant_id=job.shopify_variant_id,
+                shopify_product_id=job.shopify_product_id,
+                label_name=f"BOX {i} OF {total}",
+                label_placement="header",
+                requested_by=job.requested_by,
+                batch_id=job.batch_id,
+                printer=job.printer,
+                print_session=job.print_session,
+            ))
+    return out
+
+
+# Filter for every count of a batch's printed labels: companion labels
+# are physical stickers but never counting units.
+_NOT_COMPANION = (PrintJob.kind.is_(None)) | (PrintJob.kind != "companion")
+
+
+def _companions_heard(
+    session: Session, epcs: list[str]
+) -> tuple[list[dict], set[str]]:
+    """Which of these swept EPCs are companion tags: display info plus
+    the EPC set to drop from every unknown list."""
+    if not epcs:
+        return [], set()
+    rows = session.scalars(
+        select(CompanionTag).where(
+            func.upper(CompanionTag.epc).in_(sorted(
+                {(e or "").upper() for e in epcs}
+            ))
+        )
+    ).all()
+    return ([r.as_dict() for r in rows],
+            {(r.epc or "").upper() for r in rows})
+
+
+@app.get("/api/multibox/{sku}", dependencies=[Depends(require_user)])
+def get_multibox(sku: str, session: Session = Depends(get_session)):
+    row = session.scalar(
+        select(MultiboxProduct).where(
+            func.upper(MultiboxProduct.sku) == sku.strip().upper()
+        )
+    )
+    return {"multibox": row.as_dict() if row else None}
+
+
+class MultiboxIn(BaseModel):
+    boxes_per_unit: int = Field(ge=1, le=20)
+    # Per-box bins, index 0 = box 1; null/empty entries = not known yet
+    # (they fall back to the product's own bin on labels).
+    bins: list[str | None] | None = Field(default=None, max_length=20)
+    updated_by: str | None = Field(default=None, max_length=100)
+
+
+@app.put("/api/multibox/{sku}", dependencies=[Depends(require_user)])
+def set_multibox(
+    sku: str, payload: MultiboxIn, session: Session = Depends(get_session)
+):
+    """Mark a product as one-unit-several-cartons (or clear it with
+    boxes_per_unit 1). Durable and store-wide: labels, audits and
+    receiving all read it from here on."""
+    key = sku.strip()
+    if not key:
+        raise HTTPException(422, "A SKU is required.")
+    row = session.scalar(
+        select(MultiboxProduct).where(
+            func.upper(MultiboxProduct.sku) == key.upper()
+        )
+    )
+    old = row.boxes_per_unit if row else 1
+    if payload.boxes_per_unit <= 1:
+        if row is not None:
+            session.delete(row)
+    else:
+        bins = [
+            ((b or "").strip() or None)
+            for b in (payload.bins or [])
+        ][:payload.boxes_per_unit]
+        if row is None:
+            row = MultiboxProduct(sku=key)
+            session.add(row)
+        row.boxes_per_unit = payload.boxes_per_unit
+        row.bins = json.dumps(bins) if any(bins) else None
+        row.updated_by = payload.updated_by
+        row.updated_at = datetime.now(timezone.utc)
+    if old != payload.boxes_per_unit:
+        session.add(BarcodeChange(
+            sku=key,
+            product_title=f"{key} (multi-box mark)",
+            changed_field="multibox",
+            old_barcode=f"{old} box(es) per unit"[:64],
+            new_barcode=f"{payload.boxes_per_unit} box(es) per unit"[:64],
+            changed_by=(payload.updated_by or "").strip()[:100] or None,
+        ))
+    session.commit()
+    return {
+        "multibox": row.as_dict()
+        if payload.boxes_per_unit > 1 else None,
+        "message": (
+            f"{key}: 1 unit = {payload.boxes_per_unit} boxes - box 1 "
+            "carries the counting label, the rest print companion "
+            "labels."
+            if payload.boxes_per_unit > 1
+            else f"{key}: back to one box per unit."
+        ),
+    }
+
+
 class PrintJobIn(BaseModel):
     quantity: int = Field(default=1, ge=1, le=100)
     shopify_variant_id: str = Field(max_length=64)
@@ -1385,6 +1579,9 @@ def create_print_jobs(
         PrintJob(epc=_new_epc(), status="pending", **fields)
         for _ in range(payload.quantity)
     ]
+    # Multi-box units: per-box labels ride along ("BOX 2 OF 2", its own
+    # bin) as companion jobs - physical stickers, counting nowhere.
+    jobs = _expand_multibox(session, jobs)
     session.add_all(jobs)
     session.commit()
     for job in jobs:
@@ -2203,6 +2400,29 @@ def complete_print_job(
     job.printed_at = datetime.now(timezone.utc)
     if not create_assignment:
         session.commit()
+        return {"job": job.as_dict(), "assignment": None}
+    if job.kind == "companion":
+        # Box 2..N of a multi-box unit: the tag is live (the printer
+        # encoded it) but it must count NOWHERE - register it in the
+        # companion registry instead of assignments.
+        m = re.search(r"BOX (\d+) OF (\d+)", job.label_name or "")
+        session.add(CompanionTag(
+            epc=job.epc,
+            sku=job.sku,
+            product_title=job.product_title,
+            box_no=int(m.group(1)) if m else None,
+            box_count=int(m.group(2)) if m else None,
+            bin_location=job.bin_location,
+            created_by=job.requested_by or "printer",
+        ))
+        try:
+            session.commit()
+        except IntegrityError:
+            session.rollback()
+            job = session.get(PrintJob, job_id)
+            job.status = "done"
+            job.printed_at = datetime.now(timezone.utc)
+            session.commit()
         return {"job": job.as_dict(), "assignment": None}
     assignment = RfidAssignment(
         rfid_id=job.epc,
@@ -4938,9 +5158,14 @@ def bin_check(
         g["unavail"] += e.unavailable or 0
         if e.bin and e.bin not in g["bins"]:
             g["bins"].append(e.bin)
+    # Multi-box units: the audit's find flow must know "this product is
+    # N cartons per unit" so an untagged second box never becomes a
+    # double-counting find.
+    mb_map = _multibox_map(session, list(merged_order) + sorted(extra))
     for key in merged_order:
         g = merged[key]
         e = g["entry"]
+        mb = mb_map.get(key)
         report.append({
             "sku": e.sku,
             "product_title": e.product_title,
@@ -4951,6 +5176,7 @@ def bin_check(
             "bins": g["bins"],
             "rfid_incompatible": key in noscan,
             "in_bin_map": True,
+            "boxes_per_unit": mb.boxes_per_unit if mb else None,
             **_tag_counts(key),
         })
     # Requested SKUs the bin map doesn't put here (open-box twins, kept
@@ -4969,6 +5195,9 @@ def bin_check(
             "bins": [],
             "rfid_incompatible": key in noscan,
             "in_bin_map": False,
+            "boxes_per_unit": (
+                mb_map[key].boxes_per_unit if key in mb_map else None
+            ),
             **_tag_counts(key),
         })
     # The rest of the sweep's story — tags of OTHER products heard on
@@ -4977,6 +5206,7 @@ def bin_check(
     # count wrong".
     foreign, unknown = [], []
     printed_labels_heard: list[dict] = []
+    companions_heard: list[dict] = []
     if swept:
         covered = wanted | extra
         owners = {
@@ -5017,6 +5247,11 @@ def bin_check(
                 )
             }
             unknown = [e for e in unknown if e not in dismissed]
+        # Companion tags (box 2..N of a multi-box unit) answer sweeps
+        # like any sticker; they're known by name and count nowhere.
+        companions_heard, _comp_epcs = _companions_heard(session, unknown)
+        if _comp_epcs:
+            unknown = [e for e in unknown if e.upper() not in _comp_epcs]
         if unknown:
             label_jobs = {
                 (j.epc or "").upper(): j
@@ -5066,6 +5301,7 @@ def bin_check(
         "foreign": foreign,
         "unknown_epcs": unknown,
         "printed_labels_heard": printed_labels_heard,
+        "companions_heard": companions_heard,
         "stray_ghosts": stray_ghosts,
         "batch_done": bool(bin_key_set) and bin_key_set <= done_bin_keys,
         "batch_done_id": done_batch.id if done_batch else None,
@@ -5211,6 +5447,9 @@ class AuditFindIn(BaseModel):
     by: str | None = Field(default=None, max_length=100)
     auto_print: bool = False
     printer: str | None = Field(default=None, max_length=100)
+    # Multi-box guard override: the operator confirmed this really is a
+    # separate untagged UNIT, not box 2..N of a unit already tagged.
+    multibox_ok: bool = False
 
 
 @app.post(
@@ -5247,6 +5486,21 @@ def create_audit_find(
             f"{sku} is a bundle - its components carry the tags. "
             "Scan a component box instead.",
         )
+    # Multi-box guard (Nick, 2026-09-02, the S11740): an untagged
+    # second carton of a multi-box unit is NOT untagged stock - noting
+    # it would double-count the unit through the front door. The gun
+    # asks and retries with multibox_ok when the operator is sure.
+    if not payload.multibox_ok:
+        mb = _multibox_map(session, [sku]).get(sku.upper())
+        if mb is not None and mb.boxes_per_unit > 1:
+            raise HTTPException(
+                409,
+                f"MULTIBOX: 1 unit of {sku} is {mb.boxes_per_unit} "
+                f"boxes and its counting tag rides box 1. If this is "
+                f"box 2..{mb.boxes_per_unit} of a unit that's already "
+                "tagged, do NOT note it - stick a companion label on "
+                "instead (reprint from the product window).",
+            )
     bin_location = (product.get("bin_location") or "").strip()
     if bin_location.lower() == "no bin assigned":
         bin_location = ""
@@ -6503,15 +6757,19 @@ def get_batch(batch_id: int, session: Session = Depends(get_session)):
     nicknames = _nickname_map(session, [i.sku for i in items if i.sku])
     # How many labels this batch actually printed per product — the pair
     # step compares tags paired against labels printed, not boxes scanned.
+    # Companion labels (box 2..N of a multi-box unit) are physical
+    # stickers but never counting units, so they stay out of this math.
     printed: dict = {}
     for job in session.scalars(
         select(PrintJob).where(
             PrintJob.batch_id == batch_id,
             PrintJob.status.in_(("pending", "printing", "done")),
+            _NOT_COMPANION,
         )
     ):
         if job.sku:
             printed[job.sku] = printed.get(job.sku, 0) + 1
+    multibox = _multibox_map(session, [i.sku for i in items if i.sku])
     payload = []
     noscan = _noscan_skus(session)
     prior = _prior_tag_counts(
@@ -6521,6 +6779,8 @@ def get_batch(batch_id: int, session: Session = Depends(get_session)):
         d = item.as_dict()
         d["printed_count"] = printed.get(item.sku or "", 0)
         d["nickname"] = nicknames.get((item.sku or "").strip().upper())
+        mb = multibox.get((item.sku or "").strip().upper())
+        d["boxes_per_unit"] = mb.boxes_per_unit if mb else None
         d["rfid_incompatible"] = (
             (item.sku or "").strip().upper() in noscan
         )
@@ -8688,6 +8948,7 @@ def batch_item_labels(
         )
         for _ in range(payload.quantity)
     ]
+    jobs = _expand_multibox(session, jobs)
     session.add_all(jobs)
     session.commit()
     return {"count": len(jobs), "item": item.as_dict()}
@@ -8860,15 +9121,28 @@ def _void_and_requeue(
     unlinked = 0
     for job in old_jobs:
         job.status = "canceled" if job.status == "pending" else "voided"
-        a = session.scalar(
-            select(RfidAssignment).where(
-                func.upper(RfidAssignment.rfid_id)
-                == (job.epc or "").strip().upper()
+        if job.kind == "companion":
+            # A companion label's tag record lives in the companion
+            # registry, not in assignments.
+            c = session.scalar(
+                select(CompanionTag).where(
+                    func.upper(CompanionTag.epc)
+                    == (job.epc or "").strip().upper()
+                )
             )
-        )
-        if a is not None:
-            session.delete(a)
-            unlinked += 1
+            if c is not None:
+                session.delete(c)
+                unlinked += 1
+        else:
+            a = session.scalar(
+                select(RfidAssignment).where(
+                    func.upper(RfidAssignment.rfid_id)
+                    == (job.epc or "").strip().upper()
+                )
+            )
+            if a is not None:
+                session.delete(a)
+                unlinked += 1
         fresh.append(PrintJob(
             epc=_new_epc(),
             status="pending",
@@ -8885,6 +9159,7 @@ def _void_and_requeue(
             label_placement=job.label_placement,
             label_sku=job.label_sku,
             case_units=job.case_units,
+            kind=job.kind,
             printer=job.printer,
             requested_by=requested_by or job.requested_by,
         ))
@@ -9026,7 +9301,7 @@ def _build_label_jobs(
                     requested_by=requested_by or batch.created_by,
                 )
             )
-    return jobs, skipped_bundles
+    return _expand_multibox(session, jobs), skipped_bundles
 
 
 def _held_available(session: Session, skus: list[str]) -> dict[str, dict]:
@@ -9088,6 +9363,19 @@ def _consume_held_label(session: Session, epc: str | None,
         logger.exception("held-label consume failed (%s)", epc)
 
 
+def _item_box_slots(item: BatchItem) -> int:
+    """Boxes per unit for a receiving row. A multi-box product's bin
+    field lists ONE BIN PER BOX (Nick, 2026-09-02 - the 11740's
+    "strange bin numbers"), so the slot count IS the carton count.
+    Stays 1 until the per-box bins are actually set on the product."""
+    if item.kind != "multi_box":
+        return 1
+    full = ", ".join(
+        x for x in (item.bin_location, item.other_bins) if x
+    )
+    return max(1, len(parse_bin_parts(full)))
+
+
 def _build_receiving_label_jobs(
     session: Session, batch: Batch, requested_by: str | None
 ) -> tuple[list[PrintJob], list[str], list[str]]:
@@ -9143,11 +9431,32 @@ def _build_receiving_label_jobs(
         label_name, label_placement, label_sku = _label_name_for(
             session, item
         )
+        # Multi-box products (the 11740): the row counts CARTONS, and
+        # each carton's label names its own box and its own bin - "BOX
+        # 2 OF 2" going to the second bin slot. Interleaved per unit so
+        # the stack comes out unit by unit.
+        slots = _item_box_slots(item)
+        box_bins = parse_bins(", ".join(
+            x for x in (item.bin_location, item.other_bins) if x
+        )) if slots > 1 else []
         # Loose boxes label first, cases after — same order pairing walks.
         per_label_units = (
             [None] * item.qty_scanned + [item.case_units] * item.case_count
         )[have:]
-        for units in per_label_units[:delta]:
+        for idx, units in enumerate(per_label_units[:delta]):
+            job_bin = bin_
+            job_other = item.other_bins
+            job_name, job_place, job_sku = (
+                label_name, label_placement, label_sku
+            )
+            if slots > 1:
+                box_no = ((have + idx) % slots) + 1
+                job_name = f"BOX {box_no} OF {slots}"
+                job_place = "header"
+                job_sku = None
+                if box_no - 1 < len(box_bins):
+                    job_bin = box_bins[box_no - 1]
+                job_other = None
             jobs.append(
                 PrintJob(
                     epc=_new_epc(),
@@ -9160,15 +9469,15 @@ def _build_receiving_label_jobs(
                     variant_title=item.variant_title,
                     sku=item.sku,
                     barcode=item.barcode,
-                    bin_location=bin_,
-                    other_bins=item.other_bins,
-                    label_name=label_name,
-                    label_placement=label_placement,
-                    label_sku=label_sku,
+                    bin_location=job_bin,
+                    other_bins=job_other,
+                    label_name=job_name,
+                    label_placement=job_place,
+                    label_sku=job_sku,
                     requested_by=requested_by or batch.created_by,
                 )
             )
-    return jobs, skipped_no_bin, held_notes
+    return _expand_multibox(session, jobs), skipped_no_bin, held_notes
 
 
 class ReceivingPrintItemIn(BaseModel):
@@ -9343,13 +9652,31 @@ def _receiving_intake(
                 items.append(item)
             elif item.expected_qty is None:
                 item.expected_qty = 0
-            item.qty_scanned += entry.quantity
-            item.expected_qty += entry.quantity
+            # Multi-box products (Nick, 2026-09-02, the 11740): the bin
+            # field lists one bin per CARTON, so re-resolve the kind
+            # against the full bin string (the receiving row only kept
+            # the first bin) and count cartons, not units - every box
+            # gets its own label and tag, same as batch tagging.
+            full_bin = ", ".join(
+                x for x in (product.get("bin_location"),
+                            product.get("other_bins")) if x
+            )
+            item.kind, _ = resolve_product_kind(
+                session, item.product_title, item.sku, full_bin
+            )
+            if item.kind == "multi_box" and not item.other_bins:
+                item.other_bins = (
+                    (product.get("other_bins") or "")[:255] or None
+                )
+            boxes = entry.quantity * _item_box_slots(item)
+            item.qty_scanned += boxes
+            item.expected_qty += boxes
             if item.first_scanned_at is None:
                 item.first_scanned_at = datetime.now(timezone.utc)
             added.append({
                 "sku": item.sku,
                 "quantity": entry.quantity,
+                "boxes": boxes,
             })
         except HTTPException:
             raise
@@ -10156,6 +10483,21 @@ def consume_sort_handoff(
     return {"handoff": row.as_dict()}
 
 
+def _planner_paired_items(session: Session, batch_id: int) -> list[dict]:
+    """Paired counts for the planner hand-off, in UNITS: a multi-box
+    product pairs one tag per CARTON, so its boxes divide back by the
+    slot count before the planner hears a received quantity (a
+    half-paired unit doesn't count until its last carton pairs)."""
+    out = []
+    for i in _batch_items(session, batch_id):
+        if not i.sku:
+            continue
+        units = (i.paired_count or 0) // _item_box_slots(i)
+        if units > 0:
+            out.append({"sku": i.sku, "qty": units})
+    return out
+
+
 def _unpaired_label_counts(session: Session, batch: Batch) -> list[dict]:
     """Per product: labels printed for this batch minus tags paired -
     the physical leftover strip, by arithmetic (Nick, 2026-09-01)."""
@@ -10164,6 +10506,7 @@ def _unpaired_label_counts(session: Session, batch: Batch) -> list[dict]:
         select(PrintJob).where(
             PrintJob.batch_id == batch.id,
             PrintJob.status.in_(("pending", "printing", "done")),
+            _NOT_COMPANION,
         )
     ):
         key = (job.sku or "").strip().upper()
@@ -10215,11 +10558,7 @@ def settle_shipment(
         receipt.settled_at = datetime.now(timezone.utc)
         session.commit()
     unpaired = _unpaired_label_counts(session, batch)
-    paired_items = [
-        {"sku": i.sku, "qty": i.paired_count}
-        for i in _batch_items(session, batch_id)
-        if i.sku and (i.paired_count or 0) > 0
-    ]
+    paired_items = _planner_paired_items(session, batch_id)
     return {
         "receipt": receipt.as_dict(),
         "unpaired": unpaired,
@@ -10322,11 +10661,7 @@ def create_held_list(
         "excluded_held": excluded_held,
         "planner": {
             "order_id": receipt.stock_order_id,
-            "items": [
-                {"sku": i.sku, "qty": i.paired_count}
-                for i in _batch_items(session, batch_id)
-                if i.sku and (i.paired_count or 0) > 0
-            ],
+            "items": _planner_paired_items(session, batch_id),
         },
         "message": (
             (f"{total} unused label(s) held on the "
@@ -10397,11 +10732,7 @@ def receiving_order_status(
     )
     if receipt is None:
         return {"printed": False}
-    paired_items = [
-        {"sku": i.sku, "qty": i.paired_count}
-        for i in _batch_items(session, receipt.batch_id)
-        if i.sku and (i.paired_count or 0) > 0
-    ]
+    paired_items = _planner_paired_items(session, receipt.batch_id)
     return {
         "printed": True,
         "receipt": receipt.as_dict(),
@@ -10865,6 +11196,16 @@ def batch_pair(
         (item.bin_location or batch.bin_name)
         if _is_receiving(batch) else batch.bin_name
     )
+    # A multi-box product's cartons each go to their OWN bin, and that
+    # per-box bin was printed on the label whose EPC this is - inherit
+    # it so the tag records the carton's real shelf (Nick, 2026-09-02,
+    # the 11740). Falls back to the item bin for a hand-applied tag.
+    if _is_receiving(batch) and item.kind == "multi_box":
+        job = session.scalar(
+            select(PrintJob).where(PrintJob.epc == payload.epc)
+        )
+        if job is not None and (job.bin_location or "").strip():
+            tag_bin = job.bin_location
     assignment = RfidAssignment(
         rfid_id=payload.epc,
         shopify_variant_id=item.shopify_variant_id,
@@ -11154,6 +11495,15 @@ def batch_item_reprint(
         if (job.sku or "").strip().upper() == sku_ci:
             job.status = "canceled" if job.status == "pending" else "voided"
             voided += 1
+            if job.kind == "companion":
+                c = session.scalar(
+                    select(CompanionTag).where(
+                        func.upper(CompanionTag.epc)
+                        == (job.epc or "").strip().upper()
+                    )
+                )
+                if c is not None:
+                    session.delete(c)
     session.flush()
 
     # 4. Fresh labels, picking up the corrected name. The typed lines
@@ -11194,6 +11544,7 @@ def batch_item_reprint(
         )
         for units in per_label_units
     ]
+    jobs = _expand_multibox(session, jobs)
     session.add_all(jobs)
     session.commit()
     session.refresh(item)
@@ -11330,6 +11681,12 @@ def batch_verify(
                 }
             )
 
+    # Companion tags (box 2..N of a multi-box unit) are known by name,
+    # not strangers - and they never count.
+    companions_heard, _comp_epcs = _companions_heard(session, unknown)
+    if _comp_epcs:
+        unknown = [e for e in unknown if e.upper() not in _comp_epcs]
+
     # Unknown EPCs that are actually TOMBSTONES get named instead of
     # shrugged at: a replaced/dead sticker still on a box means the peel
     # step was skipped; a presumed-sold tag answering again is probably
@@ -11377,6 +11734,7 @@ def batch_verify(
         select(PrintJob).where(
             PrintJob.batch_id == batch_id,
             PrintJob.status.in_(("pending", "printing", "done")),
+            _NOT_COMPANION,
         )
     ):
         if job.sku:
@@ -11570,6 +11928,7 @@ def batch_verify(
         "foreign": foreign,
         "retired_heard": retired_heard,
         "unknown_epcs": unknown,
+        "companions_heard": companions_heard,
         # Unresolved codes still in the batch: worth a heads-up at verify
         # (they were counted but match no product), never a blocker —
         # completion drops them without filing Review work (Nick's call,

@@ -399,6 +399,86 @@ class HeldLabelList(Base):
         }
 
 
+class MultiboxProduct(Base):
+    """One sellable unit that physically ships as SEVERAL cartons (the
+    S11740: two boxes, one telescope, ONE tag). The mark is durable and
+    store-wide so every surface can defend the one-tag-per-unit
+    invariant: labels print per box ("BOX 2 OF 2"), audits recognize
+    the extra cartons instead of flagging them as untagged stock, and
+    receiving says "one label per unit, on box 1". bins holds each
+    box's own shelf when known (JSON list, entries may be null - some
+    get set later); a missing entry falls back to the product's bin."""
+
+    __tablename__ = "rfid_multibox_products"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sku: Mapped[str] = mapped_column(
+        String(100), unique=True, index=True, nullable=False
+    )
+    boxes_per_unit: Mapped[int] = mapped_column(Integer, nullable=False)
+    # JSON list of per-box bins, index 0 = box 1; null entries unknown.
+    bins: Mapped[str | None] = mapped_column(Text)
+    updated_by: Mapped[str | None] = mapped_column(String(100))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    def bin_list(self) -> list:
+        import json
+
+        try:
+            rows = json.loads(self.bins or "[]")
+            return rows if isinstance(rows, list) else []
+        except Exception:  # noqa: BLE001 — a bad list reads as empty
+            return []
+
+    def as_dict(self) -> dict:
+        return {
+            "sku": self.sku,
+            "boxes_per_unit": self.boxes_per_unit,
+            "bins": self.bin_list(),
+            "updated_by": self.updated_by,
+            "updated_at": (
+                self.updated_at.isoformat() if self.updated_at else None
+            ),
+        }
+
+
+class CompanionTag(Base):
+    """The RFID tag on box 2..N of a multi-box unit. Our label stock is
+    all RFID inlays, so a "BOX 2 OF 2" label is a live tag - this
+    registry is where those live so they count NOWHERE (they are never
+    RfidAssignments) but are RECOGNIZED everywhere a sweep would
+    otherwise call them unknown. Created automatically when a companion
+    print job completes (the printer encodes the EPC)."""
+
+    __tablename__ = "rfid_companion_tags"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    epc: Mapped[str] = mapped_column(
+        String(128), unique=True, index=True, nullable=False
+    )
+    sku: Mapped[str | None] = mapped_column(String(100), index=True)
+    product_title: Mapped[str | None] = mapped_column(String(255))
+    box_no: Mapped[int | None] = mapped_column(Integer)
+    box_count: Mapped[int | None] = mapped_column(Integer)
+    bin_location: Mapped[str | None] = mapped_column(String(100))
+    created_by: Mapped[str | None] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    def as_dict(self) -> dict:
+        return {
+            "epc": self.epc,
+            "sku": self.sku,
+            "product_title": self.product_title,
+            "box_no": self.box_no,
+            "box_count": self.box_count,
+            "bin_location": self.bin_location,
+        }
+
+
 class SortHandoff(Base):
     """A C72 sort-a-shipment scan pass handed to the web terminal
     (Nick, 2026-09-02): the gun's matcher couldn't place the pallet
@@ -678,6 +758,11 @@ class PrintJob(Base):
     # the label has to say "8 x 93581" so nobody treats the box as one item.
     case_units: Mapped[int | None] = mapped_column(Integer)
 
+    # "companion" = the label for box 2..N of a multi-box unit: printing
+    # it registers a CompanionTag (recognized, counted nowhere) instead
+    # of an RfidAssignment. NULL = a normal counting label.
+    kind: Mapped[str | None] = mapped_column(String(20))
+
     requested_by: Mapped[str | None] = mapped_column(String(100))
     error: Mapped[str | None] = mapped_column(String(500))
 
@@ -721,6 +806,7 @@ class PrintJob(Base):
             "label_sku": self.label_sku,
             # The agent prints "8 x SKU" when this is set.
             "case_units": self.case_units,
+            "kind": self.kind,
             "requested_by": self.requested_by,
             "error": self.error,
             "printer": self.printer,

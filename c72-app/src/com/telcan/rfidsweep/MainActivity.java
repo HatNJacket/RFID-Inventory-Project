@@ -8514,10 +8514,33 @@ public class MainActivity extends Activity {
                                 + "main box.");
                     }
                     saveRecvMarks();
+                    saveMultiboxServer(it, Math.max(1, n));
                     if (editEntry != null) renderItemEditor();
                 })
                 .setNegativeButton("CANCEL", null)
                 .show();
+    }
+
+    /** The unit-split mark is durable and store-wide (Nick, 2026-09-02:
+     *  the S11740 is ALWAYS two cartons): saving it here means labels
+     *  print "BOX X OF Y" and audits recognize the extra cartons from
+     *  now on, on every surface. Best-effort - the local mark already
+     *  covers this batch either way. */
+    private void saveMultiboxServer(BItem it, final int boxes) {
+        final String sku = it.sku;
+        if (sku == null || sku.isEmpty()) return;
+        new Thread(() -> {
+            try {
+                api("PUT", "/api/multibox/"
+                        + java.net.URLEncoder.encode(sku, "UTF-8"),
+                        new JSONObject()
+                                .put("boxes_per_unit", boxes)
+                                .put("updated_by",
+                                        prefs.getString("device", "C72")));
+            } catch (Exception ignored) {
+                // The gun-local mark still guides this batch.
+            }
+        }).start();
     }
 
     private void saveRecvMarks() {
@@ -8867,8 +8890,16 @@ public class MainActivity extends Activity {
                 JSONObject b = resp.getJSONObject("batch");
                 JSONArray items = resp.getJSONArray("items");
                 final List<BItem> loaded = new ArrayList<>();
+                // Durable multi-box marks ride the batch payload: any
+                // product marked "1 unit = N boxes" seeds the local
+                // guidance automatically (Nick, 2026-09-02).
+                final java.util.HashMap<Integer, Integer> mbSeed =
+                        new java.util.HashMap<>();
                 for (int i = 0; i < items.length(); i++) {
-                    loaded.add(BItem.from(items.getJSONObject(i)));
+                    JSONObject ij = items.getJSONObject(i);
+                    loaded.add(BItem.from(ij));
+                    int bpu = ij.optInt("boxes_per_unit", 0);
+                    if (bpu > 1) mbSeed.put(ij.optInt("id"), bpu);
                 }
                 final String bin = b.optString("bin_name");
                 final String st = b.optString("status");
@@ -8906,6 +8937,12 @@ public class MainActivity extends Activity {
                     loadScanOrder();
                     loadPriorAsked();
                     loadRecvMarks();
+                    for (java.util.Map.Entry<Integer, Integer> me
+                            : mbSeed.entrySet()) {
+                        if (!recvUnitBoxes.containsKey(me.getKey())) {
+                            recvUnitBoxes.put(me.getKey(), me.getValue());
+                        }
+                    }
                     strayMove.clear();
                     bItems.clear();
                     bItems.addAll(loaded);
@@ -12934,6 +12971,10 @@ public class MainActivity extends Activity {
 
     // ---- tagless finds -----------------------------------------------------
     private void auditBarcode(String code) {
+        auditBarcode(code, false);
+    }
+
+    private void auditBarcode(String code, boolean multiboxOk) {
         if (auditPairMode) {
             auditPairFocus(code);
             return;
@@ -12944,7 +12985,8 @@ public class MainActivity extends Activity {
                 JSONObject body = new JSONObject()
                         .put("code", code)
                         .put("by", prefs.getString("device", "C72"))
-                        .put("auto_print", auditAutoPrint);
+                        .put("auto_print", auditAutoPrint)
+                        .put("multibox_ok", multiboxOk);
                 JSONObject resp = api("POST", "/api/audit/finds", body);
                 final JSONObject find = resp.optJSONObject("find");
                 final boolean noBin = resp.optBoolean("no_home_bin");
@@ -12975,9 +13017,27 @@ public class MainActivity extends Activity {
                     auditRefreshFinds();
                 });
             } catch (Exception e) {
+                final String msg = e.getMessage() == null ? ""
+                        : e.getMessage();
                 ui.post(() -> {
+                    // The multi-box guard: an untagged second carton of
+                    // a multi-box unit is not untagged stock (Nick,
+                    // 2026-09-02, the S11740). Ask, retry on YES.
+                    if (msg.startsWith("MULTIBOX:")) {
+                        beep(SOUND_OTHER);
+                        dlg()
+                                .setTitle("MULTI-BOX PRODUCT")
+                                .setMessage(msg.substring(9).trim()
+                                        + "\n\nNote it as a separate "
+                                        + "untagged UNIT anyway?")
+                                .setPositiveButton("IT'S A SEPARATE UNIT",
+                                        (d, w) -> auditBarcode(code, true))
+                                .setNegativeButton("CANCEL", null)
+                                .show();
+                        return;
+                    }
                     beep(SOUND_ERR);
-                    status.setText("Not counted: " + e.getMessage());
+                    status.setText("Not counted: " + msg);
                 });
             }
         }).start();

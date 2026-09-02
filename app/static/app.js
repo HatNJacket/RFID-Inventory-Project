@@ -413,6 +413,7 @@ const EVENT_META = {
   oneleft: ["1-left Check", "#b07d00"],
   "audit-session": ["Audit Session", "#0e7a8a"],
   "bin-audited": ["Audit Done", "#0b6e99"],
+  multibox: ["Multi-box", "#0b6e99"],
   sweep: ["Sweep", "#0e7a8a"],
   // The sold system wears indigo/purple on purpose: product/on-hand
   // arithmetic, visually distinct from the amber human-count families.
@@ -11853,6 +11854,25 @@ function renderBinAudit() {
         : ""
     }
     ${
+      (rep.companions_heard || []).length
+        ? `<div class="recent__head" style="margin-top:14px"><h2>Companion boxes heard (${rep.companions_heard.length})</h2></div>
+           <ul class="recent__list">${rep.companions_heard
+             .map(
+               (c) =>
+                 `<li class="recent__item">📦 Box ${c.box_no || "?"} of ${
+                   c.box_count || "?"
+                 } of <strong>${escapeHtml(
+                   c.product_title || c.sku || "?"
+                 )}</strong>${
+                   c.bin_location
+                     ? ` · lives in ${escapeHtml(c.bin_location)}`
+                     : ""
+                 } - recognized, counts nowhere (the unit's tag is on box 1)</li>`
+             )
+             .join("")}</ul>`
+        : ""
+    }
+    ${
       strays || unknowns || strayGhosts
         ? `<div class="recent__head" style="margin-top:14px"><h2>Also heard on this shelf (${rep.foreign.length + rep.unknown_epcs.length + (rep.stray_ghosts || []).length})</h2></div>
            <ul class="recent__list">${strays}${strayGhosts}${unknowns}</ul>`
@@ -12850,6 +12870,53 @@ let phistPrintSession = null;
 // Inline bin edit in the parent product window (Nick, 2026-09-01):
 // click the bin, type, Enter saves (Escape cancels) - through the same
 // audited /api/bin-updates every other bin write uses.
+async function phistEditMultibox(sku, span, current) {
+  const n = prompt(
+    `How many boxes make ONE ${sku}?\n\n1 = a normal single-carton ` +
+      "product. 2+ marks it multi-box: box 1 carries the counting " +
+      "label, the rest print companion labels (recognized by sweeps, " +
+      "counted nowhere).",
+    current ? String(current.boxes_per_unit) : "2"
+  );
+  if (n === null) return;
+  const boxes = parseInt(n, 10);
+  if (!Number.isFinite(boxes) || boxes < 1 || boxes > 20) {
+    alert("Enter a whole number of boxes, 1 to 20.");
+    return;
+  }
+  let bins = null;
+  if (boxes > 1) {
+    const prior = current && current.bins ? current.bins : [];
+    const seed = [];
+    for (let i = 0; i < boxes; i++) seed.push(prior[i] || "");
+    const raw = prompt(
+      `Each box's own bin, comma-separated (box 1 first).\n\nLeave an ` +
+        "entry blank if it isn't known yet - blank boxes use the " +
+        "product's normal bin on labels.",
+      seed.join(", ")
+    );
+    if (raw === null) return;
+    bins = raw.split(",").map((b) => b.trim() || null);
+  }
+  try {
+    const r = await apiJson(`/api/multibox/${encodeURIComponent(sku)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        boxes_per_unit: boxes,
+        bins,
+        updated_by: operatorEl.value || null,
+      }),
+    });
+    span.textContent = r.multibox
+      ? `📦 1 unit = ${r.multibox.boxes_per_unit} boxes`
+      : "📦 one box";
+    alert(r.message);
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
 function phistEditBin(sku, span) {
   const inp = document.createElement("input");
   inp.className = "product__bin-input";
@@ -13022,6 +13089,35 @@ async function openProductHistory(term) {
           (data.on_hand != null ? ` · on-hand ${data.on_hand}` : "")
       )
     );
+    // Multi-box units (Nick, 2026-09-02, the S11740): the durable mark
+    // lives here - one unit, several cartons, one counting tag. Click
+    // to set the box count and each box's own bin; labels then print
+    // "BOX X OF Y" with that box's bin, and audits recognize the extra
+    // cartons instead of flagging them as untagged stock.
+    const mbSku = data.sku || (p && p.sku);
+    if (mbSku) {
+      metaEl.append(document.createTextNode(" · "));
+      const mbSpan = document.createElement("span");
+      mbSpan.className = "product__bin product__bin--edit";
+      mbSpan.textContent = "📦 …";
+      mbSpan.title =
+        "Multi-box unit: one product shipped as several cartons - box 1 " +
+        "carries the counting label, the rest print companion labels";
+      metaEl.append(mbSpan);
+      apiJson(`/api/multibox/${encodeURIComponent(mbSku)}`)
+        .then((r) => {
+          const mb = r.multibox;
+          mbSpan.textContent = mb
+            ? `📦 1 unit = ${mb.boxes_per_unit} boxes`
+            : "📦 one box";
+          mbSpan.addEventListener("click", () =>
+            phistEditMultibox(mbSku, mbSpan, mb)
+          );
+        })
+        .catch(() => {
+          mbSpan.remove();
+        });
+    }
     renderPhistTags(data, term);
     const img = document.getElementById("phist-img");
     if (data.image_url) {
