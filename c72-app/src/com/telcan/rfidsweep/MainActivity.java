@@ -11394,9 +11394,10 @@ public class MainActivity extends Activity {
                       + it.optInt("backorder_debt");
             int fOpen = auditFindsOpen(skuU);
             int fPrinted = auditFindsPrinted(skuU);
+            String bins = auditBinsText(it);
             StringBuilder sb = new StringBuilder();
-            sb.append(it.optString("product_title", sku));
-            sb.append("\n").append(heard).append("/").append(here)
+            if (!bins.isEmpty()) sb.append(bins).append(" · ");
+            sb.append(heard).append("/").append(here)
                     .append(" tags heard");
             if (exp >= 0) sb.append(" · expected ").append(exp);
             if (it.optInt("backorder_debt") > 0) {
@@ -11414,8 +11415,10 @@ public class MainActivity extends Activity {
                     && fPrinted == 0 ? C_OK
                     : (fOpen > 0 || fPrinted > 0) ? C_WARN
                     : heard > 0 ? C_WARN : C_TEXT;
-            auditList.addView(auditRowView(sb.toString(), color),
-                    auditRowLp());
+            auditList.addView(auditCard(
+                    it.optString("product_title", sku), sb.toString(),
+                    heard + "/" + here, color,
+                    it.optString("image_url", null)), auditRowLp());
         }
         if (strays > 0) {
             auditList.addView(auditRowView(strays + " other tag(s) heard "
@@ -11483,6 +11486,72 @@ public class MainActivity extends Activity {
         t.setPadding(dp(10), dp(8), dp(10), dp(8));
         t.setBackground(rr(C_CARD, C_LINE, 10));
         return t;
+    }
+
+    /** A real product card (Nick, 2026-09-01: "some style beyond just
+     *  being text"): severity stripe on the left, product image, bold
+     *  title over muted detail lines, the big count on the right. */
+    private LinearLayout auditCard(String title, String sub, String big,
+                                   int color, String imageUrl) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setBackground(rr(C_CARD, C_LINE, 10));
+        row.setPadding(0, 0, dp(10), 0);
+        View stripe = new View(this);
+        boolean neutral = color == C_TEXT || color == C_MUTED;
+        stripe.setBackgroundColor(neutral ? C_LINE : color);
+        row.addView(stripe, new LinearLayout.LayoutParams(
+                dp(5), LinearLayout.LayoutParams.MATCH_PARENT));
+        ImageView iv = new ImageView(this);
+        iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        iv.setBackgroundColor(C_BG);
+        LinearLayout.LayoutParams il =
+                new LinearLayout.LayoutParams(dp(46), dp(46));
+        il.setMargins(dp(8), dp(8), dp(8), dp(8));
+        row.addView(iv, il);
+        if (imageUrl != null && !imageUrl.isEmpty()
+                && !"null".equals(imageUrl)) {
+            loadImage(imageUrl, iv);
+        }
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setPadding(0, dp(7), 0, dp(7));
+        TextView t = new TextView(this);
+        t.setText(title);
+        t.setTextSize(13);
+        t.setTypeface(null, Typeface.BOLD);
+        t.setTextColor(C_TEXT);
+        t.setMaxLines(2);
+        col.addView(t);
+        if (sub != null && !sub.isEmpty()) {
+            TextView s2 = new TextView(this);
+            s2.setText(sub);
+            s2.setTextSize(11);
+            s2.setTextColor(neutral ? C_MUTED : color);
+            col.addView(s2);
+        }
+        row.addView(col, weight());
+        if (big != null && !big.isEmpty()) {
+            TextView n = new TextView(this);
+            n.setText(big);
+            n.setTextSize(17);
+            n.setTypeface(null, Typeface.BOLD);
+            n.setTextColor(neutral ? C_BLUE : color);
+            n.setPadding(dp(6), 0, 0, 0);
+            row.addView(n);
+        }
+        return row;
+    }
+
+    /** "BIN J2-1, J2-3" for a check/list item; "" when unknown. */
+    private String auditBinsText(JSONObject it) {
+        JSONArray arr = it.optJSONArray("bins");
+        StringBuilder sb = new StringBuilder();
+        for (int j = 0; arr != null && j < arr.length(); j++) {
+            if (sb.length() > 0) sb.append(", ");
+            sb.append(arr.optString(j));
+        }
+        return sb.length() > 0 ? "BIN " + sb : "";
     }
 
     private LinearLayout.LayoutParams auditRowLp() {
@@ -11827,11 +11896,17 @@ public class MainActivity extends Activity {
                 JSONObject o = owed.optJSONObject(i);
                 sb.append("\n· ").append(o.optString("sku", "?"));
             }
-            sb.append("\nPair them, then sweep again.");
-            list.addView(auditRowView(sb.toString(), C_OVER),
-                    auditRowLp());
+            sb.append("\nPair them and sweep again - or TAP HERE to "
+                    + "dismiss these for good.");
+            TextView row = auditRowView(sb.toString(), C_OVER);
+            final JSONArray owedF = owed;
+            row.setOnClickListener(x -> auditDismissHeardLabels(owedF));
+            list.addView(row, auditRowLp());
             flagged++;
         }
+        // Cards sort red -> yellow -> green, then by bin within each
+        // colour (Nick, 2026-09-01).
+        final List<Object[]> cards = new ArrayList<>();
         for (int i = 0; items != null && i < items.length(); i++) {
             final JSONObject it = items.optJSONObject(i);
             int det = it.optInt("detected");
@@ -11850,23 +11925,12 @@ public class MainActivity extends Activity {
                     && fPrinted == 0 && exp <= 0) {
                 continue; // not part of this shelf's story
             }
-            StringBuilder sb = new StringBuilder();
-            sb.append(it.optString("product_title",
-                    it.optString("sku")));
             // The product's bin(s) on the card (Nick, 2026-09-01: a
             // rack audit lists several bins' products - say which
             // level each one lives on).
-            JSONArray binsArr = it.optJSONArray("bins");
-            StringBuilder binsTxt = new StringBuilder();
-            for (int j = 0; binsArr != null && j < binsArr.length();
-                    j++) {
-                if (binsTxt.length() > 0) binsTxt.append(", ");
-                binsTxt.append(binsArr.optString(j));
-            }
-            sb.append("\n");
-            if (binsTxt.length() > 0) {
-                sb.append("BIN ").append(binsTxt).append(" · ");
-            }
+            String bins = auditBinsText(it);
+            StringBuilder sb = new StringBuilder();
+            if (!bins.isEmpty()) sb.append(bins).append(" · ");
             sb.append(det).append("/").append(here).append(" heard");
             if (exp >= 0) sb.append(" · expected ").append(exp)
                     .append(" · on shelf ").append(heardUnits);
@@ -11900,9 +11964,22 @@ public class MainActivity extends Activity {
                     || (exp >= 0 && heardUnits != exp);
             int color = bad ? C_OVER : warn ? C_WARN : C_OK;
             if (bad || warn) flagged++;
-            TextView row = auditRowView(sb.toString(), color);
+            LinearLayout row = auditCard(
+                    it.optString("product_title", it.optString("sku")),
+                    sb.toString(), det + "/" + here, color,
+                    it.optString("image_url", null));
             row.setOnClickListener(x -> auditItemActions(loc, it, rep));
-            list.addView(row, auditRowLp());
+            int rank = bad ? 0 : warn ? 1 : 2;
+            cards.add(new Object[]{rank,
+                    bins.isEmpty() ? "zzzz" : bins, row});
+        }
+        java.util.Collections.sort(cards, (a, b2) -> {
+            int r = Integer.compare((Integer) a[0], (Integer) b2[0]);
+            if (r != 0) return r;
+            return ((String) a[1]).compareToIgnoreCase((String) b2[1]);
+        });
+        for (Object[] c : cards) {
+            list.addView((LinearLayout) c[2], auditRowLp());
         }
         int extras = (foreign == null ? 0 : foreign.length())
                 + (unknown == null ? 0 : unknown.length());
@@ -11943,6 +12020,53 @@ public class MainActivity extends Activity {
         b.show();
         status.setText("Tap a product row for fixes: set stock, mark "
                 + "sold, un-retire, locate list.");
+    }
+
+    /** Dismiss "printed label answered but never paired" warnings for
+     *  good (Nick, 2026-09-01): the labels are accounted for - their
+     *  EPCs stop resurfacing on every future sweep. */
+    private void auditDismissHeardLabels(final JSONArray owed) {
+        StringBuilder msg = new StringBuilder();
+        final List<String> epcs = new ArrayList<>();
+        for (int i = 0; i < owed.length(); i++) {
+            JSONObject o = owed.optJSONObject(i);
+            epcs.add(o.optString("epc"));
+            msg.append("\n· ").append(o.optString("sku", "?"));
+        }
+        dlg().setTitle("DISMISS " + epcs.size() + " LABEL WARNING(S)?")
+                .setMessage("These printed labels answered the sweep "
+                        + "but were never paired:" + msg
+                        + "\n\nDismissing tells the system they're "
+                        + "accounted for - they will NOT show up on any "
+                        + "future audit, here or on the web terminal.")
+                .setPositiveButton("DISMISS FOR GOOD", (d, w) ->
+                        new Thread(() -> {
+                            try {
+                                JSONArray arr = new JSONArray();
+                                for (String e : epcs) arr.put(e);
+                                api("POST", "/api/audit/dismiss-labels",
+                                        new JSONObject()
+                                                .put("epcs", arr)
+                                                .put("by", prefs.getString(
+                                                        "device", "C72")));
+                                ui.post(() -> {
+                                    beep(SOUND_OK);
+                                    status.setText("✓ " + epcs.size()
+                                            + " label warning(s) "
+                                            + "dismissed for good. "
+                                            + "Re-checking…");
+                                    auditCheck();
+                                });
+                            } catch (Exception e) {
+                                ui.post(() -> {
+                                    beep(SOUND_ERR);
+                                    status.setText("Dismiss failed: "
+                                            + e.getMessage());
+                                });
+                            }
+                        }).start())
+                .setNegativeButton("CANCEL", null)
+                .show();
     }
 
     /** Bulk mark-sold: every product whose silent tags are fully
@@ -12218,15 +12342,101 @@ public class MainActivity extends Activity {
                 }
             }).start());
         }
+        // Printed-but-unpaired finds note: dismissible for good (Nick,
+        // 2026-09-01) - the boxes were handled some other way.
+        final int fPrinted = it.optInt("finds_printed");
+        if (fPrinted > 0) {
+            labels.add("DISMISS THE PRINTED-LABEL NOTE (" + fPrinted
+                    + ")");
+            acts.add(() -> new Thread(() -> {
+                try {
+                    JSONObject resp = api("GET", "/api/audit/finds",
+                            null);
+                    JSONArray rows = resp.optJSONArray("finds");
+                    int done = 0;
+                    for (int i = 0; rows != null && i < rows.length();
+                            i++) {
+                        JSONObject f = rows.optJSONObject(i);
+                        if (f.optString("sku").equalsIgnoreCase(sku)
+                                && "printed".equals(
+                                        f.optString("status"))) {
+                            api("POST", "/api/audit/finds/"
+                                    + f.optInt("id") + "/dismiss",
+                                    new JSONObject().put("by", device));
+                            done++;
+                        }
+                    }
+                    final int doneF = done;
+                    ui.post(() -> {
+                        beep(SOUND_OK);
+                        status.setText("✓ " + doneF + " printed-label "
+                                + "note(s) dismissed. Re-checking…");
+                        auditRefreshFinds();
+                        auditCheck();
+                    });
+                } catch (Exception ex) {
+                    ui.post(() -> status.setText(ex.getMessage()));
+                }
+            }).start());
+        }
         labels.add("OPEN IN STATION (edit, flags, bin)");
         acts.add(() -> {
             selectTab(TAB_STATION);
             stationLookup(sku);
         });
 
-        dlg().setTitle(it.optString("product_title", sku))
-                .setItems(labels.toArray(new String[0]),
-                        (d, which) -> acts.get(which).run())
+        // Styled window (Nick, 2026-09-01): the product's face and
+        // numbers up top, then one full-width button per action.
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(18), dp(6), dp(18), dp(8));
+        ImageView img = new ImageView(this);
+        img.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        img.setBackgroundColor(C_BG);
+        LinearLayout.LayoutParams il = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(100));
+        il.bottomMargin = dp(8);
+        box.addView(img, il);
+        String imgUrl = it.optString("image_url", null);
+        if (imgUrl != null && !imgUrl.isEmpty()
+                && !"null".equals(imgUrl)) {
+            loadImage(imgUrl, img);
+        }
+        TextView meta = new TextView(this);
+        meta.setTextSize(13);
+        meta.setTextColor(C_TEXT);
+        String binsLine = auditBinsText(it);
+        meta.setText("SKU: " + (sku.isEmpty() ? "—" : sku)
+                + (binsLine.isEmpty() ? "" : "\n" + binsLine)
+                + "\nHeard " + det + "/" + here
+                + (exp >= 0 ? " · expected " + exp + " · on shelf "
+                   + heardUnits : "")
+                + (silent > 0 ? "\n" + silent + " silent · " + sold
+                   + " sold since last audit" : "")
+                + (gh > 0 ? "\n" + gh + " marked-sold tag(s) answered"
+                   : "")
+                + (fPrinted > 0 ? "\n" + fPrinted + " label(s) printed, "
+                   + "not paired" : ""));
+        box.addView(meta);
+        final AlertDialog[] dRef = new AlertDialog[1];
+        for (int i = 0; i < labels.size(); i++) {
+            final Runnable act = acts.get(i);
+            Button btn = smallBtn(labels.get(i));
+            btn.setOnClickListener(vw -> {
+                if (dRef[0] != null) dRef[0].dismiss();
+                act.run();
+            });
+            LinearLayout.LayoutParams bl =
+                    new LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT);
+            bl.topMargin = dp(8);
+            box.addView(btn, bl);
+        }
+        ScrollView sc = new ScrollView(this);
+        sc.addView(box);
+        dRef[0] = dlg().setTitle(it.optString("product_title", sku))
+                .setView(sc)
                 .setNegativeButton("BACK", null)
                 .show();
     }

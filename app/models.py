@@ -425,6 +425,26 @@ class HeldLabelItem(Base):
         }
 
 
+class LabelDismissal(Base):
+    """An operator dismissed the audit's "printed label answered but was
+    never paired" warning for this EPC (Nick, 2026-09-01): the label is
+    accounted for - binned, a known blank, whatever - and must not
+    resurface on every future sweep. Dismissed EPCs vanish from the
+    printed-labels-heard list AND the unknown list. New table needs
+    dev/alter_add_label_dismissals.py on prod."""
+
+    __tablename__ = "rfid_label_dismissals"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    epc: Mapped[str] = mapped_column(
+        String(128), unique=True, index=True, nullable=False
+    )
+    dismissed_by: Mapped[str | None] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class BarcodeAlias(Base):
     """Maps a foreign ("fake") barcode — e.g. a manufacturer barcode on the
     box — to a known product, after an operator confirmed the link. Lives in

@@ -114,6 +114,24 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
           rep["bins_batch_done"] == ["f1-2"] and rep["batch_done"] is False,
           str(rep.get("bins_batch_done")))
 
+    # ---- dismissing the printed-label warning for good -------------------
+    r = cl.post("/api/audit/dismiss-labels",
+                json={"epcs": ["EPCLABEL"], "by": "Nick"})
+    check("dismiss-labels accepts the EPC",
+          r.status_code == 200 and r.json()["dismissed"] == 1,
+          r.text[:150])
+    r = cl.post("/api/bins/F1/check", json={"epcs": epcs})
+    rep_d = r.json()
+    check("a dismissed label vanishes from the report entirely",
+          not rep_d["printed_labels_heard"]
+          and "EPCLABEL" not in rep_d["unknown_epcs"],
+          str(rep_d.get("printed_labels_heard"))
+          + str(rep_d.get("unknown_epcs")))
+    r = cl.post("/api/audit/dismiss-labels",
+                json={"epcs": ["EPCLABEL"], "by": "Nick"})
+    check("re-dismissing is a no-op", r.json()["dismissed"] == 0,
+          r.text[:120])
+
     # Single-bin call unchanged (compatibility).
     r = cl.post("/api/bins/F1-2/check", json={"epcs": []})
     rep2 = r.json()

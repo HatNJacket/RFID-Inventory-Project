@@ -59,6 +59,7 @@ from app.models import (
     HeldLabelItem,
     HeldLabelList,
     HiddenBin,
+    LabelDismissal,
     LabelName,
     LinkScan,
     LocateQueueEntry,
@@ -4998,7 +4999,19 @@ def bin_check(
         # An "unknown" EPC that matches a print job is a PRINTED LABEL
         # that was never paired - the strongest owed-pairing signal
         # (Nick, 2026-09-01: applied but unpaired labels answer sweeps
-        # as productless tags).
+        # as productless tags). Dismissed EPCs (the operator said the
+        # label is accounted for) vanish entirely - neither warned nor
+        # listed as unknown.
+        if unknown:
+            dismissed = {
+                (e or "").upper()
+                for e in session.scalars(
+                    select(LabelDismissal.epc).where(
+                        func.upper(LabelDismissal.epc).in_(sorted(unknown))
+                    )
+                )
+            }
+            unknown = [e for e in unknown if e not in dismissed]
         if unknown:
             label_jobs = {
                 (j.epc or "").upper(): j
@@ -5365,6 +5378,41 @@ def dismiss_audit_find(
     f.resolved_by = payload.by
     session.commit()
     return f.as_dict()
+
+
+class LabelDismissIn(BaseModel):
+    epcs: list[str] = Field(min_length=1, max_length=500)
+    by: str | None = Field(default=None, max_length=100)
+
+
+@app.post(
+    "/api/audit/dismiss-labels", dependencies=[Depends(require_user)]
+)
+def audit_dismiss_labels(
+    payload: LabelDismissIn, session: Session = Depends(get_session)
+):
+    """Dismiss "printed label answered but never paired" warnings for
+    good (Nick, 2026-09-01): the operator says these labels are
+    accounted for. The EPCs vanish from future audit reports - neither
+    warned about nor listed as unknown."""
+    added = 0
+    for raw in payload.epcs:
+        epc = (raw or "").strip().upper()
+        if not epc:
+            continue
+        exists = session.scalar(
+            select(LabelDismissal).where(
+                func.upper(LabelDismissal.epc) == epc
+            )
+        )
+        if exists is None:
+            session.add(LabelDismissal(
+                epc=epc, dismissed_by=payload.by
+            ))
+            added += 1
+    session.commit()
+    return {"dismissed": added,
+            "message": f"{added} label warning(s) dismissed for good."}
 
 
 class AuditCompleteIn(BaseModel):

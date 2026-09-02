@@ -3,6 +3,21 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-01.
 
+## 🔍 Audit check round 2 — ✅ DEPLOYED 2026-09-01 (C72 3.72)
+
+Nick's three: (1) "printed label answered but never paired" warnings
+are DISMISSIBLE for good - tap the red card, confirm, and those EPCs
+vanish from every future report (rfid_label_dismissals, migration
+dev/alter_add_label_dismissals.py RUN on prod; the web audit honors it
+too since bin_check filters server-side). The per-product
+finds_printed note gets its own dismiss action (existing finds
+dismiss). (2) Check cards sort red → yellow → green, then by bin
+within each colour. (3) Real cards everywhere: severity stripe,
+product image, bold title over muted detail, big count on the right -
+in the live audit list AND the check screen; the tap-a-card window
+shows the product image + numbers with one full-width button per
+action. Take the gun update (3.72, code 90).
+
 ## 🔍 Audit check polish — ✅ DEPLOYED 2026-09-01 (C72 3.71)
 
 Nick's J2 rack audit: the check cards now lead with the product's
