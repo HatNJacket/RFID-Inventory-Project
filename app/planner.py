@@ -175,28 +175,48 @@ def order_lines(order_ref: str, operator: str | None = None) -> dict:
 
 # The shipment sorter re-matches on EVERY box scan; open orders barely
 # move inside one sort pass, so a short cache spares the planner (and
-# its per-detail Shopify fetches) from a scan-speed hammering.
+# its per-detail Shopify fetches) from a scan-speed hammering. Keyed by
+# the vendor filter: a Svbony pallet only ever fetches Svbony's orders.
 _ORDERS_TTL_SECONDS = 120
-_orders_cache: tuple[float, dict] | None = None
+_orders_cache: dict[tuple, tuple[float, dict]] = {}
 
 
-def open_orders_lines(operator: str | None = None) -> dict:
+def _vendor_hit(order_vendor: str | None, wanted: set[str]) -> bool:
+    """Planner and Shopify spell vendors slightly differently ("ZWO"
+    vs "ZWO Optical"), so containment counts either way."""
+    ov = (order_vendor or "").strip().upper()
+    if not ov:
+        return False
+    return any(ov == w or w in ov or ov in w for w in wanted)
+
+
+def open_orders_lines(operator: str | None = None,
+                      vendors: set[str] | None = None) -> dict:
     """Every open stock order WITH its remaining lines, in one answer -
     the shipment sorter's matching table (Nick, 2026-09-02: a pallet
-    with no order number gets scanned first, matched after). Cached for
-    a couple of minutes; read-only, never raises."""
-    global _orders_cache
+    with no order number gets scanned first, matched after). vendors
+    narrows the slow per-order detail fetches to just those vendors'
+    orders (Nick, 2026-09-02 round 3: a pallet is almost always one
+    vendor - the first box names it). Cached per vendor filter for a
+    couple of minutes; read-only, never raises."""
     base = {"configured": configured(), "ok": False, "orders": []}
     if not configured():
         return base
-    hit = _orders_cache
+    wanted = {v.strip().upper() for v in (vendors or set())
+              if (v or "").strip()}
+    key = tuple(sorted(wanted))
+    hit = _orders_cache.get(key)
     if hit and time.monotonic() - hit[0] < _ORDERS_TTL_SECONDS:
         return hit[1]
     try:
         found = _get("/api/stock-orders", params={"status": "open"},
                      operator=operator)
+        summaries = found.get("orders") or []
+        if wanted:
+            summaries = [s for s in summaries
+                         if _vendor_hit(s.get("vendor"), wanted)]
         orders = []
-        for summary in found.get("orders") or []:
+        for summary in summaries:
             try:
                 detail = _get(f"/api/stock-orders/{summary['id']}",
                               operator=operator)
@@ -224,7 +244,7 @@ def open_orders_lines(operator: str | None = None) -> dict:
                     "items": items,
                 })
         result = {**base, "ok": True, "orders": orders}
-        _orders_cache = (time.monotonic(), result)
+        _orders_cache[key] = (time.monotonic(), result)
         return result
     except Exception as exc:  # noqa: BLE001 — the sorter reports, not crashes
         return {**base, "error": str(exc)[:200]}

@@ -9883,7 +9883,44 @@ def receiving_sort_match(
     for a manual Shopify update); otherwise a greedy split assigns
     each product to the fewest orders that cover the pallet. Read-only:
     nothing prints and nothing is written here."""
-    plan = planner.open_orders_lines(payload.requested_by)
+    # Resolve the scanned codes FIRST (folding codes that reach the
+    # same product): the products name their vendor(s), and the planner
+    # walk below then fetches only THAT vendor's open orders (Nick,
+    # 2026-09-02 round 3: a pallet is almost always one vendor - the
+    # first box names it, the rest just confirm).
+    products: list[dict] = []
+    by_key: dict[str, dict] = {}
+    vendors: set[str] = set()
+    for entry in payload.counts:
+        code = entry.code.strip()
+        product = None
+        try:
+            product = product_by_barcode(code)
+        except HTTPException as error:
+            if error.status_code >= 500:
+                raise
+        sku = (product or {}).get("sku")
+        title = (product or {}).get("product_title")
+        if ((product or {}).get("vendor") or "").strip():
+            vendors.add(product["vendor"].strip())
+        match_keys = {code.upper()}
+        if product:
+            for term in (sku, product.get("barcode")):
+                if (term or "").strip():
+                    match_keys.add(term.strip().upper())
+        fold = (sku or code).strip().upper()
+        row = by_key.get(fold)
+        if row is None:
+            row = {"code": code, "sku": sku, "title": title, "count": 0,
+                   "keys": match_keys, "wanted_by": []}
+            by_key[fold] = row
+            products.append(row)
+        row["count"] += entry.count
+        row["keys"] |= match_keys
+
+    # No product named a vendor -> the full order walk still runs.
+    plan = planner.open_orders_lines(payload.requested_by,
+                                     vendors=vendors or None)
     if not plan.get("ok"):
         raise HTTPException(502, plan.get("error")
                             or "The planner bridge isn't configured.")
@@ -9900,34 +9937,6 @@ def receiving_sort_match(
                     keys.setdefault(key, line)
         orders.append({**o, "keys": keys})
 
-    # Resolve the scanned codes (folding codes that reach the same
-    # product) and find which orders want each one.
-    products: list[dict] = []
-    by_key: dict[str, dict] = {}
-    for entry in payload.counts:
-        code = entry.code.strip()
-        product = None
-        try:
-            product = product_by_barcode(code)
-        except HTTPException as error:
-            if error.status_code >= 500:
-                raise
-        sku = (product or {}).get("sku")
-        title = (product or {}).get("product_title")
-        match_keys = {code.upper()}
-        if product:
-            for term in (sku, product.get("barcode")):
-                if (term or "").strip():
-                    match_keys.add(term.strip().upper())
-        fold = (sku or code).strip().upper()
-        row = by_key.get(fold)
-        if row is None:
-            row = {"code": code, "sku": sku, "title": title, "count": 0,
-                   "keys": match_keys, "wanted_by": []}
-            by_key[fold] = row
-            products.append(row)
-        row["count"] += entry.count
-        row["keys"] |= match_keys
     for row in products:
         row["wanted_by"] = [
             o["reference_number"] for o in orders
@@ -9972,7 +9981,8 @@ def receiving_sort_match(
     ]
     if covering:
         # Best fit: the order whose remaining quantities absorb the
-        # most of what was scanned; ties go to the smaller order.
+        # most of what was scanned; ties go to the most recent order
+        # (Nick, 2026-09-02 round 3).
         def fit(o: dict) -> tuple[int, int]:
             got = sum(
                 min(p["count"], int(next(
@@ -9980,7 +9990,7 @@ def receiving_sort_match(
                 )["remaining"]))
                 for p in matched
             )
-            return (got, -sum(l["remaining"] for l in o["items"]))
+            return (got, int(o.get("order_id") or 0))
 
         best = max(covering, key=fit)
         verdict = {"consolidated": True,

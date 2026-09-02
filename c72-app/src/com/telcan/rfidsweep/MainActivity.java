@@ -7941,11 +7941,13 @@ public class MainActivity extends Activity {
             list.addView(hint);
             for (java.util.Map.Entry<String, Integer> e
                     : pileCounts.entrySet()) {
+                boolean unres = PILE_UNRESOLVED.equals(e.getKey());
                 TextView t = new TextView(this);
-                t.setText("SO " + e.getKey() + " pile: "
+                t.setText((unres ? PILE_UNRESOLVED
+                        : "SO " + e.getKey()) + " pile: "
                         + e.getValue() + " box(es) sorted");
                 t.setTextSize(13);
-                t.setTextColor(C_TEXT);
+                t.setTextColor(unres ? C_WARN : C_TEXT);
                 t.setPadding(dp(4), dp(2), 0, dp(2));
                 list.addView(t);
             }
@@ -8128,6 +8130,8 @@ public class MainActivity extends Activity {
         }
     }
 
+    private static final String PILE_UNRESOLVED = "CANNOT RESOLVE";
+
     private void appendUnmatched(StringBuilder sb, JSONArray unmatched) {
         for (int i = 0; unmatched != null && i < unmatched.length();
                 i++) {
@@ -8135,8 +8139,9 @@ public class MainActivity extends Activity {
             sb.append("\n⚠ ").append(u.optString("title",
                     u.optString("sku", u.optString("code"))))
                     .append(" ×").append(u.optInt("count"))
-                    .append(": no open order wants it - left out, "
-                            + "update by hand in Shopify admin.");
+                    .append(": no open order wants it - goes to the "
+                            + "CANNOT RESOLVE pile, update by hand in "
+                            + "Shopify admin.");
         }
     }
 
@@ -8174,8 +8179,15 @@ public class MainActivity extends Activity {
         String ref = pileByCode.get(code.trim().toUpperCase(
                 java.util.Locale.ROOT));
         if (ref == null) {
-            beep(SOUND_ERR);
-            status.setText("No pile - no open order wants this box.");
+            // No open order wants it: it still gets a physical home -
+            // the CANNOT RESOLVE pile (Nick, 2026-09-02 round 3) -
+            // and a hand-done Shopify admin update later.
+            beep(SOUND_OTHER);
+            Integer n = pileCounts.get(PILE_UNRESOLVED);
+            pileCounts.put(PILE_UNRESOLVED, n == null ? 1 : n + 1);
+            status.setText("➜  CANNOT RESOLVE pile - no open order "
+                    + "wants this box.");
+            sortRender();
             return;
         }
         beep(SOUND_OK);
