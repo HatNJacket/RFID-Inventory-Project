@@ -13,6 +13,21 @@ item is marked MOVING so the side trip carries the box to the NEW
 home with labels printed for it. No server changes. Take the gun
 update (3.76, code 94).
 
+## 📦 Sorter round 4: retry, soft consolidation, C72→web hand-off — ✅ DEPLOYED 2026-09-02 (C72 3.80)
+
+Nick's SO 941 test (nothing matched, no SKUs on cards): sort-match
+retries UNFILTERED when the vendor-scoped walk matches nothing;
+"mostly sure" consolidation (one order holds ≥80% of matched →
+consolidate, strays SKIPPED with their real order named); and the
+big one - SEND TO WEB TERMINAL on the gun's sort pane (and the NO
+MATCH dialog) posts the counted pass to the new rfid_sort_handoffs
+table (migration RUN on prod), where the web sorter's banner loads it
+through sortShipScan - label-match, near-misses, bundles, planner
+buckets all apply; the planner's print then creates the receiving
+batch the gun pairs. Gun cards now show SKUs; unresolved boxes say
+the web sorter can match them by label. Take the gun update (3.80,
+code 98).
+
 ## 📦 Receiving box marks on the C72 — ✅ DEPLOYED 2026-09-02 (C72 3.79)
 
 Nick's S30-collection and 11740 cases: the receiving item editor
