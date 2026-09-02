@@ -4729,7 +4729,8 @@ public class MainActivity extends Activity {
                 // because a focused dialog's window never lets the
                 // trigger reach this handler.)
                 if (sweepArmed && activeTab == TAB_BATCH
-                        && inBatch() && step == STEP_PAIR) {
+                        && inBatch() && step == STEP_PAIR
+                        && !stripSweepMode) {
                     startHeldSweep();
                 } else if (holdSweepEligible()) {
                     holdSweepStarter = this::holdSweepStart;
@@ -4749,6 +4750,11 @@ public class MainActivity extends Activity {
         if (isTriggerKey(keyCode)) {
             if (sweepRunning) {
                 stopHeldSweep();
+            } else if (stripScanning) {
+                // Strip sweep is hold-to-sweep, like the wording says:
+                // the pull started it, the release ends it and shows
+                // the result (Nick, 2026-09-02).
+                stripToggleScan();
             } else if (holdSweepRunning) {
                 holdSweepStop();
             } else if (holdSweepStarter != null) {
@@ -4774,7 +4780,11 @@ public class MainActivity extends Activity {
         // button starts. Without a product selected there's nothing to
         // sweep FOR, so the pull falls through to the normal single read
         // (whose message says to scan a product barcode).
+        // NEVER while the strip sweep or bundle capture is on: a held
+        // strip sweep once bulk-assigned the whole leftover strip to
+        // the focused product (Nick, 2026-09-02).
         if (activeTab == TAB_BATCH && inBatch() && step == STEP_PAIR) {
+            if (stripSweepMode || bundleTargetId != 0) return false;
             return pairActive != null;
         }
         // Station too — but an armed identify keeps its instant read.
@@ -7828,7 +7838,14 @@ public class MainActivity extends Activity {
             stripScanning = false;
             scanning = false;
             stripMerge();
-            showStripResult();
+            if (stripEpcs.isEmpty()) {
+                // A tap, or a sweep that heard nothing: no dialog,
+                // just the instruction again.
+                status.setText("Nothing heard - HOLD the trigger and "
+                        + "sweep along the strip.");
+            } else {
+                showStripResult();
+            }
         } else {
             if (scanning || sweepRunning || holdSweepRunning) return;
             synchronized (tags) { tags.clear(); }
