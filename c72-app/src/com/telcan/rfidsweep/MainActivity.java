@@ -217,43 +217,48 @@ public class MainActivity extends Activity {
 
     /** Dialog builder matching the theme — every dialog goes through
      *  here so dark mode doesn't produce white frames around dark
-     *  content. show() registers the dialog so the trigger-as-CONFIRM
-     *  setting (Nick, 2026-09-01) can find its confirm button; the
-     *  registration clears itself on dismiss. */
-    private AlertDialog currentDialog = null;
+     *  content.
 
+     *  Trigger = CONFIRM (Nick, 2026-09-01/02): a focused dialog's
+     *  WINDOW swallows key events, so the Activity's onKeyDown never
+     *  hears the trigger while a dialog is up — the listener must live
+     *  ON the dialog. create() attaches it (Builder.show() routes
+     *  through create(), so both .show() and .create().show() sites are
+     *  covered): with the setting on, a trigger pull presses the
+     *  dialog's enabled confirm button — and ONLY when it has one. */
     private AlertDialog.Builder dlg() {
         return new AlertDialog.Builder(this, themeDark
                 ? android.R.style.Theme_DeviceDefault_Dialog_Alert
                 : android.R.style.Theme_DeviceDefault_Light_Dialog_Alert) {
             @Override
-            public AlertDialog show() {
-                final AlertDialog d = super.show();
-                currentDialog = d;
-                d.setOnDismissListener(x -> {
-                    if (currentDialog == d) currentDialog = null;
+            public AlertDialog create() {
+                final AlertDialog d = super.create();
+                d.setOnKeyListener((dg, keyCode, ev) -> {
+                    if (!isTriggerKey(keyCode)) return false;
+                    if (!prefs.getBoolean("trigger_confirm", false)) {
+                        return false;
+                    }
+                    if (ev.getAction() != KeyEvent.ACTION_DOWN
+                            || ev.getRepeatCount() != 0) {
+                        // Swallow repeats/up of a consumed pull.
+                        return ev.getAction() == KeyEvent.ACTION_UP;
+                    }
+                    Button pos = d.getButton(
+                            AlertDialog.BUTTON_POSITIVE);
+                    if (pos == null
+                            || pos.getVisibility() != View.VISIBLE
+                            || !pos.isEnabled()
+                            || pos.getText() == null
+                            || pos.getText().length() == 0) {
+                        return false;
+                    }
+                    beep(SOUND_OTHER);
+                    pos.performClick();
+                    return true;
                 });
                 return d;
             }
         };
-    }
-
-    /** Trigger = CONFIRM (Settings toggle, Nick 2026-09-01): with a
-     *  dialog up that HAS an enabled confirm button, a trigger pull
-     *  presses it - and ONLY then. Dialogs without one (plain lists,
-     *  info boxes) leave the trigger to its normal job. */
-    private boolean triggerConfirm() {
-        AlertDialog d = currentDialog;
-        if (d == null || !d.isShowing()) return false;
-        Button pos = d.getButton(AlertDialog.BUTTON_POSITIVE);
-        if (pos == null || pos.getVisibility() != View.VISIBLE
-                || !pos.isEnabled() || pos.getText() == null
-                || pos.getText().length() == 0) {
-            return false;
-        }
-        beep(SOUND_OTHER);
-        pos.performClick();
-        return true;
     }
 
     // ---- status card with a severity edge ---------------------------------
@@ -4670,14 +4675,11 @@ public class MainActivity extends Activity {
     public boolean onKeyDown(int keyCode, KeyEvent event) {
         if (isTriggerKey(keyCode)) {
             if (event.getRepeatCount() == 0) {
-                // Trigger = CONFIRM on dialogs (opt-in, Nick 2026-09-01)
-                // wins while a confirmable dialog is up.
-                if (prefs.getBoolean("trigger_confirm", false)
-                        && triggerConfirm()) {
-                    return true;
-                }
                 // Armed sweep runs for exactly as long as the trigger is
-                // held; everything else is a single pull.
+                // held; everything else is a single pull. (Trigger =
+                // CONFIRM lives on the DIALOGS themselves - see dlg() -
+                // because a focused dialog's window never lets the
+                // trigger reach this handler.)
                 if (sweepArmed && activeTab == TAB_BATCH
                         && inBatch() && step == STEP_PAIR) {
                     startHeldSweep();

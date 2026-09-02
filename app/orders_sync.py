@@ -103,20 +103,39 @@ def tag_units(session: Session, sku: str) -> int:
     return sum((r.case_units or 1) for r in rows)
 
 
+# A giant IN(<thousands of SKUs>) is what actually melts the Basic
+# tier: SQL Server burns its tiny compile-memory grant on the parameter
+# list and EVERY other query queues behind it (2026-09-02: two wedged
+# store-wide audit SELECTs held DTU at 100% while Nick scanned). These
+# app-owned tables are all small - above this size, scan them WITHOUT
+# the IN and match SKUs in Python instead.
+_IN_LIMIT = 300
+
+
+def _sku_in(stmt, column, uppers):
+    """Attach an upper-SKU IN() only when the list is small enough to
+    compile cheaply; large lists filter in Python (caller checks)."""
+    if uppers is not None and len(uppers) <= _IN_LIMIT:
+        return stmt.where(func.upper(column).in_(sorted(uppers)))
+    return stmt
+
+
 def sold_unretired_map(
     session: Session, skus: list[str] | None = None
 ) -> dict[str, int]:
     """Upper-cased SKU -> units sold (fulfilled) whose tag is still on
     file. This is the number that explains missing tags in audits."""
-    stmt = select(SoldRecord)
-    if skus is not None:
-        uppers = [s.strip().upper() for s in skus]
-        stmt = stmt.where(func.upper(SoldRecord.sku).in_(uppers))
+    uppers = (
+        {s.strip().upper() for s in skus} if skus is not None else None
+    )
+    stmt = _sku_in(select(SoldRecord), SoldRecord.sku, uppers)
     out: dict[str, int] = {}
     for row in session.scalars(stmt).all():
         left = max(0, (row.quantity or 0) - (row.retired or 0))
         if left:
             key = row.sku.strip().upper()
+            if uppers is not None and key not in uppers:
+                continue
             out[key] = out.get(key, 0) + left
     return out
 
@@ -142,17 +161,19 @@ def sold_unretired_since_map(
     falls back to the full unwindowed sum. Rows with no fulfilled_at are
     excluded from windows; they surface through ledger_covers_from_map
     instead of being silently blamed."""
-    uppers = [s.strip().upper() for s in skus]
+    uppers = {s.strip().upper() for s in skus}
     out: dict[str, int] = {}
     if not uppers:
         return out
     for row in session.scalars(
-        select(SoldRecord).where(func.upper(SoldRecord.sku).in_(uppers))
+        _sku_in(select(SoldRecord), SoldRecord.sku, uppers)
     ).all():
         left = max(0, (row.quantity or 0) - (row.retired or 0))
         if not left:
             continue
         key = row.sku.strip().upper()
+        if key not in uppers:
+            continue
         since = _as_utc(since_by_sku.get(key))
         if since is not None:
             f = _as_utc(row.fulfilled_at)
@@ -168,17 +189,19 @@ def ledger_covers_from_map(
     """Upper SKU -> earliest dated sale on record (None entries absent).
     Lets callers say "sales history only starts <date>" instead of
     claiming older disappearances are unexplained by sales."""
-    uppers = [s.strip().upper() for s in skus]
+    uppers = {s.strip().upper() for s in skus}
     out: dict[str, object] = {}
     if not uppers:
         return out
     for row in session.scalars(
-        select(SoldRecord).where(func.upper(SoldRecord.sku).in_(uppers))
+        _sku_in(select(SoldRecord), SoldRecord.sku, uppers)
     ).all():
         f = _as_utc(row.fulfilled_at)
         if f is None:
             continue
         key = row.sku.strip().upper()
+        if key not in uppers:
+            continue
         if key not in out or f < out[key]:
             out[key] = f
     return out
@@ -265,20 +288,24 @@ def _clear_superseded_debts(session: Session, skus: list[str]) -> int:
     """An operator on-hand write is fresh shelf truth: any backorder
     debt noted BEFORE it is stale (the write already counted those
     boxes). Clears such rows and returns how many."""
-    uppers = [s.strip().upper() for s in skus]
+    uppers = {s.strip().upper() for s in skus}
     if not uppers:
         return 0
     write_ts: dict[str, object] = {}
     for bc in session.scalars(
-        select(BarcodeChange).where(
-            func.upper(BarcodeChange.sku).in_(uppers),
-            BarcodeChange.changed_field.in_((
-                "on-hand", "on-hand-undo",
-                "on-hand-lower", "on-hand-lower-undo",
-            )),
+        _sku_in(
+            select(BarcodeChange).where(
+                BarcodeChange.changed_field.in_((
+                    "on-hand", "on-hand-undo",
+                    "on-hand-lower", "on-hand-lower-undo",
+                )),
+            ),
+            BarcodeChange.sku, uppers,
         )
     ):
         k = (bc.sku or "").strip().upper()
+        if k not in uppers:
+            continue
         ts = _as_utc(bc.changed_at)
         if ts is not None and (k not in write_ts or ts > write_ts[k]):
             write_ts[k] = ts
@@ -304,29 +331,33 @@ def _sku_baselines(session: Session, skus) -> dict[str, object]:
     """Upper SKU -> the tag pool's baseline: newest live pairing (any
     bin), or a newer confirmed on-hand write, whichever is later. Sales
     fulfilled before it cannot be expected to have tags."""
-    uppers = [s.strip().upper() for s in skus]
+    uppers = {s.strip().upper() for s in skus}
     out: dict[str, object] = {}
     if not uppers:
         return out
     for t in session.scalars(
-        select(RfidAssignment).where(
-            func.upper(RfidAssignment.sku).in_(uppers)
-        )
+        _sku_in(select(RfidAssignment), RfidAssignment.sku, uppers)
     ):
-        k = t.sku.strip().upper()
+        k = t.sku.strip().upper() if t.sku else ""
+        if k not in uppers:
+            continue
         ts = _as_utc(t.assigned_at)
         if ts is not None and (k not in out or ts > out[k]):
             out[k] = ts
     for bc in session.scalars(
-        select(BarcodeChange).where(
-            func.upper(BarcodeChange.sku).in_(uppers),
-            BarcodeChange.changed_field.in_((
-                "on-hand", "on-hand-undo",
-                "on-hand-lower", "on-hand-lower-undo",
-            )),
+        _sku_in(
+            select(BarcodeChange).where(
+                BarcodeChange.changed_field.in_((
+                    "on-hand", "on-hand-undo",
+                    "on-hand-lower", "on-hand-lower-undo",
+                )),
+            ),
+            BarcodeChange.sku, uppers,
         )
     ):
         k = (bc.sku or "").strip().upper()
+        if k not in uppers:
+            continue
         ts = _as_utc(bc.changed_at)
         if ts is not None and (k not in out or ts > out[k]):
             out[k] = ts
