@@ -10904,6 +10904,31 @@ def batch_verify(
         batch.verified_at = datetime.now(timezone.utc)
         session.commit()
 
+    # Keep the Expected snapshots honest at verify (Nick, 2026-09-02:
+    # a batch scanned BEFORE the unavailable-stock change kept showing
+    # the old raw number - "empty filter cell casing expects 2, but 1
+    # is unavailable"). ONE batched lookup per verify press, never one
+    # per product; fail-soft, the scan-time snapshot stands offline.
+    if batch.status != "done":
+        try:
+            live = shopify.get_quantities_by_skus(
+                sorted({i.sku for i in items if i.sku})
+            )
+            live_ci = {
+                (k or "").strip().upper(): v
+                for k, v in (live or {}).items()
+            }
+            dirty = False
+            for i in items:
+                key = (i.sku or "").strip().upper()
+                if key in live_ci and i.expected_qty != live_ci[key]:
+                    i.expected_qty = live_ci[key]
+                    dirty = True
+            if dirty:
+                session.commit()
+        except Exception as error:
+            logger.warning("verify expected refresh skipped: %s", error)
+
     assignments = {}
     if epcs:
         rows = session.scalars(
