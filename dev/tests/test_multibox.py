@@ -69,16 +69,16 @@ with patch("app.shopify.lookup_barcode", side_effect=look), \
     with Session(get_engine()) as s:
         jobs = s.query(PrintJob).filter(
             PrintJob.batch_id == bid).order_by(PrintJob.id).all()
-    check("box 1 = counting label with BOX 1 OF 2 header",
-          jobs[0].kind is None and jobs[0].label_name == "BOX 1 OF 2"
-          and jobs[0].label_placement == "header"
-          and jobs[0].bin_location == "B11-1",
+    # Nick's round 2: the header stays Telescopes Canada / the saved
+    # name; the box note rides the BIN line instead.
+    check("box 1 = counting label, box note on the BIN line",
+          jobs[0].kind is None and jobs[0].label_name is None
+          and jobs[0].bin_location == "B11-1, Box 1 of 2",
           [(j.kind, j.label_name, j.bin_location) for j in jobs])
     check("box 2 = companion label right behind it",
           jobs[1].kind == "companion"
-          and jobs[1].label_name == "BOX 2 OF 2"
-          and jobs[1].bin_location == "B11-1",
-          [(j.kind, j.label_name) for j in jobs])
+          and jobs[1].bin_location == "B11-1, Box 2 of 2",
+          [(j.kind, j.bin_location) for j in jobs])
 
     # ---- printing: assignment for box 1, registry for box 2 ---------
     for j in jobs:
@@ -88,12 +88,17 @@ with patch("app.shopify.lookup_barcode", side_effect=look), \
         ties = s.query(RfidAssignment).filter(
             RfidAssignment.sku == "S11740").all()
         comps = s.query(CompanionTag).all()
-    check("ONE counting assignment only", len(ties) == 1
-          and ties[0].rfid_id == jobs[0].epc, [t.rfid_id for t in ties])
-    check("companion registered with box math", len(comps) == 1
+    check("ONE counting assignment only, with the CLEAN bin",
+          len(ties) == 1 and ties[0].rfid_id == jobs[0].epc
+          and ties[0].bin_location == "B11-1",
+          [(t.rfid_id, t.bin_location) for t in ties])
+    check("companion registered with box math and clean bin",
+          len(comps) == 1
           and comps[0].epc == jobs[1].epc and comps[0].box_no == 2
-          and comps[0].box_count == 2,
-          [(c.epc, c.box_no, c.box_count) for c in comps])
+          and comps[0].box_count == 2
+          and comps[0].bin_location == "B11-1",
+          [(c.epc, c.box_no, c.box_count, c.bin_location)
+           for c in comps])
 
     # ---- counting stays 1 everywhere --------------------------------
     it = cl.get(f"/api/batches/{bid}").json()["items"][0]

@@ -1373,13 +1373,25 @@ def _multibox_map(
     }
 
 
+# The box note rides the BIN line ("BIN: B11-1, Box 1 of 2" - Nick,
+# 2026-09-02: the header stays Telescopes Canada / the saved name).
+# It must never leak into recorded bins, so everything that copies a
+# job's bin into a record strips it first.
+_BOX_NOTE_RE = re.compile(r",?\s*Box (\d+) of (\d+)\s*$", re.IGNORECASE)
+
+
+def _strip_box_note(bin_location: str | None) -> str | None:
+    return _BOX_NOTE_RE.sub("", bin_location or "").strip() or None
+
+
 def _expand_multibox(
     session: Session, jobs: list[PrintJob]
 ) -> list[PrintJob]:
-    """Give every counting label of a multi-box product its "BOX 1 OF
-    Y" header and per-box bin, and append the companion labels for
-    boxes 2..Y right behind it (label order = sticking order). Jobs
-    that are already companions, or case labels, pass through."""
+    """Give every counting label of a multi-box product its per-box bin
+    line ("BIN: B11-1, Box 1 of 2" - the header line stays untouched),
+    and append the companion labels for boxes 2..Y right behind it
+    (label order = sticking order). Jobs that are already companions,
+    or case labels, pass through."""
     marks = _multibox_map(session, [j.sku for j in jobs])
     if not marks:
         return jobs
@@ -1392,14 +1404,14 @@ def _expand_multibox(
             continue
         bins = mark.bin_list()
 
-        def box_bin(i: int) -> str | None:
+        def box_bin(i: int) -> str:
             b = bins[i - 1] if len(bins) >= i else None
-            return (b or "").strip() or job.bin_location
+            return (b or "").strip() or (job.bin_location or "").strip()
 
         total = mark.boxes_per_unit
-        job.label_name = f"BOX 1 OF {total}"
-        job.label_placement = "header"
-        job.bin_location = box_bin(1)
+        job.bin_location = (
+            f"{box_bin(1)}, Box 1 of {total}"[:100]
+        )
         for i in range(2, total + 1):
             out.append(PrintJob(
                 epc=_new_epc(),
@@ -1409,12 +1421,13 @@ def _expand_multibox(
                 sku=job.sku,
                 product_title=job.product_title,
                 variant_title=job.variant_title,
-                bin_location=box_bin(i),
+                bin_location=f"{box_bin(i)}, Box {i} of {total}"[:100],
                 other_bins=job.other_bins,
                 shopify_variant_id=job.shopify_variant_id,
                 shopify_product_id=job.shopify_product_id,
-                label_name=f"BOX {i} OF {total}",
-                label_placement="header",
+                label_name=job.label_name,
+                label_placement=job.label_placement,
+                label_sku=job.label_sku,
                 requested_by=job.requested_by,
                 batch_id=job.batch_id,
                 printer=job.printer,
@@ -2404,15 +2417,17 @@ def complete_print_job(
     if job.kind == "companion":
         # Box 2..N of a multi-box unit: the tag is live (the printer
         # encoded it) but it must count NOWHERE - register it in the
-        # companion registry instead of assignments.
-        m = re.search(r"BOX (\d+) OF (\d+)", job.label_name or "")
+        # companion registry instead of assignments. The box math rides
+        # the bin line's note (label_name covered older jobs).
+        m = (_BOX_NOTE_RE.search(job.bin_location or "")
+             or re.search(r"BOX (\d+) OF (\d+)", job.label_name or ""))
         session.add(CompanionTag(
             epc=job.epc,
             sku=job.sku,
             product_title=job.product_title,
             box_no=int(m.group(1)) if m else None,
             box_count=int(m.group(2)) if m else None,
-            bin_location=job.bin_location,
+            bin_location=_strip_box_note(job.bin_location),
             created_by=job.requested_by or "printer",
         ))
         try:
@@ -2432,7 +2447,9 @@ def complete_print_job(
         variant_title=job.variant_title,
         sku=job.sku,
         barcode=job.barcode,
-        bin_location=job.bin_location,
+        # A multi-box unit's label bin carries ", Box 1 of 2" for the
+        # sticker - the RECORD keeps the clean bin.
+        bin_location=_strip_box_note(job.bin_location),
         assigned_by=job.requested_by or "printer",
     )
     session.add(assignment)
