@@ -9706,6 +9706,11 @@ def receiving_order_preview(
 class FullShipmentIn(BaseModel):
     order: str = Field(min_length=1, max_length=60)
     requested_by: str | None = Field(default=None, max_length=100)
+    # Codes in the order the boxes were scanned (the shipment sorter's
+    # pass): labels print in this order so the stack matches the pallet
+    # walk (Nick, 2026-09-02). Lines not in the list print after, in
+    # order-line order.
+    scan_order: list[str] | None = Field(default=None, max_length=400)
 
 
 @app.post(
@@ -9767,12 +9772,31 @@ def receiving_full_shipment(
             "receive - every line is already fully received.",
         )
     ref = f"SO {order['reference_number']}"
+    lines = out["items"]
+    if payload.scan_order:
+        # Stable sort by first appearance in the scan pass; lines the
+        # sorter never scanned keep their order-line order at the back.
+        pos = {}
+        for idx, code in enumerate(payload.scan_order):
+            key = (code or "").strip().upper()
+            if key and key not in pos:
+                pos[key] = idx
+        far = len(payload.scan_order)
+
+        def scan_pos(line: dict) -> int:
+            for term in (line.get("sku"), line.get("barcode")):
+                p = pos.get((term or "").strip().upper())
+                if p is not None:
+                    return p
+            return far
+
+        lines = sorted(lines, key=scan_pos)
     intake = _receiving_intake(session, ReceivingPrintsIn(
         items=[ReceivingPrintItemIn(
             sku=(line.get("sku") or "?")[:100],
             quantity=max(1, min(500, line["remaining"])),
             barcode=(line.get("barcode") or None),
-        ) for line in out["items"]],
+        ) for line in lines],
         requested_by=payload.requested_by,
         reference=f"{ref} · {order.get('vendor') or ''}".strip(" ·"),
     ), queue_labels=True, tag_prefix="Full shipment",
@@ -9808,6 +9832,187 @@ def receiving_full_shipment(
             + ". Label and pair the shipment, then press "
             "\"All boxes labelled\" to count what didn't arrive."
         ),
+    }
+
+
+@app.get(
+    "/api/batches/{batch_id}/print-progress",
+    dependencies=[Depends(require_user)],
+)
+def batch_print_progress(
+    batch_id: int, session: Session = Depends(get_session)
+):
+    """How much of this batch's label burst is physically out of the
+    printer - the gun's check screen waits on this before the operator
+    walks away from the printer (Nick, 2026-09-02)."""
+    _get_batch(session, batch_id)
+    counts = {"pending": 0, "printing": 0, "done": 0}
+    for job in session.scalars(
+        select(PrintJob).where(
+            PrintJob.batch_id == batch_id,
+            PrintJob.status.in_(("pending", "printing", "done")),
+        )
+    ):
+        counts[job.status] += 1
+    total = sum(counts.values())
+    return {**counts, "total": total,
+            "finished": total > 0 and counts["done"] == total}
+
+
+class SortCountIn(BaseModel):
+    code: str = Field(min_length=1, max_length=100)
+    count: int = Field(ge=1, le=500)
+
+
+class SortMatchIn(BaseModel):
+    counts: list[SortCountIn] = Field(min_length=1, max_length=200)
+    requested_by: str | None = Field(default=None, max_length=100)
+
+
+@app.post(
+    "/api/receiving/sort-match", dependencies=[Depends(require_user)]
+)
+def receiving_sort_match(
+    payload: SortMatchIn, session: Session = Depends(get_session)
+):
+    """The shipment sorter (Nick, 2026-09-02): a pallet with no order
+    number gets its boxes scanned first; this matches the scanned
+    counts against every open stock order's remaining lines. One order
+    containing EVERY matched product wins outright (consolidation -
+    quantity overflow doesn't break it, the extras just get flagged
+    for a manual Shopify update); otherwise a greedy split assigns
+    each product to the fewest orders that cover the pallet. Read-only:
+    nothing prints and nothing is written here."""
+    plan = planner.open_orders_lines(payload.requested_by)
+    if not plan.get("ok"):
+        raise HTTPException(502, plan.get("error")
+                            or "The planner bridge isn't configured.")
+
+    # Order matching tables: every remaining line under its SKU and
+    # barcode keys (case-insensitive, like all SKU compares).
+    orders = []
+    for o in plan["orders"]:
+        keys: dict[str, dict] = {}
+        for line in o["items"]:
+            for term in (line.get("sku"), line.get("barcode")):
+                key = (term or "").strip().upper()
+                if key:
+                    keys.setdefault(key, line)
+        orders.append({**o, "keys": keys})
+
+    # Resolve the scanned codes (folding codes that reach the same
+    # product) and find which orders want each one.
+    products: list[dict] = []
+    by_key: dict[str, dict] = {}
+    for entry in payload.counts:
+        code = entry.code.strip()
+        product = None
+        try:
+            product = product_by_barcode(code)
+        except HTTPException as error:
+            if error.status_code >= 500:
+                raise
+        sku = (product or {}).get("sku")
+        title = (product or {}).get("product_title")
+        match_keys = {code.upper()}
+        if product:
+            for term in (sku, product.get("barcode")):
+                if (term or "").strip():
+                    match_keys.add(term.strip().upper())
+        fold = (sku or code).strip().upper()
+        row = by_key.get(fold)
+        if row is None:
+            row = {"code": code, "sku": sku, "title": title, "count": 0,
+                   "keys": match_keys, "wanted_by": []}
+            by_key[fold] = row
+            products.append(row)
+        row["count"] += entry.count
+        row["keys"] |= match_keys
+    for row in products:
+        row["wanted_by"] = [
+            o["reference_number"] for o in orders
+            if any(k in o["keys"] for k in row["keys"])
+        ]
+
+    matched = [p for p in products if p["wanted_by"]]
+    unmatched = [{"code": p["code"], "sku": p["sku"],
+                  "title": p["title"], "count": p["count"]}
+                 for p in products if not p["wanted_by"]]
+
+    def order_products(order: dict, rows: list[dict]) -> list[dict]:
+        out = []
+        for p in rows:
+            line = next(
+                (order["keys"][k] for k in p["keys"]
+                 if k in order["keys"]), None,
+            )
+            remaining = int(line["remaining"]) if line else 0
+            out.append({
+                "code": p["code"], "sku": p["sku"],
+                "title": p["title"] or (line or {}).get("title"),
+                "count": p["count"], "remaining": remaining,
+                "overflow": max(0, p["count"] - remaining),
+            })
+        return out
+
+    def order_out(order: dict, rows: list[dict]) -> dict:
+        return {
+            "order_id": order["order_id"],
+            "reference_number": order["reference_number"],
+            "vendor": order["vendor"],
+            "products": order_products(order, rows),
+        }
+
+    verdict: dict
+    covering = [
+        o for o in orders
+        if matched and all(
+            any(k in o["keys"] for k in p["keys"]) for p in matched
+        )
+    ]
+    if covering:
+        # Best fit: the order whose remaining quantities absorb the
+        # most of what was scanned; ties go to the smaller order.
+        def fit(o: dict) -> tuple[int, int]:
+            got = sum(
+                min(p["count"], int(next(
+                    o["keys"][k] for k in p["keys"] if k in o["keys"]
+                )["remaining"]))
+                for p in matched
+            )
+            return (got, -sum(l["remaining"] for l in o["items"]))
+
+        best = max(covering, key=fit)
+        verdict = {"consolidated": True,
+                   "orders": [order_out(best, matched)]}
+    else:
+        # Greedy split: repeatedly take the order covering the most
+        # still-unassigned products (ties to the most boxes absorbed).
+        left = list(matched)
+        split = []
+        while left:
+            def coverage(o: dict) -> tuple[int, int]:
+                rows = [p for p in left
+                        if any(k in o["keys"] for k in p["keys"])]
+                return (len(rows), sum(p["count"] for p in rows))
+
+            best = max(orders, key=coverage, default=None)
+            if best is None or coverage(best)[0] == 0:
+                break
+            rows = [p for p in left
+                    if any(k in best["keys"] for k in p["keys"])]
+            split.append(order_out(best, rows))
+            left = [p for p in left if p not in rows]
+        verdict = {"consolidated": False, "orders": split}
+
+    return {
+        "ok": True,
+        "products": [
+            {"code": p["code"], "sku": p["sku"], "title": p["title"],
+             "count": p["count"], "wanted_by": p["wanted_by"]}
+            for p in products
+        ],
+        "verdict": {**verdict, "unmatched": unmatched},
     }
 
 

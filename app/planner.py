@@ -173,6 +173,63 @@ def order_lines(order_ref: str, operator: str | None = None) -> dict:
         return {**base, "error": str(exc)[:200]}
 
 
+# The shipment sorter re-matches on EVERY box scan; open orders barely
+# move inside one sort pass, so a short cache spares the planner (and
+# its per-detail Shopify fetches) from a scan-speed hammering.
+_ORDERS_TTL_SECONDS = 120
+_orders_cache: tuple[float, dict] | None = None
+
+
+def open_orders_lines(operator: str | None = None) -> dict:
+    """Every open stock order WITH its remaining lines, in one answer -
+    the shipment sorter's matching table (Nick, 2026-09-02: a pallet
+    with no order number gets scanned first, matched after). Cached for
+    a couple of minutes; read-only, never raises."""
+    global _orders_cache
+    base = {"configured": configured(), "ok": False, "orders": []}
+    if not configured():
+        return base
+    hit = _orders_cache
+    if hit and time.monotonic() - hit[0] < _ORDERS_TTL_SECONDS:
+        return hit[1]
+    try:
+        found = _get("/api/stock-orders", params={"status": "open"},
+                     operator=operator)
+        orders = []
+        for summary in found.get("orders") or []:
+            try:
+                detail = _get(f"/api/stock-orders/{summary['id']}",
+                              operator=operator)
+            except Exception:  # noqa: BLE001 — one bad order can't sink the sort
+                continue
+            items = []
+            for item in detail.get("items") or []:
+                ordered = int(item.get("ordered_qty") or 0)
+                received = int(item.get("received_qty") or 0)
+                if ordered - received <= 0:
+                    continue
+                items.append({
+                    "sku": item.get("sku"),
+                    "barcode": item.get("barcode"),
+                    "title": (item.get("title")
+                              or item.get("product_title")
+                              or item.get("name")),
+                    "remaining": ordered - received,
+                })
+            if items:
+                orders.append({
+                    "order_id": detail.get("id"),
+                    "reference_number": detail.get("reference_number"),
+                    "vendor": detail.get("vendor"),
+                    "items": items,
+                })
+        result = {**base, "ok": True, "orders": orders}
+        _orders_cache = (time.monotonic(), result)
+        return result
+    except Exception as exc:  # noqa: BLE001 — the sorter reports, not crashes
+        return {**base, "error": str(exc)[:200]}
+
+
 def on_order_for_sku(sku: str, operator: str | None = None) -> dict:
     """Every open-PO line for this SKU with units still expected.
 

@@ -4611,6 +4611,12 @@ public class MainActivity extends Activity {
     private void onScanInput(String code) {
         if (activeTab == TAB_BATCH) {
             if (!inBatch()) {
+                // A running sort eats every barcode as a box count (or
+                // a pile lookup) - bins and batches wait their turn.
+                if (sortMode) {
+                    sortScan(code);
+                    return;
+                }
                 // A bin barcode with no batch open = "start one here" —
                 // the same shortcut the Scan Station's bin scan gives.
                 if (looksLikeBin(code)) {
@@ -4821,7 +4827,11 @@ public class MainActivity extends Activity {
 
     private void onTrigger() {
         if (activeTab == TAB_BATCH) {
-            if (inBatch() && step == STEP_PAIR) {
+            // The strip sweep (full-shipment wrap-up) outranks pairing:
+            // the operator is at the printer, not the pallet.
+            if (inBatch() && stripSweepMode) {
+                stripToggleScan();
+            } else if (inBatch() && step == STEP_PAIR) {
                 pairReadTag();
             } else if (inBatch()
                     && (step == STEP_VERIFY || step == STEP_SHELF)) {
@@ -7416,12 +7426,836 @@ public class MainActivity extends Activity {
         }
         ScrollView sc = new ScrollView(this);
         sc.addView(box);
-        dlg()
+        AlertDialog.Builder b = dlg()
                 .setTitle("Receiving — " + green + " of " + total
                         + " product(s) fully tagged")
                 .setView(sc)
-                .setPositiveButton("CONFIRM", (d, w) -> exitBatch(false))
-                .setNegativeButton("CONTINUE PAIRING", null)
+                .setPositiveButton("CONFIRM", (d, w) -> {
+                    exitBatch(false);
+                    maybeNextSortOrder();
+                })
+                .setNegativeButton("CONTINUE PAIRING", null);
+        // Full-shipment receives close through the settle path: count
+        // what didn't arrive, hold the leftover strip, hand off to the
+        // planner (Nick, 2026-09-02: the whole flow lives on the gun).
+        if (batchOrderReceipt != null) {
+            b.setNeutralButton("ALL BOXES LABELLED",
+                    (d, w) -> settleShipment());
+        }
+        b.show();
+    }
+
+    // ------------------------------------- gun-only receiving (3.77) -----
+    // Nick, 2026-09-02: a pallet too big for the desk gets received
+    // entirely on the C72 - pick the stock order (or SORT a no-number
+    // pallet against every open order first), print the burst, walk the
+    // pallet pairing, then settle: strip sweep, held list, planner
+    // hand-off. Server side is the existing full-shipment suite.
+    private JSONObject batchOrderReceipt = null;
+    private boolean stripSweepMode = false;
+    private volatile boolean stripScanning = false;
+    private final java.util.HashSet<String> stripEpcs =
+            new java.util.HashSet<>();
+    private boolean sortMode = false;
+    private boolean pileMode = false;
+    private final java.util.LinkedHashMap<String, Integer> sortCounts =
+            new java.util.LinkedHashMap<>();
+    private JSONObject sortResp = null;
+    private final java.util.HashMap<String, String> pileByCode =
+            new java.util.HashMap<>();
+    private final java.util.HashMap<String, Integer> pileCounts =
+            new java.util.HashMap<>();
+    private final java.util.List<String> sortNextOrders =
+            new ArrayList<>();
+    private final java.util.HashMap<String, java.util.List<String>>
+            sortScanOrders = new java.util.HashMap<>();
+
+    private void recvOrderPicker() {
+        status.setText("Loading open stock orders…");
+        new Thread(() -> {
+            try {
+                JSONObject resp = api("GET", "/api/receiving/orders",
+                        null);
+                if (!resp.optBoolean("ok")) {
+                    throw new Exception(resp.optString("error",
+                            "planner bridge not configured"));
+                }
+                JSONArray os = resp.optJSONArray("orders");
+                final List<JSONObject> rows = new ArrayList<>();
+                for (int i = 0; os != null && i < os.length(); i++) {
+                    rows.add(os.getJSONObject(i));
+                }
+                ui.post(() -> showRecvOrderPicker(rows));
+            } catch (Exception e) {
+                ui.post(() -> alertStatus("Stock orders: "
+                        + e.getMessage()));
+            }
+        }).start();
+    }
+
+    private void showRecvOrderPicker(List<JSONObject> rows) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(16), dp(8), dp(16), dp(4));
+        if (rows.isEmpty()) {
+            TextView t = new TextView(this);
+            t.setText("No open stock orders on the planner.");
+            t.setTextSize(13);
+            t.setTextColor(C_MUTED);
+            box.addView(t);
+        }
+        final AlertDialog[] dref = new AlertDialog[1];
+        for (JSONObject o : rows) {
+            final String ref = o.optString("reference_number");
+            String vendor = o.optString("vendor", "");
+            boolean live = o.optBoolean("already_printed");
+            Button b = smallBtn("SO " + ref
+                    + (vendor.isEmpty() ? "" : " · " + vendor)
+                    + (live ? "  (live batch - resumes)" : ""));
+            b.setOnClickListener(vw -> {
+                if (dref[0] != null) dref[0].dismiss();
+                recvPreview(ref, null);
+            });
+            LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            bl.topMargin = dp(6);
+            box.addView(b, bl);
+        }
+        ScrollView sc = new ScrollView(this);
+        sc.addView(box);
+        dref[0] = dlg()
+                .setTitle("RECEIVE A SHIPMENT")
+                .setView(sc)
+                .setNegativeButton("CANCEL", null)
+                .show();
+    }
+
+    /** One order's remaining lines with flags - the last look before
+     *  the burst prints. scanOrder rides in from the sorter so the
+     *  label stack comes out in pallet-walk order. */
+    private void recvPreview(final String ref,
+                             final java.util.List<String> scanOrder) {
+        status.setText("Loading SO " + ref + "…");
+        new Thread(() -> {
+            try {
+                JSONObject resp = api("GET", "/api/receiving/orders/"
+                        + java.net.URLEncoder.encode(ref, "UTF-8"), null);
+                ui.post(() -> showRecvPreview(ref, resp, scanOrder));
+            } catch (Exception e) {
+                ui.post(() -> alertStatus("SO " + ref + ": "
+                        + e.getMessage()));
+            }
+        }).start();
+    }
+
+    private void showRecvPreview(final String ref, JSONObject resp,
+                                 final java.util.List<String> scanOrder) {
+        JSONObject order = resp.optJSONObject("order");
+        JSONArray items = resp.optJSONArray("items");
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(16), dp(8), dp(16), dp(4));
+        int boxes = 0, flagged = 0;
+        for (int i = 0; items != null && i < items.length(); i++) {
+            JSONObject line = items.optJSONObject(i);
+            boxes += line.optInt("remaining");
+            if (!line.isNull("flag") && !line.optString("flag")
+                    .isEmpty()) flagged++;
+        }
+        TextView head = new TextView(this);
+        head.setText((items == null ? 0 : items.length()) + " line(s) · "
+                + boxes + " box(es) remaining"
+                + (flagged > 0 ? " · " + flagged + " flagged" : "")
+                + (scanOrder != null
+                   ? "\nLabels print in the order you scanned." : ""));
+        head.setTextSize(13);
+        head.setTextColor(C_TEXT);
+        box.addView(head);
+        for (int i = 0; items != null && i < items.length(); i++) {
+            JSONObject line = items.optJSONObject(i);
+            String nick = line.optString("nickname", "");
+            String flag = line.isNull("flag") ? ""
+                    : line.optString("flag", "");
+            TextView t = new TextView(this);
+            t.setText((nick.isEmpty() ? "" : "[" + nick + "] ")
+                    + line.optString("title",
+                            line.optString("product_title", "?"))
+                    + "\n   " + line.optString("sku", "-") + " · "
+                    + line.optInt("remaining") + " box(es)"
+                    + (flag.isEmpty()
+                       ? " · " + line.optString("bin_location", "?")
+                       : "\n   ⚠ " + flag));
+            t.setTextSize(12);
+            t.setTextColor(flag.isEmpty() ? C_MUTED : C_WARN);
+            t.setPadding(0, dp(5), 0, 0);
+            box.addView(t);
+        }
+        ScrollView sc = new ScrollView(this);
+        sc.addView(box);
+        String vendor = order == null ? ""
+                : order.optString("vendor", "");
+        dlg()
+                .setTitle("SO " + ref
+                        + (vendor.isEmpty() ? "" : " · " + vendor))
+                .setView(sc)
+                .setPositiveButton("PRINT ALL + START", (d, w) ->
+                        recvStartFullShipment(ref, scanOrder))
+                .setNegativeButton("CANCEL", null)
+                .show();
+    }
+
+    private void recvStartFullShipment(
+            final String ref, final java.util.List<String> scanOrder) {
+        status.setText("Starting the full-shipment receive…");
+        new Thread(() -> {
+            try {
+                JSONObject body = new JSONObject()
+                        .put("order", ref)
+                        .put("requested_by",
+                                prefs.getString("device", "C72"));
+                if (scanOrder != null && !scanOrder.isEmpty()) {
+                    body.put("scan_order", new JSONArray(scanOrder));
+                }
+                JSONObject resp = api("POST",
+                        "/api/receiving/full-shipment", body);
+                final int id = resp.getJSONObject("batch").optInt("id");
+                final int queued = resp.optInt("queued");
+                final boolean reused = resp.optBoolean("reused");
+                final String msg = resp.optString("message", "");
+                ui.post(() -> {
+                    beep(SOUND_OK);
+                    if (reused || queued == 0) {
+                        status.setText(msg);
+                        enterBatch(id);
+                    } else {
+                        recvPrintWait(id, queued);
+                    }
+                });
+            } catch (Exception e) {
+                ui.post(() -> {
+                    beep(SOUND_ERR);
+                    alertStatus("Full shipment: " + e.getMessage());
+                });
+            }
+        }).start();
+    }
+
+    /** Wait at the printer until the whole burst is physically out
+     *  (Nick, 2026-09-02) - with CONTINUE ANYWAY in case of a jam. */
+    private void recvPrintWait(final int id, final int queued) {
+        final boolean[] live = {true};
+        final AlertDialog d = dlg()
+                .setTitle("PRINTING " + queued + " LABEL(S)")
+                .setMessage("Waiting for the printer… grab the stack "
+                        + "when it's done - the screen continues on its "
+                        + "own.")
+                .setPositiveButton("CONTINUE ANYWAY", (dd, w) ->
+                        enterBatch(id))
+                .setNegativeButton("STAY OUT", null)
+                .show();
+        d.setOnDismissListener(x -> live[0] = false);
+        final Runnable[] poll = new Runnable[1];
+        poll[0] = () -> new Thread(() -> {
+            try {
+                JSONObject p = api("GET", "/api/batches/" + id
+                        + "/print-progress", null);
+                final int done = p.optInt("done");
+                final int total = p.optInt("total");
+                final boolean finished = p.optBoolean("finished");
+                ui.post(() -> {
+                    if (!live[0]) return;
+                    if (finished) {
+                        beep(SOUND_OK);
+                        live[0] = false;
+                        d.dismiss();
+                        status.setText("All " + total + " label(s) out - "
+                                + "take the stack to the pallet.");
+                        enterBatch(id);
+                    } else {
+                        d.setMessage("Printer: " + done + " of " + total
+                                + " label(s) out…\n\nGrab the stack when "
+                                + "it's done - the screen continues on "
+                                + "its own.");
+                        ui.postDelayed(poll[0], 2500);
+                    }
+                });
+            } catch (Exception e) {
+                ui.post(() -> {
+                    if (live[0]) ui.postDelayed(poll[0], 4000);
+                });
+            }
+        }).start();
+        ui.postDelayed(poll[0], 2000);
+    }
+
+    /** ALL BOXES LABELLED: start the 1-hour planner clock and show
+     *  what's left on the strip; zero leftovers close straight away. */
+    private void settleShipment() {
+        final int id = batchId;
+        status.setText("Counting unused labels…");
+        new Thread(() -> {
+            try {
+                JSONObject resp = api("POST", "/api/batches/" + id
+                        + "/settle-shipment", new JSONObject().put(
+                        "created_by", prefs.getString("device", "C72")));
+                final JSONArray unpaired = resp.optJSONArray("unpaired");
+                final int total = resp.optInt("total_unpaired");
+                ui.post(() -> showSettleResult(unpaired, total));
+            } catch (Exception e) {
+                ui.post(() -> alertStatus("Settle: " + e.getMessage()));
+            }
+        }).start();
+    }
+
+    private void showSettleResult(JSONArray unpaired, int total) {
+        if (total == 0) {
+            dlg()
+                    .setTitle("EVERY LABEL FOUND ITS BOX")
+                    .setMessage("Nothing left on the strip - the whole "
+                            + "order arrived. Close the shipment and "
+                            + "hand off to TC-Planner?")
+                    .setPositiveButton("CLOSE + HAND OFF", (d, w) ->
+                            postHeldList(new java.util.ArrayList<>()))
+                    .setNegativeButton("BACK", null)
+                    .show();
+            return;
+        }
+        StringBuilder sb = new StringBuilder(total
+                + " label(s) left on the strip:\n");
+        for (int i = 0; unpaired != null && i < unpaired.length(); i++) {
+            JSONObject u = unpaired.optJSONObject(i);
+            sb.append("\n· ").append(u.optString("product_title",
+                    u.optString("sku"))).append(" - ")
+                    .append(u.optInt("count"));
+        }
+        sb.append("\n\nHold the trigger and sweep the unused line of "
+                + "labels still on the printer paper - they go on the "
+                + "held list under this vendor.");
+        dlg()
+                .setTitle("WRAP UP - " + total + " UNPAIRED")
+                .setMessage(sb.toString())
+                .setPositiveButton("START STRIP SWEEP", (d, w) -> {
+                    stripSweepMode = true;
+                    stripEpcs.clear();
+                    status.setText("STRIP SWEEP: trigger to sweep the "
+                            + "leftover strip, trigger again to stop.");
+                })
+                .setNegativeButton("KEEP PAIRING", null)
+                .show();
+    }
+
+    private void stripToggleScan() {
+        if (!readerReady) {
+            Toast.makeText(this, "Reader not ready",
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (stripScanning) {
+            try {
+                reader.stopInventory();
+            } catch (Exception ignored) {
+            }
+            stripScanning = false;
+            scanning = false;
+            stripMerge();
+            showStripResult();
+        } else {
+            if (scanning || sweepRunning || holdSweepRunning) return;
+            synchronized (tags) { tags.clear(); }
+            if (reader.startInventoryTag()) {
+                stripScanning = true;
+                scanning = true;
+                status.setText("Sweeping the strip… trigger to stop.");
+            } else {
+                status.setText("Could not start the sweep - try again.");
+            }
+        }
+    }
+
+    private void stripMerge() {
+        synchronized (tags) {
+            for (String epc : tags.keySet()) {
+                stripEpcs.add(epc.toUpperCase(java.util.Locale.ROOT));
+            }
+        }
+    }
+
+    private void showStripResult() {
+        dlg()
+                .setTitle("STRIP SWEEP - " + stripEpcs.size()
+                        + " TAG(S)")
+                .setMessage(stripEpcs.size() + " unique tag(s) heard. "
+                        + "Tags already paired to real boxes are "
+                        + "excluded automatically - hold the strip and "
+                        + "close the shipment?")
+                .setPositiveButton("HOLD STRIP + CLOSE", (d, w) ->
+                        postHeldList(new java.util.ArrayList<>(
+                                stripEpcs)))
+                .setNegativeButton("SWEEP MORE", null)
+                .show();
+    }
+
+    private void postHeldList(final java.util.List<String> epcs) {
+        final int id = batchId;
+        final JSONObject receipt = batchOrderReceipt;
+        status.setText("Holding the strip…");
+        new Thread(() -> {
+            try {
+                JSONObject body = new JSONObject()
+                        .put("epcs", new JSONArray(epcs))
+                        .put("created_by",
+                                prefs.getString("device", "C72"));
+                JSONObject resp = api("POST", "/api/batches/" + id
+                        + "/held-list", body);
+                final String msg = resp.optString("message", "Held.");
+                ui.post(() -> {
+                    beep(SOUND_OK);
+                    stripSweepMode = false;
+                    String ref = receipt == null ? "the stock order"
+                            : receipt.optString("reference",
+                                    "the stock order");
+                    dlg()
+                            .setTitle("SHIPMENT SETTLED")
+                            .setMessage(msg + "\n\nFinish at the desk: "
+                                    + "open " + ref + " in TC-Planner "
+                                    + "and run the stock update - Print "
+                                    + "labels is already handled there. "
+                                    + "The 1-hour reminder clock is "
+                                    + "running.")
+                            .setPositiveButton("DONE", (d, w) -> {
+                                exitBatch(true);
+                                status.setText(ref + " settled ✓");
+                                maybeNextSortOrder();
+                            })
+                            .setCancelable(false)
+                            .show();
+                });
+            } catch (Exception e) {
+                ui.post(() -> {
+                    beep(SOUND_ERR);
+                    alertStatus("Held list: " + e.getMessage());
+                });
+            }
+        }).start();
+    }
+
+    // ------------------------------------------- sort a shipment ---------
+    private void sortStart() {
+        sortMode = true;
+        pileMode = false;
+        sortCounts.clear();
+        sortResp = null;
+        pileByCode.clear();
+        pileCounts.clear();
+        sortNextOrders.clear();
+        sortScanOrders.clear();
+        status.setText("SORT: scan every box barcode on the pallet - "
+                + "same barcode twice = two boxes. DONE when the pallet "
+                + "is scanned.");
+        sortRender();
+    }
+
+    private void sortExit() {
+        sortMode = false;
+        pileMode = false;
+        status.setText("Sort cancelled.");
+        batchPickerPane.removeAllViews();
+        loadBatchPickerInline();
+    }
+
+    private void sortScan(String code) {
+        if (pileMode) {
+            pileScan(code);
+            return;
+        }
+        code = code.trim();
+        Integer n = sortCounts.get(code);
+        sortCounts.put(code, n == null ? 1 : n + 1);
+        beep(SOUND_OK);
+        sortRender();
+        sortMatchPost(false);
+    }
+
+    /** Re-match the whole scanned set (the server folds codes reaching
+     *  the same product and answers who wants what). Runs after every
+     *  scan - open orders are cached server-side, so this is cheap. */
+    private void sortMatchPost(final boolean thenVerdict) {
+        final JSONArray counts = new JSONArray();
+        try {
+            for (java.util.Map.Entry<String, Integer> e
+                    : sortCounts.entrySet()) {
+                counts.put(new JSONObject().put("code", e.getKey())
+                        .put("count", e.getValue()));
+            }
+        } catch (Exception ignored) {
+        }
+        if (counts.length() == 0) return;
+        new Thread(() -> {
+            try {
+                JSONObject resp = api("POST",
+                        "/api/receiving/sort-match", new JSONObject()
+                                .put("counts", counts)
+                                .put("requested_by",
+                                        prefs.getString("device", "C72")));
+                ui.post(() -> {
+                    if (!sortMode) return;
+                    sortResp = resp;
+                    sortRender();
+                    if (thenVerdict) showSortVerdict();
+                });
+            } catch (Exception e) {
+                ui.post(() -> {
+                    if (thenVerdict) alertStatus("Match: "
+                            + e.getMessage());
+                });
+            }
+        }).start();
+    }
+
+    /** The sort pane lives where the batch picker normally is. */
+    private void sortRender() {
+        if (!sortMode) return;
+        LinearLayout list = batchPickerPane;
+        list.removeAllViews();
+        list.setPadding(0, dp(4), 0, 0);
+
+        int boxes = 0;
+        for (int n : sortCounts.values()) boxes += n;
+        TextView head = new TextView(this);
+        head.setText((pileMode ? "SORT INTO PILES - " : "SORT - ")
+                + boxes + " box(es) · " + sortCounts.size()
+                + " product(s)");
+        head.setTextSize(15);
+        head.setTypeface(null, Typeface.BOLD);
+        head.setTextColor(C_BLUE);
+        head.setPadding(dp(4), 0, 0, dp(6));
+        list.addView(head);
+
+        if (pileMode) {
+            TextView hint = new TextView(this);
+            hint.setText("Scan a box - the screen names its pile.");
+            hint.setTextSize(12);
+            hint.setTextColor(C_MUTED);
+            hint.setPadding(dp(4), 0, 0, dp(6));
+            list.addView(hint);
+            for (java.util.Map.Entry<String, Integer> e
+                    : pileCounts.entrySet()) {
+                TextView t = new TextView(this);
+                t.setText("SO " + e.getKey() + " pile: "
+                        + e.getValue() + " box(es) sorted");
+                t.setTextSize(13);
+                t.setTextColor(C_TEXT);
+                t.setPadding(dp(4), dp(2), 0, dp(2));
+                list.addView(t);
+            }
+            Button done = smallBtn("PILES DONE - RECEIVE EACH ORDER");
+            makePrimary(done);
+            done.setOnClickListener(x -> beginSortReceive());
+            LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            bl.topMargin = dp(10);
+            list.addView(done, bl);
+            Button back = smallBtn("BACK TO THE VERDICT");
+            back.setOnClickListener(x -> {
+                pileMode = false;
+                sortRender();
+                showSortVerdict();
+            });
+            LinearLayout.LayoutParams bl2 =
+                    new LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT);
+            bl2.topMargin = dp(6);
+            list.addView(back, bl2);
+            return;
+        }
+
+        // Product cards: resolved info + who wants it, when the match
+        // has answered; raw code + count until then.
+        java.util.HashMap<String, JSONObject> info =
+                new java.util.HashMap<>();
+        if (sortResp != null) {
+            JSONArray ps = sortResp.optJSONArray("products");
+            for (int i = 0; ps != null && i < ps.length(); i++) {
+                JSONObject p = ps.optJSONObject(i);
+                info.put(p.optString("code"), p);
+            }
+        }
+        for (java.util.Map.Entry<String, Integer> e
+                : sortCounts.entrySet()) {
+            JSONObject p = info.get(e.getKey());
+            LinearLayout card = new LinearLayout(this);
+            card.setOrientation(LinearLayout.VERTICAL);
+            card.setBackground(btnBg(C_CARD, C_LINE, C_PRESS, 8));
+            card.setPadding(dp(10), dp(7), dp(10), dp(7));
+            TextView t1 = new TextView(this);
+            String title = p == null ? e.getKey()
+                    : p.isNull("title") || p.optString("title").isEmpty()
+                      ? e.getKey() : p.optString("title");
+            t1.setText("×" + e.getValue() + "   " + title);
+            t1.setTextSize(13);
+            t1.setTextColor(C_TEXT);
+            card.addView(t1);
+            TextView t2 = new TextView(this);
+            if (p == null) {
+                t2.setText("matching…");
+                t2.setTextColor(C_MUTED);
+            } else {
+                JSONArray wb = p.optJSONArray("wanted_by");
+                if (wb == null || wb.length() == 0) {
+                    t2.setText("no open order wants this");
+                    t2.setTextColor(C_WARN);
+                } else {
+                    StringBuilder sb = new StringBuilder("wanted by ");
+                    for (int i = 0; i < wb.length(); i++) {
+                        if (i > 0) sb.append(", ");
+                        sb.append("SO ").append(wb.optString(i));
+                    }
+                    t2.setText(sb.toString());
+                    t2.setTextColor(C_MUTED);
+                }
+            }
+            t2.setTextSize(11);
+            card.addView(t2);
+            LinearLayout.LayoutParams cl = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            cl.bottomMargin = dp(6);
+            list.addView(card, cl);
+        }
+        if (sortCounts.isEmpty()) {
+            list.addView(emptyBox("Scan the first box barcode",
+                    "Every scan counts one box - nothing prints yet"));
+        }
+
+        Button done = smallBtn("DONE SCANNING - MATCH IT");
+        makePrimary(done);
+        done.setOnClickListener(x -> {
+            if (sortCounts.isEmpty()) {
+                status.setText("Scan at least one box first.");
+                return;
+            }
+            status.setText("Matching against open orders…");
+            sortMatchPost(true);
+        });
+        LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        bl.topMargin = dp(8);
+        list.addView(done, bl);
+        Button cancel = smallBtn("CANCEL SORT");
+        cancel.setOnClickListener(x -> sortExit());
+        LinearLayout.LayoutParams bl2 = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        bl2.topMargin = dp(6);
+        list.addView(cancel, bl2);
+    }
+
+    private void showSortVerdict() {
+        if (sortResp == null) return;
+        JSONObject verdict = sortResp.optJSONObject("verdict");
+        if (verdict == null) return;
+        JSONArray orders = verdict.optJSONArray("orders");
+        JSONArray unmatched = verdict.optJSONArray("unmatched");
+        boolean consolidated = verdict.optBoolean("consolidated");
+        StringBuilder sb = new StringBuilder();
+        if (orders == null || orders.length() == 0) {
+            sb.append("No open stock order wants anything you scanned. "
+                    + "Update the stock by hand in Shopify admin.");
+            dlg().setTitle("NO MATCH")
+                    .setMessage(sb.toString())
+                    .setPositiveButton("BACK", null)
+                    .show();
+            return;
+        }
+        if (consolidated) {
+            JSONObject o = orders.optJSONObject(0);
+            final String ref = o.optString("reference_number");
+            sb.append("Everything fits SO ").append(ref)
+                    .append(" alone.");
+            appendOverflow(sb, o);
+            appendUnmatched(sb, unmatched);
+            dlg().setTitle("ONE ORDER COVERS IT")
+                    .setMessage(sb.toString())
+                    .setPositiveButton("RECEIVE AS SO " + ref, (d, w) ->
+                            beginSortReceiveSingle(o))
+                    .setNegativeButton("BACK", null)
+                    .show();
+        } else {
+            sb.append("No single order covers it. Best split:\n");
+            for (int i = 0; i < orders.length(); i++) {
+                JSONObject o = orders.optJSONObject(i);
+                int n = 0;
+                JSONArray ps = o.optJSONArray("products");
+                for (int j = 0; ps != null && j < ps.length(); j++) {
+                    n += ps.optJSONObject(j).optInt("count");
+                }
+                sb.append("\n· SO ").append(
+                        o.optString("reference_number"))
+                        .append(" - ").append(n).append(" box(es)");
+                appendOverflow(sb, o);
+            }
+            appendUnmatched(sb, unmatched);
+            sb.append("\n\nSort the pallet into piles first (each scan "
+                    + "names its pile), then receive each order one "
+                    + "after another.");
+            dlg().setTitle(orders.length() + " ORDERS")
+                    .setMessage(sb.toString())
+                    .setPositiveButton("SORT INTO PILES", (d, w) ->
+                            enterPileMode())
+                    .setNeutralButton("SKIP PILES - RECEIVE", (d, w) ->
+                            beginSortReceive())
+                    .setNegativeButton("BACK", null)
+                    .show();
+        }
+    }
+
+    private void appendOverflow(StringBuilder sb, JSONObject order) {
+        JSONArray ps = order.optJSONArray("products");
+        for (int j = 0; ps != null && j < ps.length(); j++) {
+            JSONObject p = ps.optJSONObject(j);
+            int over = p.optInt("overflow");
+            if (over > 0) {
+                sb.append("\n⚠ ").append(p.optString("title",
+                        p.optString("sku", p.optString("code"))))
+                        .append(": ").append(over)
+                        .append(" more than the order - update those "
+                                + "by hand in Shopify admin.");
+            }
+        }
+    }
+
+    private void appendUnmatched(StringBuilder sb, JSONArray unmatched) {
+        for (int i = 0; unmatched != null && i < unmatched.length();
+                i++) {
+            JSONObject u = unmatched.optJSONObject(i);
+            sb.append("\n⚠ ").append(u.optString("title",
+                    u.optString("sku", u.optString("code"))))
+                    .append(" ×").append(u.optInt("count"))
+                    .append(": no open order wants it - left out, "
+                            + "update by hand in Shopify admin.");
+        }
+    }
+
+    private void enterPileMode() {
+        pileByCode.clear();
+        pileCounts.clear();
+        JSONObject verdict = sortResp.optJSONObject("verdict");
+        JSONArray orders = verdict == null ? null
+                : verdict.optJSONArray("orders");
+        for (int i = 0; orders != null && i < orders.length(); i++) {
+            JSONObject o = orders.optJSONObject(i);
+            String ref = o.optString("reference_number");
+            JSONArray ps = o.optJSONArray("products");
+            for (int j = 0; ps != null && j < ps.length(); j++) {
+                JSONObject p = ps.optJSONObject(j);
+                String code = p.optString("code");
+                if (!code.isEmpty()) {
+                    pileByCode.put(code.toUpperCase(
+                            java.util.Locale.ROOT), ref);
+                }
+                String sku = p.isNull("sku") ? null
+                        : p.optString("sku", null);
+                if (sku != null && !sku.isEmpty()) {
+                    pileByCode.put(sku.toUpperCase(
+                            java.util.Locale.ROOT), ref);
+                }
+            }
+        }
+        pileMode = true;
+        sortRender();
+        status.setText("PILES: scan a box - the screen names its pile.");
+    }
+
+    private void pileScan(String code) {
+        String ref = pileByCode.get(code.trim().toUpperCase(
+                java.util.Locale.ROOT));
+        if (ref == null) {
+            beep(SOUND_ERR);
+            status.setText("No pile - no open order wants this box.");
+            return;
+        }
+        beep(SOUND_OK);
+        Integer n = pileCounts.get(ref);
+        pileCounts.put(ref, n == null ? 1 : n + 1);
+        status.setText("➜  SO " + ref + " pile");
+        sortRender();
+    }
+
+    /** Consolidated case: one order, scan_order = the whole pass. */
+    private void beginSortReceiveSingle(JSONObject order) {
+        sortNextOrders.clear();
+        sortScanOrders.clear();
+        String ref = order.optString("reference_number");
+        sortNextOrders.add(ref);
+        sortScanOrders.put(ref,
+                new ArrayList<>(sortCounts.keySet()));
+        sortMode = false;
+        pileMode = false;
+        startNextSortReceive();
+    }
+
+    /** Split case: queue every order; each gets the scanned codes that
+     *  belong to it, in scan order, so each stack matches its pile. */
+    private void beginSortReceive() {
+        JSONObject verdict = sortResp == null ? null
+                : sortResp.optJSONObject("verdict");
+        JSONArray orders = verdict == null ? null
+                : verdict.optJSONArray("orders");
+        if (orders == null || orders.length() == 0) return;
+        sortNextOrders.clear();
+        sortScanOrders.clear();
+        for (int i = 0; i < orders.length(); i++) {
+            JSONObject o = orders.optJSONObject(i);
+            String ref = o.optString("reference_number");
+            java.util.HashSet<String> mine = new java.util.HashSet<>();
+            JSONArray ps = o.optJSONArray("products");
+            for (int j = 0; ps != null && j < ps.length(); j++) {
+                mine.add(ps.optJSONObject(j).optString("code")
+                        .toUpperCase(java.util.Locale.ROOT));
+            }
+            java.util.List<String> so = new ArrayList<>();
+            for (String code : sortCounts.keySet()) {
+                if (mine.contains(code.toUpperCase(
+                        java.util.Locale.ROOT))) {
+                    so.add(code);
+                }
+            }
+            sortNextOrders.add(ref);
+            sortScanOrders.put(ref, so);
+        }
+        sortMode = false;
+        pileMode = false;
+        startNextSortReceive();
+    }
+
+    private void startNextSortReceive() {
+        if (sortNextOrders.isEmpty()) {
+            loadBatchPickerInline();
+            return;
+        }
+        String ref = sortNextOrders.remove(0);
+        recvPreview(ref, sortScanOrders.get(ref));
+    }
+
+    /** After a full-shipment batch settles or exits: chain straight
+     *  into the next sorted order, side-trip style. */
+    private void maybeNextSortOrder() {
+        if (sortNextOrders.isEmpty()) return;
+        final String ref = sortNextOrders.get(0);
+        dlg()
+                .setTitle("NEXT FROM THE SORT")
+                .setMessage("SO " + ref + " is next from the sorted "
+                        + "pallet - receive it now?")
+                .setPositiveButton("RECEIVE SO " + ref, (d, w) ->
+                        startNextSortReceive())
+                .setNegativeButton("LATER", (d, w) -> {
+                    sortNextOrders.clear();
+                    sortScanOrders.clear();
+                })
                 .show();
     }
 
@@ -7519,6 +8353,12 @@ public class MainActivity extends Activity {
      *  every no-batch applyBatchUi; the loading flag stops a fetch storm
      *  when several UI paths land here at once. */
     private void loadBatchPickerInline() {
+        // The sort pane owns the picker space while a sort runs - a
+        // background refresh must not clobber the scanned counts.
+        if (sortMode) {
+            sortRender();
+            return;
+        }
         if (batchPickerLoading) return;
         batchPickerLoading = true;
         if (batchPickerPane.getChildCount() == 0) {
@@ -7673,11 +8513,22 @@ public class MainActivity extends Activity {
                 : emptyBox("Scan a BIN barcode to start a new batch",
                         null), el);
 
-        // No START RECEIVING here any more (Nick, 2026-08-31):
-        // receiving is planner-driven end to end - the planner's stock
-        // update creates the batch and prints the labels; the gun only
-        // pairs. Matches the web terminal, whose start button went the
-        // same way on 2026-08-25.
+        // Planner-driven receiving still needs no start button here -
+        // but a pallet too big for the desk gets received right on the
+        // gun, and a no-order-number pallet gets SORTED first (Nick,
+        // 2026-09-02).
+        Button rcv = smallBtn("RECEIVE A SHIPMENT…");
+        rcv.setOnClickListener(x -> recvOrderPicker());
+        LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        rl.bottomMargin = dp(6);
+        list.addView(rcv, rl);
+        Button srt = smallBtn("SORT A SHIPMENT…");
+        srt.setOnClickListener(x -> sortStart());
+        list.addView(srt, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
     }
 
     private void enterBatch(int id) {
@@ -7704,10 +8555,18 @@ public class MainActivity extends Activity {
                 // the same as arriving from the stray review.
                 final int pid = b.isNull("parent_batch_id") ? 0
                         : b.optInt("parent_batch_id", 0);
+                // Full-shipment receives carry their stock-order
+                // receipt: the gun's wrap-up (settle + strip sweep)
+                // only shows for those.
+                final JSONObject receipt = b.isNull("order_receipt")
+                        ? null : b.optJSONObject("order_receipt");
                 ui.post(() -> {
                     if (scanning) toggleScan();
                     batchId = id;
                     batchBin = bin;
+                    batchOrderReceipt = receipt;
+                    stripSweepMode = false;
+                    stripEpcs.clear();
                     batchPrevDoneAt = prevDone;
                     batchShelfSweptAt = shelfSw;
                     receivingBatch = receiving;
@@ -9135,6 +9994,17 @@ public class MainActivity extends Activity {
         batchId = -1;
         batchBin = null;
         receivingBatch = false;
+        batchOrderReceipt = null;
+        stripSweepMode = false;
+        if (stripScanning) {
+            try {
+                reader.stopInventory();
+            } catch (Exception ignored) {
+            }
+            stripScanning = false;
+            scanning = false;
+        }
+        stripEpcs.clear();
         parentBatchId = 0;
         parentBinName = null;
         pendingTrips.clear();
@@ -10999,6 +11869,10 @@ public class MainActivity extends Activity {
                 auditMergeTags();
                 status.setText("Sweeping… " + auditTagSet.size()
                         + " unique tag(s) collected — trigger to stop.");
+            } else if (stripScanning) {
+                stripMerge();
+                status.setText("Sweeping the strip… " + stripEpcs.size()
+                        + " unique tag(s) - trigger to stop.");
             }
         }
         locateTick();
