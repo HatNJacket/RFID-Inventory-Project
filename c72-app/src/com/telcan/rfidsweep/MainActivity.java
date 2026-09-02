@@ -3530,6 +3530,8 @@ public class MainActivity extends Activity {
     private Button editRecommendBtn;
     private Button editLinkBtn;
     private Button editSkipBtn;
+    private Button editBundleBtn;
+    private Button editMultiBoxBtn;
     private Button editNoScanBtn;
     private Button editPriorBtn;
     private Button editDblBtn;
@@ -3788,6 +3790,28 @@ public class MainActivity extends Activity {
         editDropBtn.setOnClickListener(v -> dropItemFromBatch(true));
         mid.addView(editDropBtn);
 
+        // Receiving-only (Nick, 2026-09-02): a SET arriving as several
+        // different boxes (the S30 collection) - scan the other boxes
+        // onto this product so any of them opens its card; ONE label
+        // pairs per set. Gun-kept, prefs keyed to the batch.
+        editBundleBtn = smallBtn("BUNDLE OTHER BOXES ONTO THIS…");
+        editBundleBtn.setOnClickListener(v -> {
+            if (editEntry == null) return;
+            startBundleCapture(editEntry.item);
+        });
+        mid.addView(editBundleBtn);
+
+        // Receiving-only (Nick, 2026-09-02): one UNIT split over
+        // several boxes of the same product (the 11740) - two cartons
+        // on the pallet, one label, one unit. Stops the "two boxes =
+        // two labels" instinct on the walk.
+        editMultiBoxBtn = smallBtn("ONE UNIT = SEVERAL BOXES…");
+        editMultiBoxBtn.setOnClickListener(v -> {
+            if (editEntry == null) return;
+            askUnitBoxes(editEntry.item);
+        });
+        mid.addView(editMultiBoxBtn);
+
         LinearLayout qtyRow = new LinearLayout(this);
         qtyRow.setGravity(Gravity.CENTER);
         Button minus = smallBtn("−");
@@ -3949,6 +3973,24 @@ public class MainActivity extends Activity {
         editLabelRow.setVisibility(
                 it.resolved && !it.skipped ? View.VISIBLE : View.GONE);
         editDropBtn.setVisibility(it.resolved ? View.GONE : View.VISIBLE);
+        // Receiving-only box marks (bundle / unit-split) - see the
+        // button builders for the why.
+        boolean recvMarks = receivingBatch && it.resolved;
+        editBundleBtn.setVisibility(recvMarks ? View.VISIBLE : View.GONE);
+        if (recvMarks) {
+            int joined = 0;
+            for (Integer v : recvBundleCodes.values()) {
+                if (v != null && v == it.id) joined++;
+            }
+            editBundleBtn.setText(joined > 0
+                    ? "✓ " + joined + " BOX(ES) BUNDLED — ADD MORE…"
+                    : "BUNDLE OTHER BOXES ONTO THIS…");
+            Integer ub = recvUnitBoxes.get(it.id);
+            editMultiBoxBtn.setText(ub != null && ub > 1
+                    ? "✓ 1 UNIT = " + ub + " BOXES — CHANGE…"
+                    : "ONE UNIT = SEVERAL BOXES…");
+        }
+        editMultiBoxBtn.setVisibility(recvMarks ? View.VISIBLE : View.GONE);
         // Only a real product can be skipped; an unknown barcode already has
         // its own rescue route.
         editSkipBtn.setVisibility(it.resolved ? View.VISIBLE : View.GONE);
@@ -4831,6 +4873,10 @@ public class MainActivity extends Activity {
             // the operator is at the printer, not the pallet.
             if (inBatch() && stripSweepMode) {
                 stripToggleScan();
+            } else if (inBatch() && bundleTargetId != 0) {
+                // A trigger pull ends bundle capture - the boxes are
+                // scanned, back to pairing.
+                endBundleCapture();
             } else if (inBatch() && step == STEP_PAIR) {
                 pairReadTag();
             } else if (inBatch()
@@ -7398,13 +7444,25 @@ public class MainActivity extends Activity {
             TextView t = new TextView(this);
             String exp = b.expected != null
                     ? String.valueOf(b.expected) : "?";
+            int joined = 0;
+            for (Integer v : recvBundleCodes.values()) {
+                if (v != null && v == b.id) joined++;
+            }
+            Integer ub = recvUnitBoxes.get(b.id);
+            String marks = (joined > 0
+                    ? "\n   +" + joined + " bundled box(es) open this "
+                      + "card" : "")
+                    + (ub != null && ub > 1
+                       ? "\n   1 unit = " + ub + " boxes (one label "
+                         + "per unit)" : "");
             t.setText((problem
                         ? (b.title.isEmpty() ? b.scannedCode : b.name())
                           + " — " + (b.skipReason == null
                               ? "unresolved" : b.skipReason)
                         : b.name() + "\n   expected " + exp
                           + " · printed " + b.printed
-                          + " · tagged " + b.paired + " of " + want));
+                          + " · tagged " + b.paired + " of " + want
+                          + marks));
             t.setTextSize(13);
             t.setPadding(0, dp(4), 0, dp(4));
             int c;
@@ -8253,6 +8311,163 @@ public class MainActivity extends Activity {
         recvPreview(ref, sortScanOrders.get(ref));
     }
 
+    // ------------------------------------- receiving box marks -----------
+    // Nick, 2026-09-02: two pallet realities the receiving list can't
+    // see. (1) A SET arrives as several DIFFERENT boxes (the S30
+    // collection) - bundle their barcodes onto the set's line so any of
+    // them opens its card; ONE label pairs per set. (2) One UNIT of a
+    // product splits over several boxes (the 11740) - two cartons, one
+    // label, one unit. Both are UX truth for the walk, so they live ON
+    // THE GUN (prefs JSON keyed to the batch), like the scan order.
+    private final java.util.HashMap<String, Integer> recvBundleCodes =
+            new java.util.HashMap<>();          // scanned code -> item id
+    private final java.util.HashMap<Integer, Integer> recvUnitBoxes =
+            new java.util.HashMap<>();          // item id -> boxes/unit
+    private int bundleTargetId = 0;             // capture mode target
+
+    private void startBundleCapture(BItem it) {
+        bundleTargetId = it.id;
+        closeItemEditor();
+        beep(SOUND_OTHER);
+        status.setText("BUNDLE: scan each OTHER box that belongs to "
+                + it.name() + " - pull the TRIGGER when done.");
+        btInput.requestFocus();
+    }
+
+    private void bundleCaptureScan(String code) {
+        BItem target = itemById(bundleTargetId);
+        if (target == null) {
+            bundleTargetId = 0;
+            return;
+        }
+        String key = code.trim().toUpperCase(java.util.Locale.ROOT);
+        // The set's own barcode already opens its card - don't eat it.
+        if ((target.barcode != null
+                && key.equals(target.barcode.toUpperCase(
+                        java.util.Locale.ROOT)))
+                || (target.sku != null
+                    && key.equals(target.sku.toUpperCase(
+                            java.util.Locale.ROOT)))) {
+            beep(SOUND_ERR);
+            status.setText("That's the set's own code - scan the OTHER "
+                    + "box(es), or trigger to finish.");
+            return;
+        }
+        recvBundleCodes.put(key, bundleTargetId);
+        saveRecvMarks();
+        beep(SOUND_OK);
+        int joined = 0;
+        for (Integer v : recvBundleCodes.values()) {
+            if (v != null && v == bundleTargetId) joined++;
+        }
+        status.setText("Box joined ✓ - " + joined + " box(es) bundled "
+                + "onto " + target.name() + ". Keep scanning, trigger "
+                + "when done.");
+    }
+
+    private void endBundleCapture() {
+        BItem target = itemById(bundleTargetId);
+        bundleTargetId = 0;
+        beep(SOUND_OTHER);
+        int joined = 0;
+        if (target != null) {
+            for (Integer v : recvBundleCodes.values()) {
+                if (v != null && v == target.id) joined++;
+            }
+        }
+        status.setText(target == null ? "Bundling done."
+                : "Bundling done - " + joined + " box(es) now open "
+                  + target.name() + "'s card. ONE label pairs per set, "
+                  + "on the main box.");
+    }
+
+    private void askUnitBoxes(final BItem it) {
+        final EditText in = themedEdit();
+        in.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        in.setTextSize(16);
+        Integer cur = recvUnitBoxes.get(it.id);
+        in.setHint(cur != null ? String.valueOf(cur) : "2");
+        LinearLayout wrap = new LinearLayout(this);
+        wrap.setOrientation(LinearLayout.VERTICAL);
+        wrap.setPadding(dp(20), dp(8), dp(20), dp(4));
+        wrap.addView(in);
+        dlg()
+                .setTitle("HOW MANY BOXES MAKE ONE " + it.name() + "?")
+                .setView(wrap)
+                .setPositiveButton("SET", (d, w) -> {
+                    int n;
+                    try {
+                        n = Integer.parseInt(in.getText().toString()
+                                .trim());
+                    } catch (Exception e) {
+                        n = 0;
+                    }
+                    if (n <= 1) {
+                        recvUnitBoxes.remove(it.id);
+                        status.setText(it.name()
+                                + ": back to one box per unit.");
+                    } else {
+                        recvUnitBoxes.put(it.id, n);
+                        status.setText(it.name() + ": 1 unit = " + n
+                                + " boxes - ONE label per unit, on the "
+                                + "main box.");
+                    }
+                    saveRecvMarks();
+                    if (editEntry != null) renderItemEditor();
+                })
+                .setNegativeButton("CANCEL", null)
+                .show();
+    }
+
+    private void saveRecvMarks() {
+        try {
+            JSONObject codes = new JSONObject();
+            for (java.util.Map.Entry<String, Integer> e
+                    : recvBundleCodes.entrySet()) {
+                codes.put(e.getKey(), e.getValue());
+            }
+            JSONObject units = new JSONObject();
+            for (java.util.Map.Entry<Integer, Integer> e
+                    : recvUnitBoxes.entrySet()) {
+                units.put(String.valueOf(e.getKey()), e.getValue());
+            }
+            prefs.edit().putString("recv_marks_json", new JSONObject()
+                    .put("batch", batchId)
+                    .put("codes", codes)
+                    .put("units", units).toString()).apply();
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void loadRecvMarks() {
+        recvBundleCodes.clear();
+        recvUnitBoxes.clear();
+        bundleTargetId = 0;
+        try {
+            JSONObject saved = new JSONObject(
+                    prefs.getString("recv_marks_json", "{}"));
+            if (saved.optInt("batch", -1) != batchId) return;
+            JSONObject codes = saved.optJSONObject("codes");
+            if (codes != null) {
+                java.util.Iterator<String> keys = codes.keys();
+                while (keys.hasNext()) {
+                    String k = keys.next();
+                    recvBundleCodes.put(k, codes.getInt(k));
+                }
+            }
+            JSONObject units = saved.optJSONObject("units");
+            if (units != null) {
+                java.util.Iterator<String> keys = units.keys();
+                while (keys.hasNext()) {
+                    String k = keys.next();
+                    recvUnitBoxes.put(Integer.parseInt(k),
+                            units.getInt(k));
+                }
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
     /** After a full-shipment batch settles or exits: chain straight
      *  into the next sorted order, side-trip style. */
     private void maybeNextSortOrder() {
@@ -8589,6 +8804,7 @@ public class MainActivity extends Activity {
                     tripCarryAsked = false;
                     loadScanOrder();
                     loadPriorAsked();
+                    loadRecvMarks();
                     strayMove.clear();
                     bItems.clear();
                     bItems.addAll(loaded);
@@ -9555,6 +9771,11 @@ public class MainActivity extends Activity {
     }
 
     private void pairSelect(String code) {
+        // Bundle capture eats every scan until the trigger ends it.
+        if (receivingBatch && bundleTargetId != 0) {
+            bundleCaptureScan(code);
+            return;
+        }
         // Twins sharing a barcode (SS TH10 and its open-box listing, both
         // seeded from the same bin) both match the scan — but only one has
         // labels waiting for tags. First-match here used to hand the pair
@@ -9585,6 +9806,17 @@ public class MainActivity extends Activity {
                 }
             }
         }
+        // A bundled component box (the S30 collection): its code was
+        // scanned onto a set's line, so it opens THAT card.
+        boolean viaBundle = false;
+        if (match == null && receivingBatch) {
+            Integer bid = recvBundleCodes.get(
+                    code.trim().toUpperCase(java.util.Locale.ROOT));
+            if (bid != null) {
+                match = itemById(bid);
+                viaBundle = match != null;
+            }
+        }
         if (match == null) {
             beep(SOUND_ERR);
             status.setText("\"" + code + "\" doesn't match a product in "
@@ -9594,7 +9826,15 @@ public class MainActivity extends Activity {
         pairActive = match;
         previewItem = match;
         beep(SOUND_OK);
-        status.setText("TRIGGER on each sticker for this product.");
+        Integer ub = recvUnitBoxes.get(match.id);
+        status.setText(viaBundle
+                ? "Part of the " + match.name() + " set - ONE label "
+                  + "per set, TRIGGER on the main box's sticker."
+                : "TRIGGER on each sticker for this product."
+                  + (ub != null && ub > 1
+                     ? " (1 unit = " + ub + " boxes - one label per "
+                       + "unit, on the main box.)"
+                     : ""));
         updateBatchCard();
         refreshBatchList();
         btInput.requestFocus();
@@ -10017,6 +10257,9 @@ public class MainActivity extends Activity {
             scanning = false;
         }
         stripEpcs.clear();
+        bundleTargetId = 0;
+        recvBundleCodes.clear();
+        recvUnitBoxes.clear();
         parentBatchId = 0;
         parentBinName = null;
         pendingTrips.clear();
