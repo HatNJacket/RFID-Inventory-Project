@@ -1922,13 +1922,13 @@ a { color: var(--accent); }
   white-space: nowrap;
   overflow: hidden;
 }
-/* The sticker wraps a too-wide SKU line onto two smaller lines
-   (2026-09-08) - the preview mirrors it exactly. */
+/* The sticker wraps a too-wide SKU line onto two lines at (nearly)
+   the same big font (2026-09-08) - the preview mirrors it exactly;
+   the JS sets the tiered font size inline. */
 .label-preview__sku--wrap {
-  font-size: 9px;
   white-space: normal;
   overflow-wrap: anywhere;
-  line-height: 1.2;
+  line-height: 1.15;
 }
 .label-preview__bc {
   font-family: "Libre Barcode 128", var(--mono);

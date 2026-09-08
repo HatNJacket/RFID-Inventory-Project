@@ -8051,17 +8051,25 @@ function code128Dots(data, module) {
 }
 
 // The sticker's centre (SKU) line: one line at font 30 while it fits,
-// else TWO smaller wrapped lines (2026-09-08, Nick - the single-line
-// print overprinted itself). Every label preview renders through this
-// so preview and sticker always agree.
+// else TWO wrapped lines at the SAME big font - the barcode moves down
+// to make room (2026-09-08, Nick: the first cut's tiny wrap font was
+// unreadable). Text too wide even for two font-30 lines steps down
+// just far enough (30 -> 28 -> ... floor 20), exactly like the
+// sticker. Every label preview renders through this so preview and
+// sticker always agree.
 function renderSkuPreviewLine(elId, text) {
   const line = document.getElementById(elId);
   const t = (text || "").slice(0, 56);
   line.textContent = t || "—";
-  line.classList.toggle(
-    "label-preview__sku--wrap",
-    !!t && zplTextDots(t, 30) > LABEL_PW
-  );
+  const wraps = !!t && zplTextDots(t, 30) > LABEL_PW;
+  line.classList.toggle("label-preview__sku--wrap", wraps);
+  let f = 30;
+  if (wraps) {
+    while (f > 20 && zplTextDots(t, f) > 2 * LABEL_PW) f -= 2;
+  }
+  // Preview scale is 272px for the sticker's 431 dots (~0.63); the
+  // normal 14px line IS font 30 at that scale.
+  line.style.fontSize = wraps ? Math.round(f * 0.46) + "px" : "";
 }
 
 // Mirrors the print agent's layout rules: the top zone holds at most two

@@ -76,12 +76,15 @@ LABEL_ZPL = """^XA
 """
 
 # The centre (SKU) line: one line at font 30 while it fits the width.
-# A wider text WRAPS to two smaller lines (2026-09-08, Nick) - the old
+# A wider text WRAPS to two lines (2026-09-08, Nick) - the old
 # single-line ^FB overprinted itself instead of clipping, which is how
-# long SKU lines printed wrong. Two lines at font 16 fit the 36-dot
-# slot between header and bars, and hold anything up to the 56-char cap.
+# long SKU lines printed wrong. Field verdict on the first cut: font 16
+# was too small - the wrap keeps the BIG font and the barcode moves
+# down to make room instead. Texts too wide even for two font-30 lines
+# step the font down just far enough (30 -> 28 -> ... floor 20; the
+# 56-char cap lands at 28 for average text).
 SKU_LINE_ONE = "^CF0,30\n^FO0,52^FB{pw},1,0,C^FD{sku}^FS\n"
-SKU_LINE_WRAP = "^CF0,16\n^FO0,50^FB{pw},2,0,C^FD{sku}^FS\n"
+SKU_LINE_WRAP = "^CF0,{f}\n^FO0,52^FB{pw},2,0,C^FD{sku}^FS\n"
 
 HEADER_STORE = "^CF0,34\n^FO0,10^FB{pw},1,0,C^FDTelescopes Canada^FS\n"
 
@@ -90,10 +93,17 @@ HEADER_STORE = "^CF0,34\n^FO0,10^FB{pw},1,0,C^FDTelescopes Canada^FS\n"
 # The printer's own interpretation line shrinks with the module width, so
 # it's disabled; a separate normal-sized centered caption is printed below.
 BARCODE_LINE = (
-    "^FO{bx},88^BY{module},3,72^BCN,72,N,N,N,A^FD{barcode}^FS\n"
-    "^CF0,20\n"
-    "^FO0,164^FB{pw},1,0,C^FD{barcode}^FS\n"
+    "^FO{bx},{by}^BY{module},3,{bh}^BCN,{bh},N,N,N,A^FD{barcode}^FS\n"
+    "^CF0,{cf}\n"
+    "^FO0,{cy}^FB{pw},1,0,C^FD{barcode}^FS\n"
 )
+
+# Barcode block geometry. Normal labels keep the original placement; a
+# WRAPPED SKU line pushes the bars down 30 dots and trims their height
+# so the caption still clears the BIN line (Nick, 2026-09-08 - room for
+# the second big-font line comes from the bars, not from a tiny font).
+BARCODE_GEO_NORMAL = {"by": 88, "bh": 72, "cy": 164, "cf": 20}
+BARCODE_GEO_WRAPPED = {"by": 118, "bh": 56, "cy": 178, "cf": 18}
 
 # Prepended only for RFID-encoding printers: auto tag setup + write the EPC.
 RFID_ZPL = "^RS8\n^RFW,H^FD{epc}^FS\n"
@@ -226,12 +236,17 @@ def build_zpl(job: dict, encode_rfid: bool,
 
     # Every path caps at 56 (the plain-SKU path was uncapped and could
     # overrun even two wrapped lines); then pick one big line or the
-    # two-line wrap by measured width.
+    # two-line wrap by measured width. The wrap keeps font 30 whenever
+    # two lines hold the text, stepping down only as far as needed.
     sku_text = sku_text[:56]
-    if _zpl_text_dots(sku_text, 30) <= pw:
+    sku_wrapped = _zpl_text_dots(sku_text, 30) > pw
+    if not sku_wrapped:
         sku_line = SKU_LINE_ONE.format(pw=pw, sku=sku_text)
     else:
-        sku_line = SKU_LINE_WRAP.format(pw=pw, sku=sku_text)
+        wf = 30
+        while wf > 20 and _zpl_text_dots(sku_text, wf) > 2 * pw:
+            wf -= 2
+        sku_line = SKU_LINE_WRAP.format(pw=pw, f=wf, sku=sku_text)
 
     barcode = clean(job.get("barcode"), fallback="")
     if not barcode:
@@ -248,8 +263,9 @@ def build_zpl(job: dict, encode_rfid: bool,
             module = 1
             width = _code128_width_dots(barcode, module)
         bx = max(2, (pw - width) // 2)
+        geo = BARCODE_GEO_WRAPPED if sku_wrapped else BARCODE_GEO_NORMAL
         barcode_line = BARCODE_LINE.format(
-            bx=bx, barcode=barcode, module=module, pw=pw
+            bx=bx, barcode=barcode, module=module, pw=pw, **geo
         )
     # Some products are one item split across shelves. The label leads with
     # the bin these boxes are on and names the others, so a picker chasing
