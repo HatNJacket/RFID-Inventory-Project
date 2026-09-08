@@ -9871,13 +9871,16 @@ def receiving_unprinted(
     # paired everything - the planner's frontend just doesn't hold those
     # line-ids in its printed set, so it relays them as unprinted (Nick,
     # 2026-09-01, SO 946: spurious task + duplicate label-less batch).
-    # The relay reference is "SO {planner order id} · vendor".
+    # The relay reference carries the HUMAN reference number since
+    # 2026-09-08 (it was the planner's internal id before - batch 219
+    # read "SO 1268" for SO 945), so match either spelling.
     so_part = (payload.reference or "").split("·")[0].strip()
     so_num = so_part.upper().removeprefix("SO").strip()
     if so_num.isdigit():
         receipt = session.scalar(
             select(OrderReceipt).where(
-                OrderReceipt.stock_order_id == int(so_num)
+                (OrderReceipt.stock_order_id == int(so_num))
+                | (OrderReceipt.reference == f"SO {so_num}")
             ).order_by(OrderReceipt.id.desc())
         )
         if receipt is not None:

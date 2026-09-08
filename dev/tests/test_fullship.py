@@ -383,6 +383,16 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
           and r.json()["batch"] is None
           and "already printed and paired" in r.json()["message"],
           r.text[:250])
+    # The planner sends the HUMAN reference number since 2026-09-08
+    # (it was the internal id before) - both spellings must no-op.
+    r = cl.post("/api/receiving/unprinted",
+                json={"items": [{"sku": "CLEAN-1", "quantity": 2}],
+                      "requested_by": "planner",
+                      "reference": "SO 946 · Antares"})
+    check("the reference-number spelling no-ops too",
+          r.status_code == 201 and r.json()["batch"] is None
+          and "already printed and paired" in r.json()["message"],
+          r.text[:250])
     with Session(get_engine()) as s:
         batches_after = s.query(_B).count()
     check("no duplicate batch was booked", batches_after == batches_before,
