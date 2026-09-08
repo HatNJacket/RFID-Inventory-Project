@@ -5464,9 +5464,24 @@ function renderReceivingList() {
     settleBtn.hidden = !(
       rec && !rec.stock_updated_at && batch.status !== "abandoned"
     );
+    // Fully paired = nothing to count (Nick, 2026-09-02): the button
+    // IS the planner hand-off. The batch stays open either way until
+    // the planner's save closes it.
+    const fullyPaired =
+      items.length > 0 &&
+      items.every(
+        (i) =>
+          !i.resolved ||
+          i.skipped ||
+          (i.paired_count || 0) >=
+            (i.qty_scanned || 0) + (i.case_count || 0)
+      ) &&
+      items.some((i) => (i.paired_count || 0) > 0);
     settleBtn.textContent =
-      batch && batch.status === "done"
-        ? "➡ Continue to TC-Planner"
+      (batch && batch.status === "done") ||
+      fullyPaired ||
+      (rec && rec.settled_at)
+        ? "➡ Finish in TC-Planner (pre-filled)"
         : "✅ All boxes labelled - count unused";
   }
   const dismissed = recvOverDismissedSet();
@@ -15432,13 +15447,19 @@ document
       };
       const body = document.getElementById("fs-body");
       if (res.total_unpaired === 0) {
-        body.innerHTML = `<p class="linkbox__text">✓ Every printed label
-          found its box - nothing to hold. Finish up and the order opens
-          pre-filled in TC-Planner (Save the receive, then Update
-          stock).</p>`;
-        document.getElementById("fs-sweep").textContent =
-          "Finish & open TC-Planner";
-        document.getElementById("fs-nosweep").hidden = true;
+        // Everything paired = nothing to hold and nothing to ask
+        // (Nick, 2026-09-02): straight to the planner, pre-filled.
+        // The batch stays open and closes itself when the planner
+        // saves the received stock.
+        fsSettleData = null;
+        await openPlannerReceive(res.planner.order_id, res.planner.items);
+        setBatchResult(
+          "Order opened pre-filled in TC-Planner - Save the receive, " +
+            "then Update stock. This batch closes itself when the " +
+            "planner saves.",
+          "ok"
+        );
+        return;
       } else {
         body.innerHTML = `
           <p class="linkbox__text">These labels printed but never found
