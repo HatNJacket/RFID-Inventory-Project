@@ -3,6 +3,19 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-08.
 
+## 🗓 Unavailable dates + guarded return + pinned sweep — ✅ DEPLOYED 2026-09-08
+
+Shopify stamps every bucket's last change (InventoryQuantity
+.updatedAt) - admin-side set-asides now show their REAL date (8HGNZE
+= Apr 18; live data reaches back to Aug 2024, so nothing needed the
+"6+ months" fallback). Order: longest set-aside first. Rows whose tag
+records AND latest sweep cover the FULL on-hand get RETURN N TO
+AVAILABLE - the gated unavailable-move with new bucket "auto"
+(direction out only; server finds the real buckets; on-hand total
+unchanged, sellable rises). Bin audits keep a PINNED sweep: whatever
+sweep a check used is reused for every next bin (pin bar + "use
+newest instead") - no re-ticking per bin.
+
 ## 🔗 Linked-barcode manager + box-set alias shadow fix — ✅ DEPLOYED 2026-09-08
 
 Nick mis-linked S11810-1 straight to S11810 with no way to see or
