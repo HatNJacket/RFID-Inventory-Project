@@ -1,7 +1,7 @@
 # RFID Inventory System — Roadmap
 
 Source of truth for project status. Updated by Claude each working session.
-Last updated: 2026-09-02.
+Last updated: 2026-09-08.
 
 ## 🎯 Locate hunts the SILENT tags — ✅ DEPLOYED 2026-09-08 (C72 3.87)
 
@@ -14,19 +14,46 @@ set, and picking the entry targets exactly those ("🎯 hunting 1
 SILENT of 4 tag(s) on file"; stale sets fall back to all tags).
 Take the gun update (3.87, code 105).
 
-## 🎯 Locate window retool — 🧪 PREVIEW, awaiting Nick
+## 🎯 Locate window retool — ✅ DEPLOYED 2026-09-08 (C72 3.88)
 
-Volume becomes a 4-state icon (🔊🔉🔈🔇 = 100/50/25/0%) beside AUTO;
-EDIT TAG takes SOUND's slot (SET ASIDE - UNAVAILABLE via a new
-confirmed Shopify bucket move, NOT IN STORAGE - RETIRE local with
-honest shortfall warning, MARK PRESUMED SOLD, UNLINK); MARK FOUND
-forks into ALL GOOD / FOUND - BUT IT MOVED… (audited bin update) /
-NEEDS EDITING. Preview:
-https://claude.ai/code/artifact/a3ca4bf5-ae63-484a-804c-e0fe21d53dfa
-**DO NOT BUILD until Nick accepts the preview** (his explicit
-process, 2026-09-08). Open questions on the artifact: ship the
-Shopify unavailable-bucket move or keep v1 local; MOVED default
-scope; when EDIT TAG is offered.
+Preview accepted with amendments, built (3.88, code 106):
+
+- Volume = 4-state icon (🔊🔉🔈🔇 cycle 100/50/25/0%) on the
+  POWER row beside AUTO; long-press keeps the fine slider. EDIT TAG
+  takes SOUND's action-row slot.
+- EDIT TAG acts on the TARGETED tag (singular hunts auto-target;
+  several targets = a tag picker). Sheet: SET ASIDE - UNAVAILABLE,
+  NOT IN STORAGE - RETIRE, MARK PRESUMED SOLD (only shown when
+  unretired sales cover it - tag-info's sold_cover), UNLINK - WRONG
+  PRODUCT. Descriptions live behind "?" help buttons, orange buttons
+  only, so no sheet scrolls (Nick's amendment).
+- MARK FOUND fork: FOUND - ALL GOOD (trigger confirms) / FOUND - BUT
+  IT MOVED (the stray trio: take it back / move ALL of the product
+  to the found bin / send it somewhere new - audited bin update) /
+  FOUND - NEEDS EDITING / KEEP HUNTING.
+- SET ASIDE = the real Shopify bucket move (Nick's Q1 answer):
+  inventoryMoveQuantities available -> Damaged / Quality control /
+  Safety stock / Other (=reserved), on-hand TOTAL untouched, staff
+  comment APPENDED to custom.staff_comments (default "Product moved
+  to unavailable from C72."). Endpoint
+  POST /api/products/{sku}/unavailable-move, gated by write feature
+  `unavailable_move` (promoted in prod app settings 2026-09-08).
+  Mutation shape proven live with a net-zero cycle on ZWO ASI432MM.
+- NOT IN STORAGE = retire kind "not-in-storage": tombstone + undo,
+  no sold-ledger consumption, honest "Shopify still counts it" text.
+
+## 🐛 Two field bugs — ✅ FIXED same deploy (2026-09-08)
+
+- **F1-2 "(+1)" raises for numbers Shopify already had**: stale bin-
+  map snapshot kept re-offering made raises, and clicking errored.
+  Equal-value raise is now a friendly no-op that self-heals the
+  snapshot; every on-hand write path refreshes the snapshot
+  immediately (_refresh_binmap_onhand).
+- **ZWO OAG check contradicting a just-done audit**: an unconsumed
+  sold-ledger row for a NEVER-tagged unit kept "1 fewer tags than
+  expected" alive. A bin audit that hears EVERY tag with units ==
+  expected now consumes those stale sales tag-free ("ledger-cleared"
+  History event) and resolves the SKU's open Inventory Check.
 
 ## 🏷 Vendor mis-label flag + SO-reference fix — ✅ DEPLOYED 2026-09-08
 
@@ -2414,6 +2441,13 @@ starting early" actively harmful.
 
 ## 📌 Standing decisions
 
+- **Unavailable/damaged/repair-section stock: batch collect takes the
+  SHELF quantity as truth for now** (Nick, 2026-09-08, the ASI432MM
+  missing-piece case). A unit set aside off the shelf is NOT chased
+  during collect; the numbers reconcile when the product re-enters
+  available stock (bring-back = unavailable-move direction "out").
+  The Inventory Check's unavailable-agreement rule and the audit's
+  "matches its unavailable stock" line are the guard rails meanwhile.
 - **NEVER auto-write inventory counts** — to Shopify or any inventory
   system, from any device. Batch counts are observations; a future
   write-back is a separate, explicit, operator-confirmed step and stays
