@@ -49,6 +49,7 @@ from app.models import (
     Batch,
     BatchItem,
     BinMapEntry,
+    BoxSetPart,
     BundleContent,
     C72Command,
     CompanionTag,
@@ -495,6 +496,30 @@ def product_by_barcode(barcode: str):
                     _mislabel_options(session, sku, flag_row)
                     if flag_row is not None else []
                 )
+                # Box-set standing rides every lookup: a part that
+                # resolved through the live catalog (an active part
+                # listing) still says which set it belongs to, and a
+                # FULL product says it counts by its box SKUs.
+                if "boxset" not in product:
+                    part_row = session.scalar(
+                        select(BoxSetPart).where(
+                            func.upper(BoxSetPart.part_sku) == sku.upper()
+                        )
+                    )
+                    if part_row is not None:
+                        n_parts = len(_boxset_parts_of(
+                            session, part_row.set_sku))
+                        product["boxset"] = {
+                            "set_sku": part_row.set_sku,
+                            "set_title": part_row.set_title,
+                            "box_no": part_row.box_no,
+                            "boxes": n_parts,
+                        }
+                set_parts = _boxset_parts_of(session, sku)
+                if set_parts:
+                    product["boxset_full"] = {
+                        "parts": [p.as_dict() for p in set_parts],
+                    }
             note = sn.note if sn is not None else None
             if nt_row is not None and nt_row.kind == "unlabelable-box":
                 product["unlabelable_box"] = True
@@ -668,6 +693,16 @@ def _product_lookup(barcode: str):
                     },
                 )
 
+    # A multi-box SET part (Nick, 2026-09-08, S11230-1): the box's own
+    # barcode/SKU usually belongs to a DRAFT listing the catalog walk
+    # never sees, so the set registry is its identity. Resolves to a
+    # synthetic part product riding the FULL product's Shopify ids and
+    # bin - labels, batches and pairing all work on it normally.
+    if db_ok:
+        part = _boxset_part_product(barcode)
+        if part is not None:
+            return part
+
     # Broken-character rescue (Nick, 2026-08-25 - ZWO ships SKUs with the
     # single unicode char 'Ⅱ' for II, which VARCHAR stores as '?'):
     # 1) NFKC folds compatibility characters to plain ASCII (Ⅱ -> II), so
@@ -706,6 +741,56 @@ def _product_lookup(barcode: str):
             500, "Neither the database nor Shopify credentials are configured."
         )
     raise HTTPException(404, "No product found for that barcode or SKU.")
+
+
+def _boxset_part_product(code: str) -> dict | None:
+    """The synthetic product for a multi-box set part, or None. Carries
+    the full product's Shopify ids and bin so every downstream flow
+    (labels, batch items, pairing) works without the draft listing."""
+    key = (code or "").strip().upper()
+    if not key:
+        return None
+    from app.database import get_engine
+
+    with Session(get_engine()) as session:
+        row = session.scalar(
+            select(BoxSetPart).where(or_(
+                func.upper(BoxSetPart.part_sku) == key,
+                func.upper(BoxSetPart.part_barcode) == key,
+            ))
+        )
+        if row is None:
+            return None
+        total = session.scalar(
+            select(func.count()).select_from(BoxSetPart).where(
+                BoxSetPart.set_sku == row.set_sku
+            )
+        )
+        entry = session.scalar(
+            select(BinMapEntry).where(
+                func.upper(BinMapEntry.sku) == row.set_sku.upper()
+            )
+        )
+        return {
+            "sku": row.part_sku,
+            "barcode": row.part_barcode or row.part_sku,
+            "product_title": (
+                f"{row.set_title or row.set_sku} - "
+                f"Box {row.box_no} of {total}"
+            ),
+            "variant_title": None,
+            "shopify_variant_id": row.set_variant_id,
+            "shopify_product_id": row.set_product_id,
+            "bin_location": entry.bin if entry else None,
+            "other_bins": entry.other_bins if entry else None,
+            "image_url": entry.image_url if entry else None,
+            "boxset": {
+                "set_sku": row.set_sku,
+                "set_title": row.set_title,
+                "box_no": row.box_no,
+                "boxes": total,
+            },
+        }
 
 
 def _default_serial_label(item_name: str | None) -> str:
@@ -1513,6 +1598,28 @@ def _expand_multibox(
     (label order = sticking order). Jobs that are already companions,
     or case labels, pass through."""
     marks = _multibox_map(session, [j.sku for j in jobs])
+    # Box-set parts get their "Box N of M" note on the bin line too
+    # (Nick, 2026-09-08) - same pairing-time strip as multibox labels.
+    part_note: dict[str, tuple[int, int]] = {}
+    all_parts = session.scalars(select(BoxSetPart)).all()
+    if all_parts:
+        totals: dict[str, int] = {}
+        for r in all_parts:
+            totals[r.set_sku] = totals.get(r.set_sku, 0) + 1
+        for r in all_parts:
+            part_note[r.part_sku.strip().upper()] = (
+                r.box_no, totals[r.set_sku]
+            )
+        for job in jobs:
+            pi = part_note.get((job.sku or "").strip().upper())
+            already = (", Box " in (job.bin_location or "")
+                       or (job.bin_location or "").startswith("Box "))
+            if pi and not already:
+                base = (job.bin_location or "").strip()
+                job.bin_location = (
+                    f"{base}, Box {pi[0]} of {pi[1]}"[:100]
+                    if base else f"Box {pi[0]} of {pi[1]}"
+                )
     if not marks:
         return jobs
     out: list[PrintJob] = []
@@ -1647,6 +1754,333 @@ def set_multibox(
             "labels."
             if payload.boxes_per_unit > 1
             else f"{key}: back to one box per unit."
+        ),
+    }
+
+
+# --- Multi-box SETS (Nick, 2026-09-08, the S11230) -------------------------
+# Boxes with their OWN barcodes/SKUs (usually drafts) sold only as one
+# full product. Distinct from bundles (recipes) and from the same-SKU
+# multibox mark above. Every box gets its own counted tag under its
+# part SKU; the set's unit count is min(part counts) vs the FULL
+# product's on-hand.
+
+def _boxset_part_skus(session: Session) -> dict[str, str]:
+    """Upper part SKU -> set SKU, one query - the counting exemptions."""
+    return {
+        (r.part_sku or "").strip().upper(): r.set_sku
+        for r in session.scalars(select(BoxSetPart))
+    }
+
+
+def _boxset_parts_of(session: Session, set_sku: str) -> list[BoxSetPart]:
+    return session.scalars(
+        select(BoxSetPart).where(
+            func.upper(BoxSetPart.set_sku) == set_sku.strip().upper()
+        ).order_by(BoxSetPart.box_no)
+    ).all()
+
+
+def _boxset_unit_count(session: Session, set_sku: str) -> int | None:
+    """min over the set's parts of their tag unit counts, or None when
+    the SKU is not a set. A part with zero tags floors the whole set."""
+    parts = _boxset_parts_of(session, set_sku)
+    if not parts:
+        return None
+    counts = []
+    for p in parts:
+        tags = session.scalars(
+            select(RfidAssignment).where(
+                func.upper(RfidAssignment.sku) == p.part_sku.upper()
+            )
+        ).all()
+        counts.append(sum(t.case_units or 1 for t in tags))
+    return min(counts) if counts else 0
+
+
+class BoxSetPartIn(BaseModel):
+    # The SKU printed on the box (S11230-1) and the barcode that scans.
+    sku: str = Field(min_length=1, max_length=100)
+    barcode: str | None = Field(default=None, max_length=64)
+
+
+class BoxSetIn(BaseModel):
+    # Barcode or SKU of the FULL (sellable, active) product.
+    set_code: str = Field(min_length=1, max_length=200)
+    parts: list[BoxSetPartIn] = Field(min_length=2, max_length=8)
+    changed_by: str | None = Field(default=None, max_length=100)
+    # When given, matching rows of this open batch re-resolve as parts.
+    batch_id: int | None = None
+
+
+@app.post(
+    "/api/box-sets", status_code=201, dependencies=[Depends(require_user)]
+)
+def create_box_set(
+    payload: BoxSetIn, session: Session = Depends(get_session)
+):
+    """Define (or redefine) a multi-box set. The full product must
+    resolve in the live catalog; parts may be anything the boxes say -
+    draft-listing barcodes included, that's the point. Re-resolves
+    matching rows of the given open batch so an unresolved box becomes
+    its part on the spot. History-logged; the response carries how many
+    tags exist under the FULL SKU so the UI can offer the re-label
+    pass."""
+    full = _product_lookup(payload.set_code.strip())
+    set_sku = (full.get("sku") or "").strip()
+    if not set_sku:
+        raise HTTPException(
+            422, "The full product has no SKU - fix it in Shopify first."
+        )
+    if full.get("boxset"):
+        raise HTTPException(
+            422,
+            f"{set_sku} is itself a box of "
+            f"{full['boxset']['set_sku']} - a set can't nest sets.",
+        )
+    seen: set[str] = set()
+    cleaned: list[tuple[str, str | None]] = []
+    for p in payload.parts:
+        sku_p = p.sku.strip()
+        bc_p = (p.barcode or "").strip() or None
+        if sku_p.upper() == set_sku.upper():
+            raise HTTPException(
+                422,
+                f"{sku_p} is the full product itself - parts are the "
+                "individual boxes.",
+            )
+        if sku_p.upper() in seen:
+            raise HTTPException(422, f"{sku_p} is listed twice.")
+        seen.add(sku_p.upper())
+        cleaned.append((sku_p, bc_p))
+    # A part already claimed by a DIFFERENT set is refused; redefining
+    # THIS set replaces its old rows.
+    for row in session.scalars(select(BoxSetPart)):
+        if row.set_sku.upper() == set_sku.upper():
+            continue
+        if row.part_sku.upper() in seen:
+            raise HTTPException(
+                409,
+                f"{row.part_sku} already belongs to the "
+                f"{row.set_sku} set.",
+            )
+    for row in _boxset_parts_of(session, set_sku):
+        session.delete(row)
+    session.flush()
+    rows = []
+    for i, (sku_p, bc_p) in enumerate(cleaned, start=1):
+        rows.append(BoxSetPart(
+            set_sku=set_sku,
+            set_title=(full.get("product_title") or "")[:255] or None,
+            set_variant_id=full.get("shopify_variant_id"),
+            set_product_id=full.get("shopify_product_id"),
+            part_sku=sku_p,
+            part_barcode=bc_p,
+            box_no=i,
+            created_by=(payload.changed_by or "").strip()[:100] or None,
+        ))
+        session.add(rows[-1])
+    session.add(BarcodeChange(
+        sku=set_sku,
+        product_title=full.get("product_title"),
+        shopify_variant_id=full.get("shopify_variant_id"),
+        changed_field="box-set",
+        old_barcode="separate boxes"[:64],
+        new_barcode=(
+            f"{len(rows)} box identities: "
+            + ", ".join(r.part_sku for r in rows)
+        )[:64],
+        changed_by=(payload.changed_by or "").strip()[:100] or None,
+    ))
+
+    # Re-resolve this batch's matching rows: a row scanned as the part's
+    # barcode/SKU (resolved or not) becomes the part, riding the full
+    # product's identity for labels and pairing.
+    items_updated = 0
+    if payload.batch_id:
+        match: dict[str, BoxSetPart] = {}
+        for r in rows:
+            match[r.part_sku.upper()] = r
+            if r.part_barcode:
+                match[r.part_barcode.upper()] = r
+        total = len(rows)
+        for it in session.scalars(
+            select(BatchItem).where(BatchItem.batch_id == payload.batch_id)
+        ):
+            key_candidates = [
+                (it.sku or "").strip().upper(),
+                (it.barcode or "").strip().upper(),
+                (it.scanned_code or "").strip().upper(),
+            ]
+            part = next(
+                (match[k] for k in key_candidates if k and k in match),
+                None,
+            )
+            if part is None:
+                continue
+            it.resolved = True
+            it.sku = part.part_sku
+            it.barcode = part.part_barcode or part.part_sku
+            it.product_title = (
+                f"{part.set_title or set_sku} - "
+                f"Box {part.box_no} of {total}"
+            )[:255]
+            it.shopify_variant_id = part.set_variant_id
+            it.shopify_product_id = part.set_product_id
+            if full.get("bin_location"):
+                it.bin_location = full["bin_location"]
+            if full.get("image_url"):
+                it.image_url = full["image_url"]
+            items_updated += 1
+
+    full_tags = len(session.scalars(
+        select(RfidAssignment).where(
+            func.upper(RfidAssignment.sku) == set_sku.upper()
+        )
+    ).all())
+    session.commit()
+    return {
+        "set_sku": set_sku,
+        "set_title": full.get("product_title"),
+        "parts": [r.as_dict() for r in rows],
+        "batch_items_updated": items_updated,
+        "full_tags": full_tags,
+        "message": (
+            f"{set_sku} is now a {len(rows)}-box set "
+            f"({', '.join(r.part_sku for r in rows)}). Each box counts "
+            "under its own SKU; the unit count is the smallest of them."
+            + (
+                f" {full_tags} tag(s) still sit under {set_sku} itself - "
+                "the re-label pass can convert them."
+                if full_tags else ""
+            )
+        ),
+    }
+
+
+@app.get("/api/box-sets", dependencies=[Depends(require_user)])
+def list_box_sets(session: Session = Depends(get_session)):
+    sets: dict[str, dict] = {}
+    for r in session.scalars(
+        select(BoxSetPart).order_by(BoxSetPart.set_sku, BoxSetPart.box_no)
+    ):
+        s = sets.setdefault(r.set_sku, {
+            "set_sku": r.set_sku, "set_title": r.set_title, "parts": [],
+        })
+        s["parts"].append(r.as_dict())
+    return {"count": len(sets), "sets": list(sets.values())}
+
+
+@app.delete(
+    "/api/box-sets/{set_sku}", dependencies=[Depends(require_user)]
+)
+def delete_box_set(
+    set_sku: str, by: str | None = None,
+    session: Session = Depends(get_session),
+):
+    rows = _boxset_parts_of(session, set_sku)
+    if not rows:
+        raise HTTPException(404, f"{set_sku} is not a box set.")
+    for r in rows:
+        session.delete(r)
+    session.add(BarcodeChange(
+        sku=rows[0].set_sku,
+        product_title=rows[0].set_title,
+        changed_field="box-set",
+        old_barcode=f"{len(rows)} box identities"[:64],
+        new_barcode="separate boxes"[:64],
+        changed_by=(by or "").strip()[:100] or None,
+    ))
+    session.commit()
+    return {"set_sku": rows[0].set_sku, "removed_parts": len(rows)}
+
+
+class BoxSetRelabelIn(BaseModel):
+    units: int = Field(ge=1, le=100)
+    # Also unlink the tags currently sitting under the FULL SKU (the
+    # double-counted legacy) - peel those stickers off.
+    unlink_old: bool = False
+    changed_by: str | None = Field(default=None, max_length=100)
+    printer: str | None = Field(default=None, max_length=100)
+    confirmed: bool = False
+
+
+@app.post(
+    "/api/box-sets/{set_sku}/relabel",
+    dependencies=[Depends(require_user)],
+)
+def boxset_relabel(
+    set_sku: str, payload: BoxSetRelabelIn,
+    session: Session = Depends(get_session),
+):
+    """The re-label pass for legacy full-SKU stock: queue one label per
+    part per unit (part SKU + barcode, 'Box N of M' on the bin line)
+    and optionally unlink the old full-SKU tags (History receipts).
+    Peel old, apply new, pair as usual."""
+    if not payload.confirmed:
+        raise HTTPException(422, "Confirm the re-label first.")
+    parts = _boxset_parts_of(session, set_sku)
+    if not parts:
+        raise HTTPException(404, f"{set_sku} is not a box set.")
+    total = len(parts)
+    entry = session.scalar(
+        select(BinMapEntry).where(
+            func.upper(BinMapEntry.sku) == parts[0].set_sku.upper()
+        )
+    )
+    bin_loc = (entry.bin if entry else None) or ""
+    queued = 0
+    for p in parts:
+        if not (p.set_variant_id or "").strip():
+            raise HTTPException(
+                422,
+                f"{p.set_sku} carries no Shopify variant id - re-create "
+                "the set so labels can print.",
+            )
+        create_print_jobs(PrintJobIn(
+            quantity=payload.units,
+            shopify_variant_id=p.set_variant_id,
+            shopify_product_id=p.set_product_id,
+            product_title=p.set_title or p.set_sku,
+            sku=p.part_sku,
+            barcode=p.part_barcode or p.part_sku,
+            bin_location=(
+                f"{bin_loc}, Box {p.box_no} of {total}"[:100]
+                if bin_loc else f"Box {p.box_no} of {total}"
+            ),
+            requested_by=payload.changed_by,
+            printer=payload.printer,
+        ), session)
+        queued += payload.units
+    unlinked = 0
+    if payload.unlink_old:
+        for t in session.scalars(
+            select(RfidAssignment).where(
+                func.upper(RfidAssignment.sku)
+                == parts[0].set_sku.upper()
+            )
+        ):
+            session.add(BarcodeChange(
+                sku=t.sku,
+                product_title=t.product_title,
+                shopify_variant_id=t.shopify_variant_id,
+                changed_field="tag-unlinked",
+                old_barcode=(t.rfid_id or "")[:64] or None,
+                new_barcode="box-set re-label"[:64],
+                changed_by=(payload.changed_by or "").strip()[:100]
+                or None,
+            ))
+            session.delete(t)
+            unlinked += 1
+    session.commit()
+    return {
+        "queued_labels": queued,
+        "unlinked_old_tags": unlinked,
+        "message": (
+            f"{queued} box label(s) queued ({payload.units} unit(s) x "
+            f"{total} boxes)."
+            + (f" {unlinked} old {parts[0].set_sku} tag(s) unlinked - "
+               "peel those stickers off." if unlinked else "")
         ),
     }
 
@@ -4431,6 +4865,69 @@ def inventory_summary(
         }
         for r in rows
     ]
+    # Multi-box sets (Nick, 2026-09-08): part rows say which set they
+    # belong to, and the FULL product gets a row with each box identity
+    # in its own column - unit count = min over the parts.
+    boxset_rows = session.scalars(
+        select(BoxSetPart).order_by(BoxSetPart.set_sku, BoxSetPart.box_no)
+    ).all()
+    if boxset_rows:
+        unit_by_sku: dict[str, int] = {}
+        for p in products:
+            k = (p["sku"] or "").strip().upper()
+            unit_by_sku[k] = unit_by_sku.get(k, 0) + (p["unit_count"] or 0)
+        sets_map: dict[str, list[BoxSetPart]] = {}
+        for r in boxset_rows:
+            sets_map.setdefault(r.set_sku.strip().upper(), []).append(r)
+        part_to_set = {
+            r.part_sku.strip().upper(): r for r in boxset_rows
+        }
+        for p in products:
+            po = part_to_set.get((p["sku"] or "").strip().upper())
+            if po is not None:
+                p["boxset_part_of"] = po.set_sku
+                p["box_no"] = po.box_no
+        for k, parts_k in sets_map.items():
+            box_parts = [{
+                "sku": r.part_sku,
+                "box_no": r.box_no,
+                "units": unit_by_sku.get(r.part_sku.strip().upper(), 0),
+            } for r in parts_k]
+            unit_min = min(bp["units"] for bp in box_parts)
+            target = next(
+                (p for p in products
+                 if (p["sku"] or "").strip().upper() == k), None)
+            if target is None:
+                part_prows = [
+                    p for p in products
+                    if (p.get("boxset_part_of") or "").strip().upper() == k
+                ]
+                target = {
+                    "sku": parts_k[0].set_sku,
+                    "barcode": None,
+                    "product_title": (
+                        parts_k[0].set_title or parts_k[0].set_sku
+                    ),
+                    "variant_title": None,
+                    "bin_location": (
+                        part_prows[0]["bin_location"] if part_prows
+                        else None
+                    ),
+                    "tag_count": sum(bp["units"] for bp in box_parts),
+                    "unit_count": unit_min,
+                    "unit_breakdown": None,
+                    "last_assigned_at": max(
+                        (p["last_assigned_at"] or "" for p in part_prows),
+                        default="",
+                    ) or None,
+                    "shopify_qty": None,
+                    "vendor": None,
+                    "rfid_incompatible": False,
+                }
+                products.append(target)
+            target["box_parts"] = box_parts
+            target["unit_count"] = unit_min
+
     products.sort(key=lambda p: p["last_assigned_at"] or "", reverse=True)
 
     # Vendor (the brand) for filtering and sorting. The bin map holds it
@@ -5292,6 +5789,22 @@ def bin_check(
     extra = {
         s.strip().upper() for s in payload.skus if s and s.strip()
     } - wanted
+    # Multi-box sets (Nick, 2026-09-08): a set product in this bin
+    # audits through its PART SKUs - each part's boxes are the physical
+    # stock and each should hold one box per sellable unit, so parts
+    # ride the sweep with the SET's shelf number as their expectation.
+    bs_parts_by_set: dict[str, list[BoxSetPart]] = {}
+    bs_part_to_set: dict[str, BoxSetPart] = {}
+    for bsp in session.scalars(select(BoxSetPart)):
+        bs_parts_by_set.setdefault(
+            bsp.set_sku.strip().upper(), []
+        ).append(bsp)
+        bs_part_to_set[bsp.part_sku.strip().upper()] = bsp
+    for k in [k for k in (wanted | extra) if k in bs_parts_by_set]:
+        for bsp in bs_parts_by_set[k]:
+            pk = bsp.part_sku.strip().upper()
+            if pk not in wanted:
+                extra.add(pk)
     tags_by_sku: dict[str, list[RfidAssignment]] = {}
     if wanted or extra:
         for t in session.scalars(
@@ -5425,17 +5938,36 @@ def bin_check(
             # a count. No expected quantity means no unit math, no
             # silent mark-sold offers, no ledger clearing.
             counts["sold_unretired"] = 0
+        # A multi-box SET audits through its part rows: the set's own
+        # row keeps no expectation (its tags live under the parts). A
+        # PART with its own bin-map row audits against the SET's shelf
+        # number, not its draft listing's junk quantity.
+        is_set = key in bs_parts_by_set
+        part_owner = bs_part_to_set.get(key)
+        expected = None if (key in unlab or is_set) else g["qty"]
+        if part_owner is not None:
+            owner_key = part_owner.set_sku.strip().upper()
+            if owner_key in merged:
+                expected = merged[owner_key]["qty"]
+        if is_set:
+            counts["sold_unretired"] = 0
         report.append({
             "sku": e.sku,
             "product_title": e.product_title,
             "variant_title": e.variant_title,
             "image_url": e.image_url,
-            "expected_qty": None if key in unlab else g["qty"],
+            "expected_qty": expected,
             "on_hand_display": g["qty"] if key in unlab else None,
             "unavailable": g["unavail"],
             "bins": g["bins"],
             "rfid_incompatible": key in noscan,
             "unlabelable": key in unlab,
+            "boxset": (
+                [p.part_sku for p in bs_parts_by_set[key]]
+                if is_set else None
+            ),
+            "boxset_of": part_owner.set_sku if part_owner else None,
+            "box_no": part_owner.box_no if part_owner else None,
             "in_bin_map": True,
             "boxes_per_unit": mb.boxes_per_unit if mb else None,
             **counts,
@@ -5446,16 +5978,30 @@ def bin_check(
     for key in sorted(extra):
         tags = tags_by_sku.get(key, [])
         newest = max(tags, key=lambda t: t.id) if tags else None
+        part_owner = bs_part_to_set.get(key)
+        part_expected = None
+        if part_owner is not None:
+            owner_key = part_owner.set_sku.strip().upper()
+            if owner_key in merged:
+                part_expected = merged[owner_key]["qty"]
         report.append({
             "sku": newest.sku if newest else key,
-            "product_title": newest.product_title if newest else None,
+            "product_title": (
+                newest.product_title if newest
+                else (f"{part_owner.set_title or part_owner.set_sku} - "
+                      f"Box {part_owner.box_no}"
+                      if part_owner else None)
+            ),
             "variant_title": newest.variant_title if newest else None,
             "image_url": None,
-            "expected_qty": None,
+            "expected_qty": part_expected,
             "unavailable": 0,
             "bins": [],
             "rfid_incompatible": key in noscan,
             "unlabelable": key in unlab,
+            "boxset": None,
+            "boxset_of": part_owner.set_sku if part_owner else None,
+            "box_no": part_owner.box_no if part_owner else None,
             "in_bin_map": False,
             "boxes_per_unit": (
                 mb_map[key].boxes_per_unit if key in mb_map else None
@@ -6211,6 +6757,15 @@ def audit_bins(session: Session = Depends(get_session)):
     no_tag = _non_taggable_skus(session)
     unlab = _unlabelable_skus(session)
     saved_kinds = saved_kind_map(session)
+    # Multi-box sets: part tags roll up into the SET's row as
+    # min(part counts); part SKUs never score on their own.
+    ab_parts_by_set: dict[str, list[str]] = {}
+    ab_part_skus: set[str] = set()
+    for bsp in session.scalars(select(BoxSetPart)):
+        ab_parts_by_set.setdefault(
+            bsp.set_sku.strip().upper(), []
+        ).append(bsp.part_sku.strip().upper())
+        ab_part_skus.add(bsp.part_sku.strip().upper())
     skipped_bundles = 0
     skipped_non_taggable = 0
     seen_skus: set[str] = set()
@@ -6247,6 +6802,11 @@ def audit_bins(session: Session = Depends(get_session)):
                 skipped_non_taggable += 1
                 seen_skus.add(key)
             continue
+        # A multi-box set part never scores alone: its boxes roll up
+        # into the SET's row below as min(part counts).
+        if key in ab_part_skus:
+            seen_skus.add(key)
+            continue
         kind, excluded = resolve_product_kind_cached(
             saved_kinds, e.product_title, e.sku, e.bin
         )
@@ -6255,8 +6815,15 @@ def audit_bins(session: Session = Depends(get_session)):
             seen_skus.add(key)
             continue
         on_hand = e.qty or 0
-        sold_n = sold.get(key, 0) if units.get(key, 0) > 0 else 0
-        have = units.get(key, 0)
+        if key in ab_parts_by_set:
+            # The SET's unit count is min over its parts' tag units.
+            part_counts = [
+                units.get(pk, 0) for pk in ab_parts_by_set[key]
+            ]
+            have = min(part_counts) if part_counts else 0
+        else:
+            have = units.get(key, 0)
+        sold_n = sold.get(key, 0) if have > 0 else 0
         seen_skus.add(key)
         _bucket((e.bin or "").strip() or "(no bin)")["products"].append({
             "sku": e.sku,
@@ -6266,6 +6833,10 @@ def audit_bins(session: Session = Depends(get_session)):
             "rfid_units": have,
             "diff": have - (on_hand + sold_n),
             "rfid_incompatible": key in noscan,
+            "boxset": (
+                {pk: units.get(pk, 0) for pk in ab_parts_by_set[key]}
+                if key in ab_parts_by_set else None
+            ),
         })
 
     # Tags for products the live catalog doesn't bin at all — they exist
@@ -6275,8 +6846,10 @@ def audit_bins(session: Session = Depends(get_session)):
     for t in tags:
         key = (t.sku or "").strip().upper()
         # Non-taggable products' hand-paired bag markers are Locate
-        # helpers, not inventory — never orphan-flag them.
-        if not key or key in seen_skus or key in no_tag:
+        # helpers, not inventory — never orphan-flag them. Box-set part
+        # tags are counted through their SET's row.
+        if (not key or key in seen_skus or key in no_tag
+                or key in ab_part_skus):
             continue
         o = orphans.setdefault(
             ((t.bin_location or "").strip() or "(no bin)", key),
@@ -15371,6 +15944,7 @@ def product_history(term: str, session: Session = Depends(get_session)):
         "rfid-scan": "rfid-flag-changed",
         "non-taggable": "non-taggable",
         "unlabelable-box": "unlabelable-box",
+        "box-set": "box-set",
         "mislabel-flag": "mislabel-flag",
         "unavailable-move": "unavailable-move",
         "batch-reprint": "batch-reprinted",
@@ -15406,7 +15980,7 @@ def product_history(term: str, session: Session = Depends(get_session)):
             not in ("rfid-scan", "locate-list", "tag-sold", "scan-note",
                     "tag-retired", "tag-unretired", "tag-released",
                     "tag-reapplied", "ledger-cleared", "non-taggable",
-                    "unlabelable-box", "mislabel-flag"),
+                    "unlabelable-box", "mislabel-flag", "box-set"),
         })
 
     # What Shopify currently says the product's bin IS, and when we last
@@ -15821,6 +16395,7 @@ def history(
         "rfid-scan": "rfid-flag-changed",
         "non-taggable": "non-taggable",
         "unlabelable-box": "unlabelable-box",
+        "box-set": "box-set",
         "mislabel-flag": "mislabel-flag",
         "unavailable-move": "unavailable-move",
         "batch-reprint": "batch-reprinted",

@@ -89,19 +89,38 @@ def _clear_running(session: Session, ms: int, source: str) -> None:
 def tracked_skus(session: Session) -> set[str]:
     """Upper-cased SKUs the RFID system actually holds tags for — the
     ledger only records sales of those; the rest of the store isn't our
-    problem yet."""
-    return {
+    problem yet. A multi-box SET counts as tracked the moment any of
+    its part SKUs holds tags (the set's own sales matter even though
+    the tags live under the parts)."""
+    from app.models import BoxSetPart
+    out = {
         (sku or "").strip().upper()
         for sku in session.scalars(
             select(RfidAssignment.sku).distinct()
         ).all()
         if sku and sku.strip()
     }
+    for r in session.scalars(select(BoxSetPart)):
+        if (r.part_sku or "").strip().upper() in out:
+            out.add((r.set_sku or "").strip().upper())
+    return out
 
 
 def tag_units(session: Session, sku: str) -> int:
     """Units the SKU's tags stand for (a sealed-case tag counts its
-    case_units, everything else counts 1) — same arithmetic as audits."""
+    case_units, everything else counts 1) — same arithmetic as audits.
+    A multi-box SET counts min over its part SKUs (Nick, 2026-09-08:
+    every box identity must be present for a sellable unit)."""
+    from app.models import BoxSetPart
+    parts = session.scalars(
+        select(BoxSetPart).where(
+            func.upper(BoxSetPart.set_sku) == sku.strip().upper()
+        )
+    ).all()
+    if parts:
+        return min(
+            tag_units(session, p.part_sku) for p in parts
+        )
     rows = session.scalars(
         select(RfidAssignment).where(
             func.upper(RfidAssignment.sku) == sku.strip().upper()
@@ -476,10 +495,17 @@ def refresh_mismatch_tasks(session: Session) -> dict:
     # RFID system by decision — their arithmetic is meaningless. Any open
     # task for one is auto-closed by the tags != expected branch never
     # firing... which it would keep doing, so skip AND close explicitly.
-    from app.models import NonTaggable
+    from app.models import BoxSetPart, NonTaggable
     no_tag = {
         (r.sku or "").strip().upper()
         for r in session.scalars(select(NonTaggable))
+    }
+    # Multi-box set PARTS never get their own checks: their draft
+    # listings carry no real stock, and the set's min-count arithmetic
+    # runs under the FULL product's SKU (Nick, 2026-09-08).
+    part_of = {
+        (r.part_sku or "").strip().upper(): r.set_sku
+        for r in session.scalars(select(BoxSetPart))
     }
 
     def _own(task) -> bool:
@@ -489,6 +515,18 @@ def refresh_mismatch_tasks(session: Session) -> dict:
 
     opened = closed = 0
     for sku in skus:
+        if sku in part_of:
+            task = open_tasks.get(sku)
+            if task is not None and _own(task):
+                task.status = "resolved"
+                task.resolved_by = "orders-sync"
+                task.resolved_at = datetime.utcnow()
+                task.resolution_note = (
+                    f"Box of the {part_of[sku]} multi-box set - the "
+                    "arithmetic runs under the full product now."
+                )
+                closed += 1
+            continue
         if sku in no_tag:
             task = open_tasks.get(sku)
             if task is not None and _own(task):

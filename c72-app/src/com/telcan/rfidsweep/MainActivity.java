@@ -4350,6 +4350,7 @@ public class MainActivity extends Activity {
     private Button editRecommendBtn;
     private Button editLinkBtn;
     private Button editSkipBtn;
+    private Button editBoxSetBtn;
     private Button editBundleBtn;
     private Button editMultiBoxBtn;
     private Button editNoScanBtn;
@@ -4547,6 +4548,14 @@ public class MainActivity extends Activity {
         editLinkBtn = smallBtn("LINK TO A PRODUCT…");
         editLinkBtn.setOnClickListener(v -> showLinkDialog());
         mid.addView(editLinkBtn);
+
+        // Multi-box SET (3.92, Nick - the S11230): lump this box with
+        // others into ONE sellable product. Offered on resolved AND
+        // unresolved rows so a draft-listing box never needs linking
+        // first.
+        editBoxSetBtn = smallBtn("MULTI-BOX SET");
+        editBoxSetBtn.setOnClickListener(v -> boxSetPickBoxes());
+        mid.addView(editBoxSetBtn);
 
         // "I can't do this one." One-off skip OR one of the durable
         // Can't Scan flags (3.90) - the chooser sorts it out.
@@ -12102,6 +12111,222 @@ public class MainActivity extends Activity {
         } else {
             send.run();
         }
+    }
+
+    // ------------------------------------------ multi-box set builder ---
+    // (3.92, Nick - the S11230): boxes with their OWN barcodes/SKUs
+    // (often draft listings) sold only as one full product. Pick the
+    // boxes from this batch, confirm each SKU as the carton says it,
+    // name the full product - matching rows re-resolve as parts.
+    private final java.util.LinkedHashSet<Integer> boxSetSel =
+            new java.util.LinkedHashSet<>();
+
+    private void boxSetPickBoxes() {
+        if (editEntry == null) return;
+        boxSetSel.clear();
+        boxSetSel.add(editEntry.item.id);
+        closeItemEditor();
+        showBoxSetPicker();
+    }
+
+    private void showBoxSetPicker() {
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        list.setPadding(dp(14), dp(8), dp(14), dp(8));
+        scroll.addView(list);
+        TextView intro = new TextView(this);
+        intro.setTextSize(12);
+        intro.setTextColor(C_MUTED);
+        intro.setText("One product, several boxes, each box with its "
+                + "own barcode/SKU. Tap every box of the set (2+), "
+                + "then NEXT. A mix-and-match selection is a BUNDLE - "
+                + "use the web product window for those.");
+        intro.setPadding(0, 0, 0, dp(8));
+        list.addView(intro);
+        final AlertDialog[] dref = new AlertDialog[1];
+        for (final BItem b : bItems) {
+            boolean on = boxSetSel.contains(b.id);
+            list.addView(targetCard(
+                    b.name(),
+                    (b.resolved ? "SKU " + (b.sku == null ? "—" : b.sku)
+                            : "unresolved")
+                        + " · scanned " + (b.scannedCode == null
+                            ? "—" : b.scannedCode),
+                    on ? "hi" : null,
+                    () -> {
+                        if (on) boxSetSel.remove(b.id);
+                        else boxSetSel.add(b.id);
+                        if (dref[0] != null) dref[0].dismiss();
+                        showBoxSetPicker();
+                    }, on ? "IN THE SET" : null));
+        }
+        dref[0] = dlg()
+                .setTitle("MULTI-BOX SET - pick the boxes")
+                .setView(scroll)
+                .setPositiveButton("NEXT (" + boxSetSel.size() + ")",
+                        (d, w) -> {
+                    java.util.List<BItem> sel = new ArrayList<>();
+                    for (BItem b : bItems) {
+                        if (boxSetSel.contains(b.id)) sel.add(b);
+                    }
+                    if (sel.size() < 2) {
+                        beep(SOUND_ERR);
+                        status.setText("A set needs at least two "
+                                + "boxes.");
+                        return;
+                    }
+                    boxSetSkuPass(sel, 0,
+                            new ArrayList<String[]>());
+                })
+                .setNegativeButton("CANCEL", null)
+                .show();
+    }
+
+    /** Confirm each box's SKU exactly as the carton prints it. */
+    private void boxSetSkuPass(final java.util.List<BItem> sel,
+            final int idx, final java.util.List<String[]> parts) {
+        if (idx >= sel.size()) {
+            boxSetFullProduct(sel, parts);
+            return;
+        }
+        final BItem it = sel.get(idx);
+        final EditText in = themedEdit();
+        in.setText(it.sku != null && !it.sku.isEmpty()
+                ? it.sku : (it.scannedCode == null ? "" : it.scannedCode));
+        in.setTextSize(16);
+        LinearLayout wrap = new LinearLayout(this);
+        wrap.setOrientation(LinearLayout.VERTICAL);
+        wrap.setPadding(dp(20), dp(8), dp(20), dp(4));
+        TextView t = new TextView(this);
+        t.setTextSize(12);
+        t.setTextColor(C_MUTED);
+        t.setText(it.name() + "\nscanned: "
+                + (it.scannedCode == null ? "—" : it.scannedCode));
+        wrap.addView(t);
+        wrap.addView(in);
+        dlg().setTitle("SKU on box " + (idx + 1) + " of " + sel.size())
+                .setView(wrap)
+                .setPositiveButton("NEXT", (d, w) -> {
+                    String sku = in.getText().toString().trim();
+                    if (sku.isEmpty()) {
+                        beep(SOUND_ERR);
+                        status.setText("Every box needs the SKU its "
+                                + "carton says.");
+                        return;
+                    }
+                    String bc = it.barcode != null && !it.barcode.isEmpty()
+                            ? it.barcode : it.scannedCode;
+                    parts.add(new String[]{sku, bc});
+                    boxSetSkuPass(sel, idx + 1, parts);
+                })
+                .setNegativeButton("CANCEL", null)
+                .show();
+    }
+
+    private void boxSetFullProduct(final java.util.List<BItem> sel,
+            final java.util.List<String[]> parts) {
+        final EditText in = themedEdit();
+        in.setHint("Full product barcode or SKU (e.g. S11230)");
+        in.setTextSize(16);
+        LinearLayout wrap = new LinearLayout(this);
+        wrap.setOrientation(LinearLayout.VERTICAL);
+        wrap.setPadding(dp(20), dp(8), dp(20), dp(4));
+        wrap.addView(in);
+        dlg().setTitle("The FULL (sellable) product?")
+                .setView(wrap)
+                .setPositiveButton("CREATE SET", (d, w) -> {
+                    String code = in.getText().toString().trim();
+                    if (code.isEmpty()) return;
+                    postBoxSet(code, parts);
+                })
+                .setNegativeButton("CANCEL", null)
+                .show();
+    }
+
+    private void postBoxSet(final String setCode,
+            final java.util.List<String[]> parts) {
+        status.setText("Creating the set…");
+        new Thread(() -> {
+            try {
+                org.json.JSONArray pj = new org.json.JSONArray();
+                for (String[] p : parts) {
+                    JSONObject o = new JSONObject().put("sku", p[0]);
+                    if (p[1] != null && !p[1].isEmpty()) {
+                        o.put("barcode", p[1]);
+                    }
+                    pj.put(o);
+                }
+                JSONObject body = new JSONObject()
+                        .put("set_code", setCode)
+                        .put("parts", pj)
+                        .put("batch_id", batchId)
+                        .put("changed_by",
+                                prefs.getString("device", "C72"));
+                JSONObject resp = api("POST", "/api/box-sets", body);
+                final String msg = resp.optString("message", "Set ✓");
+                final int fullTags = resp.optInt("full_tags");
+                final String setSku = resp.optString("set_sku", setCode);
+                final int nParts = parts.size();
+                ui.post(() -> {
+                    beep(SOUND_OK);
+                    status.setText(msg);
+                    reloadBatchAndReview();
+                    if (fullTags > 0) {
+                        offerBoxSetRelabel(setSku, fullTags, nParts);
+                    }
+                });
+            } catch (Exception e) {
+                ui.post(() -> {
+                    beep(SOUND_ERR);
+                    status.setText("Set failed: " + e.getMessage());
+                });
+            }
+        }).start();
+    }
+
+    /** Legacy stock still tagged under the FULL SKU (the old
+     *  double-counting): offer per-box labels + old-tag unlink. */
+    private void offerBoxSetRelabel(final String setSku,
+            final int fullTags, final int nParts) {
+        final int units = Math.max(1, Math.round(
+                fullTags / (float) nParts));
+        dlg().setTitle("Re-label the old stock?")
+                .setMessage(fullTags + " tag(s) still sit under "
+                        + setSku + " itself - the old double-count. "
+                        + "Queue " + units + " unit(s) x " + nParts
+                        + " box labels and unlink those old tags?\n\n"
+                        + "Peel the old stickers, apply the new "
+                        + "per-box labels, pair as usual.")
+                .setPositiveButton("PRINT + UNLINK",
+                        (d, w) -> new Thread(() -> {
+                    try {
+                        JSONObject resp = api("POST", "/api/box-sets/"
+                                + encPath(setSku) + "/relabel",
+                                new JSONObject()
+                                        .put("units", units)
+                                        .put("unlink_old", true)
+                                        .put("confirmed", true)
+                                        .put("changed_by", prefs
+                                                .getString("device",
+                                                        "C72")));
+                        final String m = resp.optString("message",
+                                "Labels queued ✓");
+                        ui.post(() -> {
+                            beep(SOUND_OK);
+                            status.setText(m);
+                            reloadBatchAndReview();
+                        });
+                    } catch (Exception e) {
+                        ui.post(() -> {
+                            beep(SOUND_ERR);
+                            status.setText("Re-label failed: "
+                                    + e.getMessage());
+                        });
+                    }
+                }).start())
+                .setNegativeButton("LATER", null)
+                .show();
     }
 
     private void setItemSkip(boolean skipped, String reason) {

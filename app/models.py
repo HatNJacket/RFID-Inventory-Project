@@ -399,6 +399,56 @@ class HeldLabelList(Base):
         }
 
 
+class BoxSetPart(Base):
+    """One box identity of a multi-box SET (Nick, 2026-09-08, the
+    S11230): a product sold ONLY as a whole whose N boxes each carry
+    their OWN barcode and SKU - usually draft listings like S11230-1 /
+    S11230-2 that the catalog walk never sees, under an active full
+    listing (S11230). Distinct from BOTH bundles (recipes whose
+    components sell separately) and MultiboxProduct (same SKU on every
+    carton, one counting tag).
+
+    Every box gets its own counted tag under its part SKU. The set's
+    unit count is min(part tag counts) and compares against the FULL
+    product's Shopify on-hand; part SKUs are never audited alone (their
+    draft listings hold no real stock). Each part's audit expectation
+    is the set's own shelf number - every box identity should hold one
+    box per unit. Prod needs dev/alter_add_boxsets.py."""
+
+    __tablename__ = "rfid_boxset_parts"
+    __table_args__ = (
+        UniqueConstraint("set_sku", "box_no", name="uq_boxset_slot"),
+        UniqueConstraint("part_sku", name="uq_boxset_part_sku"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # The sellable full product (active listing) the boxes make up.
+    set_sku: Mapped[str] = mapped_column(String(100), index=True,
+                                         nullable=False)
+    set_title: Mapped[str | None] = mapped_column(String(255))
+    set_variant_id: Mapped[str | None] = mapped_column(String(64))
+    set_product_id: Mapped[str | None] = mapped_column(String(300))
+    # This box's own identity, as printed on the carton.
+    part_sku: Mapped[str] = mapped_column(String(100), index=True,
+                                          nullable=False)
+    part_barcode: Mapped[str | None] = mapped_column(String(64), index=True)
+    box_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_by: Mapped[str | None] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    def as_dict(self) -> dict:
+        return {
+            "set_sku": self.set_sku,
+            "set_title": self.set_title,
+            "part_sku": self.part_sku,
+            "part_barcode": self.part_barcode,
+            "box_no": self.box_no,
+            "created_by": self.created_by,
+        }
+
+
 class MultiboxProduct(Base):
     """One sellable unit that physically ships as SEVERAL cartons (the
     S11740: two boxes, one telescope, ONE tag). The mark is durable and

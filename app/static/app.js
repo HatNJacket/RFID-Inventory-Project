@@ -365,6 +365,7 @@ const EVENT_META = {
   "rfid-flag-changed": ["RFID Flag", "#d72c0d"],
   "non-taggable": ["Non-taggable", "#8a6116"],
   "unlabelable-box": ["Un-labelable Box", "#8a6116"],
+  "box-set": ["Multi-box Set", "#0b6e99"],
   "batch-reprinted": ["Batch Reprint", "#5c5f62"],
   "printing-stopped": ["Stopped Printing", "#d72c0d"],
   "printing-resumed": ["Resumed Printing", "#116329"],
@@ -3937,6 +3938,12 @@ function renderInventory() {
         (p.rfid_incompatible
           ? ' <span class="noscan-chip" title="tag won\'t scan when on ' +
             'box — sweeps don\'t expect it to answer">⊘ no RFID</span>'
+          : "") +
+        (p.boxset_part_of
+          ? ` <span class="noscan-chip" title="One box of the ${escapeHtml(p.boxset_part_of)} multi-box set - counts toward its unit total, never audited alone">📦 box ${p.box_no || "?"} of ${escapeHtml(p.boxset_part_of)}</span>`
+          : "") +
+        (p.box_parts
+          ? ` <span class="noscan-chip" title="Multi-box set: the unit count is the SMALLEST of the box counts">⧉ multi-box set</span>`
           : "");
       const when = p.last_assigned_at
         ? tsDate(p.last_assigned_at).toLocaleString(undefined, {
@@ -3972,11 +3979,15 @@ function renderInventory() {
             : ""
         }</td>
         <td class="num">${
-          p.unit_breakdown
-            ? `${p.unit_count}<div class="inv__cases" title="${escapeHtml(
-                caseHint(p)
-              )}">${escapeHtml(p.unit_breakdown)}</div>`
-            : p.tag_count
+          p.box_parts
+            ? `${p.unit_count}<div class="inv__cases" title="Unit count is the smallest box count - every box identity must be present for a sellable unit">${p.box_parts
+                .map((bp) => `${escapeHtml(bp.sku)}: ${bp.units}`)
+                .join(" · ")}</div>`
+            : p.unit_breakdown
+              ? `${p.unit_count}<div class="inv__cases" title="${escapeHtml(
+                  caseHint(p)
+                )}">${escapeHtml(p.unit_breakdown)}</div>`
+              : p.tag_count
         }</td>
         <td class="num">${p.shopify_qty ?? "—"}</td>
         <td>${escapeHtml(when)}</td>
@@ -5296,6 +5307,25 @@ function renderBatchItems() {
       // name instead of under it.
       li.classList.add("bcell--stacked");
     }
+    // Multi-box SET (Nick, 2026-09-08, S11230): lump this box with
+    // others into ONE sellable product - offered on resolved AND
+    // unresolved rows, so a draft-listing box never needs linking
+    // first.
+    const lump = document.createElement("button");
+    lump.type = "button";
+    lump.className = "reset";
+    lump.style.cssText = "font-size:11px;opacity:.8";
+    lump.textContent = "⧉ Multi-box set…";
+    lump.title =
+      "This box is one of several boxes (each with its own barcode/SKU) " +
+      "sold only as ONE product - lump them into a set. Each box then " +
+      "counts under its own SKU and the unit count is the smallest of " +
+      "them.";
+    lump.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      openBoxSetBuilder(item);
+    });
+    li.append(lump);
     // Multi-select (Nick, 2026-09-01, ⚙ toggle): tick several products,
     // set all their bins in one pass - each write goes through the same
     // audited /api/bin-updates, logged per product with its undo.
@@ -5316,6 +5346,146 @@ function renderBatchItems() {
     bEl.items.append(li);
   });
   renderMultibinBar();
+}
+
+// --- Multi-box set builder (Nick, 2026-09-08, the S11230) -------------------
+// Boxes with their OWN barcodes/SKUs (often drafts) sold only whole.
+// Tick the boxes from the current batch, type each part's SKU as the
+// carton says it, name the FULL (active) product, create - matching
+// batch rows re-resolve as parts on the spot.
+function openBoxSetBuilder(seedItem) {
+  if (!batch) return;
+  const { wrap, box } = mlOverlay("Lump boxes into one multi-box product");
+  const intro = document.createElement("p");
+  intro.style.cssText = "font-size:12.5px;opacity:.85;margin:0 0 8px";
+  intro.textContent =
+    "For a product sold ONLY as a package whose boxes each carry " +
+    "their own barcode/SKU (S11230-1, S11230-2 under S11230). Tick " +
+    "every box of the set, fix each SKU to what the carton says, and " +
+    "name the full product. Each box then counts under its own SKU; " +
+    "the unit count is the smallest of them. (A selection of products " +
+    "sold in varying amounts is a BUNDLE - use the product window's " +
+    "bundle editor for those.)";
+  box.appendChild(intro);
+
+  const rows = [];
+  const list = document.createElement("div");
+  batchItems.forEach((it) => {
+    const row = document.createElement("div");
+    row.style.cssText =
+      "display:flex;align-items:center;gap:8px;border:1px solid " +
+      "var(--line,#ccc);border-radius:8px;padding:6px 8px;margin:5px 0";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = it.id === seedItem.id;
+    const name = document.createElement("div");
+    name.style.cssText = "flex:1;min-width:0;font-size:12px";
+    name.innerHTML =
+      `<b>${escapeHtml(it.product_title || it.scanned_code || "?")}</b>` +
+      `<span style="opacity:.7"> · scanned ${escapeHtml(it.scanned_code || it.barcode || "—")}` +
+      `${it.resolved ? "" : " · unresolved"}</span>`;
+    const skuIn = document.createElement("input");
+    skuIn.placeholder = "SKU on the box";
+    skuIn.value = it.sku || it.scanned_code || "";
+    skuIn.style.cssText = "width:150px";
+    skuIn.disabled = !cb.checked;
+    cb.addEventListener("change", () => {
+      skuIn.disabled = !cb.checked;
+    });
+    row.append(cb, name, skuIn);
+    list.appendChild(row);
+    rows.push({ it, cb, skuIn });
+  });
+  box.appendChild(list);
+
+  const fullRow = document.createElement("div");
+  fullRow.style.cssText = "display:flex;gap:6px;margin:10px 0;align-items:center";
+  const fullLbl = document.createElement("span");
+  fullLbl.style.cssText = "font-size:12px;white-space:nowrap";
+  fullLbl.textContent = "Full product (active listing):";
+  const fullIn = document.createElement("input");
+  fullIn.placeholder = "Barcode or SKU, e.g. S11230";
+  fullIn.style.cssText = "flex:1";
+  fullRow.append(fullLbl, fullIn);
+  box.appendChild(fullRow);
+
+  const foot = document.createElement("div");
+  foot.style.cssText = "display:flex;gap:8px;justify-content:flex-end";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.textContent = "Cancel";
+  cancel.addEventListener("click", () => wrap.remove());
+  const create = document.createElement("button");
+  create.type = "button";
+  create.textContent = "Create set";
+  foot.append(cancel, create);
+  box.appendChild(foot);
+
+  create.addEventListener("click", async () => {
+    const parts = rows
+      .filter((r) => r.cb.checked)
+      .map((r) => ({
+        sku: r.skuIn.value.trim(),
+        barcode:
+          (r.it.barcode || r.it.scanned_code || "").trim() || null,
+      }));
+    const setCode = fullIn.value.trim();
+    if (parts.length < 2) {
+      alert("Tick at least two boxes.");
+      return;
+    }
+    if (parts.some((p) => !p.sku)) {
+      alert("Every ticked box needs the SKU the carton says.");
+      return;
+    }
+    if (!setCode) {
+      alert("Name the full product (its barcode or SKU).");
+      return;
+    }
+    create.disabled = true;
+    try {
+      const r = await postJson("/api/box-sets", {
+        set_code: setCode,
+        parts,
+        batch_id: batch.id,
+        changed_by: operatorEl.value || null,
+      });
+      wrap.remove();
+      setBatchResult(r.message, "ok");
+      await pullBatch(false);
+      renderBatchItems();
+      // Legacy stock still tagged under the FULL SKU: offer the
+      // re-label pass (peel old, apply per-box labels, pair again).
+      if (r.full_tags > 0) {
+        const units = Math.max(
+          1, Math.round(r.full_tags / parts.length)
+        );
+        if (
+          confirm(
+            `${r.full_tags} tag(s) still sit under ${r.set_sku} ` +
+              `itself (the old double-counting). Queue ` +
+              `${units} unit(s) x ${parts.length} box labels and ` +
+              `unlink those old tags?\n\nPeel the old stickers off, ` +
+              `apply the new per-box labels, pair as usual.`
+          )
+        ) {
+          const r2 = await postJson(
+            `/api/box-sets/${encodeURIComponent(r.set_sku)}/relabel`,
+            {
+              units,
+              unlink_old: true,
+              confirmed: true,
+              changed_by: operatorEl.value || null,
+            }
+          );
+          setBatchResult(r2.message, "ok");
+        }
+      }
+    } catch (err) {
+      alert(err.message);
+      create.disabled = false;
+    }
+  });
 }
 
 // --- Bulk bin updates (Nick, 2026-09-01) ------------------------------------
@@ -12022,6 +12192,18 @@ function renderBinAudit() {
       } else if (silent > 0) {
         flags.push([`${silent} tagged box(es) silent`, "chip--warn"]);
       }
+      // Multi-box sets: part rows say which set (and audit against the
+      // SET's shelf number); the set's own row defers to its parts.
+      if (r.boxset_of)
+        flags.push([
+          `box ${r.box_no || "?"} of ${r.boxset_of} - expected is the set's shelf count`,
+          "chip--na",
+        ]);
+      if (r.boxset)
+        flags.push([
+          "multi-box set - audits by its box SKUs above",
+          "chip--na",
+        ]);
       // Ghosts: presumed-sold (or replaced/dead) tags that ANSWERED -
       // the box never left. Treated as one more scan in the end; the
       // chip says why the numbers moved (Nick, 2026-09-01).
