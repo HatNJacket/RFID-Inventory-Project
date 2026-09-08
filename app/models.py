@@ -1250,6 +1250,23 @@ class RfidIncompatible(Base):
     )
 
 
+class MislabelFlag(Base):
+    """The VENDOR printed the wrong barcode on this product's boxes
+    (Nick, 2026-09-08: EXOS2CWB5's barcode on EXOS2CW 10lb boxes, so
+    scans resolve to the 5lb variant). The flag warns on EVERY scan,
+    everywhere - it rides the scan-note channel, so the Scan Station
+    card and every C72 surface that shows notes says "check the
+    physical product" before anyone trusts the resolution."""
+
+    __tablename__ = "rfid_mislabel_flags"
+
+    sku: Mapped[str] = mapped_column(String(100), primary_key=True)
+    set_by: Mapped[str | None] = mapped_column(String(100))
+    set_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class NonTaggable(Base):
     """Products not worth individual tags at all — a big bin of
     thumbscrews or dew-heater straps (Nick, 2026-08-25). Stronger than

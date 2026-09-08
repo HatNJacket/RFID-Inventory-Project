@@ -65,6 +65,40 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
     check("the clear is History-logged too",
           len([e for e in h["events"] if e["type"]=="scan-note"])==2, "")
 
+    # ---- vendor mis-label flag (Nick, 2026-09-08) --------------------
+    # The EXOS2CWB5-barcode-on-EXOS2CW case: the flag warns on EVERY
+    # scan by riding the scan-note channel - no new client code needed.
+    r = cl.put("/api/products/CASE-8/mislabel-flag",
+               json={"flagged": True, "changed_by": "Nick"})
+    check("mis-label flag sets", r.status_code == 200
+          and r.json()["mislabel_flag"] is True, r.text[:200])
+    p = cl.get("/api/products/by-barcode/888").json()
+    check("flagged lookups carry the structured flag",
+          p.get("mislabel_flag") is True, p)
+    check("the warning rides the scan-note channel",
+          "VENDOR MIS-LABEL" in (p.get("scan_note") or "")
+          and "Case of Eight" in p["scan_note"], p.get("scan_note"))
+    # With a scan note set too, BOTH show (warning first).
+    cl.put("/api/products/CASE-8/scan-note",
+           json={"note": "Open the case first", "changed_by": "Nick"})
+    p = cl.get("/api/products/by-barcode/888").json()
+    check("warning + note stack, warning first",
+          p["scan_note"].startswith("⚠ VENDOR MIS-LABEL")
+          and "Open the case first" in p["scan_note"], p["scan_note"])
+    h = cl.get("/api/product-history?term=CASE-8").json()
+    check("the flag flip is History-logged",
+          any(e["type"] == "mislabel-flag" for e in h["events"]),
+          [e["type"] for e in h["events"]][:8])
+    check("product history carries the flag for the window",
+          h.get("mislabel_flag") is True, h.get("mislabel_flag"))
+    r = cl.put("/api/products/CASE-8/mislabel-flag",
+               json={"flagged": False, "changed_by": "Nick"})
+    check("unflag works", r.json()["mislabel_flag"] is False, r.text[:150])
+    p = cl.get("/api/products/by-barcode/888").json()
+    check("unflagged lookups warn no more",
+          "VENDOR MIS-LABEL" not in (p.get("scan_note") or "")
+          and not p.get("mislabel_flag"), p.get("scan_note"))
+
 print()
 print("FAILED: "+", ".join(fails) if fails else "ALL CHECKS PASSED")
 sys.exit(1 if fails else 0)

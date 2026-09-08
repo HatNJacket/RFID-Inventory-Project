@@ -64,6 +64,7 @@ from app.models import (
     LabelName,
     LinkScan,
     LocateQueueEntry,
+    MislabelFlag,
     MismatchDismissal,
     MultiboxProduct,
     NonTaggable,
@@ -466,7 +467,10 @@ def _live_barcode_map(session: Session) -> dict[str, str]:
 def product_by_barcode(barcode: str):
     """Barcode-or-SKU -> product. The per-product scan note rides every
     successful lookup, so BOTH scanning surfaces (Scan Station card, C72)
-    can show it without a second call."""
+    can show it without a second call. The vendor mis-label flag (Nick,
+    2026-09-08: EXOS2CWB5's barcode on EXOS2CW boxes) rides the SAME
+    channel - its warning is composed INTO the scan note, so every
+    surface that shows notes warns without new client code."""
     product = _product_lookup(barcode)
     sku = (product.get("sku") or "").strip() if product else ""
     if sku and database_configured():
@@ -477,8 +481,24 @@ def product_by_barcode(barcode: str):
                         func.upper(ScanNote.sku) == sku.upper()
                     )
                 )
-            if sn is not None:
-                product["scan_note"] = sn.note
+                flagged = session.scalar(
+                    select(MislabelFlag).where(
+                        func.upper(MislabelFlag.sku) == sku.upper()
+                    )
+                ) is not None
+            note = sn.note if sn is not None else None
+            if flagged:
+                product["mislabel_flag"] = True
+                warn = (
+                    "⚠ VENDOR MIS-LABEL: previous vendor labels for "
+                    "this product are known to carry the WRONG barcode "
+                    "- check the physical product matches "
+                    f"{product.get('product_title') or sku} before "
+                    "trusting this scan."
+                )
+                note = f"{warn}\n{note}" if note else warn
+            if note:
+                product["scan_note"] = note
         except Exception:  # noqa: BLE001 — the note is decoration
             pass
     return product
@@ -14394,6 +14414,75 @@ def get_rfid_incompatible(sku: str, session: Session = Depends(get_session)):
     }
 
 
+class MislabelIn(BaseModel):
+    flagged: bool = True
+    changed_by: str | None = Field(default=None, max_length=100)
+
+
+@app.put(
+    "/api/products/{sku}/mislabel-flag",
+    dependencies=[Depends(require_user)],
+)
+def set_mislabel_flag(
+    sku: str, payload: MislabelIn, session: Session = Depends(get_session)
+):
+    """Flag (or unflag) a product whose VENDOR labels are known to
+    carry the wrong barcode (Nick, 2026-09-08: EXOS2CWB5's barcode
+    printed on EXOS2CW 10lb boxes). Every scan of a flagged product
+    warns loudly through the scan-note channel - Scan Station and
+    every C72 surface alike. Every flip is History-logged."""
+    sku = sku.strip()
+    if not sku:
+        raise HTTPException(422, "SKU required.")
+    row = session.get(MislabelFlag, sku)
+    changed = False
+    if payload.flagged and row is None:
+        session.add(MislabelFlag(sku=sku, set_by=payload.changed_by))
+        changed = True
+    elif not payload.flagged and row is not None:
+        session.delete(row)
+        changed = True
+    if changed:
+        session.add(BarcodeChange(
+            sku=sku,
+            changed_field="mislabel-flag",
+            old_barcode=(
+                "labels trusted" if payload.flagged
+                else "vendor mis-label warning"
+            )[:64],
+            new_barcode=(
+                "vendor mis-label warning" if payload.flagged
+                else "labels trusted"
+            )[:64],
+            changed_by=(payload.changed_by or "").strip()[:100] or None,
+        ))
+    session.commit()
+    return {
+        "sku": sku,
+        "mislabel_flag": payload.flagged,
+        "message": (
+            f"{sku}: every scan now warns that previous vendor labels "
+            "are known to be mis-labeled."
+            if payload.flagged
+            else f"{sku}: the mis-label warning is off."
+        ),
+    }
+
+
+@app.get(
+    "/api/products/{sku}/mislabel-flag",
+    dependencies=[Depends(require_user)],
+)
+def get_mislabel_flag(sku: str, session: Session = Depends(get_session)):
+    row = session.get(MislabelFlag, sku.strip())
+    return {
+        "sku": sku.strip(),
+        "mislabel_flag": row is not None,
+        "set_by": row.set_by if row else None,
+        "set_at": row.set_at.isoformat() if row and row.set_at else None,
+    }
+
+
 def _non_taggable_skus(session: Session) -> set[str]:
     """Upper-cased SKUs marked non-taggable (a big bin of thumbscrews):
     never seeded into batches, never labelled, skipped by audits and the
@@ -14607,6 +14696,7 @@ def product_history(term: str, session: Session = Depends(get_session)):
         "bundle-contents": "bundle-contents-set",
         "rfid-scan": "rfid-flag-changed",
         "non-taggable": "non-taggable",
+        "mislabel-flag": "mislabel-flag",
         "batch-reprint": "batch-reprinted",
         "on-hand": "on-hand-updated", "on-hand-undo": "on-hand-undone",
         "on-hand-lower": "on-hand-lowered",
@@ -14949,6 +15039,9 @@ def product_history(term: str, session: Session = Depends(get_session)):
         "non_taggable": (
             session.get(NonTaggable, sku) is not None if sku else False
         ),
+        "mislabel_flag": (
+            session.get(MislabelFlag, sku) is not None if sku else False
+        ),
         # Current multi-box/bundle standing, so the panel can offer the undo.
         "product_kind": (
             {
@@ -15039,6 +15132,7 @@ def history(
         "bundle-contents": "bundle-contents-set",
         "rfid-scan": "rfid-flag-changed",
         "non-taggable": "non-taggable",
+        "mislabel-flag": "mislabel-flag",
         "batch-reprint": "batch-reprinted",
         "print-stop": "printing-stopped",
         "print-resume": "printing-resumed",

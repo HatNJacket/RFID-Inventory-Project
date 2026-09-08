@@ -414,6 +414,7 @@ const EVENT_META = {
   "audit-session": ["Audit Session", "#0e7a8a"],
   "bin-audited": ["Audit Done", "#0b6e99"],
   multibox: ["Multi-box", "#0b6e99"],
+  "mislabel-flag": ["Mis-label Flag", "#b07d00"],
   sweep: ["Sweep", "#0e7a8a"],
   // The sold system wears indigo/purple on purpose: product/on-hand
   // arithmetic, visually distinct from the amber human-count families.
@@ -13222,6 +13223,7 @@ async function openProductHistory(term) {
     }
     renderNoScan(!!data.rfid_incompatible);
     renderNonTaggable(!!data.non_taggable);
+    renderMislabel(!!data.mislabel_flag);
     renderVendorRow();
     renderBundleRow();
     renderLocateRow();
@@ -13583,6 +13585,10 @@ function renderFlagChips() {
     chips.push(
       `<span class="flagchip" title="Outside the RFID system: no batches, no labels, audits skip it">🚫 non-taggable</span>`
     );
+  if (phistData.mislabel_flag)
+    chips.push(
+      `<span class="flagchip" title="Previous vendor labels are known to carry the wrong barcode - every scan warns to check the physical product">🏷 vendor mis-label</span>`
+    );
   box.innerHTML = chips.join("");
   box.hidden = !chips.length;
 }
@@ -13780,6 +13786,60 @@ function renderNonTaggable(flagged) {
     document.getElementById("phist-notag").hidden;
   renderFlagChips();
 }
+
+// Vendor mis-label warning (Nick, 2026-09-08): the vendor printed the
+// WRONG barcode on this product's boxes (EXOS2CWB5's barcode on
+// EXOS2CW 10lb), so a scan can resolve to the wrong variant. Flagged
+// products warn LOUDLY on every scan, everywhere - the warning rides
+// the scan-note channel, so the C72 shows it too with no app update.
+function renderMislabel(flagged) {
+  const row = document.getElementById("phist-mislabel");
+  if (!phistData || !phistData.sku) {
+    row.hidden = true;
+    renderFlagChips();
+    return;
+  }
+  row.hidden = false;
+  phistData.mislabel_flag = flagged;
+  const btn = document.getElementById("phist-mislabel-btn");
+  btn.classList.toggle("optflag--on", flagged);
+  btn.textContent = flagged
+    ? "🏷 Remove mis-label warning"
+    : "Flag: vendor labels mis-labeled";
+  btn.title = flagged
+    ? "Flagged: previous vendor labels for this product are known to " +
+      "carry the wrong barcode - every scan warns to check the " +
+      "physical product. Click to remove the warning."
+    : "The vendor printed another product's barcode on this one's " +
+      "boxes? Flag it and every scan (Scan Station AND the C72) warns " +
+      "to check the physical product before trusting the resolution.";
+  renderFlagChips();
+}
+
+document
+  .getElementById("phist-mislabel-btn")
+  .addEventListener("click", async () => {
+    if (!phistData || !phistData.sku) return;
+    const want = !phistData.mislabel_flag;
+    const msg = document.getElementById("phist-msg");
+    try {
+      const r = await apiJson(
+        `/api/products/${encodeURIComponent(phistData.sku)}/mislabel-flag`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            flagged: want,
+            changed_by: operatorEl.value || null,
+          }),
+        }
+      );
+      renderMislabel(want);
+      msg.textContent = r.message;
+    } catch (err) {
+      msg.textContent = err.message;
+    }
+  });
 
 // Change vendor (Nick, 2026-08-26): a PRODUCT-level Shopify write, so
 // every variant changes brand together. Audited like the SKU/barcode
