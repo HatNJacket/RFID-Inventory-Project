@@ -2455,6 +2455,13 @@ public class MainActivity extends Activity {
 
     /** Resolve a scan/typed code into the product + its tags on file. */
     private void locateLookup(String code) {
+        locateLookup(code, null);
+    }
+
+    /** onlyEpcs narrows the hunt to SPECIFIC tags (the locate list's
+     *  silent set from an audit) - null hunts every tag of the SKU. */
+    private void locateLookup(String code,
+                              final java.util.Set<String> onlyEpcs) {
         status.setText("Looking up " + code + "…");
         new Thread(() -> {
             try {
@@ -2498,14 +2505,36 @@ public class MainActivity extends Activity {
                     }
                     JSONObject first = rows.optJSONObject(0);
                     locProduct = fp != null ? fp : first;
+                    int onFile = 0;
                     for (int i = 0; i < rows.length(); i++) {
                         JSONObject a = rows.optJSONObject(i);
                         String epc = a == null ? null : a.optString("rfid_id");
                         if (epc != null && !epc.isEmpty()) {
-                            locTags.put(epc.toUpperCase(
-                                    java.util.Locale.ROOT), -999.0);
+                            onFile++;
+                            String up = epc.toUpperCase(
+                                    java.util.Locale.ROOT);
+                            if (onlyEpcs != null
+                                    && !onlyEpcs.contains(up)) {
+                                continue;
+                            }
+                            locTags.put(up, -999.0);
                         }
                     }
+                    // A stale silent set (all since retired/re-paired)
+                    // must not strand the hunt - fall back to the lot.
+                    if (locTags.isEmpty() && onlyEpcs != null) {
+                        for (int i = 0; i < rows.length(); i++) {
+                            JSONObject a = rows.optJSONObject(i);
+                            String epc = a == null ? null
+                                    : a.optString("rfid_id");
+                            if (epc != null && !epc.isEmpty()) {
+                                locTags.put(epc.toUpperCase(
+                                        java.util.Locale.ROOT), -999.0);
+                            }
+                        }
+                    }
+                    boolean narrowed = onlyEpcs != null
+                            && locTags.size() < onFile;
                     beep(SOUND_OK);
                     locName.setText(locProduct.optString("product_title",
                             code));
@@ -2513,7 +2542,11 @@ public class MainActivity extends Activity {
                             ? null : first.optString("bin_location");
                     locSku.setText("SKU: " + sku
                             + (bin != null ? "  ·  Bin: " + bin : "")
-                            + "  ·  " + locTags.size() + " tag(s) on file");
+                            + "  ·  " + (narrowed
+                               ? "🎯 hunting " + locTags.size()
+                                 + " SILENT of " + onFile
+                                 + " tag(s) on file"
+                               : locTags.size() + " tag(s) on file"));
                     loadImage(locProduct.isNull("image_url") ? null
                             : locProduct.optString("image_url"), locImg);
                     updateLocateUi();
@@ -2650,9 +2683,23 @@ public class MainActivity extends Activity {
             card.addView(rm, new LinearLayout.LayoutParams(dp(44),
                     LinearLayout.LayoutParams.WRAP_CONTENT));
 
+            // The entry may name SPECIFIC EPCs (the audit's silent
+            // tags) - hunt exactly those, not the whole shelf (Nick,
+            // 2026-09-08, ...B3F1EB drowned out by answering boxes).
+            org.json.JSONArray eps = e.optJSONArray("epcs");
+            final java.util.HashSet<String> only =
+                    new java.util.HashSet<>();
+            for (int j = 0; eps != null && j < eps.length(); j++) {
+                only.add(eps.optString(j).toUpperCase(
+                        java.util.Locale.ROOT));
+            }
+            if (!only.isEmpty()) {
+                meta.setText(meta.getText() + " · 🎯 " + only.size()
+                        + " silent tag(s) targeted");
+            }
             card.setOnClickListener(x -> {
                 if (dref[0] != null) dref[0].dismiss();
-                locateLookup(sku);
+                locateLookup(sku, only.isEmpty() ? null : only);
             });
             LinearLayout.LayoutParams cl = new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
@@ -13942,16 +13989,24 @@ public class MainActivity extends Activity {
             labels.add("ADD TO LOCATE LIST (" + silent + " silent)");
             acts.add(() -> new Thread(() -> {
                 try {
-                    api("POST", "/api/locate-queue", new JSONObject()
+                    // The SILENT tags ride along (Nick, 2026-09-08,
+                    // ...B3F1EB): the hunt targets exactly the missing
+                    // ones, not the whole shelf's answering boxes.
+                    JSONObject body = new JSONObject()
                             .put("sku", sku)
                             .put("label", it.optString("product_title",
                                     sku))
-                            .put("worker", device));
+                            .put("worker", device);
+                    JSONArray se = it.optJSONArray("silent_epcs");
+                    if (se != null && se.length() > 0) {
+                        body.put("epcs", se);
+                    }
+                    api("POST", "/api/locate-queue", body);
                     ui.post(() -> {
                         beep(SOUND_OK);
-                        status.setText(sku + " queued for LOCATE ✓ - its "
-                                + "silent tags are huntable from the "
-                                + "LOCATE tab.");
+                        status.setText(sku + " queued for LOCATE ✓ - the "
+                                + silent + " SILENT tag(s) are the hunt "
+                                + "targets on the LOCATE tab.");
                     });
                 } catch (Exception e) {
                     ui.post(() -> status.setText(e.getMessage()));

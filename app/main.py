@@ -3460,6 +3460,9 @@ class LocateQueueIn(BaseModel):
     sku: str = Field(min_length=1, max_length=100)
     label: str | None = Field(default=None, max_length=255)
     worker: str | None = Field(default=None, max_length=100)
+    # Specific EPCs to hunt (the audit's SILENT tags). Empty = all of
+    # the SKU's tags, the pre-2026-09-08 behavior.
+    epcs: list[str] | None = Field(default=None, max_length=200)
 
 
 @app.get("/api/locate-queue", dependencies=[Depends(require_user)])
@@ -3493,6 +3496,9 @@ def list_locate_queue(session: Session = Depends(get_session)):
             "created_at": e.created_at.isoformat() if e.created_at else None,
             "tag_count": len(tags),
             "bins": bins,
+            # Specific EPCs to hunt (the audit's silent set); empty =
+            # hunt every tag of the SKU.
+            "epcs": e.epc_list(),
         })
     return {"entries": entries}
 
@@ -3508,16 +3514,24 @@ def add_locate_queue(
     """Add a product to the locate list (idempotent per SKU): re-queuing
     an already-listed product is a no-op, not a duplicate."""
     sku = payload.sku.strip()
+    epcs_text = "\n".join(sorted({
+        (e or "").strip().upper() for e in (payload.epcs or []) if e
+    })) or None
     existing = session.scalar(
         select(LocateQueueEntry).where(
             func.upper(LocateQueueEntry.sku) == sku.upper()
         )
     )
     if existing is not None:
+        # Re-queuing refreshes the specific-EPC list - the newest
+        # audit's silent set is the truth worth hunting.
+        if epcs_text and existing.epcs != epcs_text:
+            existing.epcs = epcs_text
+            session.commit()
         return {"id": existing.id, "sku": existing.sku, "already": True}
     entry = LocateQueueEntry(
         sku=sku, label=(payload.label or "").strip()[:255] or None,
-        added_by=payload.worker,
+        added_by=payload.worker, epcs=epcs_text,
     )
     session.add(entry)
     session.add(BarcodeChange(

@@ -1523,9 +1523,17 @@ class LocateQueueEntry(Base):
     sku: Mapped[str] = mapped_column(String(100), index=True, nullable=False)
     label: Mapped[str | None] = mapped_column(String(255))
     added_by: Mapped[str | None] = mapped_column(String(100))
+    # Newline-joined SPECIFIC EPCs to hunt (Nick, 2026-09-08: the audit
+    # queues the SILENT tags - hunting every tag of the SKU let the
+    # on-shelf boxes drown out the missing one). Empty = hunt them all.
+    epcs: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+    def epc_list(self) -> list[str]:
+        return [e.strip().upper() for e in (self.epcs or "").split("\n")
+                if e.strip()]
 
 
 class AppSetting(Base):

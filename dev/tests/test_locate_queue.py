@@ -58,6 +58,18 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
     r = cl.post("/api/locate-queue", json={"sku": "s20300"})
     check("re-add is idempotent", r.json()["already"] is True
           and r.json()["id"] == eid, r.text)
+
+    # Specific-EPC targeting (Nick, 2026-09-08: the audit queues its
+    # SILENT tags so the hunt doesn't chase the answering shelf boxes).
+    r = cl.post("/api/locate-queue", json={
+        "sku": "S20300", "epcs": ["AAAA0000000000000000000B"]})
+    check("re-add with EPCs refreshes the target set",
+          r.json()["already"] is True, r.text)
+    r = cl.get("/api/locate-queue")
+    e0 = r.json()["entries"][0]
+    check("the entry carries the silent hunt targets",
+          e0["epcs"] == ["AAAA0000000000000000000B"]
+          and e0["tag_count"] == 2, e0)
     r = cl.get("/api/locate-queue")
     ent = r.json()["entries"]
     check("one entry after double add", len(ent) == 1, r.text)
