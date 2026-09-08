@@ -1329,6 +1329,12 @@ def tag_info(rfid_id: str, session: Session = Depends(get_session)):
 
     batch = session.get(Batch, row.batch_id) if row.batch_id else None
     entry = live[0] if live else None
+    # Unretired sold units for this SKU: the gun's EDIT TAG sheet only
+    # offers MARK PRESUMED SOLD when order history can actually cover it
+    # (Nick, 2026-09-08).
+    sold_cover = orders_sync.sold_unretired_map(
+        session, [row.sku]
+    ).get(sku_key, 0) if sku_key else 0
     return {
         "found": True,
         "printed_only": False,
@@ -1336,6 +1342,7 @@ def tag_info(rfid_id: str, session: Session = Depends(get_session)):
         "assignment": row.as_dict(),
         "tags_total": len(siblings),
         "tags_here": tags_here,
+        "sold_cover": sold_cover,
         "live_sku_exists": bool(live),
         "live_bins": live_bins,
         "image_url": entry.image_url if entry else None,
@@ -3594,6 +3601,31 @@ class OnHandUpdateIn(BaseModel):
         return v.strip()
 
 
+def _refresh_binmap_onhand(
+    session: Session, sku: str, raw_on_hand: int
+) -> None:
+    """Bring the bin-map snapshot's effective quantity in line with a
+    fresh RAW on-hand (Nick, 2026-09-08): the map rebuild is hours
+    apart, and stale rows kept re-offering already-made raises. Split-
+    shelf products get the delta on their biggest row - the next full
+    rebuild trues the per-bin split."""
+    rows = session.scalars(
+        select(BinMapEntry).where(
+            func.upper(BinMapEntry.sku) == sku.strip().upper()
+        )
+    ).all()
+    if not rows:
+        return
+    unavail = sum(r.unavailable or 0 for r in rows)
+    target = max(0, raw_on_hand - unavail)
+    current = sum(r.qty or 0 for r in rows)
+    delta = target - current
+    if delta == 0:
+        return
+    row = max(rows, key=lambda r: r.qty or 0)
+    row.qty = max(0, (row.qty or 0) + delta)
+
+
 @app.post(
     "/api/onhand-updates",
     status_code=201,
@@ -3617,7 +3649,27 @@ def update_on_hand(
     live = shopify.get_on_hand(payload.sku)
     if live is None:
         raise HTTPException(404, f"No Shopify product for SKU {payload.sku}.")
-    if payload.new_qty <= live:
+    if payload.new_qty == live:
+        # SELF-HEAL, not an error (Nick, 2026-09-08, F1-2: a raise made
+        # on the C72 left the web's bin-map snapshot stale, so its
+        # "(+1)" buttons re-offered the same raise and then refused it).
+        # Shopify already agrees - refresh the local snapshot so every
+        # expected number catches up, write nothing.
+        _refresh_binmap_onhand(session, payload.sku, live)
+        session.commit()
+        return {
+            "sku": payload.sku,
+            "before": live,
+            "after": live,
+            "change_id": None,
+            "noop": True,
+            "message": (
+                f"Shopify already shows {live} for {payload.sku} - the "
+                "local snapshot was stale and has been refreshed. "
+                "Nothing was written."
+            ),
+        }
+    if payload.new_qty < live:
         raise HTTPException(
             422,
             f"Shopify already shows {live} on hand for {payload.sku}; "
@@ -3643,6 +3695,8 @@ def update_on_hand(
         item = session.get(BatchItem, payload.item_id)
         if item is not None and item.batch_id == payload.batch_id:
             item.expected_qty = payload.new_qty
+    # And the bin-map snapshot, so audits stop re-offering the raise.
+    _refresh_binmap_onhand(session, payload.sku, payload.new_qty)
     session.commit()
     session.refresh(change)
     return {
@@ -3698,6 +3752,7 @@ def undo_on_hand(
         before = shopify.set_on_hand(row.sku, old)
     except RuntimeError as error:
         raise HTTPException(502, f"Shopify on-hand write failed: {error}")
+    _refresh_binmap_onhand(session, row.sku, old)
     session.add(BarcodeChange(
         sku=row.sku,
         changed_field="on-hand-undo",
@@ -3884,6 +3939,7 @@ def lower_on_hand(
         before = shopify.set_on_hand(payload.sku, payload.new_qty)
     except RuntimeError as error:
         raise HTTPException(502, f"Shopify on-hand write failed: {error}")
+    _refresh_binmap_onhand(session, payload.sku, payload.new_qty)
     change = BarcodeChange(
         sku=payload.sku,
         changed_field="on-hand-lower",
@@ -3948,6 +4004,7 @@ def undo_lower_on_hand(
         before = shopify.set_on_hand(row.sku, old)
     except RuntimeError as error:
         raise HTTPException(502, f"Shopify on-hand write failed: {error}")
+    _refresh_binmap_onhand(session, row.sku, old)
     restored = []
     for r in retired_rows:
         if session.scalar(
@@ -5389,6 +5446,55 @@ def bin_check(
                 t.resolution_note = (
                     f"Bin audited - {len(swept)} tag(s) heard on the "
                     f"{loc} sweep."
+                )[:255]
+        # A FULLY-CONFIRMED product is evidence (Nick, 2026-09-08, the
+        # ZWO OAG): every tag on file lives here, every one answered,
+        # and the count equals the shelf expectation - so any
+        # unconsumed sale in the ledger has NO tagged unit behind it
+        # (the sold box was never tagged). Clear that stale
+        # expectation and resolve the SKU's open Inventory Check;
+        # without this, the nightly arithmetic keeps recommending the
+        # audit that was just done.
+        for r in report:
+            sku_r = (r.get("sku") or "").strip()
+            if (not sku_r
+                    or r.get("expected_qty") is None
+                    or r.get("sold_unretired", 0) <= 0
+                    or r.get("silent_epcs")
+                    or r["tags_on_file"] != r["tags_here"]
+                    or r["detected"] != r["tags_here"]
+                    or r["detected_units"] != r["expected_qty"]):
+                continue
+            cleared = orders_sync.retire_units(
+                session, sku_r, r["sold_unretired"]
+            )
+            if not cleared:
+                continue
+            session.add(BarcodeChange(
+                sku=sku_r,
+                product_title=r.get("product_title"),
+                changed_field="ledger-cleared",
+                old_barcode=f"{cleared} stale sale expectation(s)"[:64],
+                new_barcode="audit confirmed the shelf"[:64],
+                changed_by="bin-audit",
+            ))
+            open_check = session.scalar(
+                select(ReviewTask).where(
+                    ReviewTask.category.in_(
+                        ("inventory-check", "tag-onhand-mismatch")
+                    ),
+                    ReviewTask.status == "open",
+                    func.upper(ReviewTask.sku) == sku_r.upper(),
+                )
+            )
+            if open_check is not None:
+                open_check.status = "resolved"
+                open_check.resolved_by = "bin-audit"
+                open_check.resolved_at = datetime.now(timezone.utc)
+                open_check.resolution_note = (
+                    f"Bin audit confirmed the shelf ({r['detected']} of "
+                    f"{r['expected_qty']} heard); {cleared} sale(s) "
+                    "with no tagged unit cleared from the expectation."
                 )[:255]
         session.commit()
     return {
@@ -7399,8 +7505,9 @@ def batch_shelf_sweep_state(
 class RetireTagsIn(BaseModel):
     epcs: list[str] = Field(min_length=1, max_length=1000)
     # presumed-sold (verify cleanup) | replaced (peeled, read off-box) |
-    # dead (unreadable even off the box)
-    kind: Literal["presumed-sold", "replaced", "dead"]
+    # dead (unreadable even off the box) | not-in-storage (locate verdict:
+    # the unit is genuinely gone but NOT sold — no ledger consumption)
+    kind: Literal["presumed-sold", "replaced", "dead", "not-in-storage"]
     changed_by: str | None = Field(default=None, max_length=100)
     note: str | None = Field(default=None, max_length=255)
 
@@ -14497,6 +14604,104 @@ def get_mislabel_flag(sku: str, session: Session = Depends(get_session)):
     }
 
 
+class UnavailableMoveIn(BaseModel):
+    # The UI's "Other" maps to reserved before it gets here.
+    bucket: Literal["damaged", "quality_control", "safety_stock", "reserved"]
+    direction: Literal["in", "out"] = "in"
+    qty: int = Field(default=1, ge=1, le=50)
+    comment: str | None = Field(default=None, max_length=500)
+    changed_by: str | None = Field(default=None, max_length=100)
+    confirmed: bool = False
+
+
+@app.post(
+    "/api/products/{sku}/unavailable-move",
+    dependencies=[Depends(require_user)],
+)
+def unavailable_move(
+    sku: str,
+    payload: UnavailableMoveIn,
+    session: Session = Depends(get_session),
+):
+    """Set units aside in a Shopify unavailable bucket (or bring them
+    back). ON-HAND never changes — this is inventoryMoveQuantities
+    between AVAILABLE and the bucket, the C72 locate sheet's SET ASIDE
+    write (Nick, 2026-09-08). Operator-confirmed, gated by its own
+    SHOPIFY_WRITE_MODE feature, History-logged; the optional comment
+    APPENDS a line to the product's Staff Comments metafield (never
+    overwrites)."""
+    require_shopify_write("unavailable_move")
+    sku = sku.strip()
+    if not payload.confirmed:
+        raise HTTPException(
+            422, "Confirm the move first (confirmed=true)."
+        )
+    try:
+        moved = shopify.move_unavailable(
+            sku, payload.bucket, payload.qty, payload.direction
+        )
+    except RuntimeError as error:
+        raise HTTPException(502, f"Shopify move failed: {error}")
+    comment_note = None
+    comment = (payload.comment or "").strip()
+    if comment and moved.get("product_gid"):
+        try:
+            shopify.append_staff_comment(moved["product_gid"], comment)
+            comment_note = "Staff comment added."
+        except RuntimeError as error:
+            # The move already landed — report the comment failure
+            # rather than pretending the whole write failed.
+            comment_note = f"Move landed but the staff comment failed: {error}"
+    # Keep the bin-map snapshot honest without waiting for the rebuild:
+    # shelf-effective qty and the unavailable rider move in lockstep.
+    rows = session.scalars(
+        select(BinMapEntry).where(
+            func.upper(BinMapEntry.sku) == sku.upper()
+        )
+    ).all()
+    if rows:
+        r = max(rows, key=lambda x: x.qty or 0)
+        if payload.direction == "in":
+            r.qty = max(0, (r.qty or 0) - payload.qty)
+            r.unavailable = (r.unavailable or 0) + payload.qty
+        else:
+            r.qty = (r.qty or 0) + payload.qty
+            r.unavailable = max(0, (r.unavailable or 0) - payload.qty)
+    title = rows[0].product_title if rows else None
+    bucket_label = {
+        "damaged": "Damaged", "quality_control": "Quality control",
+        "safety_stock": "Safety stock", "reserved": "Other (Reserved)",
+    }[payload.bucket]
+    session.add(BarcodeChange(
+        sku=sku,
+        product_title=title,
+        changed_field="unavailable-move",
+        old_barcode=f"{payload.direction}:{payload.qty}"[:64],
+        new_barcode=payload.bucket[:64],
+        changed_by=(payload.changed_by or "").strip()[:100] or None,
+    ))
+    session.commit()
+    verb = ("set aside as" if payload.direction == "in"
+            else "brought back from")
+    msg = (f"{payload.qty} unit(s) of {sku} {verb} {bucket_label} in "
+           f"Shopify. On-hand is unchanged; the shelf now expects "
+           f"{payload.qty} fewer box(es)."
+           if payload.direction == "in" else
+           f"{payload.qty} unit(s) of {sku} {verb} {bucket_label} — "
+           f"back in available stock.")
+    if comment_note:
+        msg += " " + comment_note
+    return {
+        "sku": sku,
+        "bucket": payload.bucket,
+        "direction": payload.direction,
+        "qty": payload.qty,
+        "available_before": moved["available_before"],
+        "bucket_before": moved["bucket_before"],
+        "message": msg,
+    }
+
+
 def _non_taggable_skus(session: Session) -> set[str]:
     """Upper-cased SKUs marked non-taggable (a big bin of thumbscrews):
     never seeded into batches, never labelled, skipped by audits and the
@@ -14711,6 +14916,7 @@ def product_history(term: str, session: Session = Depends(get_session)):
         "rfid-scan": "rfid-flag-changed",
         "non-taggable": "non-taggable",
         "mislabel-flag": "mislabel-flag",
+        "unavailable-move": "unavailable-move",
         "batch-reprint": "batch-reprinted",
         "on-hand": "on-hand-updated", "on-hand-undo": "on-hand-undone",
         "on-hand-lower": "on-hand-lowered",
@@ -14743,7 +14949,7 @@ def product_history(term: str, session: Session = Depends(get_session)):
             "shopify": c.changed_field
             not in ("rfid-scan", "locate-list", "tag-sold", "scan-note",
                     "tag-retired", "tag-unretired", "tag-released",
-                    "tag-reapplied"),
+                    "tag-reapplied", "ledger-cleared"),
         })
 
     # What Shopify currently says the product's bin IS, and when we last
@@ -15147,6 +15353,7 @@ def history(
         "rfid-scan": "rfid-flag-changed",
         "non-taggable": "non-taggable",
         "mislabel-flag": "mislabel-flag",
+        "unavailable-move": "unavailable-move",
         "batch-reprint": "batch-reprinted",
         "print-stop": "printing-stopped",
         "print-resume": "printing-resumed",

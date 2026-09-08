@@ -415,6 +415,8 @@ const EVENT_META = {
   "bin-audited": ["Audit Done", "#0b6e99"],
   multibox: ["Multi-box", "#0b6e99"],
   "mislabel-flag": ["Mis-label Flag", "#b07d00"],
+  "unavailable-move": ["Set Aside", "#6b21a8"],
+  "ledger-cleared": ["Ledger Cleared", "#4338ca"],
   sweep: ["Sweep", "#0e7a8a"],
   // The sold system wears indigo/purple on purpose: product/on-hand
   // arithmetic, visually distinct from the amber human-count families.

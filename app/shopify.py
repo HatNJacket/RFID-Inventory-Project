@@ -812,6 +812,173 @@ def set_on_hand(sku: str, qty: int) -> int:
     return before
 
 
+# The four Shopify "unavailable" buckets a unit can sit in without leaving
+# on-hand. The UI's "Other" maps to reserved before it reaches here.
+UNAVAILABLE_BUCKETS = (
+    "damaged", "quality_control", "safety_stock", "reserved",
+)
+
+_ITEM_BUCKET_QUERY = """
+query ItemBuckets($search: String!) {
+  productVariants(first: 5, query: $search) {
+    nodes {
+      sku
+      product { id }
+      inventoryItem {
+        id
+        inventoryLevels(first: 5) {
+          nodes {
+            location { id }
+            quantities(names: ["available", "damaged", "quality_control",
+                               "safety_stock", "reserved"]) {
+              name quantity
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+_MOVE_QUANTITIES_MUTATION = """
+mutation MoveQty($input: InventoryMoveQuantitiesInput!, $key: String!) {
+  inventoryMoveQuantities(input: $input) @idempotent(key: $key) {
+    userErrors { field message }
+  }
+}
+"""
+
+
+def move_unavailable(sku: str, bucket: str, qty: int = 1,
+                     direction: str = "in") -> dict:
+    """Move qty units between AVAILABLE and one unavailable bucket.
+
+    ON-HAND is untouched — this is the 'set a unit aside' write the C72's
+    locate sheet uses (Nick, 2026-09-08). direction 'in' moves
+    available -> bucket; 'out' reverses it. Same single-location rule as
+    set_on_hand. Returns the before-counts plus the product GID so the
+    caller can chain a staff-comment append without a second lookup."""
+    if bucket not in UNAVAILABLE_BUCKETS:
+        raise RuntimeError(f"Unknown unavailable bucket {bucket!r}.")
+    if direction not in ("in", "out"):
+        raise RuntimeError(f"Bad direction {direction!r}.")
+    qty = int(qty)
+    if qty < 1:
+        raise RuntimeError("Quantity must be at least 1.")
+    cleaned = _search_term(sku)
+    data = query_shopify(_ITEM_BUCKET_QUERY, {"search": f'sku:"{cleaned}"'})
+    node = next(
+        (v for v in data["productVariants"]["nodes"] if v["sku"] == sku),
+        None,
+    )
+    if node is None:
+        raise RuntimeError(f"SKU {sku} not found in Shopify.")
+    item = node["inventoryItem"]
+    levels = item["inventoryLevels"]["nodes"]
+    if not levels:
+        raise RuntimeError(f"{sku} is not stocked at any location.")
+    if len(levels) > 1:
+        raise RuntimeError(
+            f"{sku} is stocked at {len(levels)} locations — move it "
+            f"in Shopify admin instead."
+        )
+    counts = {q["name"]: q["quantity"] for q in levels[0]["quantities"]}
+    available = int(counts.get("available") or 0)
+    in_bucket = int(counts.get(bucket) or 0)
+    if direction == "in" and available < qty:
+        raise RuntimeError(
+            f"Only {available} available to set aside (need {qty}). "
+            f"Fix the count in Shopify admin first."
+        )
+    if direction == "out" and in_bucket < qty:
+        raise RuntimeError(
+            f"Only {in_bucket} in {bucket.replace('_', ' ')} "
+            f"(tried to bring back {qty})."
+        )
+    import uuid
+    key = str(uuid.uuid4())
+    src, dst = ("available", bucket) if direction == "in" \
+        else (bucket, "available")
+    loc_id = levels[0]["location"]["id"]
+    # 2026-07 shape (learned live): locationId sits INSIDE from/to, and
+    # referenceDocumentUri is required on the input. Ledger-backed names
+    # (everything but available/on_hand) also need their own document
+    # URI saying WHY the unit sits there; ours points at History.
+    ledger = f"https://telcan-rfid.azurewebsites.net/history#unavailable-{key}"
+    # changeFromQuantity on both sides = the API's compare-and-set
+    # (2026-07 requires it): the move only lands if the counts we just
+    # read still hold, so a concurrent sale fails loudly, not silently.
+    change = {
+        "inventoryItemId": item["id"],
+        "quantity": qty,
+        "from": {"name": src, "locationId": loc_id,
+                 "changeFromQuantity": int(counts.get(src) or 0)},
+        "to": {"name": dst, "locationId": loc_id,
+               "changeFromQuantity": int(counts.get(dst) or 0)},
+    }
+    if src != "available":
+        change["from"]["ledgerDocumentUri"] = ledger
+    if dst != "available":
+        change["to"]["ledgerDocumentUri"] = ledger
+    result = query_shopify(_MOVE_QUANTITIES_MUTATION, {
+        "key": key,
+        "input": {
+            "reason": "correction",
+            "referenceDocumentUri": ledger,
+            "changes": [change],
+        },
+    })
+    errors = result["inventoryMoveQuantities"]["userErrors"]
+    if errors:
+        raise RuntimeError("; ".join(e["message"] for e in errors))
+    return {
+        "available_before": available,
+        "bucket_before": in_bucket,
+        "product_gid": (node.get("product") or {}).get("id"),
+    }
+
+
+_STAFF_COMMENTS_QUERY = """
+query StaffComments($id: ID!) {
+  product(id: $id) {
+    id
+    staff: metafield(namespace: "custom", key: "staff_comments") { value }
+  }
+}
+"""
+
+
+def append_staff_comment(product_gid: str, text: str) -> None:
+    """Append a line to the product's custom.staff_comments metafield
+    (multi_line_text_field). Append-only by design — the field is shared
+    with humans in admin and must never be clobbered (Nick, 2026-09-08).
+    Requires write_products."""
+    text = (text or "").strip()
+    if not text:
+        return
+    data = query_shopify(_STAFF_COMMENTS_QUERY, {"id": product_gid})
+    product = data.get("product") or {}
+    current = ((product.get("staff") or {}).get("value") or "").rstrip()
+    value = (current + "\n" + text) if current else text
+    result = query_shopify(
+        _SET_BIN_MUTATION,
+        {
+            "metafields": [{
+                "ownerId": product_gid,
+                "namespace": "custom",
+                "key": "staff_comments",
+                "type": "multi_line_text_field",
+                "value": value,
+            }]
+        },
+    )["metafieldsSet"]
+    if result["userErrors"]:
+        raise RuntimeError(
+            "; ".join(e["message"] for e in result["userErrors"])
+        )
+
+
 _VARIANT_IDENT_QUERY = """
 query variantIdent($id: ID!) {
   productVariant(id: $id) { sku barcode }

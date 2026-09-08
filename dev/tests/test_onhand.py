@@ -64,9 +64,14 @@ with patch("app.shopify.lookup_barcode", side_effect=look), \
     r = cl.post("/api/onhand-updates",
                 json={"sku":"ZWO-X","new_qty":2,"confirmed":True})
     check("lowering refused", r.status_code==422, r.status_code)
+    # Equal is a friendly no-op since 2026-09-08 (the F1-2 "(+1)" bug):
+    # a stale snapshot offered raises Shopify already had, and the old
+    # 422 read as an error. Nothing is written; the snapshot heals.
     r = cl.post("/api/onhand-updates",
                 json={"sku":"ZWO-X","new_qty":3,"confirmed":True})
-    check("equal refused too", r.status_code==422, r.status_code)
+    check("equal is a noop, not an error", r.status_code in (200, 201)
+          and r.json().get("noop") is True
+          and STATE["ZWO-X"] == 3, r.text[:200])
 
     # The real thing.
     r = cl.post("/api/onhand-updates",

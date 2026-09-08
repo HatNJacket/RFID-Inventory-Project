@@ -300,6 +300,82 @@ with patch("app.shopify.lookup_barcode", side_effect=look), \
           and d["lists"][0]["items"][0]["sku"] == "STRIP-1",
           r.text[:300])
 
+    # ---- a fully-confirmed audit clears a stale sold expectation -----
+    # Nick's ZWO OAG (2026-09-08): 1 tag on file, the shelf holds 1,
+    # on-hand 1 - but an old sale of a NEVER-tagged unit sat unconsumed
+    # in the ledger, so the check said "1 fewer tags than expected" and
+    # recommended the audit that had just been done. The audit hearing
+    # EVERY tag with units == expected is proof the sale has no tagged
+    # unit behind it.
+    with Session(get_engine()) as s:
+        tag(s, "ZOAG00000000000000000001", "ZOAG-1")
+        s.add(BinMapEntry(sku="ZOAG-1", product_title="ZWO OAG",
+                          bin="W1-1", qty=1, shopify_variant_id="t:Z"))
+        s.add(SoldRecord(order_id="oz1", order_name="#Z1", sku="ZOAG-1",
+                         quantity=1,
+                         fulfilled_at=NOW - timedelta(days=30)))
+        s.add(ReviewTask(category="inventory-check", sku="ZOAG-1",
+                         product_title="ZWO OAG",
+                         detail="1 fewer tag(s) than expected",
+                         created_by="orders-sync"))
+        s.commit()
+        # The tag was seeded in V1-1 by tag(); move it onto the shelf
+        # this audit sweeps.
+        for a in s.query(RfidAssignment).filter_by(sku="ZOAG-1"):
+            a.bin_location = "W1-1"
+        s.commit()
+    STOCK["ZOAG-1"] = 1
+    r = cl.post("/api/bins/W1-1/check",
+                json={"epcs": ["ZOAG00000000000000000001"]})
+    check("confirming audit answers", r.status_code == 200, r.text[:200])
+    row = next((x for x in r.json()["items"]
+                if x.get("sku") == "ZOAG-1"), None)
+    check("the row was fully confirmed", row is not None
+          and row["detected"] == 1 and row["tags_here"] == 1,
+          str(row)[:250])
+    with Session(get_engine()) as s:
+        sold = s.scalar(select(SoldRecord).where(
+            SoldRecord.order_id == "oz1"))
+        check("the stale sale was consumed tag-free",
+              sold.retired == 1, sold.retired)
+        t = s.scalar(select(ReviewTask).where(
+            ReviewTask.sku == "ZOAG-1",
+            ReviewTask.category == "inventory-check"))
+        check("the inventory check resolved with the audit",
+              t.status == "resolved" and t.resolved_by == "bin-audit"
+              and "no tagged unit" in (t.resolution_note or ""),
+              (t.status, t.resolution_note))
+        # Re-running the nightly arithmetic does NOT re-file it: the
+        # expectation is clean now.
+        orders_sync.refresh_mismatch_tasks(s); s.commit()
+        again = s.scalars(select(ReviewTask).where(
+            ReviewTask.sku == "ZOAG-1",
+            ReviewTask.status == "open")).all()
+        check("the check stays resolved on the next sync", again == [],
+              again)
+
+    # A sweep that MISSES a tag never clears the ledger - the silence
+    # might really be the sold box.
+    with Session(get_engine()) as s:
+        tag(s, "ZOAG00000000000000000002", "ZOAG-2")
+        tag(s, "ZOAG00000000000000000003", "ZOAG-2")
+        for a in s.query(RfidAssignment).filter_by(sku="ZOAG-2"):
+            a.bin_location = "W1-1"
+        s.add(BinMapEntry(sku="ZOAG-2", product_title="ZWO OAG II",
+                          bin="W1-1", qty=2, shopify_variant_id="t:Z2"))
+        s.add(SoldRecord(order_id="oz2", order_name="#Z2", sku="ZOAG-2",
+                         quantity=1,
+                         fulfilled_at=NOW - timedelta(days=30)))
+        s.commit()
+    STOCK["ZOAG-2"] = 2
+    cl.post("/api/bins/W1-1/check",
+            json={"epcs": ["ZOAG00000000000000000002"]})
+    with Session(get_engine()) as s:
+        sold = s.scalar(select(SoldRecord).where(
+            SoldRecord.order_id == "oz2"))
+        check("a silent tag keeps the ledger untouched",
+              sold.retired == 0, sold.retired)
+
 print()
 print("FAILED: "+", ".join(fails) if fails else "ALL CHECKS PASSED")
 sys.exit(1 if fails else 0)

@@ -1462,6 +1462,7 @@ public class MainActivity extends Activity {
     private TextView locName, locSku, locPct, locInfo, locHint;
     private android.widget.ProgressBar locMeter;
     private Button locSoundBtn, locTargetBtn, locFoundBtn, locListBtn;
+    private Button locEditBtn;
     private Button locModeMeter, locModeRadar, locAutoBtn;
     private LinearLayout locMeterPane, locRadarPane;
     private RadarDialView locRadarView;
@@ -1650,6 +1651,21 @@ public class MainActivity extends Activity {
                 dp(64), LinearLayout.LayoutParams.WRAP_CONTENT);
         abLp.leftMargin = dp(6);
         thermoRow.addView(locAutoBtn, abLp);
+        // The volume ICON (3.88, Nick): a setting, so it lives on the
+        // power row, not the action row. Tap cycles 100/50/25/0%;
+        // long-press keeps the fine slider. The one licensed emoji
+        // exception to the v3.44 no-emoji rule - Nick asked for the
+        // speaker icons by picture.
+        locSoundBtn = smallBtn("🔊");
+        locSoundBtn.setOnClickListener(x -> cycleBeepVolume());
+        locSoundBtn.setOnLongClickListener(x -> {
+            showBeepVolumeDialog();
+            return true;
+        });
+        LinearLayout.LayoutParams vbLp = new LinearLayout.LayoutParams(
+                dp(52), LinearLayout.LayoutParams.WRAP_CONTENT);
+        vbLp.leftMargin = dp(6);
+        thermoRow.addView(locSoundBtn, vbLp);
         v.addView(thermoRow, thLp);
         paintAutoBtn();
 
@@ -1659,16 +1675,10 @@ public class MainActivity extends Activity {
         LinearLayout act = new LinearLayout(this);
         act.setGravity(Gravity.CENTER);
         act.setPadding(0, dp(6), 0, 0);
-        locSoundBtn = smallBtn("SOUND");
-        locSoundBtn.setOnClickListener(x -> {
-            locSound = !locSound;
-            paintSoundBtn();
-        });
-        // Hold for the beep-volume slider.
-        locSoundBtn.setOnLongClickListener(x -> {
-            showBeepVolumeDialog();
-            return true;
-        });
+        // EDIT TAG (3.88): acts on the TARGETED tag's record; with no
+        // single target it opens the tag list to pick one.
+        locEditBtn = smallBtn("EDIT TAG");
+        locEditBtn.setOnClickListener(x -> editTagAction());
         locTargetBtn = smallBtn("TARGET");
         locTargetBtn.setOnClickListener(x -> locateTargetDialog());
         locFoundBtn = smallBtn("MARK FOUND");
@@ -1681,7 +1691,7 @@ public class MainActivity extends Activity {
         locListBtn.setOnClickListener(x -> showLocateList());
         act.addView(locListBtn, new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
-        act.addView(locSoundBtn, new LinearLayout.LayoutParams(
+        act.addView(locEditBtn, new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         act.addView(locTargetBtn, new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
@@ -1695,10 +1705,10 @@ public class MainActivity extends Activity {
         locHint.setTextColor(C_MUTED);
         locHint.setGravity(Gravity.CENTER);
         locHint.setPadding(0, dp(8), 0, 0);
-        locHint.setText("Trigger toggles the hunt. Tap the power bar "
-                + "(1–30) or AUTO to let it step itself as you close "
-                + "in. FOUND IT? confirms at power 1 and drops that tag "
-                + "from the hunt.");
+        locHint.setText("Trigger toggles the hunt. TARGET narrows to one "
+                + "tag; EDIT TAG acts on the targeted tag's RECORD; "
+                + "MARK FOUND confirms at power 1 and records what "
+                + "happened to the box.");
         v.addView(locHint);
         return v;
     }
@@ -1796,14 +1806,32 @@ public class MainActivity extends Activity {
         locAutoBtn.setTextColor(autoPowerOn ? Color.WHITE : C_TEXT);
     }
 
-    /** Lit = beeps on; dim = muted. Same lit-means-active language as
-     *  AUTO and IDENTIFY. */
+    /** The four-state volume icon (3.88): 🔊 100 / 🔉 50 / 🔈 25 / 🔇 0.
+     *  Lit while beeps are audible; the fine slider snaps the icon to
+     *  the nearest band. locSound stays synced so hunt code keeps its
+     *  one boolean. */
     private void paintSoundBtn() {
         if (locSoundBtn == null) return;
+        int v = prefs.getInt("beep_vol", 100);
+        locSound = v > 0;
+        locSoundBtn.setText(v >= 75 ? "🔊" : v >= 40 ? "🔉"
+                : v > 0 ? "🔈" : "🔇");
         locSoundBtn.setBackground(locSound
                 ? btnBg(C_BLUE, 0, C_BLUE_DK, 8)
                 : btnBg(C_CARD, C_LINE, C_PRESS, 8));
         locSoundBtn.setTextColor(locSound ? Color.WHITE : C_TEXT);
+    }
+
+    /** Tap the volume icon: 100 → 50 → 25 → 0 → 100. */
+    private void cycleBeepVolume() {
+        int v = prefs.getInt("beep_vol", 100);
+        int next = v >= 75 ? 50 : v >= 40 ? 25 : v > 0 ? 0 : 100;
+        prefs.edit().putInt("beep_vol", next).apply();
+        rebuildTones();
+        paintSoundBtn();
+        if (next > 0) beep(SOUND_OK);   // hear the new level
+        status.setText(next == 0 ? "Beeps muted."
+                : "Beep volume " + next + "%.");
     }
 
     /** Long-press SOUND: beep volume 0-100, applied by rebuilding the
@@ -1842,6 +1870,7 @@ public class MainActivity extends Activity {
                         prefs.edit().putInt("beep_vol",
                                 b.getProgress()).apply();
                         rebuildTones();
+                        paintSoundBtn();  // icon tracks the slider
                         beep(SOUND_OK);   // hear it at the new level
                     }
                 });
@@ -3396,23 +3425,23 @@ public class MainActivity extends Activity {
                 } catch (Exception ignored) {
                 }
             }
+            // The fork dialog wants the tag's recorded bin + sold cover;
+            // grab them while we're already off the UI thread.
+            JSONObject tinfo = null;
+            if (hit != null) {
+                try {
+                    tinfo = api("GET", "/api/tag-info/" + hit, null);
+                } catch (Exception ignored) {
+                }
+            }
             final String fhit = hit;
             final boolean fstrange = strange;
+            final JSONObject finfo = tinfo;
             ui.post(() -> {
                 locFoundBtn.setEnabled(true);
                 if (fhit != null) {
-                    boolean already = locFound.contains(fhit);
-                    locFound.add(fhit);
-                    if (fhit.equals(locNarrow)) locNarrow = null;
                     beep(SOUND_OK);
-                    status.setText((already ? "Same tag again (…"
-                            : "Found ✓ …")
-                            + fhit.substring(Math.max(0, fhit.length() - 6))
-                            + " — " + locFound.size() + " of "
-                            + locTags.size() + " found; out of the hunt.");
-                    if (wasLocating && !locTargets().isEmpty()) {
-                        toggleLocate();
-                    }
+                    foundFork(fhit, wasLocating, finfo);
                 } else {
                     beep(SOUND_ERR);
                     status.setText(fstrange
@@ -3424,6 +3453,583 @@ public class MainActivity extends Activity {
                 updateLocateUi();
             });
         }).start();
+    }
+
+    /** The last 6 hex of an EPC, the way operators say tags out loud. */
+    private String epcTail(String epc) {
+        return "…" + epc.substring(Math.max(0, epc.length() - 6));
+    }
+
+    /** The pre-3.88 MARK FOUND outcome: found-mark the tag and resume
+     *  the hunt if one was running and targets remain. */
+    private void markFoundAndResume(String epc, boolean wasLocating) {
+        boolean already = locFound.contains(epc);
+        locFound.add(epc);
+        if (epc.equals(locNarrow)) locNarrow = null;
+        status.setText((already ? "Same tag again (" : "Found ✓ ")
+                + epcTail(epc) + " — " + locFound.size() + " of "
+                + locTags.size() + " found; out of the hunt.");
+        if (wasLocating && !locTargets().isEmpty()) toggleLocate();
+        updateLocateUi();
+    }
+
+    /** An action button + its "?" help beside it (Nick, 2026-09-08:
+     *  descriptions live behind help buttons so sheets never scroll,
+     *  and ONLY the orange buttons carry one). */
+    private LinearLayout rowWithHelp(Button action, final String helpTitle,
+            final String helpText) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.addView(action, new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        Button h = smallBtn("?");
+        h.setOnClickListener(x -> dlg()
+                .setTitle(helpTitle)
+                .setMessage(helpText)
+                .setPositiveButton("OK", null)
+                .show());
+        LinearLayout.LayoutParams hl = new LinearLayout.LayoutParams(
+                dp(42), LinearLayout.LayoutParams.WRAP_CONTENT);
+        hl.leftMargin = dp(6);
+        row.addView(h, hl);
+        LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        rl.topMargin = dp(8);
+        row.setLayoutParams(rl);
+        return row;
+    }
+
+    /** An orange (consequence-carrying) sheet button. */
+    private Button warnSheetBtn(String text) {
+        Button b = smallBtn(text);
+        b.setBackground(btnBg(C_WARN_BG, C_WARN, C_PRESS, 8));
+        b.setTextColor(C_TEXT);
+        return b;
+    }
+
+    /** MARK FOUND's fork (3.88): the find records what actually
+     *  HAPPENED to the box, not just that it happened. */
+    private void foundFork(final String epc, final boolean wasLocating,
+            final JSONObject info) {
+        JSONObject asg = info == null ? null
+                : info.optJSONObject("assignment");
+        final String home = asg != null && !asg.isNull("bin_location")
+                ? asg.optString("bin_location") : null;
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(18), dp(6), dp(18), dp(2));
+        TextView meta = new TextView(this);
+        meta.setTextSize(13);
+        meta.setTextColor(C_TEXT);
+        meta.setText("Tag " + epcTail(epc)
+                + (home != null ? "\nIts record says " + home + "." : ""));
+        box.addView(meta);
+
+        final AlertDialog[] dref = new AlertDialog[1];
+        Button moved = warnSheetBtn("FOUND - BUT IT MOVED");
+        moved.setOnClickListener(x -> {
+            if (dref[0] != null) dref[0].dismiss();
+            movedTrio(epc, home, info);
+        });
+        box.addView(rowWithHelp(moved, "FOUND - BUT IT MOVED",
+                "The box was not on its recorded shelf. Pick what "
+                + "happens next: carry it back to its bin, move ALL of "
+                + "this product to the bin you found it in, or send it "
+                + "to a new bin entirely. Bin changes run the audited "
+                + "update (Shopify + records, undo in History)."));
+        Button editIt = warnSheetBtn("FOUND - NEEDS EDITING");
+        editIt.setOnClickListener(x -> {
+            if (dref[0] != null) dref[0].dismiss();
+            if (info != null && info.optBoolean("found", false)) {
+                showEditTagSheet(epc, info);
+            } else {
+                openEditTagSheet(epc);
+            }
+        });
+        box.addView(rowWithHelp(editIt, "FOUND - NEEDS EDITING",
+                "Opens the tag's EDIT sheet: set the unit aside as "
+                + "unavailable stock, retire a unit that is not in "
+                + "storage, mark it presumed sold, or unlink a "
+                + "mis-paired sticker."));
+
+        dref[0] = dlg()
+                .setTitle("Found " + epcTail(epc))
+                .setView(box)
+                .setPositiveButton("FOUND - ALL GOOD",
+                        (d, w) -> markFoundAndResume(epc, wasLocating))
+                .setNegativeButton("KEEP HUNTING", (d, w) -> {
+                    if (wasLocating) toggleLocate();
+                })
+                .show();
+    }
+
+    /** FOUND - BUT IT MOVED: the stray-decision trio, locate flavor
+     *  (Nick, 2026-09-08: "default to the main buttons already in
+     *  use"). */
+    private void movedTrio(final String epc, final String home,
+            final JSONObject info) {
+        JSONObject asg = info == null ? null
+                : info.optJSONObject("assignment");
+        final String sku = asg != null ? asg.optString("sku", "") : "";
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(18), dp(6), dp(18), dp(2));
+        final AlertDialog[] dref = new AlertDialog[1];
+
+        Button back = smallBtn(home != null
+                ? "TAKE IT BACK TO " + home : "TAKE IT BACK TO ITS BIN");
+        back.setOnClickListener(x -> {
+            if (dref[0] != null) dref[0].dismiss();
+            markFoundAndResume(epc, false);
+            status.setText("Found ✓ " + epcTail(epc) + " — carry it "
+                    + (home != null ? "back to " + home : "home")
+                    + ". Nothing was written.");
+        });
+        LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        bl.topMargin = dp(8);
+        box.addView(back, bl);
+        TextView backHint = new TextView(this);
+        backHint.setText("Nothing is written - the box goes home.");
+        backHint.setTextSize(11);
+        backHint.setTextColor(C_MUTED);
+        box.addView(backHint);
+
+        Button all = smallBtn("MOVE ALL "
+                + (sku.isEmpty() ? "OF IT" : sku) + " TO THIS BIN");
+        all.setOnClickListener(x -> {
+            if (dref[0] != null) dref[0].dismiss();
+            askLocateBin("Type the bin you found it in", sku, epc);
+        });
+        LinearLayout.LayoutParams al = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        al.topMargin = dp(8);
+        box.addView(all, al);
+        TextView allHint = new TextView(this);
+        allHint.setText("The product's recorded bin becomes where you "
+                + "found it (Shopify + records).");
+        allHint.setTextSize(11);
+        allHint.setTextColor(C_MUTED);
+        box.addView(allHint);
+
+        Button other = smallBtn("SEND IT TO A NEW BIN ENTIRELY");
+        other.setOnClickListener(x -> {
+            if (dref[0] != null) dref[0].dismiss();
+            askLocateBin("Type the bin it SHOULD live in", sku, epc);
+        });
+        LinearLayout.LayoutParams ol = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        ol.topMargin = dp(8);
+        box.addView(other, ol);
+        TextView otherHint = new TextView(this);
+        otherHint.setText("Neither shelf is right - the bin updates and "
+                + "you carry the box there.");
+        otherHint.setTextSize(11);
+        otherHint.setTextColor(C_MUTED);
+        box.addView(otherHint);
+
+        dref[0] = dlg()
+                .setTitle("Where does it go?")
+                .setView(box)
+                .setNegativeButton("CANCEL", null)
+                .show();
+    }
+
+    /** Bin entry for the moved trio, then the audited product bin
+     *  write, then the found-mark. */
+    private void askLocateBin(String prompt, final String sku,
+            final String epc) {
+        if (sku == null || sku.isEmpty()) {
+            status.setText("No SKU on this tag to update a bin with.");
+            return;
+        }
+        final EditText in = themedEdit();
+        in.setHint("Bin (like D1-3)");
+        in.setTextSize(16);
+        in.setInputType(InputType.TYPE_CLASS_TEXT
+                | InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS);
+        LinearLayout wrap = new LinearLayout(this);
+        wrap.setOrientation(LinearLayout.VERTICAL);
+        wrap.setPadding(dp(20), dp(8), dp(20), dp(4));
+        wrap.addView(in);
+        dlg().setTitle(prompt)
+                .setView(wrap)
+                .setPositiveButton("SET BIN", (d2, w) -> {
+                    String bin = in.getText().toString().trim()
+                            .toUpperCase(java.util.Locale.ROOT);
+                    if (bin.isEmpty()) return;
+                    new Thread(() -> {
+                        try {
+                            JSONObject body = new JSONObject()
+                                    .put("target", sku)
+                                    .put("bin", bin)
+                                    .put("changed_by",
+                                            prefs.getString("device", "C72"));
+                            api("POST", "/api/bin-updates", body);
+                            ui.post(() -> {
+                                beep(SOUND_OK);
+                                markFoundAndResume(epc, false);
+                                status.setText(sku + " now lives in "
+                                        + bin + " ✓ — found-marked "
+                                        + epcTail(epc) + ".");
+                            });
+                        } catch (Exception ex) {
+                            ui.post(() -> {
+                                beep(SOUND_ERR);
+                                status.setText("Bin update failed: "
+                                        + ex.getMessage());
+                            });
+                        }
+                    }).start();
+                })
+                .setNegativeButton("CANCEL", null)
+                .show();
+    }
+
+    /** EDIT TAG (3.88): acts on the targeted tag; with no single
+     *  target it opens the tag list to pick one (Nick's Q3). */
+    private void editTagAction() {
+        if (locTags.isEmpty()) {
+            status.setText("Nothing being hunted — look up a product "
+                    + "first.");
+            return;
+        }
+        String target = locNarrow;
+        if (target == null && locTags.size() == 1) {
+            target = locTags.keySet().iterator().next();
+        }
+        if (target == null) {
+            java.util.Set<String> t = locTargets();
+            if (t.size() == 1) target = t.iterator().next();
+        }
+        if (target != null) {
+            openEditTagSheet(target);
+        } else {
+            editTagPicker();
+        }
+    }
+
+    /** Pick which of the hunt's tags to edit. */
+    private void editTagPicker() {
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        list.setPadding(dp(14), dp(8), dp(14), dp(8));
+        scroll.addView(list);
+        final AlertDialog[] dref = new AlertDialog[1];
+        for (final String epc : locTags.keySet()) {
+            boolean found = locFound.contains(epc);
+            list.addView(targetCard(epcTail(epc),
+                    found ? "marked found — tap to edit its record"
+                          : "tap to edit this tag's record",
+                    found ? "ok" : null,
+                    () -> {
+                        if (dref[0] != null) dref[0].dismiss();
+                        openEditTagSheet(epc);
+                    }, found ? "FOUND ✓" : null));
+        }
+        dref[0] = dlg()
+                .setTitle("Edit which tag?")
+                .setView(scroll)
+                .setNegativeButton("Cancel", null)
+                .create();
+        dref[0].show();
+    }
+
+    /** Fetch the tag's full story, then show the sheet. */
+    private void openEditTagSheet(final String epc) {
+        status.setText("Reading " + epcTail(epc) + "'s record…");
+        new Thread(() -> {
+            JSONObject info = null;
+            try {
+                info = api("GET", "/api/tag-info/" + epc, null);
+            } catch (Exception ignored) {
+            }
+            final JSONObject fi = info;
+            ui.post(() -> {
+                if (fi == null) {
+                    beep(SOUND_ERR);
+                    status.setText("Couldn't read the tag's record — "
+                            + "check the connection.");
+                    return;
+                }
+                if (!fi.optBoolean("found", false)) {
+                    beep(SOUND_ERR);
+                    status.setText("That tag has no pairing on file — "
+                            + "nothing to edit.");
+                    return;
+                }
+                status.setText("");
+                showEditTagSheet(epc, fi);
+            });
+        }).start();
+    }
+
+    /** The EDIT TAG sheet (3.88, per the approved preview): every
+     *  action is History-logged server-side; descriptions live behind
+     *  the "?" buttons so the sheet never scrolls. MARK PRESUMED SOLD
+     *  only exists when order history can cover it (Nick's amendment). */
+    private void showEditTagSheet(final String epc, JSONObject info) {
+        JSONObject asg = info.optJSONObject("assignment");
+        if (asg == null) return;
+        final String sku = asg.optString("sku", "");
+        final String title = asg.optString("product_title",
+                sku.isEmpty() ? "this product" : sku);
+        String bin = asg.isNull("bin_location") ? null
+                : asg.optString("bin_location");
+        final int soldCover = info.optInt("sold_cover", 0);
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(18), dp(6), dp(18), dp(2));
+        TextView card = new TextView(this);
+        card.setTextSize(13);
+        card.setTextColor(C_TEXT);
+        card.setText(title + "\nTag " + epcTail(epc)
+                + (bin != null ? " · recorded in " + bin : ""));
+        box.addView(card);
+
+        final AlertDialog[] dref = new AlertDialog[1];
+        Button aside = warnSheetBtn("SET ASIDE - UNAVAILABLE");
+        aside.setOnClickListener(x -> {
+            if (dref[0] != null) dref[0].dismiss();
+            setAsideBucketDialog(epc, sku, title);
+        });
+        box.addView(rowWithHelp(aside, "SET ASIDE - UNAVAILABLE",
+                "Found it, but it can't sell (missing a piece, "
+                + "damaged). Moves 1 unit into a Shopify unavailable "
+                + "bucket — you pick which — and adds a staff comment "
+                + "to the product. On-hand total is unchanged; the "
+                + "shelf then expects one fewer box, and audits say it "
+                + "matches its unavailable stock."));
+
+        Button gone = warnSheetBtn("NOT IN STORAGE - RETIRE");
+        gone.setOnClickListener(x -> {
+            if (dref[0] != null) dref[0].dismiss();
+            retireTagFlow(epc, sku, "not-in-storage", 0);
+        });
+        box.addView(rowWithHelp(gone, "NOT IN STORAGE - RETIRE",
+                "The unit is genuinely gone, but NOT sold. Retires the "
+                + "tag locally (undo at the station). Shopify still "
+                + "counts the unit, so the Inventory Check will show a "
+                + "shortfall until stock is corrected."));
+
+        if (soldCover > 0) {
+            Button sold = smallBtn("MARK PRESUMED SOLD");
+            sold.setOnClickListener(x -> {
+                if (dref[0] != null) dref[0].dismiss();
+                retireTagFlow(epc, sku, "presumed-sold", soldCover);
+            });
+            LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            sl.topMargin = dp(8);
+            box.addView(sold, sl);
+        }
+
+        Button unlink = smallBtn("UNLINK - WRONG PRODUCT");
+        unlink.setOnClickListener(x -> {
+            if (dref[0] != null) dref[0].dismiss();
+            unlinkTagFlow(epc, title);
+        });
+        LinearLayout.LayoutParams ul = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        ul.topMargin = dp(8);
+        box.addView(unlink, ul);
+
+        dref[0] = dlg()
+                .setTitle("EDIT TAG " + epcTail(epc))
+                .setView(box)
+                .setNegativeButton("CANCEL", null)
+                .show();
+    }
+
+    /** SET ASIDE step 1: which unavailable bucket (Nick's list, with
+     *  Other mapping to Shopify's reserved). */
+    private void setAsideBucketDialog(final String epc, final String sku,
+            final String title) {
+        final String[][] buckets = {
+                {"Damaged", "damaged"},
+                {"Quality control", "quality_control"},
+                {"Safety stock", "safety_stock"},
+                {"Other", "reserved"},
+        };
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(18), dp(6), dp(18), dp(2));
+        final AlertDialog[] dref = new AlertDialog[1];
+        for (String[] b : buckets) {
+            final String label = b[0], value = b[1];
+            Button btn = smallBtn(label.toUpperCase(
+                    java.util.Locale.ROOT));
+            btn.setOnClickListener(x -> {
+                if (dref[0] != null) dref[0].dismiss();
+                setAsideCommentDialog(epc, sku, title, label, value);
+            });
+            LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            bl.topMargin = dp(8);
+            box.addView(btn, bl);
+        }
+        dref[0] = dlg()
+                .setTitle("Which unavailable bucket?")
+                .setView(box)
+                .setNegativeButton("CANCEL", null)
+                .show();
+    }
+
+    /** SET ASIDE step 2: the staff comment (appended, never
+     *  overwriting) + the confirm. */
+    private void setAsideCommentDialog(final String epc, final String sku,
+            final String title, final String bucketLabel,
+            final String bucketValue) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(18), dp(6), dp(18), dp(2));
+        TextView explain = new TextView(this);
+        explain.setTextSize(12);
+        explain.setTextColor(C_TEXT);
+        explain.setText("1 unit of " + sku + " moves to " + bucketLabel
+                + ". On-hand total is unchanged - the shelf just "
+                + "expects one fewer box. The comment below is ADDED "
+                + "to the product's Staff Comments in Shopify (nothing "
+                + "is overwritten).");
+        box.addView(explain);
+        final EditText in = themedEdit();
+        in.setText("Product moved to unavailable from C72.");
+        in.setTextSize(14);
+        LinearLayout.LayoutParams il = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        il.topMargin = dp(8);
+        box.addView(in, il);
+        dlg().setTitle("SET ASIDE - " + bucketLabel.toUpperCase(
+                        java.util.Locale.ROOT))
+                .setView(box)
+                .setPositiveButton("CONFIRM SET ASIDE", (d, w) ->
+                        postSetAside(epc, sku, bucketValue,
+                                in.getText().toString().trim()))
+                .setNegativeButton("CANCEL", null)
+                .show();
+    }
+
+    private void postSetAside(final String epc, final String sku,
+            final String bucket, final String comment) {
+        status.setText("Setting " + sku + " aside…");
+        new Thread(() -> {
+            try {
+                JSONObject body = new JSONObject()
+                        .put("bucket", bucket)
+                        .put("direction", "in")
+                        .put("qty", 1)
+                        .put("comment", comment)
+                        .put("confirmed", true)
+                        .put("changed_by",
+                                prefs.getString("device", "C72"));
+                JSONObject resp = api("POST", "/api/products/"
+                        + encPath(sku) + "/unavailable-move", body);
+                ui.post(() -> {
+                    beep(SOUND_OK);
+                    markFoundAndResume(epc, false);
+                    status.setText(resp.optString("message",
+                            sku + " set aside ✓"));
+                });
+            } catch (Exception ex) {
+                ui.post(() -> {
+                    beep(SOUND_ERR);
+                    status.setText("Set aside failed: "
+                            + ex.getMessage());
+                });
+            }
+        }).start();
+    }
+
+    /** NOT IN STORAGE / PRESUMED SOLD: one confirm, one retire call,
+     *  and the tag leaves the hunt for good. */
+    private void retireTagFlow(final String epc, final String sku,
+            final String kind, int soldCover) {
+        final boolean sold = "presumed-sold".equals(kind);
+        String msg = sold
+                ? "Order history shows " + soldCover + " sale(s) with "
+                  + "no tagged unit for " + sku + ". This retires the "
+                  + "tag as PRESUMED SOLD and consumes one of those "
+                  + "sales."
+                : "The unit is gone but NOT sold. The tag retires "
+                  + "locally (undo at the station); Shopify still "
+                  + "counts the unit until stock is corrected.";
+        dlg().setTitle((sold ? "MARK SOLD " : "RETIRE ") + epcTail(epc))
+                .setMessage(msg)
+                .setPositiveButton(sold ? "MARK SOLD" : "RETIRE TAG",
+                        (d, w) -> new Thread(() -> {
+                    try {
+                        JSONObject body = new JSONObject()
+                                .put("epcs", new org.json.JSONArray()
+                                        .put(epc))
+                                .put("kind", kind)
+                                .put("note", "From C72 locate")
+                                .put("changed_by",
+                                        prefs.getString("device", "C72"));
+                        api("POST", "/api/assignments/retire", body);
+                        ui.post(() -> dropTagFromHunt(epc, sold
+                                ? "Marked presumed sold ✓ "
+                                  + epcTail(epc) + " — sale consumed."
+                                : "Tag retired ✓ " + epcTail(epc)
+                                  + " — undo lives at the station."));
+                    } catch (Exception ex) {
+                        ui.post(() -> {
+                            beep(SOUND_ERR);
+                            status.setText("Retire failed: "
+                                    + ex.getMessage());
+                        });
+                    }
+                }).start())
+                .setNegativeButton("CANCEL", null)
+                .show();
+    }
+
+    private void unlinkTagFlow(final String epc, String title) {
+        dlg().setTitle("UNLINK " + epcTail(epc))
+                .setMessage("The sticker was paired to the wrong "
+                        + "product (" + title + "). Removes the "
+                        + "pairing (History receipt); re-pair it at "
+                        + "the station.")
+                .setPositiveButton("UNLINK", (d, w) -> new Thread(() -> {
+                    try {
+                        api("DELETE", "/api/rfid-assignments/" + epc
+                                + "?by=" + URLEncoder.encode(
+                                        prefs.getString("device", "C72"),
+                                        "UTF-8"), null);
+                        ui.post(() -> dropTagFromHunt(epc,
+                                "Unlinked ✓ " + epcTail(epc)
+                                + " — re-pair it at the station."));
+                    } catch (Exception ex) {
+                        ui.post(() -> {
+                            beep(SOUND_ERR);
+                            status.setText("Unlink failed: "
+                                    + ex.getMessage());
+                        });
+                    }
+                }).start())
+                .setNegativeButton("CANCEL", null)
+                .show();
+    }
+
+    /** A tag whose RECORD no longer exists (retired, sold, unlinked)
+     *  leaves the hunt entirely — found-marks would resurrect it. */
+    private void dropTagFromHunt(String epc, String msg) {
+        locTags.remove(epc);
+        locFound.remove(epc);
+        if (epc.equals(locNarrow)) locNarrow = null;
+        beep(SOUND_OK);
+        status.setText(msg);
+        if (locating && locTargets().isEmpty()) stopLocate(false);
+        updateLocateUi();
     }
 
     /** Mark one tag found mid-hunt (the 100% prompt's path): drops it
