@@ -964,6 +964,58 @@ query StaffBySku($search: String!) {
 """
 
 
+_BUCKET_DETAILS_QUERY = """
+query BucketDetails($search: String!) {
+  productVariants(first: 50, query: $search) {
+    nodes {
+      sku
+      inventoryItem {
+        inventoryLevels(first: 3) {
+          nodes {
+            quantities(names: ["damaged", "quality_control",
+                               "safety_stock", "reserved"]) {
+              name quantity updatedAt
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+
+def get_bucket_details_by_skus(skus: list) -> dict:
+    """Upper SKU -> [{bucket, qty, updated_at}] for nonzero unavailable
+    buckets, batched ~20 per query. updatedAt is Shopify's own last-
+    change stamp per bucket - for stock set aside once and untouched,
+    that IS the set date (verified live 2026-09-08: 8HGNZE's
+    safety_stock says 2026-04-18, matching Nick's records)."""
+    out: dict = {}
+    cleaned = [(s, _search_term(s)) for s in skus if s and str(s).strip()]
+    for i in range(0, len(cleaned), 20):
+        chunk = cleaned[i:i + 20]
+        search = " OR ".join(f'sku:"{c}"' for _, c in chunk)
+        data = query_shopify(_BUCKET_DETAILS_QUERY, {"search": search})
+        for n in data["productVariants"]["nodes"]:
+            sku = (n.get("sku") or "").strip()
+            if not sku:
+                continue
+            buckets = []
+            for lv in ((n.get("inventoryItem") or {})
+                       .get("inventoryLevels") or {}).get("nodes", []):
+                for q in lv.get("quantities", []):
+                    if q.get("quantity"):
+                        buckets.append({
+                            "bucket": q["name"],
+                            "qty": q["quantity"],
+                            "updated_at": q.get("updatedAt"),
+                        })
+            if buckets:
+                out[sku.upper()] = buckets
+    return out
+
+
 def get_staff_comments_by_skus(skus: list) -> dict:
     """Upper SKU -> custom.staff_comments value, batched ~20 per query.
     Only SKUs with a non-empty comment appear. For the audit's

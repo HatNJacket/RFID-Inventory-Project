@@ -129,6 +129,77 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
     check("...and the live staff comment",
           row["staff_comments"] == "Missing a piece - Nick"
           and d["comments_live"] is True, str(row)[:200])
+    check("2 tags vs on-hand-total 3: no return offer",
+          row["return_ok"] is False and row["tag_units"] == 2
+          and row["on_hand_total"] == 3, str(row)[:200])
+
+    # ---- admin-side set-asides: date from Shopify's bucket history,
+    # oldest first, and the guarded RETURN TO AVAILABLE ---------------
+    from app.models import EpcCapture
+    with S(get_engine()) as s:
+        s.add(BinMapEntry(sku="BACK-1", bin="G9-1", qty=2,
+                          unavailable=1, product_title="Comeback",
+                          shopify_variant_id="gid://v/back"))
+        epcs = []
+        for i in range(3):
+            epc = f"BACK000000000000000000A{i}"
+            epcs.append(epc)
+            s.add(RfidAssignment(rfid_id=epc,
+                                 shopify_variant_id="gid://v/back",
+                                 sku="BACK-1", product_title="Comeback",
+                                 bin_location="G9-1"))
+        s.add(EpcCapture(device="C72", note="AUDIT G9",
+                         epc_count=3, epcs="\n".join(epcs)))
+        s.commit()
+    with patch("app.shopify.get_staff_comments_by_skus",
+               return_value={}), \
+         patch("app.shopify.get_bucket_details_by_skus",
+               return_value={"BACK-1": [{
+                   "bucket": "safety_stock", "qty": 1,
+                   "updated_at": "2026-04-18T15:42:01Z"}]}):
+        r = cl.get("/api/audit/unavailable")
+    d = r.json()
+    back = next(i for i in d["items"] if i["sku"] == "BACK-1")
+    check("admin set-aside gets its date from Shopify's bucket stamp",
+          back["set_at"] == "2026-04-18T15:42:01Z"
+          and back["set_source"] == "shopify"
+          and back["bucket"] == "safety_stock", str(back)[:250])
+    check("longest-set-aside sorts first",
+          [i["sku"] for i in d["items"]] == ["BACK-1", "ZWO-EDIT"],
+          [i["sku"] for i in d["items"]])
+    check("all tagged + all heard vs on-hand 3: return offered",
+          back["return_ok"] is True and back["tag_units"] == 3
+          and back["heard_units"] == 3, str(back)[:250])
+
+    # The button's write: bucket "auto" finds the real bucket(s).
+    auto_calls = []
+    def fake_auto_move(sku_a, bucket_a, qty_a=1, direction_a="in"):
+        auto_calls.append((sku_a, bucket_a, qty_a, direction_a))
+        return {"available_before": 2, "bucket_before": 1,
+                "product_gid": "gid://p/back"}
+    with patch("app.shopify.move_unavailable",
+               side_effect=fake_auto_move), \
+         patch("app.shopify.get_bucket_details_by_skus",
+               return_value={"BACK-1": [{
+                   "bucket": "safety_stock", "qty": 1,
+                   "updated_at": "2026-04-18T15:42:01Z"}]}):
+        r = cl.post("/api/products/BACK-1/unavailable-move", json={
+            "bucket": "auto", "direction": "out", "qty": 1,
+            "confirmed": True, "changed_by": "Nick"})
+    check("auto return moves out of the real bucket",
+          r.status_code == 200
+          and auto_calls == [("BACK-1", "safety_stock", 1, "out")]
+          and "back in available" in r.json()["message"],
+          r.text[:300])
+    with S(get_engine()) as s:
+        row_b = s.query(BinMapEntry).filter_by(sku="BACK-1").one()
+        check("snapshot follows the auto return",
+              row_b.qty == 3 and row_b.unavailable == 0,
+              f"qty={row_b.qty} unavail={row_b.unavailable}")
+    r = cl.post("/api/products/BACK-1/unavailable-move", json={
+        "bucket": "auto", "direction": "in", "qty": 1,
+        "confirmed": True})
+    check("auto refuses direction in", r.status_code == 422, r.text)
 
     # ---- direction out reverses the snapshot bookkeeping --------------
     with patch("app.shopify.move_unavailable", side_effect=fake_move), \

@@ -7004,8 +7004,7 @@ def audit_unavailable(session: Session = Depends(get_session)):
             g["bins"].append(e.bin)
 
     # The newest set-aside per product, from the History our own moves
-    # write. Admin-side bucket moves leave no local record - the UI
-    # says "no local record" instead of inventing a date.
+    # write - that record carries WHO.
     if merged:
         for c in session.scalars(
             select(BarcodeChange)
@@ -7023,6 +7022,7 @@ def audit_unavailable(session: Session = Depends(get_session)):
             )
             g["set_by"] = c.changed_by
             g["bucket"] = c.new_barcode
+            g["set_source"] = "local"
 
     comments: dict = {}
     skus = [g["sku"] for g in merged.values()]
@@ -7036,20 +7036,88 @@ def audit_unavailable(session: Session = Depends(get_session)):
         except Exception as error:  # noqa: BLE001 - degrade, don't 500
             comments_live = False
             logger.warning("staff comments fetch failed: %s", error)
+        # Admin-side set-asides: Shopify stamps each bucket's last
+        # change (verified live: 8HGNZE's safety_stock says its real
+        # April date). For a bucket set once and untouched, that IS the
+        # set date - anything Shopify no longer remembers reads as
+        # "6+ months" in the UI.
+        try:
+            details = shopify.get_bucket_details_by_skus([
+                g["sku"] for g in merged.values()
+                if g.get("set_at") is None
+            ])
+            for key, buckets in details.items():
+                g = merged.get(key)
+                if g is None or g.get("set_at") is not None:
+                    continue
+                newest = max(
+                    (b for b in buckets if b.get("updated_at")),
+                    key=lambda b: b["updated_at"],
+                    default=None,
+                )
+                if newest is not None:
+                    g["set_at"] = newest["updated_at"]
+                    g["bucket"] = ", ".join(
+                        b["bucket"] for b in buckets
+                    )
+                    g["set_source"] = "shopify"
+        except Exception as error:  # noqa: BLE001 - dates are decoration
+            logger.warning("bucket dates fetch failed: %s", error)
+
+    # Return-to-available eligibility (Nick, 2026-09-08): when the tag
+    # records AND the latest sweep both account for the FULL on-hand
+    # (sellable + unavailable), the "unavailable" units are sitting on
+    # the shelf like anything else - offer to bring them back.
+    latest_cap = session.scalar(
+        select(EpcCapture).order_by(EpcCapture.id.desc())
+    )
+    swept = {
+        e.strip().upper()
+        for e in (latest_cap.epcs or "").splitlines()
+        if e.strip()
+    } if latest_cap else set()
+    if merged:
+        uppers = set(merged.keys())
+        tags_by: dict[str, list] = {}
+        for t in session.scalars(select(RfidAssignment)):
+            k = (t.sku or "").strip().upper()
+            if k in uppers:
+                tags_by.setdefault(k, []).append(t)
+        for key, g in merged.items():
+            tags = tags_by.get(key, [])
+            g["tag_units"] = sum(t.case_units or 1 for t in tags)
+            g["heard_units"] = sum(
+                t.case_units or 1 for t in tags
+                if t.rfid_id.upper() in swept
+            )
+            total = g["effective_qty"] + g["unavailable"]
+            g["on_hand_total"] = total
+            g["return_ok"] = (
+                total > 0
+                and g["tag_units"] >= total
+                and g["heard_units"] >= total
+            )
 
     items = []
     for key, g in merged.items():
         g.setdefault("set_at", None)
         g.setdefault("set_by", None)
         g.setdefault("bucket", None)
+        g.setdefault("set_source", None)
         g["staff_comments"] = comments.get(key)
         items.append(g)
-    items.sort(key=lambda g: (g["set_at"] or "", g["sku"] or ""),
-               reverse=True)
+    # Longest-set-aside first (Nick's ordering): unknown dates are the
+    # oldest of all (beyond even Shopify's memory) and lead the list.
+    items.sort(key=lambda g: (g["set_at"] or "", g["sku"] or ""))
     return {
         "count": len(items),
         "total_units": sum(g["unavailable"] for g in items),
         "comments_live": comments_live,
+        "sweep_id": latest_cap.id if latest_cap else None,
+        "sweep_at": (
+            latest_cap.created_at.isoformat()
+            if latest_cap and latest_cap.created_at else None
+        ),
         "items": items,
     }
 
@@ -15606,8 +15674,11 @@ def remove_mislabel_alternate(
 
 
 class UnavailableMoveIn(BaseModel):
-    # The UI's "Other" maps to reserved before it gets here.
-    bucket: Literal["damaged", "quality_control", "safety_stock", "reserved"]
+    # The UI's "Other" maps to reserved before it gets here. "auto"
+    # (direction out only) brings stock back from whichever bucket(s)
+    # actually hold it - the audit's return button doesn't know which.
+    bucket: Literal["damaged", "quality_control", "safety_stock",
+                    "reserved", "auto"]
     direction: Literal["in", "out"] = "in"
     qty: int = Field(default=1, ge=1, le=50)
     comment: str | None = Field(default=None, max_length=500)
@@ -15637,12 +15708,56 @@ def unavailable_move(
         raise HTTPException(
             422, "Confirm the move first (confirmed=true)."
         )
-    try:
-        moved = shopify.move_unavailable(
-            sku, payload.bucket, payload.qty, payload.direction
+    if payload.bucket == "auto" and payload.direction != "out":
+        raise HTTPException(
+            422, "bucket 'auto' only brings stock BACK (direction out)."
         )
-    except RuntimeError as error:
-        raise HTTPException(502, f"Shopify move failed: {error}")
+    moved_qty = payload.qty
+    if payload.bucket == "auto":
+        # Bring back from whichever bucket(s) hold units, oldest ask
+        # first - the caller only knows HOW MANY, not where they sit.
+        try:
+            buckets = shopify.get_bucket_details_by_skus([sku]).get(
+                sku.upper(), []
+            )
+        except Exception as error:  # noqa: BLE001 - surface as 502
+            raise HTTPException(502, f"Shopify bucket read failed: {error}")
+        remaining = payload.qty
+        moved_total = 0
+        gid = None
+        moved_from: list[str] = []
+        for b in buckets:
+            if remaining <= 0:
+                break
+            n = min(remaining, int(b["qty"]))
+            if n <= 0:
+                continue
+            try:
+                r = shopify.move_unavailable(sku, b["bucket"], n, "out")
+            except RuntimeError as error:
+                raise HTTPException(502, f"Shopify move failed: {error}")
+            gid = r.get("product_gid") or gid
+            moved_from.append(f"{b['bucket']} x{n}")
+            moved_total += n
+            remaining -= n
+        if moved_total == 0:
+            raise HTTPException(
+                422, f"{sku} has nothing in any unavailable bucket."
+            )
+        moved_qty = moved_total
+        moved = {
+            "available_before": None,
+            "bucket_before": None,
+            "product_gid": gid,
+            "moved_from": moved_from,
+        }
+    else:
+        try:
+            moved = shopify.move_unavailable(
+                sku, payload.bucket, payload.qty, payload.direction
+            )
+        except RuntimeError as error:
+            raise HTTPException(502, f"Shopify move failed: {error}")
     comment_note = None
     comment = (payload.comment or "").strip()
     if comment and moved.get("product_gid"):
@@ -15663,40 +15778,44 @@ def unavailable_move(
     if rows:
         r = max(rows, key=lambda x: x.qty or 0)
         if payload.direction == "in":
-            r.qty = max(0, (r.qty or 0) - payload.qty)
-            r.unavailable = (r.unavailable or 0) + payload.qty
+            r.qty = max(0, (r.qty or 0) - moved_qty)
+            r.unavailable = (r.unavailable or 0) + moved_qty
         else:
-            r.qty = (r.qty or 0) + payload.qty
-            r.unavailable = max(0, (r.unavailable or 0) - payload.qty)
+            r.qty = (r.qty or 0) + moved_qty
+            r.unavailable = max(0, (r.unavailable or 0) - moved_qty)
     title = rows[0].product_title if rows else None
     bucket_label = {
         "damaged": "Damaged", "quality_control": "Quality control",
         "safety_stock": "Safety stock", "reserved": "Other (Reserved)",
+        "auto": ", ".join(moved.get("moved_from") or []) or "unavailable",
     }[payload.bucket]
     session.add(BarcodeChange(
         sku=sku,
         product_title=title,
         changed_field="unavailable-move",
-        old_barcode=f"{payload.direction}:{payload.qty}"[:64],
-        new_barcode=payload.bucket[:64],
+        old_barcode=f"{payload.direction}:{moved_qty}"[:64],
+        new_barcode=(
+            bucket_label if payload.bucket == "auto" else payload.bucket
+        )[:64],
         changed_by=(payload.changed_by or "").strip()[:100] or None,
     ))
     session.commit()
     verb = ("set aside as" if payload.direction == "in"
             else "brought back from")
-    msg = (f"{payload.qty} unit(s) of {sku} {verb} {bucket_label} in "
+    msg = (f"{moved_qty} unit(s) of {sku} {verb} {bucket_label} in "
            f"Shopify. On-hand is unchanged; the shelf now expects "
-           f"{payload.qty} fewer box(es)."
+           f"{moved_qty} fewer box(es)."
            if payload.direction == "in" else
-           f"{payload.qty} unit(s) of {sku} {verb} {bucket_label} — "
-           f"back in available stock.")
+           f"{moved_qty} unit(s) of {sku} {verb} {bucket_label} — "
+           f"back in available (sellable) stock. On-hand total is "
+           f"unchanged.")
     if comment_note:
         msg += " " + comment_note
     return {
         "sku": sku,
         "bucket": payload.bucket,
         "direction": payload.direction,
-        "qty": payload.qty,
+        "qty": moved_qty,
         "available_before": moved["available_before"],
         "bucket_before": moved["bucket_before"],
         "message": msg,

@@ -11991,6 +11991,12 @@ async function jumpToBinAudit(bin) {
   const out = document.getElementById("binaudit-report");
   binEl.value = bin;
   binEl.scrollIntoView({ behavior: "smooth", block: "center" });
+  // A pinned sweep means "audit bin after bin with THIS sweep" - jump
+  // straight to the check without re-asking (Nick, 2026-09-08).
+  if (binAuditPinnedCap) {
+    document.getElementById("binaudit-run").click();
+    return;
+  }
   try {
     const cap = await apiJson("/api/epc-captures/latest");
     const ageMs = Date.now() - tsDate(cap.created_at).getTime();
@@ -12005,6 +12011,41 @@ async function jumpToBinAudit(bin) {
     out.innerHTML = `<p class="result">Walk-scan ${escapeHtml(bin)} with the C72
       (SWEEP → SEND), then hit RUN.</p>`;
   }
+}
+
+// Pinned sweep (Nick, 2026-09-08): pick a sweep once and audit bin
+// after bin with it - RUN reuses the pinned sweep until "use newest"
+// replaces it. Whatever sweep a check actually used becomes the pin.
+let binAuditPinnedCap = null;
+
+function renderPinnedSweep() {
+  let bar = document.getElementById("binaudit-pinnedbar");
+  if (!bar) {
+    const anchor = document.getElementById("binaudit-sweeps");
+    if (!anchor) return;
+    bar = document.createElement("div");
+    bar.id = "binaudit-pinnedbar";
+    bar.className = "result";
+    anchor.parentElement.insertBefore(bar, anchor);
+  }
+  if (!binAuditPinnedCap) {
+    bar.hidden = true;
+    return;
+  }
+  bar.hidden = false;
+  bar.innerHTML =
+    `📌 Using sweep #${escapeHtml(String(binAuditPinnedCap.id))} · ` +
+    `${binAuditPinnedCap.epc_count} tag(s) · ` +
+    `${escapeHtml(fmtAgo(binAuditPinnedCap.created_at))} for every ` +
+    `bin check - ` +
+    `<button class="reset" id="binaudit-unpin" type="button">use newest sweep instead</button>`;
+  bar
+    .querySelector("#binaudit-unpin")
+    .addEventListener("click", async () => {
+      binAuditPinnedCap = null;
+      renderPinnedSweep();
+      document.getElementById("binaudit-run").click();
+    });
 }
 
 async function runBinAudit(cap) {
@@ -12024,6 +12065,8 @@ async function runBinAudit(cap) {
     );
     binAudit = { rep, cap };
     binAuditShowUntagged = false;
+    binAuditPinnedCap = cap;
+    renderPinnedSweep();
     renderBinAudit();
   } catch (err) {
     out.innerHTML = `<p class="result result--err">${escapeHtml(err.message)}</p>`;
@@ -12032,6 +12075,10 @@ async function runBinAudit(cap) {
 
 document.getElementById("binaudit-run").addEventListener("click", async () => {
   const out = document.getElementById("binaudit-report");
+  if (binAuditPinnedCap) {
+    await runBinAudit(binAuditPinnedCap);
+    return;
+  }
   out.innerHTML = `<p class="result">Pulling the latest sweep…</p>`;
   try {
     const cap = await apiJson("/api/epc-captures/latest");
@@ -12683,21 +12730,43 @@ async function loadUnavailable() {
       const bucket = g.bucket
         ? ` into ${g.bucket.replace(/_/g, " ")}`
         : "";
+      // Date provenance: our own History (who + when), Shopify's
+      // per-bucket last-change stamp (when only), or beyond even
+      // Shopify's memory - the oldest of all, so it sorts first.
       const when = g.set_at
-        ? `set aside ${fmtAgo(g.set_at)}` +
-          (g.set_by ? ` by ${g.set_by}` : "") +
-          bucket +
-          ` (${fmtWhen(g.set_at)})`
-        : "set in Shopify admin - no local record of when";
+        ? g.set_source === "shopify"
+          ? `set aside ${fmtAgo(g.set_at)}${bucket} - from Shopify's bucket history (${fmtWhen(g.set_at)})`
+          : `set aside ${fmtAgo(g.set_at)}` +
+            (g.set_by ? ` by ${g.set_by}` : "") +
+            bucket +
+            ` (${fmtWhen(g.set_at)})`
+        : "set aside 6+ months ago (beyond Shopify's history)";
+      // Return-to-available: only when tag records AND the latest
+      // sweep both cover the FULL on-hand - the "unavailable" units
+      // are demonstrably on the shelf like everything else.
+      const evidence =
+        g.tag_units != null
+          ? `${g.tag_units} tag(s) on file · ${g.heard_units} heard on the last sweep · on-hand ${g.on_hand_total}`
+          : "";
       li.innerHTML = `
         <span class="inventory__bin">${escapeHtml((g.bins || []).join(", ") || "—")}</span>
         <span class="recent__prod">
           <b><span class="prodopen" data-sku="${escapeHtml(g.sku || "")}" title="Open this product - label editor, flags, full history">${escapeHtml(g.product_title || g.sku || "?")}</span></b>
           <span class="mono" style="opacity:.75"> ${escapeHtml(g.sku || "")}</span>
           <div class="olrow__sub">${g.unavailable} unavailable · ${g.effective_qty} sellable on the shelf · ${escapeHtml(when)}${
+            evidence
+              ? `<div style="opacity:.75;margin-top:2px">${escapeHtml(evidence)}</div>`
+              : ""
+          }${
             g.staff_comments
               ? `<div style="white-space:pre-line;border-left:2px solid var(--line);padding-left:8px;margin-top:4px">${escapeHtml(g.staff_comments)}</div>`
               : `<div style="opacity:.6;margin-top:2px">no staff comment</div>`
+          }${
+            g.return_ok
+              ? `<div style="margin-top:5px"><button class="reset unavail-return" type="button"
+                   data-sku="${escapeHtml(g.sku || "")}" data-qty="${g.unavailable}"
+                   title="Every unit - the set-aside included - is tagged AND answered the last sweep, so nothing is actually missing. Moves the unavailable unit(s) back to available in Shopify (on-hand total unchanged). Confirmed, History-logged.">RETURN ${g.unavailable} TO AVAILABLE</button></div>`
+              : ""
           }</div>
         </span>
         <span class="audit-mm" title="units in the Unavailable bucket">${g.unavailable}</span>`;
@@ -12705,6 +12774,42 @@ async function loadUnavailable() {
       if (open)
         open.addEventListener("click", () => {
           if (open.dataset.sku) openProductHistory(open.dataset.sku);
+        });
+      const ret = li.querySelector(".unavail-return");
+      if (ret)
+        ret.addEventListener("click", async () => {
+          const sku = ret.dataset.sku;
+          const qty = parseInt(ret.dataset.qty, 10);
+          if (
+            !confirm(
+              `Return ${qty} unit(s) of ${sku} to AVAILABLE?\n\n` +
+                `All ${g.on_hand_total} unit(s) are tagged and answered ` +
+                `the last sweep - the set-aside is sitting on the shelf ` +
+                `like everything else.\n\nThis moves the unit(s) out of ` +
+                `the unavailable bucket(s) in Shopify; on-hand total ` +
+                `stays the same, sellable goes up by ${qty}. ` +
+                `History-logged.`
+            )
+          )
+            return;
+          ret.disabled = true;
+          try {
+            const r = await postJson(
+              `/api/products/${encodeURIComponent(sku)}/unavailable-move`,
+              {
+                bucket: "auto",
+                direction: "out",
+                qty,
+                confirmed: true,
+                changed_by: operatorEl.value || null,
+              }
+            );
+            alert(r.message);
+            loadUnavailable();
+          } catch (err) {
+            alert(err.message);
+            ret.disabled = false;
+          }
         });
       list.append(li);
     });
