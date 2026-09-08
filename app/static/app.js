@@ -3761,6 +3761,10 @@ let invBinCombo = null;
 let invVendorCombo = null;
 let invBinFilter = "";
 let invVendorFilter = "";
+// Client-side paging (50 rows): position + the filter signature that
+// resets it back to page 1 when the visible set changes.
+let invPage = 0;
+let invPageSig = "";
 
 // Freshness tags (Nick, 2026-09-08): snapshot data paints instantly
 // under a yellow "last refreshed" tag, then flips to a green checkmark
@@ -3921,7 +3925,9 @@ function renderInventory() {
     ? `(${rows.length} of ${inventoryRows.length})`
     : `(${inventoryRows.length})`;
 
+  const pager = document.getElementById("inv-pager");
   if (!rows.length) {
+    pager.hidden = true;
     body.innerHTML = `<tr><td colspan="7" class="inventory__empty">${
       filtered
         ? "Nothing matches those filters."
@@ -3929,7 +3935,38 @@ function renderInventory() {
     }</td></tr>`;
     return;
   }
-  body.innerHTML = rows
+
+  // Pages of 50 (Nick, 2026-09-08): the DATA loads once; only the
+  // rendering pages, so the tab paints instantly. Filters, search and
+  // sort jump back to page 1 (their result set is a new list).
+  const PAGE = 50;
+  const sig = [q, invBinFilter, invVendorFilter, sort, rows.length].join("");
+  if (sig !== invPageSig) {
+    invPage = 0;
+    invPageSig = sig;
+  }
+  const pages = Math.max(1, Math.ceil(rows.length / PAGE));
+  invPage = Math.min(invPage, pages - 1);
+  const pageRows = rows.slice(invPage * PAGE, invPage * PAGE + PAGE);
+  if (pages > 1) {
+    pager.hidden = false;
+    pager.innerHTML =
+      `<button class="reset" id="inv-prev" type="button" ${invPage === 0 ? "disabled" : ""}>← Prev</button>` +
+      `<span style="font-size:13px">rows ${invPage * PAGE + 1}–${Math.min(rows.length, (invPage + 1) * PAGE)} of ${rows.length} · page ${invPage + 1} of ${pages}</span>` +
+      `<button class="reset" id="inv-next" type="button" ${invPage >= pages - 1 ? "disabled" : ""}>Next →</button>`;
+    pager.querySelector("#inv-prev").addEventListener("click", () => {
+      invPage = Math.max(0, invPage - 1);
+      renderInventory();
+    });
+    pager.querySelector("#inv-next").addEventListener("click", () => {
+      invPage = Math.min(pages - 1, invPage + 1);
+      renderInventory();
+    });
+  } else {
+    pager.hidden = true;
+    pager.innerHTML = "";
+  }
+  body.innerHTML = pageRows
     .map((p) => {
       const title =
         productLink(p.product_title, p.shopify_product_id, p.sku) +
