@@ -1818,6 +1818,27 @@ body {
 .rvw-delta { color: var(--warn-ink); font-weight: 700; font-size: 15px; }
 .rvw-delta--green { color: var(--ok-ink); }
 
+/* Inventory Check verdict line (Nick, 2026-09-02): the one sentence
+   saying what would reconcile the two systems. */
+.rvw-verdict {
+  border-radius: 8px;
+  padding: 9px 12px;
+  margin: 0 0 10px;
+  font-weight: 600;
+  font-size: 13.5px;
+}
+.rvw-verdict--green {
+  background: rgba(0, 128, 96, 0.12);
+  color: var(--ok-ink);
+  border: 1px solid var(--ok-ink);
+}
+.rvw-verdict--yellow {
+  background: rgba(185, 137, 0, 0.12);
+  color: var(--warn-ink);
+  border: 1px solid var(--warn-ink);
+}
+.rvw-stat[title] { cursor: help; }
+
 /* Stop printing: unmistakably a stop control while live, quiet when idle */
 .queue-stop:not([disabled]) {
   color: #ff6a5b;

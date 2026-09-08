@@ -68,6 +68,7 @@ from app.models import (
     MultiboxProduct,
     NonTaggable,
     OneLeftCheck,
+    OnhandLog,
     OrderReceipt,
     Printer,
     PrintJob,
@@ -5335,6 +5336,27 @@ def bin_check(
         (b.bin_name or "").strip().lower() for b in done_batches
     }
     done_batch = done_batches[0] if done_batches else None
+    # An actual sweep of this location IS the bin-check task's ask
+    # (Nick, 2026-09-02): auto-resolve open bin-check tasks covering
+    # any swept bin. Guarded on a non-empty sweep so a bare LOAD (no
+    # tags collected yet) never waves the reminder away.
+    if swept:
+        for t in session.scalars(
+            select(ReviewTask).where(
+                ReviewTask.category == "bin-check",
+                ReviewTask.status == "open",
+            )
+        ):
+            m = re.match(r"Bin\s+(.+?):", t.detail or "")
+            if m and m.group(1).strip().lower() in bin_key_set:
+                t.status = "resolved"
+                t.resolved_by = "bin-audit"
+                t.resolved_at = datetime.now(timezone.utc)
+                t.resolution_note = (
+                    f"Bin audited - {len(swept)} tag(s) heard on the "
+                    f"{loc} sweep."
+                )[:255]
+        session.commit()
     return {
         "bin": loc,
         "rack": rack,
@@ -10474,6 +10496,38 @@ def receiving_sort_match(
     }
 
 
+@app.get("/api/held-lists", dependencies=[Depends(require_user)])
+def list_held_lists(session: Session = Depends(get_session)):
+    """Every vendor strip with labels still waiting on it (Nick,
+    2026-09-02): the one legitimate home of printed-but-unapplied
+    labels. Strips whose every label has since paired list with zero
+    remaining and are filtered out; pairing consumes entries
+    automatically, so this is a window, never a work queue."""
+    out = []
+    lists = session.scalars(
+        select(HeldLabelList).order_by(HeldLabelList.id.desc())
+    ).all()
+    for hl in lists:
+        items = [
+            {"sku": i.sku, "product_title": i.product_title,
+             "count": i.count}
+            for i in session.scalars(
+                select(HeldLabelItem).where(
+                    HeldLabelItem.list_id == hl.id,
+                    HeldLabelItem.count > 0,
+                )
+            )
+        ]
+        if not items:
+            continue
+        out.append({
+            **hl.as_dict(),
+            "items": items,
+            "remaining": sum(i["count"] for i in items),
+        })
+    return {"count": len(out), "lists": out}
+
+
 class SortHandoffIn(BaseModel):
     counts: list[SortCountIn] = Field(min_length=1, max_length=200)
     created_by: str | None = Field(default=None, max_length=100)
@@ -12146,7 +12200,7 @@ class CompleteIn(BaseModel):
 # distinct Auto-Resolved tag for these, never a person's click (Nick,
 # 2026-08-26).
 AUTO_CLOSERS = {"orders-sync", "dupe-check", "batch-count",
-                "planner-update"}
+                "planner-update", "bin-audit", "category-retired"}
 
 
 def _reconcile_inventory_checks(
@@ -12321,21 +12375,10 @@ def batch_complete(
                 batch_id=batch.id,
                 created_by=payload.created_by,
             ))
-        # Labels (and therefore tags) = loose boxes + sealed cases, which is
-        # not the unit count once a case is involved.
-        if item.paired_count < item.qty_scanned + item.case_count:
-            tasks.append(ReviewTask(
-                category="pairing-incomplete",
-                sku=item.sku,
-                product_title=name,
-                detail=(
-                    f"Bin {batch.bin_name}: only {item.paired_count} of "
-                    f"{item.qty_scanned} RFID tags were paired. Finish "
-                    f"pairing at the Scan Station or re-check the shelf."
-                )[:500],
-                batch_id=batch.id,
-                created_by=payload.created_by,
-            ))
+        # No pairing-incomplete task any more (Nick, 2026-09-02):
+        # printed-but-unused labels are a normal fact of life, and the
+        # only leftovers worth tracking are receiving's - which live on
+        # held vendor strips. The verify step already showed the gap.
     session.add_all(tasks)
     batch.status = "done"
     batch.completed_at = datetime.now(timezone.utc)
@@ -12385,21 +12428,9 @@ def _complete_receiving(session: Session, batch: Batch, payload) -> dict:
                 created_by=payload.created_by,
             ))
             continue
+        # No pairing-incomplete task (Nick, 2026-09-02): receiving's
+        # unused labels belong on a held vendor strip, not in an inbox.
         boxes = item.qty_scanned + item.case_count
-        if item.paired_count < boxes:
-            tasks.append(ReviewTask(
-                category="pairing-incomplete",
-                sku=item.sku,
-                product_title=name,
-                detail=(
-                    f"Receiving #{batch.id}: only {item.paired_count} of "
-                    f"{boxes} labels were paired for {name or item.sku} — "
-                    f"an unpaired label is an orphan sticker. Pair or "
-                    f"reprint before shelving."
-                )[:500],
-                batch_id=batch.id,
-                created_by=payload.created_by,
-            ))
         bin_ = (item.bin_location or "").strip()
         if boxes > 0 and bin_ and bin_.lower() != "no bin assigned":
             bins[bin_] = bins.get(bin_, 0) + boxes
@@ -12920,6 +12951,129 @@ class SoldOutRetireIn(BaseModel):
     confirmed: bool = False
 
 
+class RetireSoldIn(BaseModel):
+    units: int = Field(ge=1, le=500)
+    changed_by: str | None = Field(default=None, max_length=100)
+    confirmed: bool = False
+
+
+@app.post(
+    "/api/review-tasks/{task_id}/retire-sold",
+    dependencies=[Depends(require_user)],
+)
+def retire_sold_n(
+    task_id: int,
+    payload: RetireSoldIn,
+    session: Session = Depends(get_session),
+):
+    """The Inventory Check verdict's green button (Nick, 2026-09-02):
+    retire exactly N tags presumed-sold - the count the arithmetic says
+    would make both systems match. Sales-guarded: the sold ledger must
+    hold at least N unretired units. Tags unheard by the newest
+    relevant sweep retire first, then the oldest pairings. Local
+    records only; Shopify is never written. Resolves the task when the
+    numbers then agree."""
+    task = session.get(ReviewTask, task_id)
+    if task is None:
+        raise HTTPException(404, "No such review task.")
+    if task.category not in ("inventory-check", "tag-onhand-mismatch"):
+        raise HTTPException(422, "Retiring is for Inventory Check tasks.")
+    if task.status != "open":
+        raise HTTPException(409, f"Task is already {task.status}.")
+    sku = (task.sku or "").strip()
+    if not sku:
+        raise HTTPException(422, "This task has no SKU.")
+    cover = orders_sync.sold_unretired_map(session, [sku]).get(
+        sku.upper(), 0
+    )
+    if cover < payload.units:
+        raise HTTPException(
+            422,
+            f"The sold ledger only covers {cover} unretired unit(s) for "
+            f"{sku} - retiring {payload.units} is not backed by recorded "
+            "sales. Run the bin audit instead.",
+        )
+    tags = session.scalars(
+        select(RfidAssignment).where(
+            func.upper(RfidAssignment.sku) == sku.upper()
+        ).order_by(RfidAssignment.id)
+    ).all()
+    if len(tags) < payload.units:
+        raise HTTPException(
+            422, f"Only {len(tags)} live tag(s) on file for {sku}."
+        )
+    # Unheard-by-the-newest-sweep tags go first: they are the ones the
+    # shelf can no longer vouch for.
+    heard_epcs: set[str] = set()
+    epcs = {(t.rfid_id or "").upper() for t in tags}
+    for cap in session.scalars(
+        select(EpcCapture).order_by(EpcCapture.id.desc()).limit(30)
+    ):
+        pool = {
+            e.strip().upper() for e in (cap.epcs or "").split("\n")
+            if e.strip()
+        }
+        if pool & epcs:
+            heard_epcs = pool & epcs
+            break
+    ordered = (
+        [t for t in tags if (t.rfid_id or "").upper() not in heard_epcs]
+        + [t for t in tags if (t.rfid_id or "").upper() in heard_epcs]
+    )
+    chosen = ordered[:payload.units]
+    by = (payload.changed_by or "").strip()[:100] or None
+    if not payload.confirmed:
+        raise HTTPException(
+            409,
+            f"This retires {len(chosen)} tag(s) of {sku} as "
+            f"presumed-sold (each restorable from History) and consumes "
+            f"{payload.units} unit(s) from the sold ledger. Confirm to "
+            "proceed.",
+        )
+    moved_rows: list[tuple[RetiredTag, RfidAssignment]] = []
+    for t in chosen:
+        rt = RetiredTag(
+            rfid_id=t.rfid_id,
+            sku=t.sku,
+            product_title=t.product_title,
+            shopify_variant_id=t.shopify_variant_id,
+            bin_location=t.bin_location,
+            case_units=t.case_units,
+            kind="presumed-sold",
+            retired_by=by,
+            note=f"review task #{task.id} · verdict retire",
+        )
+        session.add(rt)
+        session.add(BarcodeChange(
+            sku=t.sku,
+            product_title=t.product_title,
+            shopify_variant_id=t.shopify_variant_id,
+            changed_field="tag-retired",
+            old_barcode=t.rfid_id,
+            new_barcode="presumed-sold",
+            changed_by=by,
+        ))
+        session.delete(t)
+        moved_rows.append((rt, t))
+    _consume_ledger_for_retirements(session, moved_rows)
+    task.status = "resolved"
+    task.resolved_by = by
+    task.resolved_at = datetime.now(timezone.utc)
+    task.resolution_note = (
+        f"{len(chosen)} tag(s) marked presumed sold - the arithmetic "
+        "agrees again."
+    )[:255]
+    session.commit()
+    return {
+        "retired": len(chosen),
+        "task": task.as_dict(),
+        "message": (
+            f"{len(chosen)} tag(s) of {sku} retired presumed-sold; "
+            "the check is resolved."
+        ),
+    }
+
+
 @app.post(
     "/api/review-tasks/{task_id}/retire-all-sold",
     dependencies=[Depends(require_user)],
@@ -12938,9 +13092,9 @@ def retire_all_sold(
     task = session.get(ReviewTask, task_id)
     if task is None:
         raise HTTPException(404, "No such review task.")
-    if task.category != "tag-onhand-mismatch":
+    if task.category not in ("tag-onhand-mismatch", "inventory-check"):
         raise HTTPException(
-            422, "The sold-out shortcut is for Tags vs On-hand tasks."
+            422, "The sold-out shortcut is for Inventory Check tasks."
         )
     if task.status != "open":
         raise HTTPException(409, f"Task is already {task.status}.")
@@ -13205,27 +13359,184 @@ def review_task_context(
         raise HTTPException(404, "No such review task.")
     ctx: dict = {"category": task.category}
     sku = (task.sku or "").strip()
-    if task.category == "inventory-check" and sku:
-        try:
-            ctx["live_on_hand"] = _expected_qty(session, sku)
-        except Exception:  # noqa: BLE001 — live extras fail soft
-            ctx["live_on_hand"] = None
-        ctx["units_on_file"] = _tag_units_for_sku(session, sku)
-    elif task.category == "tag-onhand-mismatch" and sku:
-        # The sold-out shortcut (Nick, 2026-08-26): live on-hand at 0
-        # means every remaining box has sold, so the window can offer
-        # retiring ALL tags presumed-sold in one click. Shelf-expected
-        # since 2026-09-01 (on-hand minus Unavailable).
-        try:
-            ctx["live_on_hand"] = shopify.get_shelf_on_hand(sku)
-        except Exception:  # noqa: BLE001 — live extras fail soft
-            ctx["live_on_hand"] = None
-        ctx["units_on_file"] = _tag_units_for_sku(session, sku)
-        ctx["tag_count"] = len(session.scalars(
+    if task.category in ("inventory-check", "tag-onhand-mismatch") and sku:
+        # The merged Inventory Check window (Nick, 2026-09-02): three
+        # tiles with their stories, one verdict line saying what would
+        # reconcile the two systems. Legacy tag-onhand-mismatch tasks
+        # render through the same lens.
+        ctx["category"] = "inventory-check"
+        tag_rows = session.scalars(
             select(RfidAssignment).where(
                 func.upper(RfidAssignment.sku) == sku.upper()
             )
-        ).all())
+        ).all()
+        tags_units = sum((t.case_units or 1) for t in tag_rows)
+        epcs = {(t.rfid_id or "").upper() for t in tag_rows}
+        ctx["units_on_file"] = tags_units
+        ctx["tag_count"] = len(tag_rows)
+        on_hand = unavailable = None
+        try:
+            info = shopify.get_stock_info_by_skus([sku])
+            info_ci = {
+                (k or "").strip().upper(): v for k, v in info.items()
+            }
+            row = info_ci.get(sku.upper())
+            if row is not None:
+                on_hand = row.get("on_hand")
+                unavailable = row.get("unavailable") or 0
+        except Exception:  # noqa: BLE001 — live extras fail soft
+            pass
+        ctx["live_on_hand"] = on_hand
+        ctx["unavailable"] = unavailable
+        baselines = orders_sync._sku_baselines(session, [sku])
+        sold_since = orders_sync.sold_unretired_since_map(
+            session, [sku], baselines
+        ).get(sku.upper(), 0)
+        sold_cover = orders_sync.sold_unretired_map(
+            session, [sku]
+        ).get(sku.upper(), 0)
+        debt = orders_sync.backorder_debt_map(
+            session, [sku]
+        ).get(sku.upper(), 0)
+        base = baselines.get(sku.upper())
+        expected = (
+            on_hand + sold_since + debt if on_hand is not None else None
+        )
+        ctx["expected"] = expected
+        ctx["terms"] = {
+            "on_hand": on_hand,
+            "sold_unretired": sold_since,
+            "backorder_debt": debt,
+            "unavailable": unavailable,
+            "baseline": base.isoformat() if base is not None else None,
+        }
+        in_flight = (
+            sku.upper() in orders_sync._receiving_in_flight_skus(session)
+        )
+        ctx["receiving_in_flight"] = in_flight
+        # Last Heard: the newest recent sweep that heard ANY of this
+        # SKU's tags (a sweep that heard none proves nothing about a
+        # product unless we know it covered its shelf).
+        heard = None
+        for cap in session.scalars(
+            select(EpcCapture).order_by(EpcCapture.id.desc()).limit(30)
+        ):
+            pool = {
+                e.strip().upper() for e in (cap.epcs or "").split("\n")
+                if e.strip()
+            }
+            inter = len(pool & epcs)
+            if inter > 0:
+                heard = {
+                    "heard": inter,
+                    "total": len(epcs),
+                    "at": (
+                        cap.created_at.isoformat()
+                        if cap.created_at else None
+                    ),
+                    "device": cap.device,
+                    "note": cap.note,
+                }
+                break
+        ctx["last_heard"] = heard
+        # Shopify On-hand movement, from the observation log.
+        obs = session.scalars(
+            select(OnhandLog).where(
+                func.upper(OnhandLog.sku) == sku.upper()
+            ).order_by(OnhandLog.id.desc()).limit(2)
+        ).all()
+        movement = None
+        if len(obs) >= 2:
+            new, old = obs[0], obs[1]
+            delta = new.on_hand - old.on_hand
+            span_sales = 0
+            for sr in session.scalars(
+                select(SoldRecord).where(
+                    func.upper(SoldRecord.sku) == sku.upper()
+                )
+            ):
+                f = sr.fulfilled_at
+                if f is None:
+                    continue
+                f = f if f.tzinfo else f.replace(tzinfo=timezone.utc)
+                o = old.observed_at if old.observed_at.tzinfo else (
+                    old.observed_at.replace(tzinfo=timezone.utc)
+                )
+                n = new.observed_at if new.observed_at.tzinfo else (
+                    new.observed_at.replace(tzinfo=timezone.utc)
+                )
+                if o < f <= n:
+                    span_sales += sr.quantity or 0
+            if delta < 0 and span_sales >= -delta:
+                text = (
+                    f"{-delta} removed through fulfilled orders, "
+                    f"on-hand reduced from {old.on_hand} to {new.on_hand}"
+                )
+            elif delta > 0:
+                text = (
+                    f"{delta} added, on-hand raised from {old.on_hand} "
+                    f"to {new.on_hand}"
+                )
+            else:
+                text = (
+                    f"on-hand changed from {old.on_hand} to "
+                    f"{new.on_hand}"
+                )
+            movement = {"text": text, "at": (
+                new.observed_at.isoformat() if new.observed_at else None
+            )}
+        elif len(obs) == 1:
+            movement = {"text": f"on-hand {obs[0].on_hand}", "at": (
+                obs[0].observed_at.isoformat()
+                if obs[0].observed_at else None
+            )}
+        ctx["onhand_movement"] = movement
+        # The verdict.
+        silent = (
+            len(epcs) - heard["heard"] if heard is not None else None
+        )
+        if in_flight:
+            verdict = {"kind": "receiving", "text": (
+                "A shipment is being received right now - tag and stock "
+                "numbers move until TC-Planner saves the order. "
+                "Re-check after."
+            )}
+        elif expected is None:
+            verdict = {"kind": "unknown", "text": (
+                "Live Shopify numbers are unavailable right now."
+            )}
+        else:
+            diff = tags_units - expected
+            if diff == 0:
+                verdict = {"kind": "agree", "text": (
+                    "Tags, on-hand and the sold ledger agree - "
+                    "resolve below."
+                )}
+            elif 0 < diff <= (unavailable or 0):
+                verdict = {"kind": "unavailable", "units": diff, "text": (
+                    f"Tags exceed the shelf number by {diff} - matches "
+                    "its unavailable stock. Nothing to fix."
+                )}
+            elif diff > 0 and sold_cover >= diff and (
+                silent is None or silent >= diff
+            ):
+                verdict = {"kind": "retire", "units": diff, "text": (
+                    f"Retiring {diff} unheard tag(s) would make both "
+                    "systems match - the sold ledger covers them."
+                )}
+            elif diff > 0:
+                verdict = {"kind": "surplus", "units": diff, "text": (
+                    f"{diff} more tag(s) than sales can explain - "
+                    "possibly a doubled label on one unit. Check the "
+                    "tag list, or audit the bin."
+                )}
+            else:
+                verdict = {"kind": "shortfall", "units": -diff, "text": (
+                    f"{-diff} fewer tag(s) than expected - likely "
+                    "untagged stock or a lost label. Run the bin audit "
+                    "or a manual count."
+                )}
+        ctx["verdict"] = verdict
     elif task.category == "pairing-incomplete" and task.batch_id and sku:
         item = session.scalar(
             select(BatchItem).where(
@@ -13238,6 +13549,28 @@ def review_task_context(
             ctx["labels_total"] = item.qty_scanned + item.case_count
     elif task.category == "could-not-scan" and sku:
         ctx["units_on_file"] = _tag_units_for_sku(session, sku)
+        # One-click closure when the world moved (Nick, 2026-09-02):
+        # tags added AFTER the skip was filed mean somebody did the
+        # work - offer to resolve, never auto (the skip may have
+        # covered more boxes than got tagged).
+        filed = task.created_at
+        if filed is not None:
+            filed = filed if filed.tzinfo else filed.replace(
+                tzinfo=timezone.utc
+            )
+            added = 0
+            for t in session.scalars(
+                select(RfidAssignment).where(
+                    func.upper(RfidAssignment.sku) == sku.upper()
+                )
+            ):
+                ts = t.assigned_at
+                if ts is None:
+                    continue
+                ts = ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+                if ts > filed:
+                    added += 1
+            ctx["tags_added_since"] = added
         # The desk-sort flow: bundles offer their components to tag
         # (defined once, reused); an undefined bundle offers the setup.
         kind, _ = resolve_product_kind(
@@ -13246,6 +13579,26 @@ def review_task_context(
         contents = _bundle_contents(session, sku)
         ctx["kind"] = "bundle" if contents else kind
         ctx["bundle_contents"] = contents
+    elif task.category == "unresolved-barcode":
+        # Re-run the lookup (Nick, 2026-09-02): once the code resolves
+        # (a new alias, a fixed barcode), the window offers closure -
+        # and it carries the code so the link/overwrite actions know
+        # what they are teaching.
+        m = re.match(r"Barcode (\S+) was scanned", task.detail or "")
+        code = m.group(1) if m else None
+        ctx["code"] = code
+        resolves = None
+        if code:
+            try:
+                product = _product_lookup(code)
+                if product is not None:
+                    resolves = {
+                        "sku": product.get("sku"),
+                        "product_title": product.get("product_title"),
+                    }
+            except Exception:  # noqa: BLE001 — still unknown is fine
+                resolves = None
+        ctx["resolves_to"] = resolves
     elif task.category == "bin-check":
         cap = session.scalar(
             select(EpcCapture).order_by(EpcCapture.id.desc()).limit(1)

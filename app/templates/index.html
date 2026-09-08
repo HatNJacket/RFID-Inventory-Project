@@ -596,6 +596,17 @@
                   title="A shipment arrived and you're not sure which stock orders the boxes belong to: scan every box and this sorts them into per-order lists (asking the TC-Planner which open orders expect each product), with an extra list for boxes no order explains. Each list then opens pre-filled in the planner, ready to save, update stock and print from there.">📥 Sort a shipment</button>
           <button class="reset" id="fullship-open" type="button"
                   title="Load a whole TC-Planner stock order, print every remaining label up front, then label and pair the shipment. Whatever didn't physically arrive goes on a held vendor strip; the paired counts open pre-filled in the planner to save and update stock.">📦 Receive entire shipment</button>
+          <button class="reset" id="heldstrips-open" type="button"
+                  title="Every vendor strip with labels still waiting on it - printed at receiving for boxes that didn't arrive. Pairing a strip label onto its box consumes it automatically; this window just shows what's waiting.">🏷 Held label strips</button>
+        </div>
+        <!-- Held label strips (Nick, 2026-09-02): the one legitimate
+             home of printed-but-unapplied labels. Read-only window. -->
+        <div class="linkbox serialbox" id="heldstrips" hidden>
+          <div class="linkbox__title">Held label strips
+            <button class="reset sortship__close" id="heldstrips-exit" type="button" title="Close">✕</button>
+          </div>
+          <p class="linkbox__text" id="heldstrips-status"></p>
+          <div id="heldstrips-list"></div>
         </div>
         <!-- Receive entire shipment (Nick, 2026-09-01): the RFID-first
              receive. Labels print BEFORE the planner receive is saved;

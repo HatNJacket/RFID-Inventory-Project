@@ -36,6 +36,10 @@ from app.models import (
     AppSetting,
     BackorderDebt,
     BarcodeChange,
+    Batch,
+    BatchItem,
+    OnhandLog,
+    OrderReceipt,
     RefreshLog,
     ReviewTask,
     RfidAssignment,
@@ -45,7 +49,10 @@ from app.models import (
 logger = logging.getLogger("rfid.orders")
 
 KIND = "orders-sync"            # refresh-stats kind (button + auto share it)
-CATEGORY = "tag-onhand-mismatch"  # the review-task type this module owns
+# One category for every count disagreement (Nick, 2026-09-02): the
+# tag arithmetic and human counts file the SAME Inventory Check per
+# SKU. "tag-onhand-mismatch" is retired; old resolved tasks keep it.
+CATEGORY = "inventory-check"
 STATUS_KEY = "orders_sync_status"
 CURSOR_KEY = "orders_sync_cursor"
 DAILY_KEY = "orders_sync_last_daily"
@@ -328,9 +335,17 @@ def _clear_superseded_debts(session: Session, skus: list[str]) -> int:
 
 
 def _sku_baselines(session: Session, skus) -> dict[str, object]:
-    """Upper SKU -> the tag pool's baseline: newest live pairing (any
-    bin), or a newer confirmed on-hand write, whichever is later. Sales
-    fulfilled before it cannot be expected to have tags."""
+    """Upper SKU -> the tag pool's baseline: OLDEST live pairing (when
+    the pool began), or a newer confirmed on-hand write, whichever is
+    later. Sales fulfilled before it cannot be expected to have tags.
+
+    Oldest, not newest (Nick, 2026-09-02 drift guard 2): sell one of
+    three tagged boxes Monday, receive and pair two more Tuesday - the
+    NEWEST pairing threw Monday's sale out of the window even though
+    its box absolutely had a tag, so the expected count dropped and a
+    silent tag lost its explanation. A sale after the pool EXISTED can
+    always be explained by a tag. The original false-positive fix
+    survives: a sale before the first-ever pairing stays outside."""
     uppers = {s.strip().upper() for s in skus}
     out: dict[str, object] = {}
     if not uppers:
@@ -342,7 +357,7 @@ def _sku_baselines(session: Session, skus) -> dict[str, object]:
         if k not in uppers:
             continue
         ts = _as_utc(t.assigned_at)
-        if ts is not None and (k not in out or ts > out[k]):
+        if ts is not None and (k not in out or ts < out[k]):
             out[k] = ts
     for bc in session.scalars(
         _sku_in(
@@ -365,26 +380,74 @@ def _sku_baselines(session: Session, skus) -> dict[str, object]:
 
 
 # ------------------------------------------------------- mismatch tasks -----
-def refresh_mismatch_tasks(session: Session) -> dict:
-    """One open tag-onhand-mismatch task per SKU whose tags ≠ on-hand +
-    sold-unretired; auto-closed when the numbers agree again. DISTINCT
-    from inventory-check (a human counted the shelf and disagreed) — this
-    category is arithmetic, so the system may both open and close it.
+def _receiving_in_flight_skus(session: Session) -> set[str]:
+    """Upper SKUs whose numbers are MOVING right now (Nick, 2026-09-02
+    drift guard 1): an open receiving batch is still pairing tags, or a
+    full-shipment receipt is settled but TC-Planner hasn't saved the
+    stock yet - the two sides of the arithmetic move at different
+    moments, so any comparison inside the window is noise."""
+    out: set[str] = set()
+    open_batches = session.scalars(
+        select(Batch).where(
+            Batch.kind == "receiving",
+            Batch.status.notin_(("done", "abandoned")),
+        )
+    ).all()
+    pending_receipts = session.scalars(
+        select(OrderReceipt).where(
+            OrderReceipt.settled_at.is_not(None),
+            OrderReceipt.stock_updated_at.is_(None),
+        )
+    ).all()
+    batch_ids = {b.id for b in open_batches} | {
+        r.batch_id for r in pending_receipts if r.batch_id
+    }
+    if not batch_ids:
+        return out
+    for item in session.scalars(
+        select(BatchItem).where(BatchItem.batch_id.in_(sorted(batch_ids)))
+    ):
+        if item.sku:
+            out.add(item.sku.strip().upper())
+    return out
 
-    Sales are WINDOWED to each SKU's tag-pool baseline (same rule as the
-    shelf reconcile): a unit sold before tagging never had a tag, so it
-    belongs in neither side of the expectation. Without this, the 60-day
-    ledger backfill false-flagged every SKU with pre-tagging sales
-    (Nick, 2026-08-24)."""
+
+def _log_onhand(
+    session: Session, sku: str, value: int, source: str = "orders-sync"
+) -> None:
+    """Append an observation when the value CHANGED - the memory behind
+    the Inventory Check window's movement hover."""
+    last = session.scalar(
+        select(OnhandLog).where(func.upper(OnhandLog.sku) == sku.upper())
+        .order_by(OnhandLog.id.desc())
+    )
+    if last is None or last.on_hand != value:
+        session.add(OnhandLog(sku=sku, on_hand=value, source=source))
+
+
+def refresh_mismatch_tasks(session: Session) -> dict:
+    """One open Inventory Check per SKU whose tags ≠ on-hand +
+    sold-unretired (+ backorder debt, within the unavailable bucket).
+    The arithmetic files into the SAME category human counts use (Nick,
+    2026-09-02) - one task per SKU, whoever noticed first - but it only
+    auto-CLOSES tasks it created itself: a human's standing count
+    dispute is not the system's to wave away.
+
+    Sales are WINDOWED to each SKU's tag-pool baseline (oldest live
+    pairing, or a newer confirmed on-hand write): a unit sold before
+    the pool existed never had a tag. SKUs with a receive mid-flight
+    are skipped (guard 1); a surplus within Shopify's Unavailable
+    bucket counts as agreement (guard 4)."""
     sold_all = sold_unretired_map(session)
     open_tasks = {
         (t.sku or "").strip().upper(): t
         for t in session.scalars(
             select(ReviewTask).where(
-                ReviewTask.category == CATEGORY,
+                ReviewTask.category.in_((CATEGORY, "tag-onhand-mismatch")),
                 ReviewTask.status == "open",
             )
         ).all()
+        if t.sku
     }
     debt_all = backorder_debt_map(session)
     skus = sorted(set(sold_all) | set(open_tasks) | set(debt_all))
@@ -394,13 +457,19 @@ def refresh_mismatch_tasks(session: Session) -> dict:
     debts = backorder_debt_map(session, skus)
     baselines = _sku_baselines(session, skus)
     sold = sold_unretired_since_map(session, skus, baselines)
+    in_flight = _receiving_in_flight_skus(session)
     try:
-        on_hand = shopify.get_on_hand_by_skus(skus)
+        stock = shopify.get_stock_info_by_skus(skus)
     except Exception as error:
         logger.warning("mismatch check skipped (on-hand fetch): %s", error)
         return {"tasks_opened": 0, "tasks_closed": 0}
     on_hand_ci = {
-        (k or "").strip().upper(): v for k, v in (on_hand or {}).items()
+        (k or "").strip().upper(): (v or {}).get("on_hand")
+        for k, v in (stock or {}).items()
+    }
+    unavail_ci = {
+        (k or "").strip().upper(): (v or {}).get("unavailable") or 0
+        for k, v in (stock or {}).items()
     }
 
     # Non-taggable products (bins of loose thumbscrews) are outside the
@@ -413,11 +482,16 @@ def refresh_mismatch_tasks(session: Session) -> dict:
         for r in session.scalars(select(NonTaggable))
     }
 
+    def _own(task) -> bool:
+        # The arithmetic may only close its OWN filings; a human-filed
+        # check (batch completion) waits for human or batch evidence.
+        return (task.created_by or "") == "orders-sync"
+
     opened = closed = 0
     for sku in skus:
         if sku in no_tag:
             task = open_tasks.get(sku)
-            if task is not None:
+            if task is not None and _own(task):
                 task.status = "resolved"
                 task.resolved_by = "orders-sync"
                 task.resolved_at = datetime.utcnow()
@@ -430,6 +504,20 @@ def refresh_mismatch_tasks(session: Session) -> dict:
         oh = on_hand_ci.get(sku)
         if oh is None:
             continue
+        _log_onhand(session, sku, oh)
+        # Mid-receive: tags jump at pairing, on-hand at the planner's
+        # save - comparing inside the window files noise. Skip filing
+        # and closing; re-word an open check so nobody chases it.
+        if sku in in_flight:
+            task = open_tasks.get(sku)
+            if task is not None and task.status == "open":
+                marker = "A shipment is being received right now"
+                if marker not in (task.detail or ""):
+                    task.detail = (
+                        f"{marker} - tag and stock numbers move until "
+                        "TC-Planner saves the order. Re-check after."
+                    )[:500]
+            continue
         tags = tag_units(session, sku)
         # No live tags = no RFID claim to check (Nick, 2026-08-26, the
         # ZWO ANTI-DEW case: 0 tags, on-hand 0, one old ledger row filed
@@ -439,7 +527,7 @@ def refresh_mismatch_tasks(session: Session) -> dict:
         # work. Untagged-stock gaps are the Audit tab's job instead.
         if tags == 0:
             task = open_tasks.get(sku)
-            if task is not None:
+            if task is not None and _own(task):
                 task.status = "resolved"
                 task.resolved_by = "orders-sync"
                 task.resolved_at = datetime.utcnow()
@@ -454,8 +542,14 @@ def refresh_mismatch_tasks(session: Session) -> dict:
         # Shopify's number doesn't count — expected must carry them or
         # the SKU false-flags forever (Nick, 2026-08-26, AirGradient).
         expected = oh + sold.get(sku, 0) + debts.get(sku, 0)
+        unavail = unavail_ci.get(sku, 0)
         task = open_tasks.get(sku)
-        if tags != expected:
+        diff = tags - expected
+        # A surplus that fits inside Shopify's Unavailable bucket is
+        # agreement (drift guard 4): those units were tagged at
+        # receiving, then reserved/damaged out of the shelf number.
+        within_unavail = 0 < diff <= unavail
+        if diff != 0 and not within_unavail:
             base = baselines.get(sku)
             since = (
                 base.strftime("%b %d") if base is not None else "ever"
@@ -464,13 +558,19 @@ def refresh_mismatch_tasks(session: Session) -> dict:
                 f"RFID tags stand for {tags} unit(s) but the expected count "
                 f"is {expected} (Shopify on-hand {oh}"
                 + (
-                    f" + {sold[sku]} sold since tagging ({since})"
+                    f" + {sold[sku]} sold since the tag pool began "
+                    f"({since})"
                     if sold.get(sku)
                     else ""
                 )
                 + (
                     f" + {debts[sku]} on customer backorder when received"
                     if debts.get(sku)
+                    else ""
+                )
+                + (
+                    f"; {unavail} more sit in Shopify's Unavailable bucket"
+                    if unavail
                     else ""
                 )
                 + "). Recommend a bin audit — a sweep that hears the "
@@ -492,13 +592,16 @@ def refresh_mismatch_tasks(session: Session) -> dict:
                     created_by="orders-sync",
                 ))
                 opened += 1
-            elif task.detail != detail[:500]:
+            elif _own(task) and task.detail != detail[:500]:
                 task.detail = detail[:500]
-        elif task is not None:
+        elif task is not None and _own(task):
             task.status = "resolved"
             task.resolved_by = "orders-sync"
             task.resolved_at = datetime.utcnow()
             task.resolution_note = (
+                "Tags exceed the shelf number by the Unavailable bucket "
+                "- matches its unavailable stock."
+                if within_unavail else
                 "Tags, on-hand and the sold ledger agree again."
             )
             closed += 1

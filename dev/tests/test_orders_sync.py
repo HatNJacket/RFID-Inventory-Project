@@ -58,6 +58,11 @@ with TestClient(app) as cl:
     s.commit()
 
   with patch("app.shopify.get_fulfilled_orders", return_value=ORDERS), \
+       patch("app.shopify.get_stock_info_by_skus",
+             side_effect=lambda skus: {
+                 k: {"on_hand": v, "unavailable": 0, "bin": ""}
+                 for k, v in ON_HAND.items()
+                 if k in [x.upper() for x in skus]}), \
        patch("app.shopify.get_on_hand_by_skus",
              side_effect=lambda skus: {k:v for k,v in ON_HAND.items()
                                        if k in [x.upper() for x in skus]}):
@@ -81,7 +86,7 @@ with TestClient(app) as cl:
         check("no duplicate ledger rows",
               len(s.scalars(select(SoldRecord)).all())==2, "")
         open_tasks = s.scalars(select(ReviewTask).where(
-            ReviewTask.category=="tag-onhand-mismatch",
+            ReviewTask.category=="inventory-check",
             ReviewTask.status=="open")).all()
         check("still exactly one open mismatch task",
               len(open_tasks)==1 and open_tasks[0].sku.upper()=="CAM-2",
@@ -96,7 +101,7 @@ with TestClient(app) as cl:
     cl.post("/api/orders-sync/run")
     with Session(get_engine()) as s:
         t = s.scalars(select(ReviewTask).where(
-            ReviewTask.category=="tag-onhand-mismatch")).first()
+            ReviewTask.category=="inventory-check")).first()
         check("mismatch task auto-resolved when numbers agree",
               t.status=="resolved" and t.resolved_by=="orders-sync", t.status)
 

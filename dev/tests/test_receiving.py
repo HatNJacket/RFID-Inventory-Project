@@ -182,8 +182,10 @@ with patch("app.shopify.lookup_barcode", side_effect=look), \
     check("box counts ride the bin-check details",
           any("3 box(es)" in t["detail"] and "I1-5" in t["detail"]
               for t in bin_checks), bin_checks)
-    check("unpaired labels flag as pairing-incomplete",
-          "pairing-incomplete" in cats, cats)
+    # Category retired (Nick, 2026-09-02): printed-but-unused labels
+    # are normal; receiving leftovers live on held vendor strips.
+    check("no pairing-incomplete task any more",
+          "pairing-incomplete" not in cats, cats)
     check("the unknown barcode flags as unresolved-barcode",
           "unresolved-barcode" in cats, cats)
     check("no shelf-count inventory-check tasks from receiving",

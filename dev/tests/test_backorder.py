@@ -44,6 +44,11 @@ COMMITTED = {KIT: 1, "AG PLAIN": 0, "AG SHORT": 0}
 
 def fake_on_hand_by_skus(skus):
     return {s: STOCK[s] for s in skus if s in STOCK}
+def fake_stock_info(skus):
+    # refresh_mismatch_tasks reads stock info (on-hand + unavailable)
+    # since the Inventory Check merger.
+    return {s: {"on_hand": STOCK[s], "unavailable": 0, "bin": "I5-1"}
+            for s in skus if s in STOCK}
 def fake_on_hand(sku):
     return STOCK.get(sku)
 def fake_breakdown(sku):
@@ -68,7 +73,8 @@ def receive_and_pair(cl, sku, qty, ref, epcs):
 with patch("app.shopify.lookup_barcode", return_value=None), \
      patch("app.shopify.lookup_barcode_all", return_value=[]), \
      patch("app.shopify.fetch_all_variant_bins", return_value=[]), \
-     patch("app.shopify.get_stock_info_by_skus", return_value={}), \
+     patch("app.shopify.get_stock_info_by_skus",
+           side_effect=fake_stock_info), \
      patch("app.shopify.get_quantities_by_skus", return_value={}), \
      patch("app.shopify.get_on_hand_by_skus",
            side_effect=fake_on_hand_by_skus), \

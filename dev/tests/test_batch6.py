@@ -53,7 +53,11 @@ with patch("app.shopify.lookup_barcode", side_effect=fake_lookup), \
      patch("app.shopify.lookup_barcode_all",
            side_effect=lambda t: [fake_lookup(t)] if fake_lookup(t) else []), \
      patch("app.shopify.fetch_all_variant_bins", return_value=[]), \
-     patch("app.shopify.get_stock_info_by_skus", return_value={}), \
+     patch("app.shopify.get_stock_info_by_skus",
+           side_effect=lambda skus: {
+               s: {"on_hand": 0, "unavailable": 0, "bin": ""}
+               for s in skus if s.upper() == "ANTI-DEW"
+           }), \
      patch("app.shopify.get_quantities_by_skus", return_value={}), \
      patch("app.shopify.update_product_vendor", side_effect=fake_vendor), \
      patch("app.shopify.get_on_hand_by_skus",
@@ -120,7 +124,7 @@ with patch("app.shopify.lookup_barcode", side_effect=fake_lookup), \
         s.commit()
         out = orders_sync.refresh_mismatch_tasks(s)
         open_now = s.scalars(select(ReviewTask).where(
-            ReviewTask.category == "tag-onhand-mismatch",
+            ReviewTask.category == "inventory-check",
             ReviewTask.status == "open")).all()
     check("an untagged SKU with old sales files NO mismatch task",
           not any((t.sku or "").upper() == "ANTI-DEW" for t in open_now),
@@ -128,13 +132,13 @@ with patch("app.shopify.lookup_barcode", side_effect=fake_lookup), \
 
     # An existing stale task for a now-untagged SKU auto-closes.
     with Session(get_engine()) as s:
-        s.add(ReviewTask(category="tag-onhand-mismatch", sku="ANTI-DEW",
+        s.add(ReviewTask(category="inventory-check", sku="ANTI-DEW",
                          detail="stale", created_by="orders-sync"))
         s.commit()
         orders_sync.refresh_mismatch_tasks(s)
         stale = s.scalar(select(ReviewTask).where(
             ReviewTask.sku == "ANTI-DEW",
-            ReviewTask.category == "tag-onhand-mismatch"))
+            ReviewTask.category == "inventory-check"))
         check("a stale mismatch task for an untagged SKU auto-closes",
               stale.status == "resolved"
               and "No live tags" in (stale.resolution_note or ""),

@@ -479,6 +479,35 @@ class CompanionTag(Base):
         }
 
 
+class OnhandLog(Base):
+    """One row per SKU per on-hand CHANGE the nightly sync observed
+    (Nick, 2026-09-02): the memory behind "raised from 0 to 2 at
+    receiving" in the Inventory Check window. Rows are written only
+    when the fetched value differs from the newest row, so the log
+    stays small; movement is explained by joining the delta with the
+    sold ledger and receiving receipts inside the same span."""
+
+    __tablename__ = "rfid_onhand_log"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sku: Mapped[str] = mapped_column(String(100), index=True, nullable=False)
+    on_hand: Mapped[int] = mapped_column(Integer, nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    source: Mapped[str | None] = mapped_column(String(40))
+
+    def as_dict(self) -> dict:
+        return {
+            "sku": self.sku,
+            "on_hand": self.on_hand,
+            "observed_at": (
+                self.observed_at.isoformat() if self.observed_at else None
+            ),
+            "source": self.source,
+        }
+
+
 class SortHandoff(Base):
     """A C72 sort-a-shipment scan pass handed to the web terminal
     (Nick, 2026-09-02): the gun's matcher couldn't place the pallet

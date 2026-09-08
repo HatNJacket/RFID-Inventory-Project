@@ -10082,26 +10082,34 @@ function openResolveWindow(t) {
   // (nothing stored to "mark resolved" — an action or a dismissal IS the
   // resolution).
   let middle = "";
-  if (t.category === "inventory-check") {
+  if (
+    t.category === "inventory-check" ||
+    t.category === "tag-onhand-mismatch"
+  ) {
+    // The merged Inventory Check window (Nick, 2026-09-02): three
+    // tiles that explain themselves on hover, one verdict line saying
+    // what would reconcile the two systems. Legacy tag-onhand tasks
+    // render through the same lens.
     middle = `
       <div class="rvw-stats">
-        <div class="rvw-stat"><div class="rvw-stat__l">Counted</div><div class="rvw-stat__n"><span id="rvw-counted">${counted ?? "?"}</span> <span id="rvw-delta" class="rvw-delta" hidden></span></div></div>
-        <div class="rvw-stat"><div class="rvw-stat__l">Shopify then</div><div class="rvw-stat__n">${expectedThen ?? "?"}</div></div>
-        <div class="rvw-stat rvw-stat--live"><div class="rvw-stat__l">Shopify NOW</div><div class="rvw-stat__n" id="rvw-live">…</div></div>
+        <div class="rvw-stat" id="rvw-tile-tags"><div class="rvw-stat__l">Active RFID tags</div><div class="rvw-stat__n"><span id="rvw-tags">…</span> <span id="rvw-delta" class="rvw-delta" hidden></span></div></div>
+        <div class="rvw-stat" id="rvw-tile-heard"><div class="rvw-stat__l">Last Heard</div><div class="rvw-stat__n" id="rvw-heard">…</div></div>
+        <div class="rvw-stat rvw-stat--live" id="rvw-tile-oh"><div class="rvw-stat__l">Shopify On-hand</div><div class="rvw-stat__n" id="rvw-live">…</div></div>
       </div>
-      <div class="recent__meta" id="rvw-liveline" style="margin-bottom:8px">Checking the live count…</div>
+      <div class="recent__meta" id="rvw-liveline" style="margin-bottom:8px">Checking the live numbers… (hover a tile for its story)</div>
+      <div class="rvw-verdict" id="rvw-verdict" hidden></div>
       <div id="rvw-actions"></div>
-      <button class="reset rvw-wide rvw-choice rvw-choice--amber" id="rvw-userfid" type="button">
-        Shopify is wrong → use the RFID count${counted != null ? ` (${counted})` : ""}
+      ${counted != null ? `<button class="reset rvw-wide rvw-choice rvw-choice--amber" id="rvw-userfid" type="button">
+        Shopify is wrong → use the RFID count (${counted})
         <span class="rvw-choice__sub">Writes the counted number to Shopify on-hand. Raises are the normal audited write; a lower must be fully covered by recorded sales. Undoable from History.</span>
-      </button>
-      ${binFromDetail ? `<button class="reset rvw-wide" id="rvw-audit" type="button">Jump to ${escapeHtml(binFromDetail)}'s bin audit</button>` : ""}
-      <button class="reset rvw-wide rvw-recount" id="rvw-recount" type="button"
+      </button>` : ""}
+      ${binFromDetail ? `<button class="reset rvw-wide" id="rvw-audit" type="button">Sweep the shelf - run ${escapeHtml(binFromDetail)}'s bin audit</button>` : ""}
+      ${counted != null ? `<button class="reset rvw-wide rvw-recount" id="rvw-recount" type="button"
         title="You KNOW what's on the shelf: build the correction with - and +, then press the middle to apply. The RFID side updates and logs always; Shopify on-hand is only raised when its number differs (audited, undoable). Lowering Shopify stays a bin-audit job.">
         <span class="rvw-recount__pm" id="rvw-minus">−</span>
         <span class="rvw-recount__label" id="rvw-recount-label">Manually set the counted number</span>
         <span class="rvw-recount__pm" id="rvw-plus">+</span>
-      </button>`;
+      </button>` : `<button class="reset rvw-wide" id="rvw-station" type="button">Open at the Scan Station</button>`}`;
   } else if (t.category === "labels-not-printed") {
     // The Update-stock safety net (Nick, 2026-08-26): stock reached
     // Shopify without labels. One click queues everything the linked
@@ -10120,13 +10128,23 @@ function openResolveWindow(t) {
         Open the order in TC-Planner (pre-filled)
         <span class="rvw-choice__sub">Opens the stock order with what actually arrived already filled in - Save the receive there, then Update stock. Print labels stays grayed (the labels are on the boxes). This task closes itself when the planner reports the update.</span>
       </button>`;
-  } else if (t.category === "tag-onhand-mismatch") {
-    // The sold-out shortcut (Nick, 2026-08-26): when the LIVE on-hand
-    // is 0, every remaining box has sold - the context loader offers
-    // one click that retires all tags presumed-sold and resolves this.
+  } else if (t.category === "unresolved-barcode") {
+    // The link-or-adopt actions live right in the window (Nick,
+    // 2026-09-02): once the code resolves, the context offers closure.
     middle = `
-      <div class="recent__meta" id="rvw-liveline" style="margin-bottom:8px">Checking the live numbers…</div>
+      <div class="recent__meta" id="rvw-liveline" style="margin-bottom:8px">Re-checking the code…</div>
       <div id="rvw-actions"></div>
+      <div id="rvw-linkrow" hidden>
+        <input id="rvw-linktarget" class="rv-notein" type="text" maxlength="100" placeholder="Known SKU or barcode of the real product…" style="margin-bottom:6px" />
+        <button class="reset rvw-wide rvw-choice rvw-choice--blue" id="rvw-linkalias" type="button">
+          Link the scanned code as an alias
+          <span class="rvw-choice__sub">The code finds that product from now on. Shopify untouched; unlinkable from History.</span>
+        </button>
+        <button class="reset rvw-wide rvw-choice rvw-choice--amber" id="rvw-setbarcode" type="button">
+          Set it as the product's Shopify barcode
+          <span class="rvw-choice__sub">Adopts the scanned code as the REAL barcode in Shopify (audited, undoable).</span>
+        </button>
+      </div>
       <button class="reset rvw-wide" id="rvw-station" type="button">Open at the Scan Station</button>`;
   } else if (t.category === "pairing-incomplete") {
     middle = `
@@ -10614,40 +10632,117 @@ async function loadResolveContext(t, counted) {
   const line = document.getElementById("rvw-liveline");
   try {
     const ctx = await apiJson(`/api/review-tasks/${t.id}/context`);
-    if (t.category === "inventory-check") {
-      const live = ctx.live_on_hand;
-      document.getElementById("rvw-live").textContent = live ?? "—";
-      const actions = document.getElementById("rvw-actions");
-      if (live != null && counted != null && live === counted) {
-        line.textContent =
-          "Live on-hand now MATCHES the count — the world caught up.";
-        actions.innerHTML = `<button class="reset rvw-wide rvw-ok" id="rvw-agree" type="button">Counts agree now — resolve</button>`;
-        document.getElementById("rvw-agree").addEventListener("click", () =>
-          commitResolve(t, `Live on-hand now matches the count (${counted}).`)
-        );
-      } else if (live != null && counted != null && counted > live) {
-        // The write itself is the "Shopify is wrong" choice button.
-        line.textContent = `Shelf count (${counted}) is HIGHER than live on-hand (${live}) — physical proof the boxes exist.`;
-      } else if (live != null) {
-        line.textContent = `Live on-hand is ${live} — above the count. "Use the RFID count" can lower it when recorded sales fully cover the drop; otherwise recount or resolve with a note.`;
-      } else {
-        line.textContent = "Live on-hand unavailable right now.";
-      }
-    } else if (t.category === "tag-onhand-mismatch") {
+    if (
+      t.category === "inventory-check" ||
+      t.category === "tag-onhand-mismatch"
+    ) {
+      // The merged window (Nick, 2026-09-02): tiles + hovers, one
+      // verdict line, and the verdict's own action when there is one.
       const live = ctx.live_on_hand;
       const units = ctx.units_on_file;
-      if (live == null) {
-        line.textContent = "Live on-hand unavailable right now.";
-      } else {
-        line.textContent = `Shopify on-hand is now ${live} · RFID tags stand for ${units ?? "?"} unit(s).`;
-        if (live === 0 && (units ?? 0) > 0) {
-          const actions = document.getElementById("rvw-actions");
+      const terms = ctx.terms || {};
+      document.getElementById("rvw-live").textContent = live ?? "—";
+      document.getElementById("rvw-tags").textContent = units ?? "—";
+      const heard = ctx.last_heard;
+      document.getElementById("rvw-heard").textContent = heard
+        ? `${heard.heard}/${heard.total}`
+        : "—";
+      // Hover stories.
+      const parts = [];
+      if (terms.on_hand != null) parts.push(`${terms.on_hand} on-hand`);
+      if (terms.sold_unretired)
+        parts.push(`${terms.sold_unretired} sold but unretired`);
+      if (terms.backorder_debt)
+        parts.push(`${terms.backorder_debt} on customer backorder`);
+      if (terms.unavailable)
+        parts.push(`${terms.unavailable} set as unavailable`);
+      document.getElementById("rvw-tile-tags").title =
+        ctx.expected != null
+          ? `Expected ${ctx.expected}: ${parts.join(", ")}`
+          : "Live expected count unavailable right now.";
+      document.getElementById("rvw-tile-heard").title = heard
+        ? `${heard.heard} of ${heard.total} tags answered ${fmtAgo(heard.at)}` +
+          `${heard.note ? ` (${heard.note})` : ""}` +
+          `${heard.device ? ` from ${heard.device}` : ""}`
+        : "No recent sweep heard this product's tags.";
+      document.getElementById("rvw-tile-oh").title = ctx.onhand_movement
+        ? `${ctx.onhand_movement.text} (${fmtAgo(ctx.onhand_movement.at)})`
+        : "No movement history yet - the nightly sync builds it.";
+      line.textContent = "Hover a tile for its story.";
+      // The verdict.
+      const v = ctx.verdict;
+      const vEl = document.getElementById("rvw-verdict");
+      const actions = document.getElementById("rvw-actions");
+      if (v) {
+        const green =
+          v.kind === "agree" || v.kind === "unavailable" ||
+          v.kind === "retire";
+        vEl.hidden = false;
+        vEl.className =
+          "rvw-verdict " +
+          (green ? "rvw-verdict--green" : "rvw-verdict--yellow");
+        vEl.textContent = (green ? "✓ " : "⚠ ") + v.text;
+        if (v.kind === "retire") {
           actions.innerHTML = `
-            <button class="reset rvw-wide rvw-choice rvw-choice--amber" id="rvw-allsold" type="button">
-              Mark all ${ctx.tag_count} tag(s) presumed sold
-              <span class="rvw-choice__sub">Shopify says 0 on hand - every remaining box has sold. Retires the tags (restorable from History) and resolves this task.</span>
+            <button class="reset rvw-wide rvw-choice rvw-choice--amber" id="rvw-retire" type="button">
+              Retire ${v.units} tag(s) presumed sold
+              <span class="rvw-choice__sub">Sales-guarded; unheard tags retire first, each restorable from History. Resolves this check. Shopify is not touched.</span>
             </button>`;
-          document.getElementById("rvw-allsold").addEventListener("click", async () => {
+          document
+            .getElementById("rvw-retire")
+            .addEventListener("click", async () => {
+              const operator = operatorEl.value;
+              if (!operator) {
+                alert("Pick who's scanning (top right) first.");
+                return;
+              }
+              if (
+                !confirm(
+                  `Retire ${v.units} tag(s) of ${t.sku} presumed sold?\n\n` +
+                    `The sold ledger covers them; unheard tags go first. ` +
+                    `Each is restorable from History. Shopify is not touched.`
+                )
+              )
+                return;
+              const btn = document.getElementById("rvw-retire");
+              btn.disabled = true;
+              try {
+                await postJson(`/api/review-tasks/${t.id}/retire-sold`, {
+                  units: v.units,
+                  changed_by: operator,
+                  confirmed: true,
+                });
+                reviewTasks = reviewTasks.filter((x) => x.id !== t.id);
+                closeResolveWindow();
+                renderReview();
+              } catch (err) {
+                btn.disabled = false;
+                alert(err.message);
+              }
+            });
+        } else if (v.kind === "agree" || v.kind === "unavailable") {
+          actions.innerHTML = `<button class="reset rvw-wide rvw-ok" id="rvw-agree" type="button">Nothing to fix — resolve</button>`;
+          document.getElementById("rvw-agree").addEventListener("click", () =>
+            commitResolve(t, v.text)
+          );
+        }
+      }
+      // The sold-out shortcut survives for the on-hand-0 case the
+      // verdict didn't already cover with a retire button.
+      if (
+        live === 0 &&
+        (units ?? 0) > 0 &&
+        (!v || v.kind !== "retire") &&
+        !actions.innerHTML
+      ) {
+        actions.innerHTML = `
+          <button class="reset rvw-wide rvw-choice rvw-choice--amber" id="rvw-allsold" type="button">
+            Mark all ${ctx.tag_count} tag(s) presumed sold
+            <span class="rvw-choice__sub">Shopify says 0 on hand - every remaining box has sold. Retires the tags (restorable from History) and resolves this task.</span>
+          </button>`;
+        document
+          .getElementById("rvw-allsold")
+          .addEventListener("click", async () => {
             const operator = operatorEl.value;
             if (!operator) {
               alert("Pick who's scanning (top right) first.");
@@ -10677,7 +10772,78 @@ async function loadResolveContext(t, counted) {
               alert(err.message);
             }
           });
-        }
+      }
+    } else if (t.category === "unresolved-barcode") {
+      const actions = document.getElementById("rvw-actions");
+      const linkrow = document.getElementById("rvw-linkrow");
+      if (ctx.resolves_to) {
+        line.textContent = "";
+        actions.innerHTML = `<button class="reset rvw-wide rvw-ok" id="rvw-nowresolves" type="button">The code now resolves to ${escapeHtml(
+          ctx.resolves_to.product_title || ctx.resolves_to.sku || "?"
+        )} — resolve</button>`;
+        document
+          .getElementById("rvw-nowresolves")
+          .addEventListener("click", () =>
+            commitResolve(
+              t,
+              `Code now resolves to ${ctx.resolves_to.sku || ctx.resolves_to.product_title}.`
+            )
+          );
+      } else if (ctx.code) {
+        line.textContent = `"${ctx.code}" still matches nothing - link it below, or fix it at the Scan Station.`;
+        linkrow.hidden = false;
+        const doLink = async (asBarcode) => {
+          const target = document
+            .getElementById("rvw-linktarget")
+            .value.trim();
+          if (!target) {
+            alert("Type the real product's SKU or barcode first.");
+            return;
+          }
+          const operator = operatorEl.value;
+          if (!operator) {
+            alert("Pick who's scanning (top right) first.");
+            return;
+          }
+          try {
+            if (asBarcode) {
+              if (
+                !confirm(
+                  `Set "${ctx.code}" as the Shopify barcode of ${target}?\n\nThis WRITES to Shopify (undoable from History).`
+                )
+              )
+                return;
+              await postJson("/api/barcode-overwrites", {
+                new_barcode: ctx.code,
+                target,
+                changed_by: operator,
+                confirmed: true,
+              });
+            } else {
+              await postJson("/api/barcode-aliases", {
+                alias_barcode: ctx.code,
+                target,
+                created_by: operator,
+              });
+            }
+            commitResolve(
+              t,
+              asBarcode
+                ? `Adopted ${ctx.code} as ${target}'s Shopify barcode.`
+                : `Linked ${ctx.code} as an alias of ${target}.`
+            );
+          } catch (err) {
+            alert(err.message);
+          }
+        };
+        document
+          .getElementById("rvw-linkalias")
+          .addEventListener("click", () => doLink(false));
+        document
+          .getElementById("rvw-setbarcode")
+          .addEventListener("click", () => doLink(true));
+      } else {
+        line.textContent = "";
       }
     } else if (t.category === "pairing-incomplete") {
       if (ctx.paired_count != null && ctx.labels_total != null) {
@@ -10697,6 +10863,18 @@ async function loadResolveContext(t, counted) {
     } else if (t.category === "could-not-scan") {
       if (ctx.units_on_file != null)
         line.textContent = `The RFID system now holds ${ctx.units_on_file} unit(s) for this SKU${ctx.units_on_file > 0 ? " — if that covers this box, resolve below." : "."}`;
+      // The world moved since the skip (Nick, 2026-09-02): tags were
+      // added AFTER this was filed - one-click closure, never auto.
+      if ((ctx.tags_added_since || 0) > 0) {
+        const actions = document.getElementById("rvw-actions");
+        actions.innerHTML = `<button class="reset rvw-wide rvw-ok" id="rvw-tagged" type="button">${ctx.tags_added_since} tag(s) added since this was filed — resolve</button>`;
+        document.getElementById("rvw-tagged").addEventListener("click", () =>
+          commitResolve(
+            t,
+            `${ctx.tags_added_since} tag(s) added after the skip was filed.`
+          )
+        );
+      }
       if (ctx.kind === "bundle") renderBundleActions(t, ctx);
     } else if (t.category === "bin-check") {
       line.textContent = ctx.latest_sweep_at
@@ -15408,6 +15586,63 @@ document.getElementById("sortship-open").addEventListener("click", async () => {
 
 document.getElementById("sortship-exit").addEventListener("click", () => {
   document.getElementById("sortship").hidden = true;
+});
+
+// --- Held label strips (Nick, 2026-09-02) -----------------------------
+// The one legitimate home of printed-but-unapplied labels: receiving's
+// leftovers, waiting on vendor strips. Read-only - pairing a strip
+// label onto its box consumes it automatically.
+document
+  .getElementById("heldstrips-open")
+  .addEventListener("click", async () => {
+    const panel = document.getElementById("heldstrips");
+    panel.hidden = false;
+    const status = document.getElementById("heldstrips-status");
+    const host = document.getElementById("heldstrips-list");
+    status.textContent = "Loading the strips…";
+    host.innerHTML = "";
+    try {
+      const r = await apiJson("/api/held-lists");
+      if (!r.lists.length) {
+        status.textContent =
+          "No labels waiting on any strip - every printed label found " +
+          "its box.";
+        return;
+      }
+      status.textContent =
+        `${r.lists.length} strip(s) holding ` +
+        `${r.lists.reduce((n, l) => n + l.remaining, 0)} label(s). ` +
+        "Pairing a strip label onto its box consumes it automatically.";
+      host.innerHTML = r.lists
+        .map(
+          (l) => `
+        <div class="recent__head" style="margin-top:12px"><h2>${escapeHtml(
+          l.vendor || "vendor"
+        )} strip${l.reference ? ` · ${escapeHtml(l.reference)}` : ""} · ${
+          l.remaining
+        } label(s) waiting</h2></div>
+        <ul class="recent__list">${l.items
+          .map(
+            (i) =>
+              `<li class="recent__item"><strong>${escapeHtml(
+                i.product_title || i.sku || "?"
+              )}</strong>${
+                i.sku ? ` · ${escapeHtml(i.sku)}` : ""
+              } · ${i.count} label(s) on the strip</li>`
+          )
+          .join("")}</ul>
+        <p class="recent__meta">Held ${fmtAgo(l.created_at)}${
+          l.created_by ? ` by ${escapeHtml(l.created_by)}` : ""
+        } · ${l.epc_count} tag(s) in the strip's pool</p>`
+        )
+        .join("");
+    } catch (err) {
+      status.textContent = err.message;
+    }
+  });
+
+document.getElementById("heldstrips-exit").addEventListener("click", () => {
+  document.getElementById("heldstrips").hidden = true;
 });
 
 document.getElementById("sortship-clear").addEventListener("click", () => {
