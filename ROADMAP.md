@@ -3,6 +3,20 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-08.
 
+## 🏷 SKU line wraps on stickers + previews; barcode max = 33 — ✅ DEPLOYED 2026-09-08
+
+Nick's long-centre-line labels printed wrong (ZPL overprints a
+too-wide single ^FB line). Threshold test prints on the ZD220 pinned
+the geometry: barcode bars are thick to 15 alphanumeric chars,
+hairline-but-scannable to 33 (Nick verified), off the sticker at 34+.
+The sticker's centre line now measures itself and wraps to two font-16
+lines when it outgrows font 30 (print_agent.py, warehouse process
+restarted; every path capped at 56 chars). All four web label previews
+(Scan Station card, batch item, reprint, product-window editor) mirror
+the wrap via renderSkuPreviewLine; labelFitIssues dropped the obsolete
+overlap warning and gained a "barcode over 33 chars won't scan" one.
+test_labelwrap.py covers the geometry.
+
 ## 🎯 Locate hunts the SILENT tags — ✅ DEPLOYED 2026-09-08 (C72 3.87)
 
 Nick's ...B3F1EB hunt: ADD TO LOCATE queued only the SKU, so the
