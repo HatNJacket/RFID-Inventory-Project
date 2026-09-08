@@ -3,6 +3,38 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-02.
 
+## 📋 Inventory Check merger + Review self-clears — ✅ DEPLOYED 2026-09-02 (web/server only)
+
+Nick's Review-task redesign, built from the "Inventory Checks"
+artifact (https://claude.ai/code/artifact/a797cc23-5af6-4088-af16-a7278238e3df):
+
+- **ONE "inventory-check" per SKU** from either trigger (human count
+  or the nightly tag arithmetic; "tag-onhand-mismatch" retired, prod
+  tasks migrated: 74 re-categorized, 16 merged). The sync only
+  auto-closes its OWN filings.
+- **Drift guards**: mid-receive SKUs skipped (open receiving batch or
+  settled-not-planner-saved receipt); sales window baseline = OLDEST
+  live pairing; surplus within Shopify's Unavailable bucket =
+  agreement; rfid_onhand_log observes on-hand changes (migration
+  dev/migrate_review_merge.py RUN on prod).
+- **The window**: Active RFID tags / Last Heard / Shopify On-hand
+  tiles with hover stories + ONE verdict line - green "Retiring N
+  unheard tags would make both systems match" (one-click
+  /retire-sold, sales-guarded, unheard-first), green "matches its
+  unavailable stock", yellow surplus/shortfall/receive-in-progress.
+- **pairing-incomplete RETIRED** (never filed again) - "Held label
+  strips" window on the Batch tab (GET /api/held-lists) shows what
+  waits on receiving strips instead.
+- **Self-clears**: bin-check resolves on a covering non-empty sweep
+  ("bin-audit" closer); could-not-scan offers closure when tags were
+  added since filing; unresolved-barcode re-runs the lookup and gains
+  in-window Link-as-alias / Set-as-Shopify-barcode.
+- Same-day: a FULLY-PAIRED receiving batch's settle button is now
+  "➡ Finish in TC-Planner (pre-filled)" - one click straight to the
+  planner deep link, no strip ceremony (Nick's report).
+- Suite dev/tests/test_invcheck.py (25); 55/55. No gun changes (the
+  C72 audit CHECK already retires tags).
+
 ## 🔀 Stray decision: third bin — ✅ DEPLOYED 2026-09-02 (C72 3.76)
 
 The wrong-bin window during batch-tag CHECK now has a third choice
