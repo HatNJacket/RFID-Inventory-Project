@@ -9,13 +9,23 @@ Nick's long-centre-line labels printed wrong (ZPL overprints a
 too-wide single ^FB line). Threshold test prints on the ZD220 pinned
 the geometry: barcode bars are thick to 15 alphanumeric chars,
 hairline-but-scannable to 33 (Nick verified), off the sticker at 34+.
-The sticker's centre line now measures itself and wraps to two font-16
-lines when it outgrows font 30 (print_agent.py, warehouse process
-restarted; every path capped at 56 chars). All four web label previews
-(Scan Station card, batch item, reprint, product-window editor) mirror
-the wrap via renderSkuPreviewLine; labelFitIssues dropped the obsolete
-overlap warning and gained a "barcode over 33 chars won't scan" one.
-test_labelwrap.py covers the geometry.
+The centre line now wraps to TWO lines when it outgrows one - at the
+same big font (Nick's call after v1's font 16 read too small); the
+barcode block shifts down 30 dots and trims its bars 72 -> 56 to make
+the room. Text too wide for two font-30 lines steps down only as far
+as needed (floor 20; the 56-char cap lands ~22). The fit check is
+FIELD-CALIBRATED: the width model runs ~13% narrow of the printer's
+real font 0 (TEST 3 overprinted at font 28), so SKU_WIDTH_FUDGE 1.13
++ a 20-dot per-line break reserve - constants duplicated
+print_agent.py <-> app.js, keep them in lockstep. All four web label
+previews (Scan Station card, batch item, reprint, product-window
+editor) mirror the wrap + tier via renderSkuPreviewLine;
+labelFitIssues dropped the obsolete overlap warning and gained a
+"barcode over 33 chars won't scan" one. Every path capped at 56
+chars. Physically verified on three test-print rounds; the exact
+overprinting string is a regression pin in test_labelwrap.py.
+Remember: print_agent.py changes need the warehouse process bounced
+(kill the py/python pair; the loop relaunches in 10s).
 
 ## 🎯 Locate hunts the SILENT tags — ✅ DEPLOYED 2026-09-08 (C72 3.87)
 
