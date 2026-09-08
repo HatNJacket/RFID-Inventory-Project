@@ -3,6 +3,20 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-08.
 
+## 📐 Audit expected folds in UNAVAILABLE; chosen SKU breaks; no audit names — ✅ DEPLOYED 2026-09-08 (C72 3.91)
+
+Nick's ASI432MM case (3 sellable + 1 reserved, 4 tag records): the
+audit compared records to the SELLABLE expectation and forever offered
+"Set to 4" - a raise Shopify already had. Expected now folds the
+Unavailable bucket in on the web binaudit AND both C72 audit views
+("expected 4 (incl 1 unavailable)"); silence covered by the bucket
+reads as the set-aside unit (green), and the raise only offers past
+the folded total. SKU wrap round 3: wrapped lines inset 10 dots/side
+(label-variance clipping), break points CHOSEN (operator "|" in the
+label editor wins; else the separator nearest the middle; auto-wrap
+only for solid tokens). Audit sessions have NO naming step - the name
+derives from the scope ("Rack I1" / "Bin F1-2" / "1-left: ZWO").
+
 ## 🏷 SKU line wraps on stickers + previews; barcode max = 33 — ✅ DEPLOYED 2026-09-08
 
 Nick's long-centre-line labels printed wrong (ZPL overprints a
