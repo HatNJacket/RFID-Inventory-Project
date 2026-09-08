@@ -8057,15 +8057,27 @@ function code128Dots(data, module) {
 // just far enough (30 -> 28 -> ... floor 20), exactly like the
 // sticker. Every label preview renders through this so preview and
 // sticker always agree.
+// Field calibration (Nick's SKU TEST 3, 2026-09-08): the printer's
+// real font 0 runs ~13% wider than the width model, and ^FB loses a
+// little capacity at each break. IDENTICAL constants live in
+// print_agent.py (_sku_fits) - sticker and preview must always agree.
+const SKU_WIDTH_FUDGE = 1.13;
+const SKU_WRAP_LINE_RESERVE = 20;
+function skuFits(text, size, lines) {
+  const cap =
+    lines === 1 ? LABEL_PW : lines * (LABEL_PW - SKU_WRAP_LINE_RESERVE);
+  return zplTextDots(text, size) * SKU_WIDTH_FUDGE <= cap;
+}
+
 function renderSkuPreviewLine(elId, text) {
   const line = document.getElementById(elId);
   const t = (text || "").slice(0, 56);
   line.textContent = t || "—";
-  const wraps = !!t && zplTextDots(t, 30) > LABEL_PW;
+  const wraps = !!t && !skuFits(t, 30, 1);
   line.classList.toggle("label-preview__sku--wrap", wraps);
   let f = 30;
   if (wraps) {
-    while (f > 20 && zplTextDots(t, f) > 2 * LABEL_PW) f -= 2;
+    while (f > 20 && !skuFits(t, f, 2)) f -= 2;
   }
   // Preview scale is 272px for the sticker's 431 dots (~0.63); the
   // normal 14px line IS font 30 at that scale.

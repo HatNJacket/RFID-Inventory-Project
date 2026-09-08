@@ -44,10 +44,20 @@ check("wrapped label moves the bars down and trims them",
       and ",88^BY" not in z, z)
 
 # Text too wide even for two font-30 lines steps the font down only as
-# far as needed (56 average chars land at 26 - still readable).
+# far as needed. The tier is FIELD-CALIBRATED (Nick's SKU TEST 3
+# overprinted at font 28: the model runs ~13% narrow and breaks cost
+# capacity), so the 56-char cases land at font 22 - still readable.
 z = zpl({**BASE, "sku": "X" * 56})
-check("56-char worst case steps down, modestly",
-      "^CF0,26\n^FO0,52^FB431,2,0,C^FD" + "X" * 56 in z, z)
+check("56-char worst case steps down to font 22",
+      "^CF0,22\n^FO0,52^FB431,2,0,C^FD" + "X" * 56 in z, z)
+# The exact label that overprinted in the field, as a regression pin.
+field3 = "SKU-LINE-MAXIMUM-56-CHARACTERS-ABCDEFGHIJKLMNOPQRSTUVWXY"
+z = zpl({**BASE, "sku": field3})
+check("Nick's overprinting TEST 3 string now tiers to 22",
+      "^CF0,22\n^FO0,52^FB431,2,0,C^FD" + field3 in z, z)
+check("...and its inflated width fits two reserved lines",
+      pa._zpl_text_dots(field3, 22) * 1.13 <= 2 * (431 - 20),
+      pa._zpl_text_dots(field3, 22) * 1.13)
 
 # The threshold is the measured width, not a character count: narrow
 # characters pack tighter than wide ones.

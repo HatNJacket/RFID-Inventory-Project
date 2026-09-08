@@ -158,6 +158,20 @@ def _zpl_text_dots(text: str, size: int) -> float:
     )
 
 
+# Field calibration (Nick's SKU TEST 3, 2026-09-08): the printer's real
+# font 0 runs ~13% wider than the model (a line the model rated 355 of
+# 431 dots filled the width), and ^FB loses a little capacity at every
+# break. Inflate the model and reserve break room per wrapped line
+# before trusting a fit. Keep IDENTICAL to the app.js constants.
+SKU_WIDTH_FUDGE = 1.13
+SKU_WRAP_LINE_RESERVE = 20
+
+
+def _sku_fits(text: str, size: int, lines: int, pw: int) -> bool:
+    cap = pw if lines == 1 else lines * (pw - SKU_WRAP_LINE_RESERVE)
+    return _zpl_text_dots(text, size) * SKU_WIDTH_FUDGE <= cap
+
+
 def _code128_width_dots(data: str, module: int = 2) -> int:
     """Printed width of a Code 128 barcode (mode A auto-encoding), so it
     can be centered. Digit pairs pack into subset-C symbols; odd-length
@@ -239,12 +253,12 @@ def build_zpl(job: dict, encode_rfid: bool,
     # two-line wrap by measured width. The wrap keeps font 30 whenever
     # two lines hold the text, stepping down only as far as needed.
     sku_text = sku_text[:56]
-    sku_wrapped = _zpl_text_dots(sku_text, 30) > pw
+    sku_wrapped = not _sku_fits(sku_text, 30, 1, pw)
     if not sku_wrapped:
         sku_line = SKU_LINE_ONE.format(pw=pw, sku=sku_text)
     else:
         wf = 30
-        while wf > 20 and _zpl_text_dots(sku_text, wf) > 2 * pw:
+        while wf > 20 and not _sku_fits(sku_text, wf, 2, pw):
             wf -= 2
         sku_line = SKU_LINE_WRAP.format(pw=pw, f=wf, sku=sku_text)
 
