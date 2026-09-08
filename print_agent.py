@@ -72,10 +72,16 @@ LABEL_ZPL = """^XA
 ^LL{ll}
 ^LH{sr},0
 ^LT{sd}
-{header}^CF0,30
-^FO0,52^FB{pw},1,0,C^FD{sku}^FS
-{barcode_line}{bin_line}^XZ
+{header}{sku_line}{barcode_line}{bin_line}^XZ
 """
+
+# The centre (SKU) line: one line at font 30 while it fits the width.
+# A wider text WRAPS to two smaller lines (2026-09-08, Nick) - the old
+# single-line ^FB overprinted itself instead of clipping, which is how
+# long SKU lines printed wrong. Two lines at font 16 fit the 36-dot
+# slot between header and bars, and hold anything up to the 56-char cap.
+SKU_LINE_ONE = "^CF0,30\n^FO0,52^FB{pw},1,0,C^FD{sku}^FS\n"
+SKU_LINE_WRAP = "^CF0,16\n^FO0,50^FB{pw},2,0,C^FD{sku}^FS\n"
 
 HEADER_STORE = "^CF0,34\n^FO0,10^FB{pw},1,0,C^FDTelescopes Canada^FS\n"
 
@@ -128,6 +134,18 @@ TEST_ZPL = """^XA
 
 def label_dots(width_in: float, height_in: float) -> tuple[int, int]:
     return int(width_in * DPI), int(height_in * DPI)
+
+
+def _zpl_text_dots(text: str, size: int) -> float:
+    """Approximate ZPL font-0 text width - the SAME model the web
+    terminal's previews use (zplTextDots in app.js), so the sticker and
+    every preview agree on when the SKU line wraps."""
+    narrow = set("iIl1jft.,:;'|!()[] -")
+    wide = set("MWmw@")
+    return sum(
+        (0.35 if c in narrow else 0.78 if c in wide else 0.55) * size
+        for c in text
+    )
 
 
 def _code128_width_dots(data: str, module: int = 2) -> int:
@@ -206,6 +224,15 @@ def build_zpl(job: dict, encode_rfid: bool,
     if case_units:
         sku_text = f"{case_units} x {sku_text}"[:56]
 
+    # Every path caps at 56 (the plain-SKU path was uncapped and could
+    # overrun even two wrapped lines); then pick one big line or the
+    # two-line wrap by measured width.
+    sku_text = sku_text[:56]
+    if _zpl_text_dots(sku_text, 30) <= pw:
+        sku_line = SKU_LINE_ONE.format(pw=pw, sku=sku_text)
+    else:
+        sku_line = SKU_LINE_WRAP.format(pw=pw, sku=sku_text)
+
     barcode = clean(job.get("barcode"), fallback="")
     if not barcode:
         # No barcode on file: encode the SKU instead — the app's scan field
@@ -246,7 +273,7 @@ def build_zpl(job: dict, encode_rfid: bool,
         sd=shift_down,
         sr=shift_right,
         header=header,
-        sku=sku_text,
+        sku_line=sku_line,
         barcode_line=barcode_line,
         bin_line=bin_line,
     )

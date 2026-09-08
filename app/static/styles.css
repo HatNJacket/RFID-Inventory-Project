@@ -1917,7 +1917,19 @@ a { color: var(--accent); }
 .label-preview__header--md { font-size: 13px; }
 .label-preview__header--sm { font-size: 11px; }
 .label-preview__header--lg { font-size: 16px; }
-.label-preview__sku { font-size: 14px; }
+.label-preview__sku {
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+/* The sticker wraps a too-wide SKU line onto two smaller lines
+   (2026-09-08) - the preview mirrors it exactly. */
+.label-preview__sku--wrap {
+  font-size: 9px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.2;
+}
 .label-preview__bc {
   font-family: "Libre Barcode 128", var(--mono);
   letter-spacing: 2px;

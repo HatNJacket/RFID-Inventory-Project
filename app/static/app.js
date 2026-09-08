@@ -2330,7 +2330,7 @@ function renderCardLabelPreview(p, data) {
       : top.length <= 56
         ? "label-preview__header--md"
         : "label-preview__header--sm");
-  document.getElementById("p-prev-sku").textContent = skuLine || "—";
+  renderSkuPreviewLine("p-prev-sku", skuLine);
   document.getElementById("p-prev-bc").textContent =
     p.barcode || p.sku || "";
   document.getElementById("p-prev-bin").textContent =
@@ -6765,9 +6765,7 @@ function updateBitemLabelMode() {
       : header.length <= 56
         ? "label-preview__header--md"
         : "label-preview__header--sm");
-  document.getElementById("bitem-prev-sku").textContent = asSku
-    ? typed
-    : it.sku || "";
+  renderSkuPreviewLine("bitem-prev-sku", asSku ? typed : it.sku || "");
   document.getElementById("bitem-prev-bc").textContent =
     it.barcode || it.sku || "";
   document.getElementById("bitem-prev-bin").textContent =
@@ -8038,11 +8036,39 @@ function zplTextDots(text, size) {
   return w;
 }
 
+// Printed width of a Code 128 barcode - the print agent's model
+// (_code128_width_dots). 33 alphanumeric chars is the confirmed max
+// (Nick's test prints, 2026-09-08): 34+ run off the sticker edge.
+function code128Dots(data, module) {
+  const n = data.length;
+  const symbols =
+    n && /^\d+$/.test(data)
+      ? n % 2 === 0
+        ? n / 2
+        : (n - 1) / 2 + 2
+      : n;
+  return (11 * (symbols + 2) + 13) * module;
+}
+
+// The sticker's centre (SKU) line: one line at font 30 while it fits,
+// else TWO smaller wrapped lines (2026-09-08, Nick - the single-line
+// print overprinted itself). Every label preview renders through this
+// so preview and sticker always agree.
+function renderSkuPreviewLine(elId, text) {
+  const line = document.getElementById(elId);
+  const t = (text || "").slice(0, 56);
+  line.textContent = t || "—";
+  line.classList.toggle(
+    "label-preview__sku--wrap",
+    !!t && zplTextDots(t, 30) > LABEL_PW
+  );
+}
+
 // Mirrors the print agent's layout rules: the top zone holds at most two
 // lines (font steps down 28/20/16 with length) and ends where the SKU
-// line starts; the SKU line is ONE line at font 30 — ZPL overprints
-// rather than clipping, which is exactly the mess being fixed.
-function labelFitIssues(top, sku) {
+// line starts; the SKU line wraps to two smaller lines when it outgrows
+// font 30 (so it no longer overprints - only the 56-char cap trims it).
+function labelFitIssues(top, sku, barcode) {
   const issues = [];
   if (top && top !== STORE_HEADER) {
     if (top.length > 76)
@@ -8059,15 +8085,13 @@ function labelFitIssues(top, sku) {
         "Top line: wraps onto a second line that lands ON the SKU line."
       );
   }
-  if (sku) {
-    if (sku.length > 56)
-      issues.push("SKU line: cut off after 56 characters.");
-    else if (zplTextDots(sku, 30) > LABEL_PW)
-      issues.push(
-        "SKU line: too wide for its single line — the text will overlap " +
-          "itself on the sticker."
-      );
-  }
+  if (sku && sku.length > 56)
+    issues.push("SKU line: cut off after 56 characters.");
+  if (barcode && code128Dots(barcode, 1) > LABEL_PW - 24)
+    issues.push(
+      "Barcode: too long for scannable bars (33 characters is the " +
+        "printable max) — the bars will run off the sticker's edge."
+    );
   return issues;
 }
 
@@ -8088,7 +8112,7 @@ function updateReprintFitWarn() {
       : top.length <= 56
         ? "label-preview__header--md"
         : "label-preview__header--sm");
-  document.getElementById("breprint-prev-sku").textContent = skuLine || "—";
+  renderSkuPreviewLine("breprint-prev-sku", skuLine);
   if (breprintItem) {
     document.getElementById("breprint-prev-bc").textContent =
       breprintItem.barcode || breprintItem.sku || "";
@@ -8096,7 +8120,11 @@ function updateReprintFitWarn() {
       "BIN: " + (batch ? batch.bin_name : "—");
   }
   const warnEl = document.getElementById("breprint-fitwarn");
-  const issues = labelFitIssues(top, skuLine);
+  const issues = labelFitIssues(
+    top,
+    skuLine,
+    breprintItem ? breprintItem.barcode || breprintItem.sku || "" : ""
+  );
   warnEl.hidden = !issues.length;
   warnEl.textContent = issues.length
     ? "⚠ " + issues.join("\n⚠ ") + "\nYou can still print — this is a warning, not a block."
@@ -13665,12 +13693,14 @@ function updateLabelPreview() {
       : top.length <= 56
         ? "label-preview__header--md"
         : "label-preview__header--sm");
-  document.getElementById("phist-prev-sku").textContent = skuLine || "—";
+  renderSkuPreviewLine("phist-prev-sku", skuLine);
   document.getElementById("phist-prev-bc").textContent =
     p.barcode || p.sku || phistData.barcode || "";
   document.getElementById("phist-prev-bin").textContent =
     "BIN: " + (p.bin_location || "—");
-  const issues = labelFitIssues(top, skuLine);
+  const issues = labelFitIssues(
+    top, skuLine, p.barcode || p.sku || phistData.barcode || ""
+  );
   const warn = document.getElementById("phist-fitwarn");
   warn.hidden = !issues.length;
   warn.textContent = issues.length
