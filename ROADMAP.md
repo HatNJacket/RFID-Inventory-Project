@@ -3,6 +3,31 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-02.
 
+## 🎯 Locate hunts the SILENT tags — ✅ DEPLOYED 2026-09-08 (C72 3.87)
+
+Nick's ...B3F1EB hunt: ADD TO LOCATE queued only the SKU, so the
+LOCATE tab hunted every tag and the answering shelf boxes drowned
+out the missing one - he had to hand-check every ASI 432MM. Now the
+audit's add-to-locate sends its silent_epcs with the queue entry
+(rfid_locate_queue.epcs, migration RUN), re-queuing refreshes the
+set, and picking the entry targets exactly those ("🎯 hunting 1
+SILENT of 4 tag(s) on file"; stale sets fall back to all tags).
+Take the gun update (3.87, code 105).
+
+## 🎯 Locate window retool — 🧪 PREVIEW, awaiting Nick
+
+Volume becomes a 4-state icon (🔊🔉🔈🔇 = 100/50/25/0%) beside AUTO;
+EDIT TAG takes SOUND's slot (SET ASIDE - UNAVAILABLE via a new
+confirmed Shopify bucket move, NOT IN STORAGE - RETIRE local with
+honest shortfall warning, MARK PRESUMED SOLD, UNLINK); MARK FOUND
+forks into ALL GOOD / FOUND - BUT IT MOVED… (audited bin update) /
+NEEDS EDITING. Preview:
+https://claude.ai/code/artifact/a3ca4bf5-ae63-484a-804c-e0fe21d53dfa
+**DO NOT BUILD until Nick accepts the preview** (his explicit
+process, 2026-09-08). Open questions on the artifact: ship the
+Shopify unavailable-bucket move or keep v1 local; MOVED default
+scope; when EDIT TAG is offered.
+
 ## 🏷 Vendor mis-label flag + SO-reference fix — ✅ DEPLOYED 2026-09-08
 
 Nick's EXOS2CWB5-barcode-on-EXOS2CW case (vendor printed the 5lb
