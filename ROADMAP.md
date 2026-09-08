@@ -3,6 +3,18 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-08.
 
+## 🔗 Linked-barcode manager + box-set alias shadow fix — ✅ DEPLOYED 2026-09-08
+
+Nick mis-linked S11810-1 straight to S11810 with no way to see or
+undo it. Product window now has "Linked barcodes (N)…": this
+product's aliases (who linked, when, kind) with per-row Unlink
+(History receipt "alias-unlinked" - the live row was the only trace)
+plus a store-wide view. GET /api/barcode-aliases[?sku=]. Creating a
+box set clears aliases sitting on part codes (aliases resolve BEFORE
+the part registry - the mis-link would have shadowed the set
+forever). Multi-box products with NO draft listings need none: the
+part registry IS the identity, made-up part SKUs work.
+
 ## 🗂 Audits: Unavailable-stock section — ✅ DEPLOYED 2026-09-08
 
 Fifth Audits hub card, "Unavailable stock": every product with units
