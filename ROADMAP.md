@@ -14,6 +14,40 @@ set, and picking the entry targets exactly those ("🎯 hunting 1
 SILENT of 4 tag(s) on file"; stale sets fall back to all tags).
 Take the gun update (3.87, code 105).
 
+## 📦 Un-labelable box + mis-label picker + tab speedups — ✅ DEPLOYED 2026-09-08 (C72 3.89)
+
+Nick's CR2032 assorted-box request plus the mis-label upgrade and the
+approved caching plan, one deploy (migration
+dev/alter_add_flag_kinds.py RUN on prod):
+
+- **"Box of Un-Labelable Product"** joins the Can't Scan family
+  (rfid_non_taggable.kind): the BOX gets ONE label + bin (print from
+  the product window's new button; the found-untagged walk can also
+  print it), on-hand still shows and stays updatable, per-unit tags
+  never count anywhere (batches, receiving labels, audits, inventory
+  checks, sweeps all treat it as location-only; audit rows wear a 📦
+  chip with on-hand shown, zero drift). Every Can't Scan flag now
+  CONFIRMS with its full meaning before applying. NOTE: prod's
+  non-taggable table was EMPTY - the thumbscrews were never actually
+  flagged; Nick flags them + CR2032 with the new option himself.
+- **Mis-label picker**: each vendor mis-label flag carries the
+  products the label might ACTUALLY be (rfid_mislabel_flags.alt_skus;
+  the EXOS pair is cross-linked both ways on prod). The flag button
+  manages the list (preview cards, add by barcode/SKU); scanning a
+  flagged product pops "which product is this?" with previews +
+  add-another - Scan Station overlay on web, and on the C72 (3.89,
+  code 107) at the find / station-link / audit-pair / locate lookups.
+  C72 receiving/sort keep the loud text warning (server resolves those
+  scans; picker there is a future step if wanted).
+- **Speedups** (Nick-approved plan): /api/audit/bins dropped from a
+  measured 48s to 4s (the per-product ProductKind N+1 is now one
+  query); Inventory paints instantly from
+  /api/inventory/summary?fast=1 (~2s) under a yellow "last refreshed"
+  tag and swaps to live numbers with a green "Up to date ✓"; the
+  Audits hub restores its last-known card numbers (localStorage) the
+  same way. Review untouched and the S0 tier bump dropped - both
+  Nick's call.
+
 ## 🎯 Locate window retool — ✅ DEPLOYED 2026-09-08 (C72 3.88)
 
 Preview accepted with amendments, built (3.88, code 106):
