@@ -4548,9 +4548,9 @@ public class MainActivity extends Activity {
         editLinkBtn.setOnClickListener(v -> showLinkDialog());
         mid.addView(editLinkBtn);
 
-        // "I can't do this one." Keeps the row and the reason; prints no
-        // label; changes no count anywhere.
-        editSkipBtn = smallBtn("CAN'T SCAN — SKIP");
+        // "I can't do this one." One-off skip OR one of the durable
+        // Can't Scan flags (3.90) - the chooser sorts it out.
+        editSkipBtn = smallBtn("CAN'T SCAN");
         editSkipBtn.setOnClickListener(v -> {
             if (editEntry != null && editEntry.item.skipped) setItemSkip(false, null);
             else askSkipReason();
@@ -4815,7 +4815,7 @@ public class MainActivity extends Activity {
         // its own rescue route.
         editSkipBtn.setVisibility(it.resolved ? View.VISIBLE : View.GONE);
         editSkipBtn.setText(it.skipped
-                ? "PUT IT BACK IN THE BATCH" : "CAN'T SCAN — SKIP");
+                ? "PUT IT BACK IN THE BATCH" : "CAN'T SCAN");
         editNoScanBtn.setVisibility(
                 it.resolved && it.sku != null ? View.VISIBLE : View.GONE);
         editNoScanBtn.setText(it.noScan
@@ -11878,13 +11878,162 @@ public class MainActivity extends Activity {
         "Other",
     };
 
+    /** CAN'T SCAN (3.90, Nick): the chooser he expected - a one-off
+     *  box skip, or one of the three durable Can't Scan FLAGS, each
+     *  behind its own confirmation that explains the flag in full. */
     private void askSkipReason() {
         if (editEntry == null) return;
+        final String[] options = {
+            "SKIP JUST THIS BOX (wrapped, damaged, can't reach)",
+            "WON'T RFID SCAN - flag the product",
+            "BOX OF UN-LABELABLE PRODUCT - flag it",
+            "NON-TAGGABLE - flag it (not worth tags at all)",
+        };
+        dlg()
+                .setTitle("Can't scan - what's the situation?")
+                .setItems(options, (d, which) -> {
+                    if (which == 0) {
+                        askOneOffSkipReason();
+                    } else if (editEntry == null
+                            || editEntry.item.sku == null) {
+                        editMsg.setText("Flags need a real product with "
+                                + "a SKU - resolve the scan first.");
+                    } else if (which == 1) {
+                        if (editEntry.item.noScan) {
+                            editMsg.setText("Already flagged ⊘ - remove "
+                                    + "it with the WON'T RFID SCAN "
+                                    + "button below.");
+                        } else {
+                            toggleNoScan();
+                        }
+                    } else if (which == 2) {
+                        confirmUnlabelableFlag();
+                    } else {
+                        confirmNonTaggableFlag();
+                    }
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void askOneOffSkipReason() {
         dlg()
                 .setTitle("Why can't it be scanned?")
                 .setItems(SKIP_REASONS, (d, which) ->
                         confirmSkip(SKIP_REASONS[which]))
                 .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    /** Box of Un-Labelable Product from the collect step: flag it,
+     *  drop it from this batch (its tags never count), then offer the
+     *  ONE box label right away. */
+    private void confirmUnlabelableFlag() {
+        final BItem it = editEntry.item;
+        dlg()
+                .setTitle("Box of un-labelable product?")
+                .setMessage(it.name() + "\n\nFor an assorted box (100 "
+                        + "loose batteries, a bin of thumbscrews):\n"
+                        + "- The BOX gets ONE label and a bin, for "
+                        + "location and clarity.\n"
+                        + "- On-hand still shows everywhere and can "
+                        + "still be updated.\n"
+                        + "- Individual tags are NEVER counted: no "
+                        + "batch collect, no per-unit labels, no "
+                        + "tags-vs-on-hand math.\n\n"
+                        + "Flagging drops it from THIS batch too. "
+                        + "Store-wide; undo from the product window.")
+                .setPositiveButton("FLAG + DROP FROM BATCH",
+                        (d, w) -> postFlagAndDrop(it, "unlabelable-box"))
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    /** Plain non-taggable from the collect step: fully outside RFID. */
+    private void confirmNonTaggableFlag() {
+        final BItem it = editEntry.item;
+        dlg()
+                .setTitle("Non-taggable?")
+                .setMessage(it.name() + "\n\nFor products not worth "
+                        + "tags AT ALL:\n"
+                        + "- Never seeded into batches, no labels of "
+                        + "any kind, audits skip it entirely.\n"
+                        + "- ONE tag can still be hand-paired at the "
+                        + "station as a bag marker for Locate.\n\n"
+                        + "If the box itself should carry a location "
+                        + "label, use BOX OF UN-LABELABLE PRODUCT "
+                        + "instead. Flagging drops it from THIS batch. "
+                        + "Store-wide; undo from the product window.")
+                .setPositiveButton("FLAG + DROP FROM BATCH",
+                        (d, w) -> postFlagAndDrop(it, "non-taggable"))
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void postFlagAndDrop(final BItem it, final String kind) {
+        final int itemId = it.id;
+        final boolean unlab = "unlabelable-box".equals(kind);
+        editMsg.setText("Flagging…");
+        new Thread(() -> {
+            try {
+                JSONObject body = new JSONObject()
+                        .put(unlab ? "flagged" : "non_taggable", true)
+                        .put("changed_by",
+                                prefs.getString("device", "C72"));
+                api("PUT", "/api/products/" + encPath(it.sku)
+                        + (unlab ? "/unlabelable-box" : "/non-taggable"),
+                        body);
+                api("DELETE", "/api/batches/" + batchId + "/items/"
+                        + itemId, null);
+                ui.post(() -> {
+                    beep(SOUND_OK);
+                    closeItemEditor();
+                    status.setText(unlab
+                            ? "Flagged 📦 " + it.name() + " - out of "
+                              + "the batch. Its tags never count now."
+                            : "Flagged 🚫 " + it.name() + " - out of "
+                              + "the batch and the RFID system.");
+                    reloadBatchAndReview();
+                    if (unlab) offerBoxLabelPrint(it);
+                });
+            } catch (Exception e) {
+                ui.post(() -> {
+                    beep(SOUND_ERR);
+                    editMsg.setText("Could not flag it: "
+                            + e.getMessage());
+                });
+            }
+        }).start();
+    }
+
+    private void offerBoxLabelPrint(final BItem it) {
+        dlg()
+                .setTitle("Print its ONE box label now?")
+                .setMessage("Queues like any label (home bin printed "
+                        + "on it). Pair it to the box as usual - the "
+                        + "tag marks the location and is never "
+                        + "counted.")
+                .setPositiveButton("PRINT BOX LABEL",
+                        (d, w) -> new Thread(() -> {
+                    try {
+                        JSONObject r = api("POST", "/api/products/"
+                                + encPath(it.sku) + "/box-label",
+                                new JSONObject().put("changed_by",
+                                        prefs.getString("device", "C72")));
+                        ui.post(() -> {
+                            beep(SOUND_OK);
+                            status.setText(r.optString("message",
+                                    "Box label queued ✓"));
+                        });
+                    } catch (Exception e) {
+                        ui.post(() -> {
+                            beep(SOUND_ERR);
+                            status.setText("Box label: "
+                                    + e.getMessage());
+                        });
+                    }
+                }).start())
+                .setNegativeButton("LATER", null)
                 .show();
     }
 
@@ -12102,9 +12251,10 @@ public class MainActivity extends Activity {
                         + "scan per box, so three of the same product means "
                         + "three scans.\n\n"
                         + "• Tap an item to fix its count, bin, or details."
-                        + "\n• Can't scan a box? Tap it and use CAN'T SCAN "
-                        + "— SKIP; it stays visible and no count is "
-                        + "invented.\n"
+                        + "\n• Can't scan a box? Tap it and use CAN'T "
+                        + "SCAN: skip the one box, or flag the product "
+                        + "(won't-scan / un-labelable box / "
+                        + "non-taggable).\n"
                         + "• BASE-LINE first on a part-tagged shelf: sweep "
                         + "the whole shelf and boxes already wearing tags "
                         + "count as done.\n"
@@ -12229,8 +12379,10 @@ public class MainActivity extends Activity {
                 + "• BIN changes the product's shelf in Shopify. The "
                 + "wrong-shelf row offers TAKE IT TO <bin> (side trip), "
                 + "Belongs elsewhere (drop), Move here, or Ignore.\n"
-                + "• CAN'T SCAN — SKIP keeps the row without inventing a "
-                + "count.\n"
+                + "• CAN'T SCAN skips the one box (no count invented) "
+                + "or flags the product: won't-scan, un-labelable box "
+                + "(one location label, tags never counted), or "
+                + "non-taggable.\n"
                 + "• WON'T RFID SCAN flags the PRODUCT store-wide: label "
                 + "prints, pairing counts, sweeps stop expecting it to "
                 + "answer.\n"

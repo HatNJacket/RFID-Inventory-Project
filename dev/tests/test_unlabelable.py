@@ -129,6 +129,21 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
                if p["sku"] == "SCREW-1"]
           and r.json()["skipped_non_taggable"] == 1, r.text[:200])
 
+    # ---- collect scans can't re-add a flagged product ----------------
+    from app.models import Batch
+    with S(get_engine()) as s:
+        s.add(Batch(bin_name="D4-2", created_by="test"))
+        s.commit()
+        bid = s.scalar(select(Batch.id).order_by(Batch.id.desc()))
+    r = cl.post(f"/api/batches/{bid}/scan", json={"code": "CR2032"})
+    check("collect scan refuses an un-labelable box, kindly",
+          r.status_code == 422
+          and "box label prints" in r.json()["detail"], r.text)
+    r = cl.post(f"/api/batches/{bid}/scan", json={"code": "SCREW-1"})
+    check("collect scan refuses non-taggable too",
+          r.status_code == 422
+          and "never joins batches" in r.json()["detail"], r.text)
+
     # ---- inventory fast snapshot -------------------------------------
     r = cl.get("/api/inventory/summary?fast=1")
     d = r.json()

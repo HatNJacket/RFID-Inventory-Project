@@ -8022,6 +8022,27 @@ def batch_scan(
         if error.status_code != 404:
             raise
 
+    # Products flagged out of per-unit tagging never join a batch - a
+    # collect scan right after flagging used to quietly re-add them
+    # (Nick, 2026-09-08).
+    if product is not None:
+        flag_ci = (product.get("sku") or "").strip().upper()
+        if flag_ci and flag_ci in _non_taggable_skus(session):
+            if flag_ci in _unlabelable_skus(session):
+                raise HTTPException(
+                    422,
+                    f"{product.get('sku')} is flagged as an "
+                    "un-labelable box - its boxes aren't collected and "
+                    "its tags never count. The ONE box label prints "
+                    "from the product window.",
+                )
+            raise HTTPException(
+                422,
+                f"{product.get('sku')} is flagged non-taggable - it "
+                "never joins batches. Un-flag it from the product "
+                "window if that's wrong.",
+            )
+
     items = _batch_items(session, batch_id)
     item = None
     if product is not None:
