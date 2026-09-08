@@ -3,6 +3,20 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-02.
 
+## 🔗 Planner deep link revived + html no-cache — ✅ DEPLOYED 2026-09-08
+
+Nick: "Finish in TC-Planner just opens the planner." The deployed
+planner container was running a STALE frontend bundle
+(index-Cxrf8MC4.js, predating the #receive= deep-link handler from
+2026-08-31) - source was fine, the running image had regressed.
+Rebuilt from main (acr-build + restart; bundle back to
+index-BkqYNhO- with the handler) and fixed the CLASS of bug: the
+planner now serves index.html with Cache-Control no-cache (hashed
+/assets stay cacheable), so browsers stop pinning old bundles across
+deploys. Planner commit 38d86fb. NOTE: anyone who saw the bare
+planner should hard-refresh ONCE (Ctrl+F5); after that, plain
+reloads always get the current build.
+
 ## 📋 Inventory Check merger + Review self-clears — ✅ DEPLOYED 2026-09-02 (web/server only)
 
 Nick's Review-task redesign, built from the "Inventory Checks"
