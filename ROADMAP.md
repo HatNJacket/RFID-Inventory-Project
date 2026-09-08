@@ -3,6 +3,19 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-08.
 
+## ↩ Box-set merge + History UNDO; overlays restyled — ✅ DEPLOYED 2026-09-08
+
+Nick's first S11810 set came out 4 parts for 2 boxes (ticked rows AND
+drafts on the same barcodes). Undone on prod (drafts S11810-1/-2 kept
+in Shopify for reuse). Now: entries sharing a barcode MERGE - a
+ticked row plus a new-draft entry becomes ONE part that gets the
+draft; two plain entries on one barcode are refused. Box-set create
+events in History carry an UNDO button while the set stands (removes
+part records only; drafts stay). Also: the overlay windows (Linked
+barcodes, mis-label manager/picker, box-set builder) now use the
+site's native modal shell (.phist-overlay/.linkbox, reset buttons,
+.mlrow cards) instead of generic inline-styled boxes.
+
 ## 📝 Box sets create DRAFT listings + barcode override — ✅ DEPLOYED 2026-09-08 (C72 3.93)
 
 Nick's S11810 exposed two holes: the alias mis-link, and box 2's
