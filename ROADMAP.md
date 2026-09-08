@@ -3,6 +3,13 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-08.
 
+## 📄 Inventory pages of 50 — ✅ DEPLOYED 2026-09-08
+
+The tab's slow paint was rendering the whole store at once. Data
+still loads once (fast snapshot + live swap unchanged); the TABLE
+renders 50 rows with a Prev/Next pager; filters, search and sort
+reset to page 1.
+
 ## ↩ Box-set merge + History UNDO; overlays restyled — ✅ DEPLOYED 2026-09-08
 
 Nick's first S11810 set came out 4 parts for 2 boxes (ticked rows AND
