@@ -14,6 +14,17 @@ set, and picking the entry targets exactly those ("🎯 hunting 1
 SILENT of 4 tag(s) on file"; stale sets fall back to all tags).
 Take the gun update (3.87, code 105).
 
+## 📦 CAN'T SCAN chooser on the gun — ✅ DEPLOYED 2026-09-08 (C72 3.90)
+
+Nick's correction: the flag family belonged in BATCH TAGGING's CAN'T
+SCAN dialog (he'd only gotten the one-off skip reasons there). The
+button now opens a chooser - skip just this box (old reasons), or flag
+the product won't-scan / un-labelable box / non-taggable, each behind
+a full-meaning confirmation. Flagging from the chooser drops the item
+from the batch; the un-labelable path offers PRINT BOX LABEL on the
+spot. batch_scan also refuses flagged products now (a collect scan
+right after flagging used to re-add them quietly).
+
 ## 📦 Un-labelable box + mis-label picker + tab speedups — ✅ DEPLOYED 2026-09-08 (C72 3.89)
 
 Nick's CR2032 assorted-box request plus the mis-label upgrade and the
