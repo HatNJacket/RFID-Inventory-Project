@@ -3,6 +3,25 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-08.
 
+## ⧉ Multi-box SETS (distinct-SKU boxes sold only whole) — ✅ DEPLOYED 2026-09-08 (C72 3.92)
+
+Nick's A/B rack walk, the S11230: boxes each carry their OWN
+barcode/SKU (usually drafts, S11230-1/-2) under an active full
+listing. A THIRD thing - not a bundle (recipes), not the same-SKU
+multibox mark. rfid_boxset_parts (migration RUN): ordered parts under
+a set SKU; part codes resolve through the lookup chain as synthetic
+products riding the full product's ids/bin. Counting = min(part tag
+counts) vs the FULL product's on-hand (checks never file for parts;
+audit_bins rolls parts into the set row; bin sweeps audit each part
+against the SET's shelf number). Inventory shows the set with each
+box identity in its own column. Defined AT COLLECT: web rows
+(resolved AND unresolved) get "Multi-box set…" (builder overlay), C72
+3.92 gets MULTI-BOX SET in the collect item editor. Legacy full-SKU
+tags trigger the re-label offer (per-box labels + unlink, peel old
+stickers). Labels carry "Box N of M" on the bin line (pairing strips
+it). Follow-up when wanted: receiving + shipment-sort awareness of
+part scans (v1 is collect + inventory/audits, Nick's pick).
+
 ## 📐 Audit expected folds in UNAVAILABLE; chosen SKU breaks; no audit names — ✅ DEPLOYED 2026-09-08 (C72 3.91)
 
 Nick's ASI432MM case (3 sellable + 1 reserved, 4 tag records): the
