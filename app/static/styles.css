@@ -2880,6 +2880,24 @@ tr.binaudit-untagged td { opacity: 0.72; }
 }
 .sortsel { width: 18px; height: 18px; }
 
+/* Rows inside the site-native overlay windows (linked barcodes,
+   mis-label manager/picker, box-set builder) — same tokens as the
+   rest of the terminal (Nick, 2026-09-08). */
+.mlrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--card-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin: 6px 0;
+  font-size: 13px;
+  color: var(--ink);
+}
+.mlrow__main { flex: 1; min-width: 0; }
+.mlrow__meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+
 /* Freshness tags (Nick, 2026-09-08): snapshot data paints instantly in
    yellow, then flips green once the live numbers land. */
 .freshtag {

@@ -5358,7 +5358,7 @@ function openBoxSetBuilder(seedItem) {
   if (!batch) return;
   const { wrap, box } = mlOverlay("Lump boxes into one multi-box product");
   const intro = document.createElement("p");
-  intro.style.cssText = "font-size:12.5px;opacity:.85;margin:0 0 8px";
+  intro.className = "linkbox__text";
   intro.textContent =
     "For a product sold ONLY as a package whose boxes each carry " +
     "their own barcode/SKU (S11230-1, S11230-2 under S11230). Tick " +
@@ -5373,22 +5373,21 @@ function openBoxSetBuilder(seedItem) {
   const list = document.createElement("div");
   batchItems.forEach((it) => {
     const row = document.createElement("div");
-    row.style.cssText =
-      "display:flex;align-items:center;gap:8px;border:1px solid " +
-      "var(--line,#ccc);border-radius:8px;padding:6px 8px;margin:5px 0";
+    row.className = "mlrow";
     const cb = document.createElement("input");
     cb.type = "checkbox";
     cb.checked = it.id === seedItem.id;
     const name = document.createElement("div");
-    name.style.cssText = "flex:1;min-width:0;font-size:12px";
+    name.className = "mlrow__main";
     name.innerHTML =
       `<b>${escapeHtml(it.product_title || it.scanned_code || "?")}</b>` +
-      `<span style="opacity:.7"> · scanned ${escapeHtml(it.scanned_code || it.barcode || "—")}` +
+      `<span class="mlrow__meta"> · scanned ${escapeHtml(it.scanned_code || it.barcode || "—")}` +
       `${it.resolved ? "" : " · unresolved"}</span>`;
     const skuIn = document.createElement("input");
+    skuIn.className = "linkbox__input";
     skuIn.placeholder = "SKU on the box";
     skuIn.value = it.sku || it.scanned_code || "";
-    skuIn.style.cssText = "width:150px";
+    skuIn.style.cssText = "flex:0 0 160px;font-size:13px;padding:6px 9px";
     skuIn.disabled = !cb.checked;
     cb.addEventListener("change", () => {
       skuIn.disabled = !cb.checked;
@@ -5408,11 +5407,13 @@ function openBoxSetBuilder(seedItem) {
     "font-size:12px";
   const minus = document.createElement("button");
   minus.type = "button";
+  minus.className = "reset";
   minus.textContent = "−";
   const countEl = document.createElement("b");
   countEl.textContent = "0";
   const plus = document.createElement("button");
   plus.type = "button";
+  plus.className = "reset";
   plus.textContent = "+";
   const draftLbl = document.createElement("span");
   draftLbl.textContent =
@@ -5433,15 +5434,18 @@ function openBoxSetBuilder(seedItem) {
       row.style.cssText =
         "display:flex;gap:6px;margin:4px 0;align-items:center";
       const bcIn = document.createElement("input");
+      bcIn.className = "linkbox__input";
       bcIn.placeholder = `new box ${i + 1}: barcode`;
-      bcIn.style.cssText = "flex:1";
+      bcIn.style.cssText = "flex:1;font-size:13px;padding:6px 9px";
       const skuIn = document.createElement("input");
+      skuIn.className = "linkbox__input";
       skuIn.placeholder = "SKU (blank = auto -X)";
-      skuIn.style.cssText = "width:140px";
+      skuIn.style.cssText = "flex:0 0 150px;font-size:13px;padding:6px 9px";
       const binIn = document.createElement("input");
+      binIn.className = "linkbox__input";
       binIn.placeholder = "bin";
       binIn.value = batch ? batch.bin_name || "" : "";
-      binIn.style.cssText = "width:80px";
+      binIn.style.cssText = "flex:0 0 90px;font-size:13px;padding:6px 9px";
       row.append(bcIn, skuIn, binIn);
       draftList.appendChild(row);
       draftRows.push({ row, bcIn, skuIn, binIn });
@@ -5458,22 +5462,26 @@ function openBoxSetBuilder(seedItem) {
   const fullRow = document.createElement("div");
   fullRow.style.cssText = "display:flex;gap:6px;margin:10px 0;align-items:center";
   const fullLbl = document.createElement("span");
-  fullLbl.style.cssText = "font-size:12px;white-space:nowrap";
+  fullLbl.style.cssText = "font-size:13px;white-space:nowrap";
   fullLbl.textContent = "Full product (active listing):";
   const fullIn = document.createElement("input");
+  fullIn.className = "linkbox__input";
   fullIn.placeholder = "Barcode or SKU, e.g. S11230";
-  fullIn.style.cssText = "flex:1";
+  fullIn.style.cssText = "flex:1;font-size:14px;padding:7px 10px";
   fullRow.append(fullLbl, fullIn);
   box.appendChild(fullRow);
 
   const foot = document.createElement("div");
-  foot.style.cssText = "display:flex;gap:8px;justify-content:flex-end";
+  foot.className = "linkbox__actions";
+  foot.style.cssText = "justify-content:flex-end";
   const cancel = document.createElement("button");
   cancel.type = "button";
+  cancel.className = "reset";
   cancel.textContent = "Cancel";
   cancel.addEventListener("click", () => wrap.remove());
   const create = document.createElement("button");
   create.type = "button";
+  create.className = "reset";
   create.textContent = "Create set";
   foot.append(cancel, create);
   box.appendChild(foot);
@@ -14666,20 +14674,16 @@ document
 // Self-contained overlay DOM: nothing in index.html to keep in sync.
 
 function mlOverlay(titleText) {
+  // The site's own modal shell (same as the event-colour editor), so
+  // these windows match the rest of the terminal (Nick, 2026-09-08).
   const wrap = document.createElement("div");
-  wrap.style.cssText =
-    "position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:2000;" +
-    "display:flex;align-items:center;justify-content:center;padding:16px";
-  const box = document.createElement("div");
-  box.style.cssText =
-    "background:var(--card,#fff);color:var(--ink,#1c1c1e);" +
-    "border:1px solid var(--line,#ccc);border-radius:10px;" +
-    "max-width:560px;width:100%;" +
-    "max-height:85vh;overflow:auto;padding:16px 18px;" +
-    "box-shadow:0 12px 40px rgba(0,0,0,.35)";
-  const h = document.createElement("h3");
+  wrap.className = "phist-overlay";
+  const box = document.createElement("section");
+  box.className = "linkbox serialbox phist-modal";
+  box.style.maxWidth = "640px";
+  const h = document.createElement("div");
+  h.className = "linkbox__title";
   h.textContent = titleText;
-  h.style.cssText = "margin:0 0 10px;font-size:16px";
   box.appendChild(h);
   wrap.appendChild(box);
   wrap.addEventListener("click", (e) => {
@@ -14691,35 +14695,34 @@ function mlOverlay(titleText) {
 
 function mlProductCard(opt, actionLabel, onAction, onRemove) {
   const card = document.createElement("div");
-  card.style.cssText =
-    "display:flex;align-items:center;gap:10px;border:1px solid " +
-    "var(--line,#ccc);border-radius:8px;padding:8px 10px;margin:6px 0";
+  card.className = "mlrow";
   const img = document.createElement("img");
   img.src = opt.image_url || "";
   img.alt = "";
   img.style.cssText =
-    "width:46px;height:46px;object-fit:cover;background:#eee;" +
+    "width:46px;height:46px;object-fit:cover;background:var(--card-2);" +
     "border-radius:6px;flex:0 0 auto" +
     (opt.image_url ? "" : ";visibility:hidden");
   card.appendChild(img);
   const col = document.createElement("div");
-  col.style.cssText = "flex:1;min-width:0";
+  col.className = "mlrow__main";
   const nm = document.createElement("div");
   nm.textContent = opt.product_title || opt.sku;
-  nm.style.cssText = "font-weight:600;font-size:13px";
+  nm.style.cssText = "font-weight:650";
   col.appendChild(nm);
   const meta = document.createElement("div");
+  meta.className = "mlrow__meta";
   meta.textContent =
     `SKU ${opt.sku}` +
     (opt.barcode ? ` · barcode ${opt.barcode}` : "") +
     (opt.bin_location ? ` · bin ${opt.bin_location}` : "") +
     (opt.flagged ? " · the flagged product" : "");
-  meta.style.cssText = "font-size:11.5px;opacity:.75";
   col.appendChild(meta);
   card.appendChild(col);
   if (onAction) {
     const btn = document.createElement("button");
     btn.type = "button";
+    btn.className = "reset";
     btn.textContent = actionLabel;
     btn.addEventListener("click", onAction);
     card.appendChild(btn);
@@ -14727,6 +14730,7 @@ function mlProductCard(opt, actionLabel, onAction, onRemove) {
   if (onRemove) {
     const x = document.createElement("button");
     x.type = "button";
+    x.className = "reset";
     x.textContent = "✕";
     x.title = "Remove from the picker list";
     x.addEventListener("click", onRemove);
@@ -14740,7 +14744,7 @@ function mlProductCard(opt, actionLabel, onAction, onRemove) {
 async function openMislabelManager(sku) {
   const { wrap, box } = mlOverlay(`Mis-label picker list for ${sku}`);
   const intro = document.createElement("p");
-  intro.style.cssText = "font-size:12.5px;opacity:.8;margin:0 0 8px";
+  intro.className = "linkbox__text";
   intro.textContent =
     "When a scan resolves to this product, these are offered as " +
     '"which product is this really?". Add every product the ' +
@@ -14750,25 +14754,29 @@ async function openMislabelManager(sku) {
   box.appendChild(list);
 
   const addRow = document.createElement("div");
-  addRow.style.cssText = "display:flex;gap:6px;margin:10px 0";
+  addRow.className = "linkbox__form";
+  addRow.style.margin = "10px 0";
   const input = document.createElement("input");
+  input.className = "linkbox__input";
   input.placeholder = "Barcode or SKU of another product…";
-  input.style.cssText = "flex:1";
   const addBtn = document.createElement("button");
   addBtn.type = "button";
+  addBtn.className = "reset";
   addBtn.textContent = "Add product";
   addRow.appendChild(input);
   addRow.appendChild(addBtn);
   box.appendChild(addRow);
 
   const foot = document.createElement("div");
-  foot.style.cssText =
-    "display:flex;gap:8px;justify-content:space-between;margin-top:10px";
+  foot.className = "linkbox__actions";
+  foot.style.cssText = "justify-content:space-between;margin-top:10px";
   const unflagBtn = document.createElement("button");
   unflagBtn.type = "button";
+  unflagBtn.className = "reset";
   unflagBtn.textContent = "Remove warning entirely";
   const closeBtn = document.createElement("button");
   closeBtn.type = "button";
+  closeBtn.className = "reset";
   closeBtn.textContent = "Close";
   closeBtn.addEventListener("click", () => wrap.remove());
   foot.appendChild(unflagBtn);
@@ -14789,7 +14797,7 @@ async function openMislabelManager(sku) {
     const opts = (d.options || []).filter((o) => !o.flagged);
     if (!opts.length) {
       const empty = document.createElement("p");
-      empty.style.cssText = "font-size:12px;opacity:.7";
+      empty.className = "linkbox__text";
       empty.textContent =
         "No products listed yet - scans show the text warning only. " +
         "Add the product(s) this label might actually be to turn on " +
@@ -14878,7 +14886,7 @@ async function openMislabelManager(sku) {
 function openMislabelPicker(product, onPick) {
   const { wrap, box } = mlOverlay("Vendor mis-label: which product is this?");
   const intro = document.createElement("p");
-  intro.style.cssText = "font-size:12.5px;margin:0 0 8px";
+  intro.className = "linkbox__text";
   intro.textContent =
     "Previous vendor labels for this product are known to carry the " +
     "wrong barcode. Check the physical box and pick what's actually " +
@@ -14894,6 +14902,7 @@ function openMislabelPicker(product, onPick) {
   });
   const addBtn = document.createElement("button");
   addBtn.type = "button";
+  addBtn.className = "reset";
   addBtn.textContent = "It's a different product - add it to this list…";
   addBtn.style.cssText = "margin-top:6px";
   addBtn.addEventListener("click", async () => {
@@ -14927,6 +14936,7 @@ function openMislabelPicker(product, onPick) {
   box.appendChild(addBtn);
   const cancel = document.createElement("button");
   cancel.type = "button";
+  cancel.className = "reset";
   cancel.textContent = "Cancel scan";
   cancel.style.cssText = "margin:6px 0 0 8px";
   cancel.addEventListener("click", () => wrap.remove());
@@ -15075,7 +15085,7 @@ function openAliasManager(sku) {
     sku ? `Linked barcodes for ${sku}` : "Every linked barcode"
   );
   const intro = document.createElement("p");
-  intro.style.cssText = "font-size:12.5px;opacity:.8;margin:0 0 8px";
+  intro.className = "linkbox__text";
   intro.textContent =
     "A linked (aliased) code resolves to its product on every scan - " +
     "and WINS over box-set parts and other lookups, so a wrong link " +
@@ -15084,15 +15094,17 @@ function openAliasManager(sku) {
   const list = document.createElement("div");
   box.appendChild(list);
   const foot = document.createElement("div");
-  foot.style.cssText =
-    "display:flex;gap:8px;justify-content:space-between;margin-top:10px";
+  foot.className = "linkbox__actions";
+  foot.style.cssText = "justify-content:space-between;margin-top:10px";
   const scopeBtn = document.createElement("button");
   scopeBtn.type = "button";
+  scopeBtn.className = "reset";
   scopeBtn.textContent = sku
     ? "Show every product's links"
     : "Close";
   const closeBtn = document.createElement("button");
   closeBtn.type = "button";
+  closeBtn.className = "reset";
   closeBtn.textContent = "Close";
   closeBtn.addEventListener("click", () => wrap.remove());
   foot.appendChild(scopeBtn);
@@ -15117,7 +15129,7 @@ function openAliasManager(sku) {
     list.innerHTML = "";
     if (!d.count) {
       const empty = document.createElement("p");
-      empty.style.cssText = "font-size:12px;opacity:.7";
+      empty.className = "linkbox__text";
       empty.textContent = sku
         ? "No barcodes are linked to this product."
         : "No linked barcodes anywhere.";
@@ -15126,11 +15138,9 @@ function openAliasManager(sku) {
     }
     d.aliases.forEach((a) => {
       const row = document.createElement("div");
-      row.style.cssText =
-        "display:flex;align-items:center;gap:10px;border:1px solid " +
-        "var(--line,#ccc);border-radius:8px;padding:7px 10px;margin:5px 0";
+      row.className = "mlrow";
       const col = document.createElement("div");
-      col.style.cssText = "flex:1;min-width:0;font-size:12px";
+      col.className = "mlrow__main";
       const kindNote =
         a.kind === "label"
           ? " · from a saved label line (auto-replaced on edits)"
@@ -15141,13 +15151,14 @@ function openAliasManager(sku) {
         `<b class="mono">${escapeHtml(a.alias_barcode)}</b> → ` +
         `${escapeHtml(a.product_title || a.sku || a.barcode || "?")} ` +
         `<span class="mono" style="opacity:.75">${escapeHtml(a.sku || "")}</span>` +
-        `<div style="opacity:.7">linked ${a.created_at ? fmtAgo(a.created_at) : "—"}` +
+        `<div class="mlrow__meta">linked ${a.created_at ? fmtAgo(a.created_at) : "—"}` +
         `${a.created_by ? " by " + escapeHtml(a.created_by) : ""}` +
         `${a.created_at ? " (" + escapeHtml(fmtWhen(a.created_at)) + ")" : ""}` +
         `${kindNote}</div>`;
       row.appendChild(col);
       const unlink = document.createElement("button");
       unlink.type = "button";
+      unlink.className = "reset";
       unlink.textContent = "Unlink";
       unlink.addEventListener("click", async () => {
         if (
