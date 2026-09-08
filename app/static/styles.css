@@ -2866,3 +2866,22 @@ tr.binaudit-untagged td { opacity: 0.72; }
   font-size: 0.92rem;
 }
 .sortsel { width: 18px; height: 18px; }
+
+/* Freshness tags (Nick, 2026-09-08): snapshot data paints instantly in
+   yellow, then flips green once the live numbers land. */
+.freshtag {
+  display: inline-block;
+  margin: 6px 0 10px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  background: #fdf3d7;
+  color: #8a6116;
+  border: 1px solid #e7cf94;
+}
+.freshtag--live {
+  background: #ddf5e4;
+  color: #1c7a3d;
+  border-color: #a9dfbc;
+}

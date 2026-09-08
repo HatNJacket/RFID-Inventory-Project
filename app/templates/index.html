@@ -520,6 +520,9 @@
         <h2>Products in the RFID system <span class="recent__note" id="inv-count"></span></h2>
         <input id="inv-search" class="recent__search" type="search" placeholder="Search product, SKU, barcode…" autocomplete="off" />
       </div>
+      <!-- Freshness tag (Nick, 2026-09-08): snapshot paints instantly
+           in yellow, flips green once the live Shopify walk lands. -->
+      <div id="inv-fresh" class="freshtag" hidden></div>
       <div class="invfilters">
         <label class="invfilter">
           <span class="invfilter__label">Bin</span>
@@ -1199,6 +1202,9 @@
            — and audits can run as named, resumable sessions. The tool
            internals below keep their original ids untouched. -->
       <div id="audit-hub">
+        <!-- Freshness tag (Nick, 2026-09-08): saved card numbers show
+             instantly in yellow; green checkmark once live data lands. -->
+        <div id="audhub-fresh" class="freshtag" hidden></div>
         <div class="audhub-cards">
           <button class="audcard" type="button" data-pane="checks">
             <span class="audcard__label">1-left checks</span>
@@ -1511,10 +1517,19 @@
                 <span id="phist-notag-what" hidden></span>
                 <button class="reset" id="phist-notag-btn" type="button"></button>
               </div>
+              <!-- Box of Un-Labelable Product (Nick, 2026-09-08): the
+                   CR2032 assorted box. The box gets ONE label + bin;
+                   on-hand stays real; tags never count. -->
+              <div class="optitem" id="phist-unbox" hidden>
+                <button class="reset" id="phist-unbox-btn" type="button"></button>
+              </div>
+              <div class="optitem" id="phist-unbox-print" hidden>
+                <button class="reset" id="phist-unbox-print-btn" type="button">🖨 Print box label</button>
+              </div>
               <!-- Vendor mis-label warning (Nick, 2026-09-08): the
                    vendor printed the wrong barcode on this product's
                    boxes, so every scan warns to check the physical
-                   product. -->
+                   product. Click while ON to manage the picker list. -->
               <div class="optitem" id="phist-mislabel" hidden>
                 <button class="reset" id="phist-mislabel-btn" type="button"></button>
               </div>

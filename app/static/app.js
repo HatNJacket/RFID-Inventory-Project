@@ -364,6 +364,7 @@ const EVENT_META = {
   "manual-recount": ["Manual Recount", "#8a6116"],
   "rfid-flag-changed": ["RFID Flag", "#d72c0d"],
   "non-taggable": ["Non-taggable", "#8a6116"],
+  "unlabelable-box": ["Un-labelable Box", "#8a6116"],
   "batch-reprinted": ["Batch Reprint", "#5c5f62"],
   "printing-stopped": ["Stopped Printing", "#d72c0d"],
   "printing-resumed": ["Resumed Printing", "#116329"],
@@ -762,6 +763,36 @@ async function stationBarcodeScan(barcode) {
       return;
     }
     const product = await res.json();
+    // Mis-label picker (Nick, 2026-09-08): a flagged product with a
+    // "might actually be" list asks which product is physically in
+    // hand before the station accepts anything.
+    if (product.mislabel_options && product.mislabel_options.length > 1) {
+      openMislabelPicker(product, async (opt) => {
+        if (
+          (opt.sku || "").toUpperCase() ===
+          (product.sku || "").toUpperCase()
+        ) {
+          acceptProduct(
+            product,
+            "Confirmed against the physical box. Scan the RFID tag."
+          );
+          return;
+        }
+        setResult(`Loading ${opt.sku}…`, "busy");
+        try {
+          const chosen = await apiJson(
+            `/api/products/by-barcode/${encodeURIComponent(opt.sku)}`
+          );
+          acceptProduct(
+            chosen,
+            "Product picked from the mis-label list. Scan the RFID tag."
+          );
+        } catch (err) {
+          setResult(err.message || "Lookup failed.", "err");
+        }
+      });
+      return;
+    }
     if (product.alias_warning) {
       openConfirmBox(product);
       return;
@@ -3729,40 +3760,87 @@ let invVendorCombo = null;
 let invBinFilter = "";
 let invVendorFilter = "";
 
+// Freshness tags (Nick, 2026-09-08): snapshot data paints instantly
+// under a yellow "last refreshed" tag, then flips to a green checkmark
+// when the live numbers land.
+function agoText(ms) {
+  if (ms == null || ms < 0) return "just now";
+  const m = Math.round(ms / 60000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  if (h < 48) return `${h} h ago`;
+  return `${Math.round(h / 24)} d ago`;
+}
+
+function setFreshTag(id, live, ageMs) {
+  const tag = document.getElementById(id);
+  if (!tag) return;
+  tag.hidden = false;
+  tag.classList.toggle("freshtag--live", !!live);
+  tag.textContent = live
+    ? "Up to date ✓"
+    : `Showing saved numbers - last refreshed ${agoText(ageMs)}`;
+}
+
+function applyInventoryData(data) {
+  inventoryRows = data.products;
+  // Offer only values that exist, with how many products each covers.
+  const countBy = (key) => {
+    const m = new Map();
+    inventoryRows.forEach((p) => {
+      if (p[key]) m.set(p[key], (m.get(p[key]) || 0) + 1);
+    });
+    return m;
+  };
+  const binCounts = countBy("bin_location");
+  const vendorCounts = countBy("vendor");
+  if (invBinCombo)
+    invBinCombo.setOptions(
+      (data.bins || []).map((b) => ({ label: b, count: binCounts.get(b) }))
+    );
+  if (invVendorCombo)
+    invVendorCombo.setOptions(
+      (data.vendors || []).map((v) => ({
+        label: v,
+        count: vendorCounts.get(v),
+      }))
+    );
+  renderInventory();
+}
+
 async function loadInventory() {
   const body = document.getElementById("inv-body");
+  let livePainted = false;
+  // Instant paint from the bin-map snapshot (the live Shopify walk
+  // takes ~14s; nobody should stare at "Loading…" for it).
+  apiFetch("/api/inventory/summary?fast=1")
+    .then(async (r) => {
+      if (!r.ok || livePainted) return;
+      const d = await r.json();
+      if (livePainted) return;
+      applyInventoryData(d);
+      setFreshTag(
+        "inv-fresh", false,
+        d.onhand_age_minutes == null ? null : d.onhand_age_minutes * 60000
+      );
+    })
+    .catch(() => {});
   try {
     const res = await apiFetch("/api/inventory/summary");
     if (!res.ok) {
-      body.innerHTML =
-        '<tr><td colspan="7" class="inventory__empty">Could not load inventory.</td></tr>';
+      if (!livePainted)
+        body.innerHTML =
+          '<tr><td colspan="7" class="inventory__empty">Could not load inventory.</td></tr>';
       return;
     }
     const data = await res.json();
-    inventoryRows = data.products;
-    // Offer only values that exist, with how many products each covers.
-    const countBy = (key) => {
-      const m = new Map();
-      inventoryRows.forEach((p) => {
-        if (p[key]) m.set(p[key], (m.get(p[key]) || 0) + 1);
-      });
-      return m;
-    };
-    const binCounts = countBy("bin_location");
-    const vendorCounts = countBy("vendor");
-    if (invBinCombo)
-      invBinCombo.setOptions(
-        (data.bins || []).map((b) => ({ label: b, count: binCounts.get(b) }))
-      );
-    if (invVendorCombo)
-      invVendorCombo.setOptions(
-        (data.vendors || []).map((v) => ({
-          label: v,
-          count: vendorCounts.get(v),
-        }))
-      );
-    renderInventory();
+    livePainted = true;
+    applyInventoryData(data);
+    setFreshTag("inv-fresh", true);
   } catch (err) {
+    // The snapshot (if it painted) stays up with its yellow tag.
+    if (!document.getElementById("inv-fresh").hidden) return;
     body.innerHTML =
       '<tr><td colspan="7" class="inventory__empty">Network error.</td></tr>';
   }
@@ -11574,6 +11652,10 @@ function renderAuditBins() {
                      p.rfid_incompatible
                        ? ' <span class="noscan-chip" title="tag won\'t scan when on box">⊘</span>'
                        : ""
+                   }${
+                     p.unlabelable
+                       ? ' <span class="noscan-chip" title="un-labelable box: one location label, tags never counted - on-hand shown for reference">📦</span>'
+                       : ""
                    }</td>
                    <td class="mono"><span class="skulink" data-sku="${escapeHtml(p.sku || "")}">${escapeHtml(p.sku || "—")}</span></td>
                    <td class="num">${p.on_hand == null ? "—" : p.on_hand}${
@@ -11581,7 +11663,7 @@ function renderAuditBins() {
                        ? ` <span class="bexp--note" title="Boxes sold on fulfilled orders whose tag is still on file — they raise the expected tag count until an audit marks them sold">(+${p.sold_unretired} sold)</span>`
                        : ""
                    }</td>
-                   <td class="num">${p.rfid_units}</td>
+                   <td class="num">${p.unlabelable ? "—" : p.rfid_units}</td>
                    <td class="num${p.diff ? " bexp--off" : ""}">${
                      p.diff > 0 ? "+" + p.diff : p.diff
                    }</td>
@@ -12261,9 +12343,16 @@ refreshify("audit-refresh", "audit-onhand-pull", async () => {
 });
 
 async function loadAudits() {
-  loadOneleft();
-  loadAuditBins();
-  loadAuditSessions();
+  // Last-known card numbers paint instantly (yellow "last refreshed"
+  // tag); the tag flips green once every live load below has landed.
+  audRestoreCards();
+  const slowLoads = [loadOneleft(), loadAuditBins(), loadAuditSessions()];
+  Promise.allSettled(slowLoads.concat([auditsChecksLoad()])).then(() =>
+    setFreshTag("audhub-fresh", true)
+  );
+}
+
+async function auditsChecksLoad() {
   const list = document.getElementById("audit-list");
   try {
     const { tasks } = await apiJson("/api/review-tasks?status=open&limit=100");
@@ -12749,6 +12838,43 @@ function audSetCard(prefix, num, sub, tone) {
   numEl.textContent = num;
   subEl.textContent = sub;
   subEl.className = "audcard__sub" + (tone ? ` audcard__sub--${tone}` : "");
+  // Persist real values so the next visit paints them instantly under
+  // the yellow "last refreshed" tag (Nick, 2026-09-08). Placeholders
+  // ("–", "!") never overwrite a saved number.
+  if (num !== "–" && num !== "!" && num !== "…") {
+    try {
+      const saved = JSON.parse(localStorage.getItem("audcards") || "{}");
+      saved[prefix] = { num, sub, tone: tone || null };
+      saved.__at = Date.now();
+      localStorage.setItem("audcards", JSON.stringify(saved));
+    } catch (e) {
+      /* storage blocked - instant paint just won't happen */
+    }
+  }
+}
+
+// Paint the last-known card values immediately; live loads overwrite
+// them and flip the tag green when the slowest one lands.
+function audRestoreCards() {
+  let saved = null;
+  try {
+    saved = JSON.parse(localStorage.getItem("audcards") || "null");
+  } catch (e) {
+    saved = null;
+  }
+  if (!saved || !saved.__at) return false;
+  for (const [prefix, c] of Object.entries(saved)) {
+    if (prefix === "__at" || !c || typeof c !== "object") continue;
+    const numEl = document.getElementById(`${prefix}-num`);
+    const subEl = document.getElementById(`${prefix}-sub`);
+    if (!numEl) continue;
+    numEl.textContent = c.num;
+    subEl.textContent = c.sub;
+    subEl.className =
+      "audcard__sub" + (c.tone ? ` audcard__sub--${c.tone}` : "");
+  }
+  setFreshTag("audhub-fresh", false, Date.now() - saved.__at);
+  return true;
 }
 
 // === Audit sessions =========================================================
@@ -13225,6 +13351,7 @@ async function openProductHistory(term) {
     }
     renderNoScan(!!data.rfid_incompatible);
     renderNonTaggable(!!data.non_taggable);
+    renderUnlabelable(!!data.unlabelable_box);
     renderMislabel(!!data.mislabel_flag);
     renderVendorRow();
     renderBundleRow();
@@ -13587,6 +13714,10 @@ function renderFlagChips() {
     chips.push(
       `<span class="flagchip" title="Outside the RFID system: no batches, no labels, audits skip it">🚫 non-taggable</span>`
     );
+  if (phistData.unlabelable_box)
+    chips.push(
+      `<span class="flagchip" title="Assorted box: ONE location label on the box, tags never counted, on-hand stays real and updatable">📦 un-labelable box</span>`
+    );
   if (phistData.mislabel_flag)
     chips.push(
       `<span class="flagchip" title="Previous vendor labels are known to carry the wrong barcode - every scan warns to check the physical product">🏷 vendor mis-label</span>`
@@ -13619,10 +13750,15 @@ function renderNoScan(flagged) {
     : "Sweeps currently expect this product's tags to answer. If a tag " +
       "reads fine in hand but never on the box, flag it so sweeps stop " +
       "counting it as missing.";
-  document.getElementById("phist-flags").hidden =
-    document.getElementById("phist-norfid").hidden &&
-    document.getElementById("phist-notag").hidden;
+  updateFlagGroupVisibility();
   renderFlagChips();
+}
+
+// One rule for the whole Flags fieldset: visible while ANY flag row is.
+function updateFlagGroupVisibility() {
+  document.getElementById("phist-flags").hidden = [
+    "phist-norfid", "phist-notag", "phist-unbox", "phist-mislabel",
+  ].every((id) => document.getElementById(id).hidden);
 }
 
 // Bundle contents on the product panel — the standing record behind
@@ -13737,6 +13873,22 @@ document
     if (!phistData || !phistData.sku) return;
     const want = !phistData.rfid_incompatible;
     const msg = document.getElementById("phist-msg");
+    // Every Can't Scan option confirms with its full meaning before
+    // applying (Nick, 2026-09-08) - each points at a different flag.
+    if (
+      want &&
+      !confirm(
+        `Flag ${phistData.sku} as WON'T RFID SCAN?\n\n` +
+          `For products whose tag reads fine in hand but never while ` +
+          `on the box (foil bags, dense glass):\n` +
+          `- Labels still print and pairing still counts every unit.\n` +
+          `- Sweeps and Verify just stop expecting the tags to ` +
+          `answer, so they're never reported missing.\n\n` +
+          `Undo any time with this same button (History keeps the ` +
+          `record).`
+      )
+    )
+      return;
     try {
       await apiJson(
         `/api/products/${encodeURIComponent(phistData.sku)}/rfid-incompatible`,
@@ -13783,11 +13935,114 @@ function renderNonTaggable(flagged) {
       "thumbscrews): drops it from batches, labels and audits. You can " +
       "still pair ONE tag by hand as a bag marker and find it with " +
       "Locate.";
-  document.getElementById("phist-flags").hidden =
-    document.getElementById("phist-norfid").hidden &&
-    document.getElementById("phist-notag").hidden;
+  updateFlagGroupVisibility();
   renderFlagChips();
 }
+
+// Box of Un-Labelable Product (Nick, 2026-09-08): the CR2032 assorted
+// box. Between won't-scan and non-taggable in strength - the BOX gets
+// ONE label + a bin for location/clarity, on-hand stays real and
+// updatable, but per-unit tags never count anywhere.
+function renderUnlabelable(flagged) {
+  const row = document.getElementById("phist-unbox");
+  const printRow = document.getElementById("phist-unbox-print");
+  if (!phistData || !phistData.sku) {
+    row.hidden = true;
+    printRow.hidden = true;
+    renderFlagChips();
+    return;
+  }
+  row.hidden = false;
+  printRow.hidden = !flagged;
+  phistData.unlabelable_box = flagged;
+  const btn = document.getElementById("phist-unbox-btn");
+  btn.classList.toggle("optflag--on", flagged);
+  btn.textContent = flagged
+    ? "📦 Remove un-labelable box flag"
+    : "Flag: box of un-labelable product";
+  btn.title = flagged
+    ? "Flagged as an un-labelable box: ONE label on the box for " +
+      "location, tags never counted, on-hand still shows and can be " +
+      "updated. Click to return it to normal per-unit tagging."
+    : "An assorted box of product (100 loose CR2032s): the box itself " +
+      "gets a label and a bin, but individual tags are never counted. " +
+      "On-hand stays real and updatable.";
+  updateFlagGroupVisibility();
+  renderFlagChips();
+}
+
+document
+  .getElementById("phist-unbox-btn")
+  .addEventListener("click", async () => {
+    if (!phistData || !phistData.sku) return;
+    const want = !phistData.unlabelable_box;
+    const msg = document.getElementById("phist-msg");
+    if (
+      want &&
+      !confirm(
+        `Mark ${phistData.sku} as a BOX OF UN-LABELABLE PRODUCT?\n\n` +
+          `For an assorted box (100 loose CR2032 batteries, a bin of ` +
+          `thumbscrews):\n` +
+          `- The BOX gets ONE label and a bin, for location and ` +
+          `clarity. Print it from the button that appears below.\n` +
+          `- On-hand still shows everywhere and can still be raised ` +
+          `or corrected.\n` +
+          `- Individual RFID tags are NEVER counted: no batch ` +
+          `collect, no per-unit labels, no tags-vs-on-hand math.\n\n` +
+          `Undo any time with this same button (History keeps the ` +
+          `record).`
+      )
+    )
+      return;
+    try {
+      const r = await apiJson(
+        `/api/products/${encodeURIComponent(phistData.sku)}/unlabelable-box`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            flagged: want,
+            changed_by: operatorEl.value || null,
+          }),
+        }
+      );
+      renderUnlabelable(want);
+      if (want) phistData.non_taggable = false;
+      renderNonTaggable(!!phistData.non_taggable);
+      msg.textContent = r.message;
+    } catch (err) {
+      msg.textContent = err.message;
+    }
+  });
+
+document
+  .getElementById("phist-unbox-print-btn")
+  .addEventListener("click", async () => {
+    if (!phistData || !phistData.sku) return;
+    const msg = document.getElementById("phist-msg");
+    if (
+      !confirm(
+        `Print ${phistData.sku}'s ONE box label?\n\n` +
+          `It queues like any label (home bin printed on it) - pair ` +
+          `it to the box as usual, and the tag marks the location ` +
+          `without ever being counted.`
+      )
+    )
+      return;
+    try {
+      const r = await apiJson(
+        `/api/products/${encodeURIComponent(phistData.sku)}/box-label`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ changed_by: operatorEl.value || null }),
+        }
+      );
+      msg.textContent = r.message;
+    } catch (err) {
+      msg.textContent = err.message;
+    }
+  });
 
 // Vendor mis-label warning (Nick, 2026-09-08): the vendor printed the
 // WRONG barcode on this product's boxes (EXOS2CWB5's barcode on
@@ -13806,15 +14061,17 @@ function renderMislabel(flagged) {
   const btn = document.getElementById("phist-mislabel-btn");
   btn.classList.toggle("optflag--on", flagged);
   btn.textContent = flagged
-    ? "🏷 Remove mis-label warning"
+    ? "🏷 Mis-label warning ON - manage…"
     : "Flag: vendor labels mis-labeled";
   btn.title = flagged
     ? "Flagged: previous vendor labels for this product are known to " +
-      "carry the wrong barcode - every scan warns to check the " +
-      "physical product. Click to remove the warning."
+      "carry the wrong barcode - every scan warns and (with products " +
+      "listed) offers the which-is-it picker. Click to manage the " +
+      "picker list or remove the warning."
     : "The vendor printed another product's barcode on this one's " +
       "boxes? Flag it and every scan (Scan Station AND the C72) warns " +
-      "to check the physical product before trusting the resolution.";
+      "to check the physical product; add the products the label " +
+      "might actually be and scans offer a picker.";
   renderFlagChips();
 }
 
@@ -13822,8 +14079,26 @@ document
   .getElementById("phist-mislabel-btn")
   .addEventListener("click", async () => {
     if (!phistData || !phistData.sku) return;
-    const want = !phistData.mislabel_flag;
     const msg = document.getElementById("phist-msg");
+    if (phistData.mislabel_flag) {
+      // Already on: manage the picker list (removal lives in there).
+      openMislabelManager(phistData.sku);
+      return;
+    }
+    if (
+      !confirm(
+        `Flag ${phistData.sku} as VENDOR MIS-LABELED?\n\n` +
+          `For products whose previous vendor labels carry the WRONG ` +
+          `barcode:\n` +
+          `- Every scan (Scan Station AND the C72) warns to check the ` +
+          `physical product.\n` +
+          `- Add the products the label might actually be, and scans ` +
+          `offer a picker with product previews instead of trusting ` +
+          `the barcode.\n\nThe manager window opens next so you can ` +
+          `add those products.`
+      )
+    )
+      return;
     try {
       const r = await apiJson(
         `/api/products/${encodeURIComponent(phistData.sku)}/mislabel-flag`,
@@ -13831,17 +14106,289 @@ document
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            flagged: want,
+            flagged: true,
             changed_by: operatorEl.value || null,
           }),
         }
       );
-      renderMislabel(want);
+      renderMislabel(true);
       msg.textContent = r.message;
+      openMislabelManager(phistData.sku);
     } catch (err) {
       msg.textContent = err.message;
     }
   });
+
+// --- Mis-label overlay windows (manager + scan-time picker) ----------------
+// Self-contained overlay DOM: nothing in index.html to keep in sync.
+
+function mlOverlay(titleText) {
+  const wrap = document.createElement("div");
+  wrap.style.cssText =
+    "position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:2000;" +
+    "display:flex;align-items:center;justify-content:center;padding:16px";
+  const box = document.createElement("div");
+  box.style.cssText =
+    "background:var(--card,#fff);color:var(--ink,#1c1c1e);" +
+    "border:1px solid var(--line,#ccc);border-radius:10px;" +
+    "max-width:560px;width:100%;" +
+    "max-height:85vh;overflow:auto;padding:16px 18px;" +
+    "box-shadow:0 12px 40px rgba(0,0,0,.35)";
+  const h = document.createElement("h3");
+  h.textContent = titleText;
+  h.style.cssText = "margin:0 0 10px;font-size:16px";
+  box.appendChild(h);
+  wrap.appendChild(box);
+  wrap.addEventListener("click", (e) => {
+    if (e.target === wrap) wrap.remove();
+  });
+  document.body.appendChild(wrap);
+  return { wrap, box };
+}
+
+function mlProductCard(opt, actionLabel, onAction, onRemove) {
+  const card = document.createElement("div");
+  card.style.cssText =
+    "display:flex;align-items:center;gap:10px;border:1px solid " +
+    "var(--line,#ccc);border-radius:8px;padding:8px 10px;margin:6px 0";
+  const img = document.createElement("img");
+  img.src = opt.image_url || "";
+  img.alt = "";
+  img.style.cssText =
+    "width:46px;height:46px;object-fit:cover;background:#eee;" +
+    "border-radius:6px;flex:0 0 auto" +
+    (opt.image_url ? "" : ";visibility:hidden");
+  card.appendChild(img);
+  const col = document.createElement("div");
+  col.style.cssText = "flex:1;min-width:0";
+  const nm = document.createElement("div");
+  nm.textContent = opt.product_title || opt.sku;
+  nm.style.cssText = "font-weight:600;font-size:13px";
+  col.appendChild(nm);
+  const meta = document.createElement("div");
+  meta.textContent =
+    `SKU ${opt.sku}` +
+    (opt.barcode ? ` · barcode ${opt.barcode}` : "") +
+    (opt.bin_location ? ` · bin ${opt.bin_location}` : "") +
+    (opt.flagged ? " · the flagged product" : "");
+  meta.style.cssText = "font-size:11.5px;opacity:.75";
+  col.appendChild(meta);
+  card.appendChild(col);
+  if (onAction) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = actionLabel;
+    btn.addEventListener("click", onAction);
+    card.appendChild(btn);
+  }
+  if (onRemove) {
+    const x = document.createElement("button");
+    x.type = "button";
+    x.textContent = "✕";
+    x.title = "Remove from the picker list";
+    x.addEventListener("click", onRemove);
+    card.appendChild(x);
+  }
+  return card;
+}
+
+// The flag's manager: the picker list with previews, add-by-code, and
+// the remove-warning-entirely button (Nick, 2026-09-08).
+async function openMislabelManager(sku) {
+  const { wrap, box } = mlOverlay(`Mis-label picker list for ${sku}`);
+  const intro = document.createElement("p");
+  intro.style.cssText = "font-size:12.5px;opacity:.8;margin:0 0 8px";
+  intro.textContent =
+    "When a scan resolves to this product, these are offered as " +
+    '"which product is this really?". Add every product the ' +
+    "vendor's label might actually be.";
+  box.appendChild(intro);
+  const list = document.createElement("div");
+  box.appendChild(list);
+
+  const addRow = document.createElement("div");
+  addRow.style.cssText = "display:flex;gap:6px;margin:10px 0";
+  const input = document.createElement("input");
+  input.placeholder = "Barcode or SKU of another product…";
+  input.style.cssText = "flex:1";
+  const addBtn = document.createElement("button");
+  addBtn.type = "button";
+  addBtn.textContent = "Add product";
+  addRow.appendChild(input);
+  addRow.appendChild(addBtn);
+  box.appendChild(addRow);
+
+  const foot = document.createElement("div");
+  foot.style.cssText =
+    "display:flex;gap:8px;justify-content:space-between;margin-top:10px";
+  const unflagBtn = document.createElement("button");
+  unflagBtn.type = "button";
+  unflagBtn.textContent = "Remove warning entirely";
+  const closeBtn = document.createElement("button");
+  closeBtn.type = "button";
+  closeBtn.textContent = "Close";
+  closeBtn.addEventListener("click", () => wrap.remove());
+  foot.appendChild(unflagBtn);
+  foot.appendChild(closeBtn);
+  box.appendChild(foot);
+
+  async function refresh() {
+    let d;
+    try {
+      d = await apiJson(
+        `/api/products/${encodeURIComponent(sku)}/mislabel-flag`
+      );
+    } catch (err) {
+      list.textContent = err.message;
+      return;
+    }
+    list.innerHTML = "";
+    const opts = (d.options || []).filter((o) => !o.flagged);
+    if (!opts.length) {
+      const empty = document.createElement("p");
+      empty.style.cssText = "font-size:12px;opacity:.7";
+      empty.textContent =
+        "No products listed yet - scans show the text warning only. " +
+        "Add the product(s) this label might actually be to turn on " +
+        "the picker.";
+      list.appendChild(empty);
+    }
+    opts.forEach((o) => {
+      list.appendChild(
+        mlProductCard(o, null, null, async () => {
+          try {
+            await apiJson(
+              `/api/products/${encodeURIComponent(sku)}` +
+                `/mislabel-alternates/${encodeURIComponent(o.sku)}` +
+                `?by=${encodeURIComponent(operatorEl.value || "")}`,
+              { method: "DELETE" }
+            );
+            refresh();
+          } catch (err) {
+            alert(err.message);
+          }
+        })
+      );
+    });
+  }
+
+  addBtn.addEventListener("click", async () => {
+    const code = input.value.trim();
+    if (!code) return;
+    addBtn.disabled = true;
+    try {
+      await apiJson(
+        `/api/products/${encodeURIComponent(sku)}/mislabel-alternates`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            code,
+            changed_by: operatorEl.value || null,
+          }),
+        }
+      );
+      input.value = "";
+      refresh();
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      addBtn.disabled = false;
+    }
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") addBtn.click();
+  });
+
+  unflagBtn.addEventListener("click", async () => {
+    if (
+      !confirm(
+        `Remove the mis-label warning from ${sku}?\n\nScans stop ` +
+          `warning and the picker list is forgotten.`
+      )
+    )
+      return;
+    try {
+      await apiJson(
+        `/api/products/${encodeURIComponent(sku)}/mislabel-flag`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            flagged: false,
+            changed_by: operatorEl.value || null,
+          }),
+        }
+      );
+      if (phistData && phistData.sku === sku) renderMislabel(false);
+      wrap.remove();
+    } catch (err) {
+      alert(err.message);
+    }
+  });
+
+  refresh();
+}
+
+// Scan-time picker: a mis-label-flagged product with listed options
+// asks "which product is this really?" before the station accepts it.
+function openMislabelPicker(product, onPick) {
+  const { wrap, box } = mlOverlay("Vendor mis-label: which product is this?");
+  const intro = document.createElement("p");
+  intro.style.cssText = "font-size:12.5px;margin:0 0 8px";
+  intro.textContent =
+    "Previous vendor labels for this product are known to carry the " +
+    "wrong barcode. Check the physical box and pick what's actually " +
+    "in your hand:";
+  box.appendChild(intro);
+  (product.mislabel_options || []).forEach((o) => {
+    box.appendChild(
+      mlProductCard(o, "It's this one", () => {
+        wrap.remove();
+        onPick(o);
+      })
+    );
+  });
+  const addBtn = document.createElement("button");
+  addBtn.type = "button";
+  addBtn.textContent = "It's a different product - add it to this list…";
+  addBtn.style.cssText = "margin-top:6px";
+  addBtn.addEventListener("click", async () => {
+    const code = prompt(
+      "Barcode or SKU of the product actually in your hand:"
+    );
+    if (!code || !code.trim()) return;
+    try {
+      const r = await apiJson(
+        `/api/products/${encodeURIComponent(product.sku)}` +
+          `/mislabel-alternates`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            code: code.trim(),
+            changed_by: operatorEl.value || null,
+          }),
+        }
+      );
+      wrap.remove();
+      onPick(
+        (r.options || []).find(
+          (o) => o.sku.toUpperCase() === r.added.sku.toUpperCase()
+        ) || { sku: r.added.sku }
+      );
+    } catch (err) {
+      alert(err.message);
+    }
+  });
+  box.appendChild(addBtn);
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.textContent = "Cancel scan";
+  cancel.style.cssText = "margin:6px 0 0 8px";
+  cancel.addEventListener("click", () => wrap.remove());
+  box.appendChild(cancel);
+}
 
 // Change vendor (Nick, 2026-08-26): a PRODUCT-level Shopify write, so
 // every variant changes brand together. Audited like the SKU/barcode
@@ -13932,6 +14479,12 @@ document
         }
       );
       renderNonTaggable(want);
+      if (want) {
+        // The two kinds share one standing - flipping this one on
+        // switches the other off (the server stores a single row).
+        phistData.unlabelable_box = false;
+        renderUnlabelable(false);
+      }
       msg.textContent = want
         ? "Marked non-taggable 🚫 - logged; batches and audits skip it now."
         : "Back in the RFID system ✓ - logged; batches and audits count it again.";

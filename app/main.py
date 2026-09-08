@@ -481,14 +481,36 @@ def product_by_barcode(barcode: str):
                         func.upper(ScanNote.sku) == sku.upper()
                     )
                 )
-                flagged = session.scalar(
+                flag_row = session.scalar(
                     select(MislabelFlag).where(
                         func.upper(MislabelFlag.sku) == sku.upper()
                     )
-                ) is not None
+                )
+                nt_row = session.scalar(
+                    select(NonTaggable).where(
+                        func.upper(NonTaggable.sku) == sku.upper()
+                    )
+                )
+                options = (
+                    _mislabel_options(session, sku, flag_row)
+                    if flag_row is not None else []
+                )
             note = sn.note if sn is not None else None
-            if flagged:
+            if nt_row is not None and nt_row.kind == "unlabelable-box":
+                product["unlabelable_box"] = True
+                box_note = (
+                    "📦 UN-LABELABLE BOX: assorted contents - the box "
+                    "carries ONE location label and tags are never "
+                    "counted. On-hand is still real and updatable."
+                )
+                note = f"{box_note}\n{note}" if note else box_note
+            if flag_row is not None:
                 product["mislabel_flag"] = True
+                # The picker (Nick, 2026-09-08): the products this label
+                # might actually be, previews included, so every scanning
+                # surface can ask "which one is in your hand?".
+                if options:
+                    product["mislabel_options"] = options
                 warn = (
                     "⚠ VENDOR MIS-LABEL: previous vendor labels for "
                     "this product are known to carry the WRONG barcode "
@@ -502,6 +524,48 @@ def product_by_barcode(barcode: str):
         except Exception:  # noqa: BLE001 — the note is decoration
             pass
     return product
+
+
+def _mislabel_options(
+    session: Session, sku: str, flag_row: "MislabelFlag | None" = None
+) -> list[dict]:
+    """The picker's product cards for a mis-label-flagged SKU: the
+    flagged product itself first, then its alternates, each with the
+    preview fields (name, SKU, barcode, image, bin) from the live bin
+    map. Empty when the flag has no alternates - the plain text warning
+    is enough then."""
+    if flag_row is None:
+        flag_row = session.scalar(
+            select(MislabelFlag).where(
+                func.upper(MislabelFlag.sku) == sku.upper()
+            )
+        )
+    if flag_row is None:
+        return []
+    alts = flag_row.alt_list()
+    if not alts:
+        return []
+    ordered = [sku] + [a for a in alts if a.upper() != sku.upper()]
+    uppers = [s.upper() for s in ordered]
+    by_sku: dict[str, BinMapEntry] = {}
+    for e in session.scalars(
+        select(BinMapEntry).where(
+            func.upper(BinMapEntry.sku).in_(uppers)
+        )
+    ):
+        by_sku.setdefault((e.sku or "").upper(), e)
+    out = []
+    for s in ordered:
+        e = by_sku.get(s.upper())
+        out.append({
+            "sku": e.sku if e else s,
+            "product_title": e.product_title if e else None,
+            "barcode": e.barcode if e else None,
+            "image_url": e.image_url if e else None,
+            "bin_location": e.bin if e else None,
+            "flagged": s.upper() == sku.upper(),
+        })
+    return out
 
 
 def _product_lookup(barcode: str):
@@ -4297,10 +4361,17 @@ def _live_quantities(skus: list[str]) -> dict[str, int]:
 
 
 @app.get("/api/inventory/summary", dependencies=[Depends(require_user)])
-def inventory_summary(session: Session = Depends(get_session)):
+def inventory_summary(
+    fast: bool = False, session: Session = Depends(get_session)
+):
     """One row per product in the RFID system: identity, bin, tag count,
     newest tag date — plus current LIVE Shopify on-hand, so tag counts can
-    be eyeballed against stock levels."""
+    be eyeballed against stock levels.
+
+    fast=1 (Nick, 2026-09-08): skip the live Shopify walk (12+ round
+    trips, the tab's 14 measured seconds) and answer from the bin-map
+    snapshot instantly. The client paints this first under a "last
+    refreshed" tag, then swaps in the live call's numbers."""
     rows = session.execute(
         select(
             RfidAssignment.sku,
@@ -4380,8 +4451,22 @@ def inventory_summary(session: Session = Depends(get_session)):
     skus = [p["sku"] for p in products if p["sku"]]
 
     # Live Shopify quantities; a product the API can't answer for shows
-    # no number rather than a stale one.
-    if skus and not config.check_shopify_env():
+    # no number rather than a stale one. fast=1 answers from the bin-map
+    # snapshot instead (same shelf-expected semantic, minutes old).
+    if fast:
+        snap: dict[str, int] = {}
+        for s, qty in session.execute(
+            select(BinMapEntry.sku, BinMapEntry.qty)
+            .where(BinMapEntry.sku.isnot(None))
+        ):
+            if s and qty is not None:
+                k = s.strip().upper()
+                snap[k] = snap.get(k, 0) + qty
+        for p in products:
+            k = (p["sku"] or "").strip().upper()
+            if k in snap:
+                p["shopify_qty"] = snap[k]
+    elif skus and not config.check_shopify_env():
         try:
             live = _live_quantities(skus)
             for p in products:
@@ -4435,9 +4520,14 @@ def inventory_summary(session: Session = Depends(get_session)):
             and not bin_contains(p["shopify_bin"] or "", rfid_bin)
         )
 
+    age = _bin_map_age(session) if fast else None
     return {
         "count": len(products),
         "products": products,
+        # fast=1 answered from the snapshot; the client shows the age
+        # tag and swaps in the live call when it lands.
+        "live": not fast,
+        "onhand_age_minutes": None if age is None else int(age / 60),
         # Everything the filters can offer, so the UI doesn't have to
         # derive them and can show them sorted.
         "bins": sorted(
@@ -4645,6 +4735,31 @@ def resolve_product_kind(
     # A saved answer applies even when the bin metafield has since changed
     # to a single slot — the operator saw the physical goods.
     return saved.kind, bool(saved.excluded)
+
+
+def saved_kind_map(session: Session) -> dict:
+    """Every operator-saved kind answer in ONE query. The audit walked
+    the whole catalog through per-SKU session.get lookups — a couple
+    thousand sequential Azure round-trips that made /api/audit/bins a
+    48-second endpoint (measured 2026-09-08). Bulk callers pass this to
+    resolve_product_kind_cached instead."""
+    return {r.sku: r for r in session.scalars(select(ProductKind))}
+
+
+def resolve_product_kind_cached(
+    saved: dict,
+    product_title: str | None,
+    sku: str | None,
+    bin_value: str | None,
+) -> tuple[str | None, bool]:
+    """resolve_product_kind against a pre-loaded saved_kind_map."""
+    guess = guess_product_kind(product_title, sku, bin_value)
+    if not sku:
+        return guess, False
+    row = saved.get(sku)
+    if row is None:
+        return guess, False
+    return row.kind, bool(row.excluded)
 
 
 def parse_bins(value: str | None) -> list[str]:
@@ -5186,6 +5301,7 @@ def bin_check(
         ):
             tags_by_sku.setdefault((t.sku or "").upper(), []).append(t)
     noscan = _noscan_skus(session)
+    unlab = _unlabelable_skus(session)
     # Sold-but-unretired units per SKU: the audit's licence to explain a
     # silent tag as "that box shipped" and offer MARK SOLD.
     sold_map = orders_sync.sold_unretired_map(
@@ -5303,18 +5419,26 @@ def bin_check(
         g = merged[key]
         e = g["entry"]
         mb = mb_map.get(key)
+        counts = _tag_counts(key)
+        if key in unlab:
+            # Un-labelable box: the one tag is a location marker, never
+            # a count. No expected quantity means no unit math, no
+            # silent mark-sold offers, no ledger clearing.
+            counts["sold_unretired"] = 0
         report.append({
             "sku": e.sku,
             "product_title": e.product_title,
             "variant_title": e.variant_title,
             "image_url": e.image_url,
-            "expected_qty": g["qty"],
+            "expected_qty": None if key in unlab else g["qty"],
+            "on_hand_display": g["qty"] if key in unlab else None,
             "unavailable": g["unavail"],
             "bins": g["bins"],
             "rfid_incompatible": key in noscan,
+            "unlabelable": key in unlab,
             "in_bin_map": True,
             "boxes_per_unit": mb.boxes_per_unit if mb else None,
-            **_tag_counts(key),
+            **counts,
         })
     # Requested SKUs the bin map doesn't put here (open-box twins, kept
     # strays, map lag): same counts, named from their newest tag, no
@@ -5331,6 +5455,7 @@ def bin_check(
             "unavailable": 0,
             "bins": [],
             "rfid_incompatible": key in noscan,
+            "unlabelable": key in unlab,
             "in_bin_map": False,
             "boxes_per_unit": (
                 mb_map[key].boxes_per_unit if key in mb_map else None
@@ -5678,11 +5803,29 @@ def create_audit_find(
             422, "That product has no SKU - fix it in Shopify first."
         )
     if sku.upper() in _non_taggable_skus(session):
-        raise HTTPException(
-            422,
-            f"{sku} is flagged non-taggable - it never gets labels. "
-            "A hand-paired marker tag is the only tag it carries.",
-        )
+        if sku.upper() in _unlabelable_skus(session):
+            # Un-labelable box: exactly ONE label ever - the box marker.
+            # Finding the box unmarked is the right moment to print it.
+            existing = session.scalar(
+                select(RfidAssignment).where(
+                    func.upper(RfidAssignment.sku) == sku.upper()
+                )
+            )
+            if existing is not None:
+                raise HTTPException(
+                    422,
+                    f"{sku} is an un-labelable box and already has its "
+                    f"box marker (…{(existing.rfid_id or '')[-6:]} in "
+                    f"{existing.bin_location or 'no bin'}). One label "
+                    "per box - unlink the old marker first if you're "
+                    "replacing it.",
+                )
+        else:
+            raise HTTPException(
+                422,
+                f"{sku} is flagged non-taggable - it never gets labels. "
+                "A hand-paired marker tag is the only tag it carries.",
+            )
     kind, excluded = resolve_product_kind(
         session, product.get("product_title"), sku,
         product.get("bin_location"),
@@ -6066,6 +6209,8 @@ def audit_bins(session: Session = Depends(get_session)):
 
     noscan = _noscan_skus(session)
     no_tag = _non_taggable_skus(session)
+    unlab = _unlabelable_skus(session)
+    saved_kinds = saved_kind_map(session)
     skipped_bundles = 0
     skipped_non_taggable = 0
     seen_skus: set[str] = set()
@@ -6081,11 +6226,29 @@ def audit_bins(session: Session = Depends(get_session)):
         # system at all — comparing any of them is guaranteed phantom
         # drift, so they leave the audit instead of scoring it.
         if key in no_tag:
-            skipped_non_taggable += 1
-            seen_skus.add(key)
+            if key in unlab:
+                # Un-labelable boxes (Nick, 2026-09-08): on-hand is real
+                # and updatable so it SHOWS, but the one tag is a box
+                # marker, not a count — drift never scores.
+                seen_skus.add(key)
+                _bucket((e.bin or "").strip() or "(no bin)")[
+                    "products"
+                ].append({
+                    "sku": e.sku,
+                    "product_title": e.product_title,
+                    "on_hand": e.qty or 0,
+                    "sold_unretired": 0,
+                    "rfid_units": units.get(key, 0),
+                    "diff": 0,
+                    "rfid_incompatible": key in noscan,
+                    "unlabelable": True,
+                })
+            else:
+                skipped_non_taggable += 1
+                seen_skus.add(key)
             continue
-        kind, excluded = resolve_product_kind(
-            session, e.product_title, e.sku, e.bin
+        kind, excluded = resolve_product_kind_cached(
+            saved_kinds, e.product_title, e.sku, e.bin
         )
         if kind == "bundle" or excluded:
             skipped_bundles += 1
@@ -10251,7 +10414,13 @@ def receiving_order_preview(
         line["product_title"] = product.get("product_title")
         line["bin_location"] = product.get("bin_location")
         if sku_ci in no_tag:
-            line["flag"] = "non-taggable - no labels print for it"
+            line["flag"] = (
+                "un-labelable box - stock counts, but no per-unit "
+                "labels (its ONE box label prints from the product "
+                "window)"
+                if sku_ci in _unlabelable_skus(session)
+                else "non-taggable - no labels print for it"
+            )
         else:
             kind, excluded = resolve_product_kind(
                 session, product.get("product_title"),
@@ -14601,6 +14770,101 @@ def get_mislabel_flag(sku: str, session: Session = Depends(get_session)):
         "mislabel_flag": row is not None,
         "set_by": row.set_by if row else None,
         "set_at": row.set_at.isoformat() if row and row.set_at else None,
+        "alternates": row.alt_list() if row else [],
+        "options": (
+            _mislabel_options(session, sku.strip(), row) if row else []
+        ),
+    }
+
+
+class MislabelAltIn(BaseModel):
+    # Barcode OR SKU of the product this label might actually be.
+    code: str = Field(min_length=1, max_length=200)
+    changed_by: str | None = Field(default=None, max_length=100)
+
+
+@app.post(
+    "/api/products/{sku}/mislabel-alternates",
+    dependencies=[Depends(require_user)],
+)
+def add_mislabel_alternate(
+    sku: str, payload: MislabelAltIn, session: Session = Depends(get_session)
+):
+    """Add a product to a mis-label flag's "might actually be" list
+    (Nick, 2026-09-08). The code resolves through the normal rescue
+    chain (barcode or SKU), so the operator can type either. Creates
+    the flag row if the product wasn't flagged yet. History-logged."""
+    sku = sku.strip()
+    if not sku:
+        raise HTTPException(422, "SKU required.")
+    alt = _product_lookup(payload.code.strip())
+    alt_sku = (alt.get("sku") or "").strip()
+    if not alt_sku:
+        raise HTTPException(
+            422,
+            f"'{payload.code}' doesn't resolve to a product with a SKU.",
+        )
+    if alt_sku.upper() == sku.upper():
+        raise HTTPException(
+            422, "That's the flagged product itself - add the OTHER "
+                 "product the label might be.")
+    row = session.get(MislabelFlag, sku)
+    if row is None:
+        row = MislabelFlag(sku=sku, set_by=payload.changed_by)
+        session.add(row)
+    alts = row.alt_list()
+    if alt_sku.upper() not in {a.upper() for a in alts}:
+        alts.append(alt_sku)
+        row.alt_skus = "\n".join(alts)
+        session.add(BarcodeChange(
+            sku=sku,
+            changed_field="mislabel-flag",
+            old_barcode="picker option added"[:64],
+            new_barcode=alt_sku[:64],
+            changed_by=(payload.changed_by or "").strip()[:100] or None,
+        ))
+    session.commit()
+    return {
+        "sku": sku,
+        "alternates": alts,
+        "options": _mislabel_options(session, sku, row),
+        "added": {
+            "sku": alt_sku,
+            "product_title": alt.get("product_title"),
+            "barcode": alt.get("barcode"),
+        },
+    }
+
+
+@app.delete(
+    "/api/products/{sku}/mislabel-alternates/{alt_sku}",
+    dependencies=[Depends(require_user)],
+)
+def remove_mislabel_alternate(
+    sku: str, alt_sku: str, by: str | None = None,
+    session: Session = Depends(get_session),
+):
+    sku = sku.strip()
+    row = session.get(MislabelFlag, sku)
+    if row is None:
+        raise HTTPException(404, f"{sku} carries no mis-label flag.")
+    alts = row.alt_list()
+    kept = [a for a in alts if a.upper() != alt_sku.strip().upper()]
+    if len(kept) == len(alts):
+        raise HTTPException(404, f"{alt_sku} isn't on {sku}'s list.")
+    row.alt_skus = "\n".join(kept) or None
+    session.add(BarcodeChange(
+        sku=sku,
+        changed_field="mislabel-flag",
+        old_barcode="picker option removed"[:64],
+        new_barcode=alt_sku.strip()[:64],
+        changed_by=(by or "").strip()[:100] or None,
+    ))
+    session.commit()
+    return {
+        "sku": sku,
+        "alternates": kept,
+        "options": _mislabel_options(session, sku, row),
     }
 
 
@@ -14703,13 +14967,27 @@ def unavailable_move(
 
 
 def _non_taggable_skus(session: Session) -> set[str]:
-    """Upper-cased SKUs marked non-taggable (a big bin of thumbscrews):
-    never seeded into batches, never labelled, skipped by audits and the
-    tags-vs-on-hand arithmetic. A hand-paired tag may still exist as a
-    bag marker for Locate."""
+    """Upper-cased SKUs outside per-unit tagging — BOTH kinds (plain
+    non-taggable AND un-labelable boxes): never seeded into batches,
+    no per-unit labels, excluded from the tags-vs-on-hand arithmetic.
+    Callers that treat the two kinds differently (audit display, the
+    box-marker label) also consult _unlabelable_skus."""
     return {
         (r.sku or "").strip().upper()
         for r in session.scalars(select(NonTaggable))
+    }
+
+
+def _unlabelable_skus(session: Session) -> set[str]:
+    """Upper-cased SKUs flagged "Box of Un-Labelable Product" (Nick,
+    2026-09-08, the CR2032 assorted box): the BOX carries ONE label and
+    a bin for location/clarity, on-hand still shows and can be updated,
+    but tag counts never enter any arithmetic."""
+    return {
+        (r.sku or "").strip().upper()
+        for r in session.scalars(
+            select(NonTaggable).where(NonTaggable.kind == "unlabelable-box")
+        )
     }
 
 
@@ -14737,10 +15015,18 @@ def set_non_taggable(
         raise HTTPException(422, "SKU required.")
     row = session.get(NonTaggable, sku)
     changed = False
+    was = row.kind if row is not None else "in the RFID system"
     if payload.non_taggable and row is None:
         session.add(NonTaggable(
             sku=sku, set_by=payload.changed_by, note=payload.note,
+            kind="non-taggable",
         ))
+        changed = True
+    elif payload.non_taggable and row is not None \
+            and row.kind != "non-taggable":
+        # Switching kinds (unlabelable box -> fully non-taggable).
+        row.kind = "non-taggable"
+        row.set_by = payload.changed_by
         changed = True
     elif not payload.non_taggable and row is not None:
         session.delete(row)
@@ -14749,10 +15035,7 @@ def set_non_taggable(
         session.add(BarcodeChange(
             sku=sku,
             changed_field="non-taggable",
-            old_barcode=(
-                "in the RFID system" if payload.non_taggable
-                else "non-taggable"
-            ),
+            old_barcode=was[:64],
             new_barcode=(
                 "non-taggable" if payload.non_taggable
                 else "in the RFID system"
@@ -14761,6 +15044,157 @@ def set_non_taggable(
         ))
     session.commit()
     return {"sku": sku, "non_taggable": payload.non_taggable}
+
+
+class UnlabelableIn(BaseModel):
+    flagged: bool = True
+    changed_by: str | None = Field(default=None, max_length=100)
+    note: str | None = Field(default=None, max_length=255)
+
+
+@app.put(
+    "/api/products/{sku}/unlabelable-box",
+    dependencies=[Depends(require_user)],
+)
+def set_unlabelable_box(
+    sku: str, payload: UnlabelableIn, session: Session = Depends(get_session)
+):
+    """Flag (or unflag) a product as a "Box of Un-Labelable Product"
+    (Nick, 2026-09-08: a box of 100 CR2032s; the thumbscrews too). The
+    BOX gets ONE label and a bin for location/clarity; on-hand still
+    shows and can be updated; per-unit tag counts never happen. Batches,
+    receiving labels and the tags-vs-on-hand arithmetic all skip it,
+    same as non-taggable. History-logged."""
+    sku = sku.strip()
+    if not sku:
+        raise HTTPException(422, "SKU required.")
+    row = session.get(NonTaggable, sku)
+    changed = False
+    was = row.kind if row is not None else "in the RFID system"
+    if payload.flagged and row is None:
+        session.add(NonTaggable(
+            sku=sku, set_by=payload.changed_by, note=payload.note,
+            kind="unlabelable-box",
+        ))
+        changed = True
+    elif payload.flagged and row is not None \
+            and row.kind != "unlabelable-box":
+        row.kind = "unlabelable-box"
+        row.set_by = payload.changed_by
+        changed = True
+    elif not payload.flagged and row is not None \
+            and row.kind == "unlabelable-box":
+        session.delete(row)
+        changed = True
+    if changed:
+        session.add(BarcodeChange(
+            sku=sku,
+            changed_field="unlabelable-box",
+            old_barcode=was[:64],
+            new_barcode=(
+                "unlabelable-box" if payload.flagged
+                else "in the RFID system"
+            ),
+            changed_by=payload.changed_by,
+        ))
+    session.commit()
+    return {
+        "sku": sku,
+        "unlabelable_box": payload.flagged,
+        "message": (
+            f"{sku}: flagged as an un-labelable box - print its ONE box "
+            "label from this window, pair it to the box, and the tag "
+            "marks the location without ever being counted."
+            if payload.flagged
+            else f"{sku}: back to normal per-unit tagging."
+        ),
+    }
+
+
+class BoxLabelIn(BaseModel):
+    changed_by: str | None = Field(default=None, max_length=100)
+    printer: str | None = Field(default=None, max_length=100)
+
+
+@app.post(
+    "/api/products/{sku}/box-label",
+    dependencies=[Depends(require_user)],
+)
+def print_box_label(
+    sku: str, payload: BoxLabelIn, session: Session = Depends(get_session)
+):
+    """The un-labelable box's ONE label (Nick, 2026-09-08): prints
+    through the normal queue with the home bin on it; pairing it at the
+    station makes it the box marker (a location record, never a count).
+    Refuses when a marker already exists or an unpaired label is
+    already out - one box, one label."""
+    sku = sku.strip()
+    if sku.upper() not in _unlabelable_skus(session):
+        raise HTTPException(
+            422,
+            f"{sku} is not flagged as an un-labelable box - this button "
+            "is only for those.",
+        )
+    existing = session.scalar(
+        select(RfidAssignment).where(
+            func.upper(RfidAssignment.sku) == sku.upper()
+        )
+    )
+    if existing is not None:
+        raise HTTPException(
+            409,
+            f"The box marker already exists: …{(existing.rfid_id or '')[-6:]}"
+            f" in {existing.bin_location or 'no bin'}. One box, one "
+            "label - unlink it first if you're replacing a damaged one.",
+        )
+    stray_job = session.scalar(
+        select(PrintJob).where(
+            func.upper(PrintJob.sku) == sku.upper(),
+            PrintJob.status.in_(("pending", "printing", "done")),
+        ).order_by(PrintJob.id.desc())
+    )
+    if stray_job is not None:
+        raise HTTPException(
+            409,
+            f"A label for {sku} is already out (job #{stray_job.id}, "
+            f"{stray_job.status}) and unpaired - pair THAT one to the "
+            "box, or void it before printing another.",
+        )
+    product = _product_lookup(sku)
+    bin_location = (product.get("bin_location") or "").strip()
+    if bin_location.lower() == "no bin assigned":
+        bin_location = ""
+    if not bin_location:
+        raise HTTPException(
+            422,
+            f"{sku} has no home bin - assign one in Shopify first so "
+            "the box label can name its location.",
+        )
+    if not (product.get("shopify_variant_id") or "").strip():
+        raise HTTPException(422, f"{sku} has no Shopify variant id - "
+                                 "can't print.")
+    res = create_print_jobs(PrintJobIn(
+        quantity=1,
+        shopify_variant_id=product.get("shopify_variant_id"),
+        shopify_product_id=product.get("shopify_product_id"),
+        product_title=product.get("product_title") or sku,
+        variant_title=product.get("variant_title"),
+        sku=sku,
+        barcode=product.get("barcode"),
+        bin_location=bin_location,
+        requested_by=payload.changed_by,
+        printer=payload.printer,
+    ), session)
+    job = res["jobs"][0]
+    session.commit()
+    return {
+        "job": job,
+        "message": (
+            f"Box label queued for {sku} (bin {bin_location}). Pair it "
+            "to the box as usual - the tag records the location and is "
+            "never counted."
+        ),
+    }
 
 
 class ScanNoteIn(BaseModel):
@@ -14915,6 +15349,7 @@ def product_history(term: str, session: Session = Depends(get_session)):
         "bundle-contents": "bundle-contents-set",
         "rfid-scan": "rfid-flag-changed",
         "non-taggable": "non-taggable",
+        "unlabelable-box": "unlabelable-box",
         "mislabel-flag": "mislabel-flag",
         "unavailable-move": "unavailable-move",
         "batch-reprint": "batch-reprinted",
@@ -14949,7 +15384,8 @@ def product_history(term: str, session: Session = Depends(get_session)):
             "shopify": c.changed_field
             not in ("rfid-scan", "locate-list", "tag-sold", "scan-note",
                     "tag-retired", "tag-unretired", "tag-released",
-                    "tag-reapplied", "ledger-cleared"),
+                    "tag-reapplied", "ledger-cleared", "non-taggable",
+                    "unlabelable-box", "mislabel-flag"),
         })
 
     # What Shopify currently says the product's bin IS, and when we last
@@ -15257,10 +15693,21 @@ def product_history(term: str, session: Session = Depends(get_session)):
             session.get(RfidIncompatible, sku) is not None if sku else False
         ),
         "non_taggable": (
-            session.get(NonTaggable, sku) is not None if sku else False
+            (session.get(NonTaggable, sku) is not None
+             and session.get(NonTaggable, sku).kind == "non-taggable")
+            if sku else False
+        ),
+        "unlabelable_box": (
+            (session.get(NonTaggable, sku) is not None
+             and session.get(NonTaggable, sku).kind == "unlabelable-box")
+            if sku else False
         ),
         "mislabel_flag": (
             session.get(MislabelFlag, sku) is not None if sku else False
+        ),
+        "mislabel_alternates": (
+            session.get(MislabelFlag, sku).alt_list()
+            if sku and session.get(MislabelFlag, sku) is not None else []
         ),
         # Current multi-box/bundle standing, so the panel can offer the undo.
         "product_kind": (
@@ -15352,6 +15799,7 @@ def history(
         "bundle-contents": "bundle-contents-set",
         "rfid-scan": "rfid-flag-changed",
         "non-taggable": "non-taggable",
+        "unlabelable-box": "unlabelable-box",
         "mislabel-flag": "mislabel-flag",
         "unavailable-move": "unavailable-move",
         "batch-reprint": "batch-reprinted",

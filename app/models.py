@@ -1262,9 +1262,19 @@ class MislabelFlag(Base):
 
     sku: Mapped[str] = mapped_column(String(100), primary_key=True)
     set_by: Mapped[str | None] = mapped_column(String(100))
+    # The products this label might ACTUALLY be (Nick, 2026-09-08):
+    # newline-separated SKUs. When a flagged product is scanned, every
+    # surface offers a picker across [this SKU] + these, so the operator
+    # names what's physically in hand instead of trusting the barcode.
+    # Prod needs dev/alter_add_flag_kinds.py.
+    alt_skus: Mapped[str | None] = mapped_column(Text)
     set_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+    def alt_list(self) -> list[str]:
+        return [s.strip() for s in (self.alt_skus or "").splitlines()
+                if s.strip()]
 
 
 class NonTaggable(Base):
@@ -1282,6 +1292,17 @@ class NonTaggable(Base):
     sku: Mapped[str] = mapped_column(String(100), primary_key=True)
     set_by: Mapped[str | None] = mapped_column(String(100))
     note: Mapped[str | None] = mapped_column(String(255))
+    # Two strengths (Nick, 2026-09-08, the CR2032 assorted box):
+    #   "non-taggable"    — fully outside RFID; no labels at all.
+    #   "unlabelable-box" — the BOX gets ONE label + a bin for location
+    #                       and clarity; on-hand still shows and can be
+    #                       updated; per-unit tag counts never happen.
+    # Both kinds skip batches, receiving labels, and the tags-vs-on-hand
+    # arithmetic. Prod needs dev/alter_add_flag_kinds.py.
+    kind: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="non-taggable",
+        server_default="non-taggable",
+    )
     set_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

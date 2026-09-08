@@ -1358,8 +1358,20 @@ public class MainActivity extends Activity {
         status.setText("Looking up " + code + "…");
         new Thread(() -> {
             try {
-                JSONObject p = api("GET", "/api/products/by-barcode/"
+                JSONObject raw = api("GET", "/api/products/by-barcode/"
                         + encPath(code), null);
+                ui.post(() -> maybeMislabelPicker(raw,
+                        this::showFindResult));
+            } catch (Exception e) {
+                findLookupFallback(code, e);
+            }
+        }).start();
+    }
+
+    /** Render the FIND tab's answer for a (picker-resolved) product. */
+    private void showFindResult(JSONObject p) {
+        {
+            {
                 final String bin = p.optString("bin_location", "");
                 final String title = p.optString("product_title", "(unknown)");
                 final String variant = p.isNull("variant_title") ? ""
@@ -1403,27 +1415,162 @@ public class MainActivity extends Activity {
                             + "bin set in Shopify.");
                     btInput.requestFocus();
                 });
+            }
+        }
+    }
+
+    /** findLookup's not-a-listing path (runs on the lookup thread). */
+    private void findLookupFallback(String code, Exception e) {
+        // Not a listing — but it may be a CASE code (a box of N of
+        // one product). That is exactly the scan that used to come
+        // back empty and leave someone holding an unplaceable box.
+        JSONObject c = null;
+        try {
+            c = api("GET", "/api/cases/"
+                    + encPath(code), null);
+        } catch (Exception ignored) {
+            // genuinely unknown; fall through to the error below
+        }
+        if (c != null) {
+            final JSONObject box = c;
+            ui.post(() -> showCaseFind(box));
+            return;
+        }
+        ui.post(() -> {
+            beep(SOUND_ERR);
+            findResult.setText("Not found:\n" + e.getMessage());
+            loadImage(null, findImg);
+            btInput.requestFocus();
+        });
+    }
+
+    /** Mis-label picker (3.89, Nick): a flagged product whose payload
+     *  lists what the label might ACTUALLY be asks the operator to name
+     *  the product physically in hand before anything proceeds. A pick
+     *  of an alternate re-resolves it fresh; products without a list
+     *  pass straight through. Call on the UI thread. */
+    private void maybeMislabelPicker(final JSONObject product,
+            final java.util.function.Consumer<JSONObject> onResolved) {
+        final org.json.JSONArray opts =
+                product.optJSONArray("mislabel_options");
+        if (opts == null || opts.length() < 2) {
+            onResolved.accept(product);
+            return;
+        }
+        beepScanNote();
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        list.setPadding(dp(14), dp(8), dp(14), dp(8));
+        scroll.addView(list);
+        TextView intro = new TextView(this);
+        intro.setTextSize(12);
+        intro.setTextColor(C_WARN);
+        intro.setText("Previous vendor labels carry the WRONG barcode. "
+                + "Check the physical box - which product is in your "
+                + "hand?");
+        intro.setPadding(0, 0, 0, dp(8));
+        list.addView(intro);
+        final AlertDialog[] dref = new AlertDialog[1];
+        final String flaggedSku = product.optString("sku", "");
+        for (int i = 0; i < opts.length(); i++) {
+            JSONObject o = opts.optJSONObject(i);
+            if (o == null) continue;
+            final String oSku = o.optString("sku", "");
+            String sub = "SKU " + oSku
+                    + (o.isNull("barcode") ? ""
+                       : " · " + o.optString("barcode"))
+                    + (o.isNull("bin_location") ? ""
+                       : " · bin " + o.optString("bin_location"));
+            boolean isFlagged = o.optBoolean("flagged", false);
+            list.addView(targetCard(
+                    o.isNull("product_title") ? oSku
+                            : o.optString("product_title"),
+                    sub, isFlagged ? "hi" : null,
+                    () -> {
+                        if (dref[0] != null) dref[0].dismiss();
+                        if (oSku.equalsIgnoreCase(flaggedSku)) {
+                            onResolved.accept(product);
+                        } else {
+                            resolveMislabelPick(oSku, onResolved);
+                        }
+                    }, isFlagged ? "LABEL SAYS" : null));
+        }
+        Button add = smallBtn("ADD ANOTHER PRODUCT");
+        add.setOnClickListener(x -> {
+            if (dref[0] != null) dref[0].dismiss();
+            final EditText in = themedEdit();
+            in.setHint("Its barcode or SKU");
+            in.setTextSize(16);
+            LinearLayout wrap = new LinearLayout(this);
+            wrap.setOrientation(LinearLayout.VERTICAL);
+            wrap.setPadding(dp(20), dp(8), dp(20), dp(4));
+            wrap.addView(in);
+            dlg().setTitle("What is actually in your hand?")
+                    .setView(wrap)
+                    .setPositiveButton("ADD + USE IT", (d2, w) -> {
+                        String codeIn = in.getText().toString().trim();
+                        if (codeIn.isEmpty()) return;
+                        addMislabelAlternate(flaggedSku, codeIn,
+                                onResolved);
+                    })
+                    .setNegativeButton("CANCEL", null)
+                    .show();
+        });
+        LinearLayout.LayoutParams al = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        al.topMargin = dp(4);
+        list.addView(add, al);
+        dref[0] = dlg()
+                .setTitle("VENDOR MIS-LABEL")
+                .setView(scroll)
+                .setNegativeButton("CANCEL SCAN", null)
+                .show();
+    }
+
+    /** A picked alternate resolves fresh so downstream code gets the
+     *  full product payload, not the preview card. */
+    private void resolveMislabelPick(final String sku,
+            final java.util.function.Consumer<JSONObject> onResolved) {
+        status.setText("Loading " + sku + "…");
+        new Thread(() -> {
+            try {
+                JSONObject p = api("GET", "/api/products/by-barcode/"
+                        + encPath(sku), null);
+                // The picked product may be flagged too - the operator
+                // just named it, so no second prompt.
+                p.remove("mislabel_options");
+                ui.post(() -> onResolved.accept(p));
             } catch (Exception e) {
-                // Not a listing — but it may be a CASE code (a box of N of
-                // one product). That is exactly the scan that used to come
-                // back empty and leave someone holding an unplaceable box.
-                JSONObject c = null;
-                try {
-                    c = api("GET", "/api/cases/"
-                            + encPath(code), null);
-                } catch (Exception ignored) {
-                    // genuinely unknown; fall through to the error below
-                }
-                if (c != null) {
-                    final JSONObject box = c;
-                    ui.post(() -> showCaseFind(box));
-                    return;
-                }
                 ui.post(() -> {
                     beep(SOUND_ERR);
-                    findResult.setText("Not found:\n" + e.getMessage());
-                    loadImage(null, findImg);
-                    btInput.requestFocus();
+                    status.setText("Couldn't load " + sku + ": "
+                            + e.getMessage());
+                });
+            }
+        }).start();
+    }
+
+    private void addMislabelAlternate(final String flaggedSku,
+            final String code,
+            final java.util.function.Consumer<JSONObject> onResolved) {
+        status.setText("Adding " + code + " to the mis-label list…");
+        new Thread(() -> {
+            try {
+                JSONObject r = api("POST", "/api/products/"
+                        + encPath(flaggedSku) + "/mislabel-alternates",
+                        new JSONObject()
+                                .put("code", code)
+                                .put("changed_by",
+                                        prefs.getString("device", "C72")));
+                final String added = r.getJSONObject("added")
+                        .optString("sku", code);
+                ui.post(() -> resolveMislabelPick(added, onResolved));
+            } catch (Exception e) {
+                ui.post(() -> {
+                    beep(SOUND_ERR);
+                    status.setText("Couldn't add it: " + e.getMessage());
                 });
             }
         }).start();
@@ -2493,15 +2640,35 @@ public class MainActivity extends Activity {
                               final java.util.Set<String> onlyEpcs) {
         status.setText("Looking up " + code + "…");
         new Thread(() -> {
+            JSONObject looked = null;
             try {
-                JSONObject product = null;
-                try {
-                    product = api("GET", "/api/products/by-barcode/"
-                            + encPath(code), null);
-                } catch (Exception ignored) {
-                    // Not in the catalog under that code — the tags call
-                    // below still matches raw SKU/barcode on tags.
-                }
+                looked = api("GET", "/api/products/by-barcode/"
+                        + encPath(code), null);
+            } catch (Exception ignored) {
+                // Not in the catalog under that code — the tags call
+                // below still matches raw SKU/barcode on tags.
+            }
+            final JSONObject fp0 = looked;
+            if (fp0 != null
+                    && fp0.optJSONArray("mislabel_options") != null) {
+                // Mis-label picker first: hunting the WRONG SKU's tags
+                // wastes the whole walk.
+                ui.post(() -> maybeMislabelPicker(fp0, resolved ->
+                        locateLookupTags(code, resolved, onlyEpcs)));
+            } else {
+                locateLookupTags(code, fp0, onlyEpcs);
+            }
+        }).start();
+    }
+
+    /** The tags half of the locate lookup, with the product already
+     *  (picker-)resolved. Safe from any thread. */
+    private void locateLookupTags(final String code,
+            final JSONObject resolvedProduct,
+            final java.util.Set<String> onlyEpcs) {
+        new Thread(() -> {
+            try {
+                JSONObject product = resolvedProduct;
                 String sku = product != null && !product.isNull("sku")
                         ? product.optString("sku") : code;
                 String bc = product != null && !product.isNull("barcode")
@@ -12808,6 +12975,23 @@ public class MainActivity extends Activity {
                 String enc = URLEncoder.encode(code, "UTF-8");
                 JSONObject prod = api("GET",
                         "/api/products/by-barcode/" + enc, null);
+                ui.post(() -> maybeMislabelPicker(prod,
+                        resolved -> stationShowProduct(code, resolved)));
+            } catch (Exception e) {
+                ui.post(() -> {
+                    beep(SOUND_ERR);
+                    status.setText("No product for " + code + " - "
+                            + e.getMessage());
+                });
+            }
+        }).start();
+    }
+
+    /** Station card render for a (picker-resolved) product; fetches the
+     *  tag count on its own thread. */
+    private void stationShowProduct(String code, final JSONObject prod) {
+        new Thread(() -> {
+            {
                 int count = 0;
                 boolean silent = false;
                 try {
@@ -12850,13 +13034,6 @@ public class MainActivity extends Activity {
                             + "(" + tagsOnFile + " tag(s) on file)."
                             + (noScan ? " ⊘ Won't scan once it's on the "
                               + "box — pair BEFORE applying." : ""));
-                    btInput.requestFocus();
-                });
-            } catch (Exception e) {
-                ui.post(() -> {
-                    beep(SOUND_ERR);
-                    status.setText("No product for \"" + code + "\" — "
-                            + e.getMessage());
                     btInput.requestFocus();
                 });
             }
@@ -13993,15 +14170,15 @@ public class MainActivity extends Activity {
     private void auditPairFocus(String code) {
         new Thread(() -> {
             try {
-                final JSONObject p = api("GET", "/api/products/by-barcode/"
+                final JSONObject raw = api("GET", "/api/products/by-barcode/"
                         + encPath(code), null);
-                ui.post(() -> {
+                ui.post(() -> maybeMislabelPicker(raw, (p) -> {
                     auditPairProduct = p;
                     beep(SOUND_OK);
                     status.setText("Focused: "
                             + p.optString("product_title", code)
                             + " - trigger on its sticker.");
-                });
+                }));
             } catch (Exception e) {
                 ui.post(() -> {
                     beep(SOUND_ERR);
