@@ -939,6 +939,92 @@ def move_unavailable(sku: str, bucket: str, qty: int = 1,
     }
 
 
+_PRODUCT_CREATE_MUTATION = """
+mutation DraftCreate($product: ProductCreateInput!) {
+  productCreate(product: $product) {
+    product {
+      id
+      variants(first: 1) { nodes { id } }
+    }
+    userErrors { field message }
+  }
+}
+"""
+
+_VARIANT_IDENT_MUTATION = """
+mutation VariantIdent($productId: ID!,
+                      $variants: [ProductVariantsBulkInput!]!) {
+  productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+    userErrors { field message }
+  }
+}
+"""
+
+_PRODUCT_DELETE_MUTATION = """
+mutation DraftDelete($input: ProductDeleteInput!) {
+  productDelete(input: $input) {
+    deletedProductId
+    userErrors { field message }
+  }
+}
+"""
+
+
+def create_draft_listing(title: str, sku: str, barcode: str | None,
+                         bin_value: str | None) -> dict:
+    """Create a DRAFT product for a multi-box set ingredient (Nick,
+    2026-09-08): title + status draft, the default variant given the
+    part's SKU/barcode, and the bin metafields when known. Requires
+    write_products. Returns the new product/variant GIDs."""
+    data = query_shopify(_PRODUCT_CREATE_MUTATION, {
+        "product": {"title": title, "status": "DRAFT"},
+    })
+    res = data["productCreate"]
+    if res["userErrors"]:
+        raise RuntimeError(
+            "; ".join(e["message"] for e in res["userErrors"])
+        )
+    product_gid = res["product"]["id"]
+    nodes = (res["product"].get("variants") or {}).get("nodes") or []
+    variant_gid = nodes[0]["id"] if nodes else None
+    if variant_gid:
+        variant: dict = {"id": variant_gid,
+                         "inventoryItem": {"sku": sku, "tracked": False}}
+        if (barcode or "").strip():
+            variant["barcode"] = barcode.strip()
+        vres = query_shopify(_VARIANT_IDENT_MUTATION, {
+            "productId": product_gid,
+            "variants": [variant],
+        })["productVariantsBulkUpdate"]
+        if vres["userErrors"]:
+            raise RuntimeError(
+                "; ".join(e["message"] for e in vres["userErrors"])
+            )
+    if (bin_value or "").strip():
+        set_product_bin(product_gid, bin_value.strip())
+        if variant_gid:
+            set_variant_bin(variant_gid, bin_value.strip())
+    return {
+        "product_gid": product_gid,
+        "variant_gid": variant_gid,
+        "sku": sku,
+        "barcode": (barcode or "").strip() or None,
+        "title": title,
+    }
+
+
+def delete_product(product_gid: str) -> None:
+    """Delete a product outright - ONLY for cleaning up a draft this
+    system just created (verification, or a failed set build)."""
+    res = query_shopify(_PRODUCT_DELETE_MUTATION, {
+        "input": {"id": product_gid},
+    })["productDelete"]
+    if res["userErrors"]:
+        raise RuntimeError(
+            "; ".join(e["message"] for e in res["userErrors"])
+        )
+
+
 _STAFF_COMMENTS_QUERY = """
 query StaffComments($id: ID!) {
   product(id: $id) {

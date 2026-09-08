@@ -300,5 +300,73 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
     r = cl.get("/api/box-sets")
     check("registry empty again", r.json()["count"] == 0, r.text)
 
+    # ---- NEW boxes: auto-numbered SKUs + real DRAFT listings ----------
+    # (Nick, 2026-09-08: most multi-box products have no draft
+    # listings - the builder creates them, gated as its own write.)
+    from app import config
+    r = cl.post("/api/box-sets", json={
+        "set_code": "S11230",
+        "parts": [
+            {"sku": "S11230-1", "barcode": "7411230001"},
+            {"barcode": "NEWBOX-BC-2", "create_draft": True},
+        ]})
+    check("draft creation is gated behind its own write feature",
+          r.status_code == 403
+          and "draft_listings" in r.json()["detail"], r.text)
+
+    saved_mode = config.SHOPIFY_WRITE_MODE
+    config.SHOPIFY_WRITE_MODE = "scan_station_only,draft_listings"
+    draft_calls = []
+    def fake_draft(title, sku, barcode, bin_value):
+        draft_calls.append((title, sku, barcode, bin_value))
+        return {"product_gid": f"gid://p/{sku}",
+                "variant_gid": f"gid://v/{sku}",
+                "sku": sku, "barcode": barcode, "title": title}
+    with patch("app.shopify.create_draft_listing",
+               side_effect=fake_draft):
+        r = cl.post("/api/box-sets", json={
+            "set_code": "S11230",
+            "parts": [
+                {"sku": "S11230-1", "barcode": "7411230001"},
+                {"barcode": "NEWBOX-BC-2", "create_draft": True,
+                 "bin": "A7-1"},
+                {"sku": "CUSTOM-9", "barcode": "NEWBOX-BC-3",
+                 "create_draft": True},
+            ], "changed_by": "Nick"})
+    config.SHOPIFY_WRITE_MODE = saved_mode
+    d = r.json()
+    check("set with new boxes created", r.status_code == 201
+          and d["drafts_created"] == ["S11230-2", "CUSTOM-9"],
+          r.text[:300])
+    check("blank SKU auto-numbers, skipping the taken -1",
+          [p["part_sku"] for p in d["parts"]]
+          == ["S11230-1", "S11230-2", "CUSTOM-9"], str(d)[:300])
+    check("draft named exactly per Nick's format, bin carried",
+          draft_calls[0][0].startswith(
+              "DRAFT LISTING - INGREDIENT Explore FirstLight 10in Dob "
+              "S11230-2")
+          and draft_calls[0][3] == "A7-1"
+          and draft_calls[1][1] == "CUSTOM-9", draft_calls)
+
+    # A part whose barcode IS the set's own catalog barcode still
+    # resolves to the PART - the S11810 collision.
+    saved_mode = config.SHOPIFY_WRITE_MODE
+    config.SHOPIFY_WRITE_MODE = "scan_station_only,draft_listings"
+    with patch("app.shopify.create_draft_listing",
+               side_effect=fake_draft):
+        cl.post("/api/box-sets", json={
+            "set_code": "S11230",
+            "parts": [
+                {"sku": "S11230-1", "barcode": "7411230001"},
+                {"barcode": "7411230", "create_draft": True},
+            ]})
+    config.SHOPIFY_WRITE_MODE = saved_mode
+    r = cl.get("/api/products/by-barcode/7411230")
+    check("a box barcode colliding with the catalog resolves to the PART",
+          r.json().get("sku") == "S11230-2"
+          and (r.json().get("boxset") or {}).get("set_sku") == "S11230",
+          r.text[:300])
+    cl.delete("/api/box-sets/S11230?by=Nick")
+
 print()
 sys.exit(1 if fails else 0)

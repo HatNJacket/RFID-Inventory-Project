@@ -473,6 +473,27 @@ def product_by_barcode(barcode: str):
     channel - its warning is composed INTO the scan note, so every
     surface that shows notes warns without new client code."""
     product = _product_lookup(barcode)
+    # A physical box barcode ALWAYS means the box - even when it
+    # collides with the FULL product's own catalog barcode (Nick's
+    # S11810, 2026-09-08: box 2's barcode IS the listing's barcode, so
+    # the catalog resolved the whole product and double-counted). The
+    # part registry outranks whatever the catalog said for that code.
+    if product and database_configured():
+        try:
+            with Session(get_engine()) as _s:
+                hit = _s.scalar(select(BoxSetPart).where(
+                    func.upper(BoxSetPart.part_barcode)
+                    == barcode.strip().upper()
+                ))
+            if hit is not None and (
+                (product.get("sku") or "").strip().upper()
+                != hit.part_sku.strip().upper()
+            ):
+                part_prod = _boxset_part_product(barcode)
+                if part_prod is not None:
+                    product = part_prod
+        except Exception:  # noqa: BLE001 - the override is best-effort
+            pass
     sku = (product.get("sku") or "").strip() if product else ""
     if sku and database_configured():
         try:
@@ -1800,8 +1821,13 @@ def _boxset_unit_count(session: Session, set_sku: str) -> int | None:
 
 class BoxSetPartIn(BaseModel):
     # The SKU printed on the box (S11230-1) and the barcode that scans.
-    sku: str = Field(min_length=1, max_length=100)
+    # A NEW box (create_draft) may give either or both: a missing SKU is
+    # auto-numbered SET-X (lowest unused, Nick 2026-09-08), and a real
+    # DRAFT listing is created in Shopify carrying the identity + bin.
+    sku: str | None = Field(default=None, max_length=100)
     barcode: str | None = Field(default=None, max_length=64)
+    create_draft: bool = False
+    bin: str | None = Field(default=None, max_length=100)
 
 
 class BoxSetIn(BaseModel):
@@ -1838,11 +1864,35 @@ def create_box_set(
             f"{set_sku} is itself a box of "
             f"{full['boxset']['set_sku']} - a set can't nest sets.",
         )
+    # Auto-number missing part SKUs: SET-X with the lowest unused X,
+    # skipping numbers already taken by chosen parts (Nick: 12345-1
+    # picked means the drafts start at 12345-2).
+    used_nums: set[int] = set()
+    for p in payload.parts:
+        s = (p.sku or "").strip().upper()
+        prefix = f"{set_sku.upper()}-"
+        if s.startswith(prefix) and s[len(prefix):].isdigit():
+            used_nums.add(int(s[len(prefix):]))
+
+    def _next_num() -> int:
+        n = 1
+        while n in used_nums:
+            n += 1
+        used_nums.add(n)
+        return n
+
     seen: set[str] = set()
     cleaned: list[tuple[str, str | None]] = []
+    drafts_wanted: list[tuple[int, str | None]] = []  # (idx, bin)
     for p in payload.parts:
-        sku_p = p.sku.strip()
+        sku_p = (p.sku or "").strip()
         bc_p = (p.barcode or "").strip() or None
+        if not sku_p and not bc_p:
+            raise HTTPException(
+                422, "Every box needs a SKU or a barcode."
+            )
+        if not sku_p:
+            sku_p = f"{set_sku}-{_next_num()}"
         if sku_p.upper() == set_sku.upper():
             raise HTTPException(
                 422,
@@ -1852,7 +1902,37 @@ def create_box_set(
         if sku_p.upper() in seen:
             raise HTTPException(422, f"{sku_p} is listed twice.")
         seen.add(sku_p.upper())
+        if p.create_draft:
+            drafts_wanted.append((len(cleaned), (p.bin or "").strip()
+                                  or None))
         cleaned.append((sku_p, bc_p))
+
+    # Real DRAFT listings for the new boxes (Nick, 2026-09-08): a
+    # gated Shopify write, done BEFORE any local rows so a failure
+    # leaves nothing half-linked. Named exactly per his format.
+    drafts_made: list[dict] = []
+    if drafts_wanted:
+        require_shopify_write("draft_listings")
+        default_bin = (full.get("bin_location") or "").strip() or None
+        for idx, bin_p in drafts_wanted:
+            sku_p, bc_p = cleaned[idx]
+            title = (
+                f"DRAFT LISTING - INGREDIENT "
+                f"{full.get('product_title') or set_sku} {sku_p}"
+            )[:255]
+            try:
+                d = shopify.create_draft_listing(
+                    title, sku_p, bc_p, bin_p or default_bin
+                )
+            except Exception as error:  # noqa: BLE001 - surface as 502
+                raise HTTPException(
+                    502,
+                    f"Draft listing for {sku_p} failed: {error}. "
+                    + (f"{len(drafts_made)} draft(s) were already "
+                       "created and remain in Shopify."
+                       if drafts_made else "Nothing was created.")
+                )
+            drafts_made.append(d)
     # A part already claimed by a DIFFERENT set is refused; redefining
     # THIS set replaces its old rows.
     for row in session.scalars(select(BoxSetPart)):
@@ -1973,11 +2053,17 @@ def create_box_set(
         "parts": [r.as_dict() for r in rows],
         "batch_items_updated": items_updated,
         "aliases_cleared": aliases_cleared,
+        "drafts_created": [d["sku"] for d in drafts_made],
         "full_tags": full_tags,
         "message": (
             f"{set_sku} is now a {len(rows)}-box set "
             f"({', '.join(r.part_sku for r in rows)}). Each box counts "
             "under its own SKU; the unit count is the smallest of them."
+            + (
+                f" {len(drafts_made)} draft listing(s) created in "
+                f"Shopify: {', '.join(d['sku'] for d in drafts_made)}."
+                if drafts_made else ""
+            )
             + (
                 f" {aliases_cleared} old barcode link(s) on the part "
                 "codes removed (they would have shadowed the set)."

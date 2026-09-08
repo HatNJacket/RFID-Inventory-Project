@@ -5399,6 +5399,62 @@ function openBoxSetBuilder(seedItem) {
   });
   box.appendChild(list);
 
+  // NEW boxes with no listing anywhere (Nick, 2026-09-08): the system
+  // creates real DRAFT listings in Shopify. − / + set how many; each
+  // gets barcode/SKU (blank SKU = auto SET-X) and a bin.
+  const draftHead = document.createElement("div");
+  draftHead.style.cssText =
+    "display:flex;align-items:center;gap:8px;margin:10px 0 4px;" +
+    "font-size:12px";
+  const minus = document.createElement("button");
+  minus.type = "button";
+  minus.textContent = "−";
+  const countEl = document.createElement("b");
+  countEl.textContent = "0";
+  const plus = document.createElement("button");
+  plus.type = "button";
+  plus.textContent = "+";
+  const draftLbl = document.createElement("span");
+  draftLbl.textContent =
+    "new draft listing(s) to create in Shopify for boxes with no " +
+    "listing";
+  draftHead.append(minus, countEl, plus, draftLbl);
+  box.appendChild(draftHead);
+  const draftList = document.createElement("div");
+  box.appendChild(draftList);
+  const draftRows = [];
+  function renderDraftRows(n) {
+    while (draftRows.length > n) {
+      draftRows.pop().row.remove();
+    }
+    while (draftRows.length < n) {
+      const i = draftRows.length;
+      const row = document.createElement("div");
+      row.style.cssText =
+        "display:flex;gap:6px;margin:4px 0;align-items:center";
+      const bcIn = document.createElement("input");
+      bcIn.placeholder = `new box ${i + 1}: barcode`;
+      bcIn.style.cssText = "flex:1";
+      const skuIn = document.createElement("input");
+      skuIn.placeholder = "SKU (blank = auto -X)";
+      skuIn.style.cssText = "width:140px";
+      const binIn = document.createElement("input");
+      binIn.placeholder = "bin";
+      binIn.value = batch ? batch.bin_name || "" : "";
+      binIn.style.cssText = "width:80px";
+      row.append(bcIn, skuIn, binIn);
+      draftList.appendChild(row);
+      draftRows.push({ row, bcIn, skuIn, binIn });
+    }
+    countEl.textContent = String(draftRows.length);
+  }
+  minus.addEventListener("click", () =>
+    renderDraftRows(Math.max(0, draftRows.length - 1))
+  );
+  plus.addEventListener("click", () =>
+    renderDraftRows(Math.min(8, draftRows.length + 1))
+  );
+
   const fullRow = document.createElement("div");
   fullRow.style.cssText = "display:flex;gap:6px;margin:10px 0;align-items:center";
   const fullLbl = document.createElement("span");
@@ -5430,13 +5486,27 @@ function openBoxSetBuilder(seedItem) {
         barcode:
           (r.it.barcode || r.it.scanned_code || "").trim() || null,
       }));
-    const setCode = fullIn.value.trim();
-    if (parts.length < 2) {
-      alert("Tick at least two boxes.");
-      return;
-    }
     if (parts.some((p) => !p.sku)) {
       alert("Every ticked box needs the SKU the carton says.");
+      return;
+    }
+    for (const dr of draftRows) {
+      const bc = dr.bcIn.value.trim();
+      const skuV = dr.skuIn.value.trim();
+      if (!bc && !skuV) {
+        alert("Every new draft box needs a barcode or a SKU.");
+        return;
+      }
+      parts.push({
+        sku: skuV || null,
+        barcode: bc || null,
+        create_draft: true,
+        bin: dr.binIn.value.trim() || null,
+      });
+    }
+    const setCode = fullIn.value.trim();
+    if (parts.length < 2) {
+      alert("A set needs at least two boxes (ticked or new).");
       return;
     }
     if (!setCode) {

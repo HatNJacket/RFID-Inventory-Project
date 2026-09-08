@@ -12120,11 +12120,15 @@ public class MainActivity extends Activity {
     // name the full product - matching rows re-resolve as parts.
     private final java.util.LinkedHashSet<Integer> boxSetSel =
             new java.util.LinkedHashSet<>();
+    // How many NEW draft listings to create for boxes with no listing
+    // anywhere (Nick, 2026-09-08) - the - / + row on the picker.
+    private int boxSetNewCount = 0;
 
     private void boxSetPickBoxes() {
         if (editEntry == null) return;
         boxSetSel.clear();
         boxSetSel.add(editEntry.item.id);
+        boxSetNewCount = 0;
         closeItemEditor();
         showBoxSetPicker();
     }
@@ -12161,23 +12165,59 @@ public class MainActivity extends Activity {
                         showBoxSetPicker();
                     }, on ? "IN THE SET" : null));
         }
+        // NEW draft listings (Nick, 2026-09-08): boxes with no listing
+        // anywhere. Minus on the left, plus on the right; each new box
+        // gets its own window after NEXT and a real Shopify DRAFT.
+        LinearLayout newRow = new LinearLayout(this);
+        newRow.setGravity(Gravity.CENTER_VERTICAL);
+        Button minus = smallBtn("−");
+        minus.setOnClickListener(x -> {
+            if (boxSetNewCount > 0) boxSetNewCount--;
+            if (dref[0] != null) dref[0].dismiss();
+            showBoxSetPicker();
+        });
+        TextView cnt = new TextView(this);
+        cnt.setText("  " + boxSetNewCount + " new draft listing"
+                + (boxSetNewCount == 1 ? "" : "s") + "  ");
+        cnt.setTextSize(13);
+        cnt.setTypeface(null, Typeface.BOLD);
+        cnt.setTextColor(C_TEXT);
+        Button plus = smallBtn("+");
+        plus.setOnClickListener(x -> {
+            if (boxSetNewCount < 8) boxSetNewCount++;
+            if (dref[0] != null) dref[0].dismiss();
+            showBoxSetPicker();
+        });
+        newRow.addView(minus, new LinearLayout.LayoutParams(
+                dp(52), LinearLayout.LayoutParams.WRAP_CONTENT));
+        newRow.addView(cnt, weight());
+        cnt.setGravity(Gravity.CENTER);
+        newRow.addView(plus, new LinearLayout.LayoutParams(
+                dp(52), LinearLayout.LayoutParams.WRAP_CONTENT));
+        LinearLayout.LayoutParams nrl = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        nrl.topMargin = dp(8);
+        list.addView(newRow, nrl);
+
         dref[0] = dlg()
                 .setTitle("MULTI-BOX SET - pick the boxes")
                 .setView(scroll)
-                .setPositiveButton("NEXT (" + boxSetSel.size() + ")",
+                .setPositiveButton("NEXT ("
+                        + (boxSetSel.size() + boxSetNewCount) + ")",
                         (d, w) -> {
                     java.util.List<BItem> sel = new ArrayList<>();
                     for (BItem b : bItems) {
                         if (boxSetSel.contains(b.id)) sel.add(b);
                     }
-                    if (sel.size() < 2) {
+                    if (sel.size() + boxSetNewCount < 2) {
                         beep(SOUND_ERR);
                         status.setText("A set needs at least two "
-                                + "boxes.");
+                                + "boxes (picked or new).");
                         return;
                     }
                     boxSetSkuPass(sel, 0,
-                            new ArrayList<String[]>());
+                            new ArrayList<JSONObject>());
                 })
                 .setNegativeButton("CANCEL", null)
                 .show();
@@ -12185,9 +12225,9 @@ public class MainActivity extends Activity {
 
     /** Confirm each box's SKU exactly as the carton prints it. */
     private void boxSetSkuPass(final java.util.List<BItem> sel,
-            final int idx, final java.util.List<String[]> parts) {
+            final int idx, final java.util.List<JSONObject> parts) {
         if (idx >= sel.size()) {
-            boxSetFullProduct(sel, parts);
+            boxSetDraftPass(boxSetNewCount, parts);
             return;
         }
         final BItem it = sel.get(idx);
@@ -12217,15 +12257,78 @@ public class MainActivity extends Activity {
                     }
                     String bc = it.barcode != null && !it.barcode.isEmpty()
                             ? it.barcode : it.scannedCode;
-                    parts.add(new String[]{sku, bc});
+                    try {
+                        JSONObject o = new JSONObject().put("sku", sku);
+                        if (bc != null && !bc.isEmpty()) {
+                            o.put("barcode", bc);
+                        }
+                        parts.add(o);
+                    } catch (Exception ignored) {
+                    }
                     boxSetSkuPass(sel, idx + 1, parts);
                 })
                 .setNegativeButton("CANCEL", null)
                 .show();
     }
 
-    private void boxSetFullProduct(final java.util.List<BItem> sel,
-            final java.util.List<String[]> parts) {
+    /** One window per NEW box (Nick, 2026-09-08): barcode, SKU or
+     *  both (blank SKU auto-numbers SET-X), and its bin - default the
+     *  bin being batch tagged. A real Shopify DRAFT listing is created
+     *  server-side, named DRAFT LISTING - INGREDIENT <product> <sku>. */
+    private void boxSetDraftPass(final int remaining,
+            final java.util.List<JSONObject> parts) {
+        if (remaining <= 0) {
+            boxSetFullProduct(parts);
+            return;
+        }
+        final int n = boxSetNewCount - remaining + 1;
+        final EditText bcIn = themedEdit();
+        bcIn.setHint("Barcode on the box (optional)");
+        bcIn.setTextSize(15);
+        final EditText skuIn = themedEdit();
+        skuIn.setHint("SKU (blank = auto, e.g. S11810-" + (n + 1) + ")");
+        skuIn.setTextSize(15);
+        final EditText binIn = themedEdit();
+        binIn.setHint("Bin");
+        binIn.setText(batchBin == null ? "" : batchBin);
+        binIn.setTextSize(15);
+        LinearLayout wrap = new LinearLayout(this);
+        wrap.setOrientation(LinearLayout.VERTICAL);
+        wrap.setPadding(dp(20), dp(8), dp(20), dp(4));
+        wrap.addView(bcIn);
+        wrap.addView(skuIn);
+        wrap.addView(binIn);
+        dlg().setTitle("New box " + n + " of " + boxSetNewCount
+                        + " (draft listing)")
+                .setView(wrap)
+                .setPositiveButton("NEXT", (d, w) -> {
+                    String bc = bcIn.getText().toString().trim();
+                    String sku = skuIn.getText().toString().trim();
+                    if (bc.isEmpty() && sku.isEmpty()) {
+                        beep(SOUND_ERR);
+                        status.setText("A new box needs a barcode or "
+                                + "a SKU.");
+                        return;
+                    }
+                    try {
+                        JSONObject o = new JSONObject()
+                                .put("create_draft", true);
+                        if (!sku.isEmpty()) o.put("sku", sku);
+                        if (!bc.isEmpty()) o.put("barcode", bc);
+                        String bin = binIn.getText().toString().trim()
+                                .toUpperCase(java.util.Locale.ROOT);
+                        if (!bin.isEmpty()) o.put("bin", bin);
+                        parts.add(o);
+                    } catch (Exception ignored) {
+                    }
+                    boxSetDraftPass(remaining - 1, parts);
+                })
+                .setNegativeButton("CANCEL", null)
+                .show();
+    }
+
+    private void boxSetFullProduct(
+            final java.util.List<JSONObject> parts) {
         final EditText in = themedEdit();
         in.setHint("Full product barcode or SKU (e.g. S11230)");
         in.setTextSize(16);
@@ -12245,17 +12348,13 @@ public class MainActivity extends Activity {
     }
 
     private void postBoxSet(final String setCode,
-            final java.util.List<String[]> parts) {
+            final java.util.List<JSONObject> parts) {
         status.setText("Creating the set…");
         new Thread(() -> {
             try {
                 org.json.JSONArray pj = new org.json.JSONArray();
-                for (String[] p : parts) {
-                    JSONObject o = new JSONObject().put("sku", p[0]);
-                    if (p[1] != null && !p[1].isEmpty()) {
-                        o.put("barcode", p[1]);
-                    }
-                    pj.put(o);
+                for (JSONObject p : parts) {
+                    pj.put(p);
                 }
                 JSONObject body = new JSONObject()
                         .put("set_code", setCode)
