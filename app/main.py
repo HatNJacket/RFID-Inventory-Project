@@ -1864,12 +1864,57 @@ def create_box_set(
             f"{set_sku} is itself a box of "
             f"{full['boxset']['set_sku']} - a set can't nest sets.",
         )
+    # Two entries sharing a BARCODE are the same physical box: a
+    # ticked batch row plus a new-draft entry for the same code MERGE
+    # into one part that gets the draft (Nick, 2026-09-08 - his first
+    # S11810 set ended up with four parts for two boxes). Two plain
+    # entries with one barcode are a mistake and refused.
+    raw: list[dict] = []
+    for p in payload.parts:
+        sku_p = (p.sku or "").strip()
+        bc_p = (p.barcode or "").strip() or None
+        if not sku_p and not bc_p:
+            raise HTTPException(
+                422, "Every box needs a SKU or a barcode."
+            )
+        raw.append({
+            "sku": sku_p, "barcode": bc_p,
+            "create_draft": bool(p.create_draft),
+            "bin": (p.bin or "").strip() or None,
+        })
+    merged_parts: list[dict] = []
+    by_bc: dict[str, dict] = {}
+    for e in raw:
+        key = (e["barcode"] or "").upper()
+        if key and key in by_bc:
+            tgt = by_bc[key]
+            if not (e["create_draft"] or tgt["create_draft"]):
+                raise HTTPException(
+                    422,
+                    f"Two boxes share barcode {e['barcode']} - a "
+                    "barcode identifies ONE box.",
+                )
+            # The draft side's explicit SKU/bin wins; an unresolved
+            # row's sku is usually just the scanned code, so a real
+            # SKU (or auto-numbering) from the draft replaces it.
+            if e["create_draft"]:
+                if e["sku"]:
+                    tgt["sku"] = e["sku"]
+                elif tgt["sku"].upper() == key:
+                    tgt["sku"] = ""  # scanned-code sku -> auto-number
+                tgt["bin"] = e["bin"] or tgt["bin"]
+            tgt["create_draft"] = True
+            continue
+        if key:
+            by_bc[key] = e
+        merged_parts.append(e)
+
     # Auto-number missing part SKUs: SET-X with the lowest unused X,
     # skipping numbers already taken by chosen parts (Nick: 12345-1
     # picked means the drafts start at 12345-2).
     used_nums: set[int] = set()
-    for p in payload.parts:
-        s = (p.sku or "").strip().upper()
+    for e in merged_parts:
+        s = e["sku"].upper()
         prefix = f"{set_sku.upper()}-"
         if s.startswith(prefix) and s[len(prefix):].isdigit():
             used_nums.add(int(s[len(prefix):]))
@@ -1884,13 +1929,8 @@ def create_box_set(
     seen: set[str] = set()
     cleaned: list[tuple[str, str | None]] = []
     drafts_wanted: list[tuple[int, str | None]] = []  # (idx, bin)
-    for p in payload.parts:
-        sku_p = (p.sku or "").strip()
-        bc_p = (p.barcode or "").strip() or None
-        if not sku_p and not bc_p:
-            raise HTTPException(
-                422, "Every box needs a SKU or a barcode."
-            )
+    for e in merged_parts:
+        sku_p = e["sku"]
         if not sku_p:
             sku_p = f"{set_sku}-{_next_num()}"
         if sku_p.upper() == set_sku.upper():
@@ -1902,10 +1942,15 @@ def create_box_set(
         if sku_p.upper() in seen:
             raise HTTPException(422, f"{sku_p} is listed twice.")
         seen.add(sku_p.upper())
-        if p.create_draft:
-            drafts_wanted.append((len(cleaned), (p.bin or "").strip()
-                                  or None))
-        cleaned.append((sku_p, bc_p))
+        if e["create_draft"]:
+            drafts_wanted.append((len(cleaned), e["bin"]))
+        cleaned.append((sku_p, e["barcode"]))
+    if len(cleaned) < 2:
+        raise HTTPException(
+            422,
+            "After merging same-barcode entries the set has fewer than "
+            "two boxes.",
+        )
 
     # Real DRAFT listings for the new boxes (Nick, 2026-09-08): a
     # gated Shopify write, done BEFORE any local rows so a failure
@@ -16824,6 +16869,19 @@ def history(
                 "old_bin": c.old_barcode,
                 "new_bin": c.new_barcode,
             }
+        # A box-set definition can be undone while the set still stands
+        # (Nick, 2026-09-08): one click removes the set - part records
+        # only, the Shopify draft listings stay. Offered only on the
+        # CREATE event and only while the set still exists.
+        elif (c.changed_field == "box-set" and c.sku
+              and "box identities" in (c.new_barcode or "")):
+            if session.scalar(
+                select(BoxSetPart).where(
+                    func.upper(BoxSetPart.set_sku)
+                    == c.sku.strip().upper()
+                )
+            ) is not None:
+                event["undo"] = {"kind": "box-set", "set_sku": c.sku}
         # A completed audit logs its location + one-line summary; the
         # generic "(none) → x" rendering would just add noise.
         elif c.changed_field == "bin-audited":

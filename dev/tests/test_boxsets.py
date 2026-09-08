@@ -368,5 +368,55 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
           r.text[:300])
     cl.delete("/api/box-sets/S11230?by=Nick")
 
+    # ---- Nick's exact S11810 mistake: ticked rows + drafts sharing
+    # barcodes MERGE into one part each, not four ----------------------
+    saved_mode = config.SHOPIFY_WRITE_MODE
+    config.SHOPIFY_WRITE_MODE = "scan_station_only,draft_listings"
+    draft_calls.clear()
+    with patch("app.shopify.create_draft_listing",
+               side_effect=fake_draft):
+        r = cl.post("/api/box-sets", json={
+            "set_code": "S11230",
+            "parts": [
+                {"sku": "BC-AAA", "barcode": "BC-AAA"},
+                {"sku": "BC-BBB", "barcode": "BC-BBB"},
+                {"barcode": "BC-AAA", "create_draft": True,
+                 "bin": "A7-1"},
+                {"barcode": "BC-BBB", "create_draft": True,
+                 "bin": "A7-1"},
+            ], "changed_by": "Nick"})
+    config.SHOPIFY_WRITE_MODE = saved_mode
+    d = r.json()
+    check("same-barcode row + draft merge into ONE part each",
+          r.status_code == 201 and len(d["parts"]) == 2
+          and [p["part_sku"] for p in d["parts"]]
+          == ["S11230-1", "S11230-2"]
+          and len(draft_calls) == 2, r.text[:300])
+
+    # Plain duplicate barcodes (no draft involved) stay refused.
+    r = cl.post("/api/box-sets", json={
+        "set_code": "S11230", "parts": [
+            {"sku": "X-1", "barcode": "SAME"},
+            {"sku": "X-2", "barcode": "SAME"}]})
+    check("two plain entries sharing a barcode are refused",
+          r.status_code == 422 and "ONE box" in r.json()["detail"],
+          r.text)
+
+    # ---- History carries an UNDO on the create while the set stands --
+    r = cl.get("/api/history?limit=50")
+    ev = next((e for e in r.json()["events"]
+               if e.get("type") == "box-set"
+               and (e.get("undo") or {}).get("set_sku") == "S11230"),
+              None)
+    check("box-set create event offers undo while the set exists",
+          ev is not None and ev["undo"]["kind"] == "box-set",
+          str(ev)[:200])
+    cl.delete("/api/box-sets/S11230?by=Nick")
+    r = cl.get("/api/history?limit=50")
+    still = [e for e in r.json()["events"]
+             if e.get("type") == "box-set" and e.get("undo")]
+    check("undo disappears once the set is gone", still == [],
+          str(still)[:200])
+
 print()
 sys.exit(1 if fails else 0)

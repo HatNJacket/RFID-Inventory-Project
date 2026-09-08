@@ -15482,6 +15482,32 @@ async function undoHistoryEvent(e, btn) {
   // Resolved/dismissed review tasks: undo = reopen — the task returns to
   // the Review inbox and this resolution entry leaves History (the task
   // is simply open again, as if never closed).
+  // Multi-box sets: undo removes the set's part records - the Shopify
+  // draft listings stay (Nick, 2026-09-08). The builder recreates it
+  // in seconds if that was a mistake.
+  if (e.undo.kind === "box-set") {
+    if (
+      !confirm(
+        `Remove the ${e.undo.set_sku} multi-box set?\n\nIts boxes go ` +
+          `back to counting separately. Draft listings created for it ` +
+          `stay in Shopify.`
+      )
+    )
+      return;
+    btn.disabled = true;
+    try {
+      await apiFetch(
+        `/api/box-sets/${encodeURIComponent(e.undo.set_sku)}` +
+          `?by=${encodeURIComponent(operatorEl.value || "")}`,
+        { method: "DELETE" }
+      );
+      await loadHistory();
+    } catch (err) {
+      btn.disabled = false;
+      alert(err.message);
+    }
+    return;
+  }
   if (e.undo.kind === "review-reopen") {
     if (
       !confirm(
