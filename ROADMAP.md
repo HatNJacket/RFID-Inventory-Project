@@ -3,6 +3,22 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-08.
 
+## 📝 Box sets create DRAFT listings + barcode override — ✅ DEPLOYED 2026-09-08 (C72 3.93)
+
+Nick's S11810 exposed two holes: the alias mis-link, and box 2's
+barcode BEING the full product's catalog barcode (both boxes resolved
+to S11810 and double-counted). Now: the set builders (C72 picker "-
+N +" row; web -/+ rows) take NEW boxes with no listing anywhere -
+barcode/SKU (blank = auto SET-X, lowest unused) + bin (default the
+batch bin) - and the server creates a REAL Shopify DRAFT listing per
+new box ("DRAFT LISTING - INGREDIENT <title> <SKU-X>", variant
+sku/barcode untracked, bin metafields; write feature "draft_listings"
+PROMOTED in prod settings; mutation chain proven with a live
+create-verify-delete). A physical box barcode now ALWAYS resolves to
+its PART, even when it collides with the set's own catalog barcode.
+The Linked-barcodes button moved out of the Product-options fold to
+under the Flags group (Nick couldn't find it).
+
 ## 🗓 Unavailable dates + guarded return + pinned sweep — ✅ DEPLOYED 2026-09-08
 
 Shopify stamps every bucket's last change (InventoryQuantity
