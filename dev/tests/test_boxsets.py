@@ -241,7 +241,59 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
         gone = s.query(RfidAssignment).filter_by(sku="S11230").all()
         check("old full-SKU tags unlinked", gone == [], gone)
 
+    # ---- linked barcodes: list, unlink receipt, shadow cleanup --------
+    # Nick's S11810-1 case: an unresolved box barcode linked straight to
+    # the full product. The manager lists it (who/when), unlink logs a
+    # receipt, and creating a box set on that code clears the alias so
+    # it can't shadow the part registry.
+    r = cl.post("/api/barcode-aliases", json={
+        "alias_barcode": "S11810-1", "target": "S11230",
+        "created_by": "Nick"})
+    check("alias created (the mis-link)", r.status_code == 201, r.text)
+    r = cl.get("/api/barcode-aliases?sku=S11230")
+    al = r.json()["aliases"]
+    check("manager lists the link with who and when",
+          r.json()["count"] >= 1
+          and any(a["alias_barcode"] == "S11810-1"
+                  and a["created_by"] == "Nick"
+                  and a["created_at"] for a in al), str(al)[:300])
+
+    # Creating a set whose part code matches the alias clears it.
+    r = cl.post("/api/box-sets", json={
+        "set_code": "S11230",
+        "parts": [{"sku": "S11810-1"}, {"sku": "S11810-2"}],
+        "changed_by": "Nick"})
+    check("set creation clears the shadowing alias",
+          r.status_code == 201 and r.json()["aliases_cleared"] == 1
+          and "shadowed" in r.json()["message"], r.text[:300])
+    r = cl.get("/api/barcode-aliases")
+    check("the alias is gone",
+          not any(a["alias_barcode"] == "S11810-1"
+                  for a in r.json()["aliases"]), r.text[:200])
+    r = cl.get("/api/product-history?term=S11230")
+    evs = [e for e in r.json()["events"] if e["type"] == "alias-unlinked"]
+    check("...with an unlink receipt in History", len(evs) == 1
+          and evs[0]["shopify"] is False, str(evs)[:200])
+    cl.delete("/api/box-sets/S11230?by=Nick")
+
+    # Manual unlink through the manager logs its own receipt.
+    cl.post("/api/barcode-aliases", json={
+        "alias_barcode": "FOREIGN-99", "target": "ZOTHER",
+        "created_by": "Nick"})
+    r = cl.delete("/api/barcode-aliases/FOREIGN-99?by=Nick")
+    check("manual unlink answers 204", r.status_code == 204, r.text)
+    r = cl.get("/api/product-history?term=ZOTHER")
+    evs = [e for e in r.json()["events"] if e["type"] == "alias-unlinked"]
+    check("manual unlink logged with the worker", len(evs) == 1
+          and evs[0]["worker"] == "Nick", str(evs)[:200])
+
     # ---- delete -------------------------------------------------------
+    r = cl.post("/api/box-sets", json={
+        "set_code": "S11230",
+        "parts": [
+            {"sku": "S11230-1", "barcode": "7411230001"},
+            {"sku": "S11230-2", "barcode": "7411230002"},
+        ]})
     r = cl.delete("/api/box-sets/S11230?by=Nick")
     check("set deletes", r.status_code == 200
           and r.json()["removed_parts"] == 2, r.text)

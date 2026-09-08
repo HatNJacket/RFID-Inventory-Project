@@ -1893,6 +1893,34 @@ def create_box_set(
         changed_by=(payload.changed_by or "").strip()[:100] or None,
     ))
 
+    # A stale alias on a part's code would SHADOW the set forever
+    # (aliases resolve before the box-set registry - exactly Nick's
+    # S11810-1 -> S11810 mis-link, 2026-09-08). Clear them, with the
+    # unlink receipt.
+    aliases_cleared = 0
+    part_codes = set()
+    for sku_p, bc_p in cleaned:
+        part_codes.add(sku_p.upper())
+        if bc_p:
+            part_codes.add(bc_p.upper())
+    for al in session.scalars(select(BarcodeAlias)):
+        if (al.alias_barcode or "").strip().upper() in part_codes:
+            session.add(BarcodeChange(
+                sku=al.sku,
+                product_title=al.product_title,
+                changed_field="alias-unlinked",
+                old_barcode=(al.alias_barcode or "")[:64] or None,
+                new_barcode=(
+                    f"now box of {set_sku}"[:64]
+                ),
+                changed_by=(payload.changed_by or "").strip()[:100]
+                or None,
+            ))
+            session.delete(al)
+            aliases_cleared += 1
+    if aliases_cleared:
+        session.flush()
+
     # Re-resolve this batch's matching rows: a row scanned as the part's
     # barcode/SKU (resolved or not) becomes the part, riding the full
     # product's identity for labels and pairing.
@@ -1944,11 +1972,17 @@ def create_box_set(
         "set_title": full.get("product_title"),
         "parts": [r.as_dict() for r in rows],
         "batch_items_updated": items_updated,
+        "aliases_cleared": aliases_cleared,
         "full_tags": full_tags,
         "message": (
             f"{set_sku} is now a {len(rows)}-box set "
             f"({', '.join(r.part_sku for r in rows)}). Each box counts "
             "under its own SKU; the unit count is the smallest of them."
+            + (
+                f" {aliases_cleared} old barcode link(s) on the part "
+                "codes removed (they would have shadowed the set)."
+                if aliases_cleared else ""
+            )
             + (
                 f" {full_tags} tag(s) still sit under {set_sku} itself - "
                 "the re-label pass can convert them."
@@ -3134,12 +3168,32 @@ def create_alias(payload: AliasIn, session: Session = Depends(get_session)):
     return {"alias": alias.as_dict(), "product": product}
 
 
+@app.get("/api/barcode-aliases", dependencies=[Depends(require_user)])
+def list_aliases(
+    sku: str | None = None, session: Session = Depends(get_session)
+):
+    """Every linked barcode (Nick, 2026-09-08 - the S11810-1 mis-link):
+    what code points at what product, who linked it and when, so a bad
+    link can be found and unlinked instead of silently shadowing
+    lookups forever. ?sku= narrows to one product's links."""
+    stmt = select(BarcodeAlias).order_by(BarcodeAlias.id.desc())
+    if sku and sku.strip():
+        stmt = stmt.where(
+            func.upper(BarcodeAlias.sku) == sku.strip().upper()
+        )
+    rows = session.scalars(stmt.limit(500)).all()
+    return {"count": len(rows), "aliases": [r.as_dict() for r in rows]}
+
+
 @app.delete(
     "/api/barcode-aliases/{alias_barcode}",
     status_code=204,
     dependencies=[Depends(require_user)],
 )
-def delete_alias(alias_barcode: str, session: Session = Depends(get_session)):
+def delete_alias(
+    alias_barcode: str, by: str | None = None,
+    session: Session = Depends(get_session),
+):
     row = session.scalar(
         select(BarcodeAlias).where(
             BarcodeAlias.alias_barcode == alias_barcode.strip()
@@ -3147,6 +3201,16 @@ def delete_alias(alias_barcode: str, session: Session = Depends(get_session)):
     )
     if row is None:
         raise HTTPException(404, "No such linked barcode.")
+    # The live row IS how product history shows the link - once it's
+    # gone, this receipt is the only trace (Nick, 2026-09-08).
+    session.add(BarcodeChange(
+        sku=row.sku,
+        product_title=row.product_title,
+        changed_field="alias-unlinked",
+        old_barcode=(row.alias_barcode or "")[:64] or None,
+        new_barcode=(row.sku or row.barcode or "?")[:64],
+        changed_by=(by or "").strip()[:100] or None,
+    ))
     session.delete(row)
     session.commit()
 
@@ -16024,6 +16088,7 @@ def product_history(term: str, session: Session = Depends(get_session)):
         "non-taggable": "non-taggable",
         "unlabelable-box": "unlabelable-box",
         "box-set": "box-set",
+        "alias-unlinked": "alias-unlinked",
         "mislabel-flag": "mislabel-flag",
         "unavailable-move": "unavailable-move",
         "batch-reprint": "batch-reprinted",
@@ -16059,7 +16124,8 @@ def product_history(term: str, session: Session = Depends(get_session)):
             not in ("rfid-scan", "locate-list", "tag-sold", "scan-note",
                     "tag-retired", "tag-unretired", "tag-released",
                     "tag-reapplied", "ledger-cleared", "non-taggable",
-                    "unlabelable-box", "mislabel-flag", "box-set"),
+                    "unlabelable-box", "mislabel-flag", "box-set",
+                    "alias-unlinked"),
         })
 
     # What Shopify currently says the product's bin IS, and when we last
@@ -16475,6 +16541,7 @@ def history(
         "non-taggable": "non-taggable",
         "unlabelable-box": "unlabelable-box",
         "box-set": "box-set",
+        "alias-unlinked": "alias-unlinked",
         "mislabel-flag": "mislabel-flag",
         "unavailable-move": "unavailable-move",
         "batch-reprint": "batch-reprinted",

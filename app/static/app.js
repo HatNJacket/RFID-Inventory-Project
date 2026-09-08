@@ -366,6 +366,7 @@ const EVENT_META = {
   "non-taggable": ["Non-taggable", "#8a6116"],
   "unlabelable-box": ["Un-labelable Box", "#8a6116"],
   "box-set": ["Multi-box Set", "#0b6e99"],
+  "alias-unlinked": ["Link Removed", "#8a6116"],
   "batch-reprinted": ["Batch Reprint", "#5c5f62"],
   "printing-stopped": ["Stopped Printing", "#d72c0d"],
   "printing-resumed": ["Resumed Printing", "#116329"],
@@ -13720,6 +13721,7 @@ async function openProductHistory(term) {
     renderVendorRow();
     renderBundleRow();
     renderLocateRow();
+    renderAliasesRow();
     // Multi-box/bundle standing. Only shown when an answer was actually
     // saved — an auto-detected product has nothing to undo.
     const kindBox = document.getElementById("phist-kind");
@@ -14858,6 +14860,151 @@ document
       msg.textContent = err.message;
     }
   });
+
+// --- Linked barcodes (Nick, 2026-09-08, the S11810-1 mis-link) --------------
+// Every alias in one place: what code points at what product, who
+// linked it and when, and the unlink. The row shows THIS product's
+// links; the manager can widen to the whole store.
+async function renderAliasesRow() {
+  const row = document.getElementById("phist-aliases");
+  if (!phistData || !phistData.sku) {
+    row.hidden = true;
+    return;
+  }
+  row.hidden = false;
+  const btn = document.getElementById("phist-aliases-btn");
+  btn.textContent = "🔗 Linked barcodes…";
+  btn.title =
+    "Foreign codes linked to resolve to this product (and store-wide) " +
+    "- who linked each, when, and the unlink.";
+  try {
+    const d = await apiJson(
+      `/api/barcode-aliases?sku=${encodeURIComponent(phistData.sku)}`
+    );
+    btn.textContent = d.count
+      ? `🔗 Linked barcodes (${d.count})…`
+      : "🔗 Linked barcodes…";
+  } catch (err) {
+    /* count is decoration - the button still opens the manager */
+  }
+}
+
+document
+  .getElementById("phist-aliases-btn")
+  .addEventListener("click", () => {
+    if (phistData && phistData.sku) openAliasManager(phistData.sku);
+  });
+
+function openAliasManager(sku) {
+  const { wrap, box } = mlOverlay(
+    sku ? `Linked barcodes for ${sku}` : "Every linked barcode"
+  );
+  const intro = document.createElement("p");
+  intro.style.cssText = "font-size:12.5px;opacity:.8;margin:0 0 8px";
+  intro.textContent =
+    "A linked (aliased) code resolves to its product on every scan - " +
+    "and WINS over box-set parts and other lookups, so a wrong link " +
+    "shadows everything. Unlinking is History-logged.";
+  box.appendChild(intro);
+  const list = document.createElement("div");
+  box.appendChild(list);
+  const foot = document.createElement("div");
+  foot.style.cssText =
+    "display:flex;gap:8px;justify-content:space-between;margin-top:10px";
+  const scopeBtn = document.createElement("button");
+  scopeBtn.type = "button";
+  scopeBtn.textContent = sku
+    ? "Show every product's links"
+    : "Close";
+  const closeBtn = document.createElement("button");
+  closeBtn.type = "button";
+  closeBtn.textContent = "Close";
+  closeBtn.addEventListener("click", () => wrap.remove());
+  foot.appendChild(scopeBtn);
+  if (sku) foot.appendChild(closeBtn);
+  box.appendChild(foot);
+  scopeBtn.addEventListener("click", () => {
+    wrap.remove();
+    if (sku) openAliasManager(null);
+  });
+
+  async function refresh() {
+    let d;
+    try {
+      d = await apiJson(
+        "/api/barcode-aliases" +
+          (sku ? `?sku=${encodeURIComponent(sku)}` : "")
+      );
+    } catch (err) {
+      list.textContent = err.message;
+      return;
+    }
+    list.innerHTML = "";
+    if (!d.count) {
+      const empty = document.createElement("p");
+      empty.style.cssText = "font-size:12px;opacity:.7";
+      empty.textContent = sku
+        ? "No barcodes are linked to this product."
+        : "No linked barcodes anywhere.";
+      list.appendChild(empty);
+      return;
+    }
+    d.aliases.forEach((a) => {
+      const row = document.createElement("div");
+      row.style.cssText =
+        "display:flex;align-items:center;gap:10px;border:1px solid " +
+        "var(--line,#ccc);border-radius:8px;padding:7px 10px;margin:5px 0";
+      const col = document.createElement("div");
+      col.style.cssText = "flex:1;min-width:0;font-size:12px";
+      const kindNote =
+        a.kind === "label"
+          ? " · from a saved label line (auto-replaced on edits)"
+          : a.kind === "nickname"
+            ? " · vendor nickname"
+            : "";
+      col.innerHTML =
+        `<b class="mono">${escapeHtml(a.alias_barcode)}</b> → ` +
+        `${escapeHtml(a.product_title || a.sku || a.barcode || "?")} ` +
+        `<span class="mono" style="opacity:.75">${escapeHtml(a.sku || "")}</span>` +
+        `<div style="opacity:.7">linked ${a.created_at ? fmtAgo(a.created_at) : "—"}` +
+        `${a.created_by ? " by " + escapeHtml(a.created_by) : ""}` +
+        `${a.created_at ? " (" + escapeHtml(fmtWhen(a.created_at)) + ")" : ""}` +
+        `${kindNote}</div>`;
+      row.appendChild(col);
+      const unlink = document.createElement("button");
+      unlink.type = "button";
+      unlink.textContent = "Unlink";
+      unlink.addEventListener("click", async () => {
+        if (
+          !confirm(
+            `Unlink ${a.alias_barcode} from ` +
+              `${a.product_title || a.sku}?\n\nScanning it stops ` +
+              `resolving to this product (History keeps the receipt).`
+          )
+        )
+          return;
+        try {
+          const res = await apiFetch(
+            `/api/barcode-aliases/${encodeURIComponent(a.alias_barcode)}` +
+              `?by=${encodeURIComponent(operatorEl.value || "")}`,
+            { method: "DELETE" }
+          );
+          if (!res.ok && res.status !== 204) {
+            const body = await res.json().catch(() => ({}));
+            throw new Error(body.detail || `HTTP ${res.status}`);
+          }
+          refresh();
+          renderAliasesRow();
+        } catch (err) {
+          alert(err.message);
+        }
+      });
+      row.appendChild(unlink);
+      list.appendChild(row);
+    });
+  }
+  refresh();
+}
 
 // --- C72 locate list: queue this product for a physical tag hunt. The
 // gun's LOCATE tab pulls the same list, so nobody types a 24-hex EPC.
