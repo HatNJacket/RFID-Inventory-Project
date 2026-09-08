@@ -3,6 +3,17 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-08.
 
+## 🗂 Audits: Unavailable-stock section — ✅ DEPLOYED 2026-09-08
+
+Fifth Audits hub card, "Unavailable stock": every product with units
+in Shopify's Unavailable bucket, with bins, sellable-vs-set-aside
+counts, when/who/bucket from the unavailable-move History (admin-side
+moves honestly say "no local record"), and the LIVE Staff Comments
+metafield per product (batched fetch, degrades gracefully). First
+prod read: 44 products / 46 units, comments carrying the whole story
+("Clay took one...", "missing screw set", ticket numbers). GET
+/api/audit/unavailable.
+
 ## ⧉ Multi-box SETS (distinct-SKU boxes sold only whole) — ✅ DEPLOYED 2026-09-08 (C72 3.92)
 
 Nick's A/B rack walk, the S11230: boxes each carry their OWN
