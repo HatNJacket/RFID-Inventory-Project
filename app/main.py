@@ -6911,6 +6911,85 @@ def audit_bins(session: Session = Depends(get_session)):
     }
 
 
+@app.get("/api/audit/unavailable", dependencies=[Depends(require_user)])
+def audit_unavailable(session: Session = Depends(get_session)):
+    """Every product with units in Shopify's Unavailable bucket (Nick,
+    2026-09-08 - set-asides kept surprising audits): per product, how
+    many sit unavailable, WHEN and by whom the newest set-aside
+    happened (from the unavailable-move History; items moved in
+    Shopify admin have no local record and say so), and the live Staff
+    Comments metafield - the why."""
+    merged: dict[str, dict] = {}
+    for e in session.scalars(
+        select(BinMapEntry).where(BinMapEntry.unavailable > 0)
+    ):
+        key = (e.sku or "").strip().upper()
+        if not key:
+            continue
+        g = merged.setdefault(key, {
+            "sku": e.sku,
+            "product_title": e.product_title,
+            "image_url": e.image_url,
+            "bins": [],
+            "unavailable": 0,
+            "effective_qty": 0,
+        })
+        g["unavailable"] += e.unavailable or 0
+        g["effective_qty"] += e.qty or 0
+        if e.bin and e.bin not in g["bins"]:
+            g["bins"].append(e.bin)
+
+    # The newest set-aside per product, from the History our own moves
+    # write. Admin-side bucket moves leave no local record - the UI
+    # says "no local record" instead of inventing a date.
+    if merged:
+        for c in session.scalars(
+            select(BarcodeChange)
+            .where(BarcodeChange.changed_field == "unavailable-move")
+            .order_by(BarcodeChange.id.desc())
+        ):
+            key = (c.sku or "").strip().upper()
+            g = merged.get(key)
+            if g is None or g.get("set_at") is not None:
+                continue
+            if not (c.old_barcode or "").startswith("in:"):
+                continue
+            g["set_at"] = (
+                c.changed_at.isoformat() if c.changed_at else None
+            )
+            g["set_by"] = c.changed_by
+            g["bucket"] = c.new_barcode
+
+    comments: dict = {}
+    skus = [g["sku"] for g in merged.values()]
+    # Nothing to fetch = nothing failed; the flag only goes false when
+    # a real fetch broke, so the UI's warning never fires on an empty
+    # (healthy) list.
+    comments_live = True
+    if skus and not config.check_shopify_env():
+        try:
+            comments = shopify.get_staff_comments_by_skus(skus)
+        except Exception as error:  # noqa: BLE001 - degrade, don't 500
+            comments_live = False
+            logger.warning("staff comments fetch failed: %s", error)
+
+    items = []
+    for key, g in merged.items():
+        g.setdefault("set_at", None)
+        g.setdefault("set_by", None)
+        g.setdefault("bucket", None)
+        g["staff_comments"] = comments.get(key)
+        items.append(g)
+    items.sort(key=lambda g: (g["set_at"] or "", g["sku"] or ""),
+               reverse=True)
+    return {
+        "count": len(items),
+        "total_units": sum(g["unavailable"] for g in items),
+        "comments_live": comments_live,
+        "items": items,
+    }
+
+
 @app.post("/api/bin-map/refresh", dependencies=[Depends(require_user)])
 def bin_map_refresh():
     """Force a full re-read of every product's bin from Shopify. Takes

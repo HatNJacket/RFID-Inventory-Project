@@ -1226,6 +1226,13 @@
             <span class="audcard__num" id="ahc-more-num">–</span>
             <span class="audcard__sub" id="ahc-more-sub">from finished batches</span>
           </button>
+          <!-- Unavailable stock (Nick, 2026-09-08): every set-aside in
+               one place - who, when, and the Staff Comments why. -->
+          <button class="audcard" type="button" data-pane="unavail">
+            <span class="audcard__label">Unavailable stock</span>
+            <span class="audcard__num" id="ahc-unavail-num">–</span>
+            <span class="audcard__sub" id="ahc-unavail-sub">loading…</span>
+          </button>
         </div>
         <div class="recent__head" style="margin-top:18px">
           <h2>Audit sessions <span class="recent__note" id="audsess-meta"></span></h2>
@@ -1369,6 +1376,24 @@
       <ul class="recent__list" id="audit-list"></ul>
       <div class="recent__head" style="margin-top:24px"><h2>Recent C72 sweeps</h2></div>
       <ul class="recent__list" id="sweep-list"></ul>
+      </div>
+
+      <!-- Unavailable stock (Nick, 2026-09-08): every set-aside in one
+           place - who, when, and the Staff Comments why. -->
+      <div class="apane" id="apane-unavail" hidden>
+        <div class="linkbox__actions" style="margin-bottom:10px">
+          <button class="reset apane-back" type="button">← Audits</button>
+        </div>
+        <div class="recent__head">
+          <h2>Unavailable stock <span class="recent__note" id="unavail-meta"></span></h2>
+        </div>
+        <p class="linkbox__text" style="max-width:78ch">
+          Products with units in Shopify's Unavailable bucket (damaged /
+          quality control / safety stock / reserved). Audits expect these
+          on the shelf but never count them as sellable; bring one back
+          with the C72's EDIT TAG, or in Shopify admin.
+        </p>
+        <ul class="recent__list" id="unavail-list"></ul>
       </div>
     </section>
 

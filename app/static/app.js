@@ -12644,10 +12644,73 @@ async function loadAudits() {
   // Last-known card numbers paint instantly (yellow "last refreshed"
   // tag); the tag flips green once every live load below has landed.
   audRestoreCards();
-  const slowLoads = [loadOneleft(), loadAuditBins(), loadAuditSessions()];
+  const slowLoads = [
+    loadOneleft(),
+    loadAuditBins(),
+    loadAuditSessions(),
+    loadUnavailable(),
+  ];
   Promise.allSettled(slowLoads.concat([auditsChecksLoad()])).then(() =>
     setFreshTag("audhub-fresh", true)
   );
+}
+
+// Unavailable stock (Nick, 2026-09-08): every set-aside in one place -
+// how many, when and by whom (from the unavailable-move History; admin
+// moves have no local record and say so), and the live Staff Comments.
+async function loadUnavailable() {
+  const list = document.getElementById("unavail-list");
+  try {
+    const d = await apiJson("/api/audit/unavailable");
+    audSetCard(
+      "ahc-unavail",
+      String(d.count),
+      d.count
+        ? `${d.total_units} unit(s) set aside`
+        : "nothing set aside ✓",
+      d.count ? "warn" : "ok"
+    );
+    document.getElementById("unavail-meta").textContent =
+      d.count && !d.comments_live
+        ? "(Staff Comments could not be fetched - showing the rest)"
+        : `(${d.count})`;
+    list.innerHTML = d.count
+      ? ""
+      : '<li class="recent__empty">No products have unavailable stock.</li>';
+    d.items.forEach((g) => {
+      const li = document.createElement("li");
+      const bucket = g.bucket
+        ? ` into ${g.bucket.replace(/_/g, " ")}`
+        : "";
+      const when = g.set_at
+        ? `set aside ${fmtAgo(g.set_at)}` +
+          (g.set_by ? ` by ${g.set_by}` : "") +
+          bucket +
+          ` (${fmtWhen(g.set_at)})`
+        : "set in Shopify admin - no local record of when";
+      li.innerHTML = `
+        <span class="inventory__bin">${escapeHtml((g.bins || []).join(", ") || "—")}</span>
+        <span class="recent__prod">
+          <b><span class="prodopen" data-sku="${escapeHtml(g.sku || "")}" title="Open this product - label editor, flags, full history">${escapeHtml(g.product_title || g.sku || "?")}</span></b>
+          <span class="mono" style="opacity:.75"> ${escapeHtml(g.sku || "")}</span>
+          <div class="olrow__sub">${g.unavailable} unavailable · ${g.effective_qty} sellable on the shelf · ${escapeHtml(when)}${
+            g.staff_comments
+              ? `<div style="white-space:pre-line;border-left:2px solid var(--line);padding-left:8px;margin-top:4px">${escapeHtml(g.staff_comments)}</div>`
+              : `<div style="opacity:.6;margin-top:2px">no staff comment</div>`
+          }</div>
+        </span>
+        <span class="audit-mm" title="units in the Unavailable bucket">${g.unavailable}</span>`;
+      const open = li.querySelector(".prodopen");
+      if (open)
+        open.addEventListener("click", () => {
+          if (open.dataset.sku) openProductHistory(open.dataset.sku);
+        });
+      list.append(li);
+    });
+  } catch (err) {
+    audSetCard("ahc-unavail", "!", "could not load", "bad");
+    list.innerHTML = `<li class="recent__empty">${escapeHtml(err.message)}</li>`;
+  }
 }
 
 async function auditsChecksLoad() {

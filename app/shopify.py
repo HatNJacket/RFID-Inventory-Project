@@ -948,6 +948,38 @@ query StaffComments($id: ID!) {
 }
 """
 
+_STAFF_BY_SKU_QUERY = """
+query StaffBySku($search: String!) {
+  productVariants(first: 50, query: $search) {
+    nodes {
+      sku
+      product {
+        staff: metafield(namespace: "custom", key: "staff_comments") {
+          value
+        }
+      }
+    }
+  }
+}
+"""
+
+
+def get_staff_comments_by_skus(skus: list) -> dict:
+    """Upper SKU -> custom.staff_comments value, batched ~20 per query.
+    Only SKUs with a non-empty comment appear. For the audit's
+    unavailable-stock listing (Nick, 2026-09-08)."""
+    out: dict = {}
+    cleaned = [(s, _search_term(s)) for s in skus if s and str(s).strip()]
+    for i in range(0, len(cleaned), 20):
+        chunk = cleaned[i:i + 20]
+        search = " OR ".join(f'sku:"{c}"' for _, c in chunk)
+        data = query_shopify(_STAFF_BY_SKU_QUERY, {"search": search})
+        for n in data["productVariants"]["nodes"]:
+            val = ((n.get("product") or {}).get("staff") or {}).get("value")
+            if n.get("sku") and (val or "").strip():
+                out[n["sku"].strip().upper()] = val.strip()
+    return out
+
 
 def append_staff_comment(product_gid: str, text: str) -> None:
     """Append a line to the product's custom.staff_comments metafield

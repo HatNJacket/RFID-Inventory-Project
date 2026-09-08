@@ -113,6 +113,23 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
     check("product history shows the set-aside", len(evs) == 1
           and evs[0]["shopify"] is True, str(evs)[:200])
 
+    # ---- the audit's Unavailable-stock section (Nick, 2026-09-08) ----
+    with patch("app.shopify.get_staff_comments_by_skus",
+               return_value={"ZWO-EDIT": "Missing a piece - Nick"}):
+        r = cl.get("/api/audit/unavailable")
+    d = r.json()
+    row = next((i for i in d["items"] if i["sku"] == "ZWO-EDIT"), None)
+    check("unavailable section lists the set-aside",
+          d["count"] == 1 and row is not None
+          and row["unavailable"] == 1 and row["bins"] == ["F1-2"],
+          str(d)[:300])
+    check("...with when/who/bucket from History",
+          row["set_at"] is not None and row["set_by"] == "C72"
+          and row["bucket"] == "damaged", str(row)[:200])
+    check("...and the live staff comment",
+          row["staff_comments"] == "Missing a piece - Nick"
+          and d["comments_live"] is True, str(row)[:200])
+
     # ---- direction out reverses the snapshot bookkeeping --------------
     with patch("app.shopify.move_unavailable", side_effect=fake_move), \
          patch("app.shopify.append_staff_comment",
@@ -126,6 +143,11 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
         check("snapshot restored on the way back",
               row.qty == 3 and row.unavailable == 0,
               f"qty={row.qty} unavail={row.unavailable}")
+    with patch("app.shopify.get_staff_comments_by_skus",
+               return_value={}):
+        r = cl.get("/api/audit/unavailable")
+    check("brought-back stock leaves the unavailable section",
+          r.json()["count"] == 0, r.text[:200])
 
     # A Shopify refusal surfaces as 502, nothing committed locally.
     def angry_move(*a, **k):
