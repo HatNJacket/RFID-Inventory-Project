@@ -3,6 +3,30 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-02.
 
+## 🏷 Vendor mis-label flag + SO-reference fix — ✅ DEPLOYED 2026-09-08
+
+Nick's EXOS2CWB5-barcode-on-EXOS2CW case (vendor printed the 5lb
+variant's barcode on the 10lb boxes; on-hand 3 vs 1 on the shelf
+still needs a human look - the merged Inventory Check will flag it):
+
+- **Mis-label flag** (rfid_mislabel_flags, migration RUN): set from
+  the product window's Flags group ("Flag: vendor labels
+  mis-labeled"); every scan of a flagged product warns "check the
+  physical product" - the warning rides the SCAN-NOTE channel, so the
+  Scan Station card AND every C72 surface that shows notes carry it
+  with NO gun update. Structured mislabel_flag rides lookups +
+  product history; chips + History event ("Mis-label Flag").
+  EXOS2CW and EXOS2CWB5 flagged on prod.
+- **Planner relays now send the HUMAN SO reference** (both
+  rfid-labels and the unprinted safety net used the planner's
+  INTERNAL order id - batch 219 read "SO 1268" for SO 945). RFID's
+  unprinted no-op guard matches either spelling; batch 219 relabeled
+  to "TC-Planner · SO 945 · Explore Scientific" on prod
+  (History-logged). Planner + RFID both deployed. Batch 219 (SO 945
+  partial receive, Sep 3: epwp5210-01 ×3, TL-ST3B-00 ×1,
+  FL-EXOSNANOT1-00 ×4, nothing paired) is still open and waiting to
+  be finished - Nick's to work.
+
 ## 🔗 Planner deep link revived + html no-cache — ✅ DEPLOYED 2026-09-08
 
 Nick: "Finish in TC-Planner just opens the planner." The deployed
