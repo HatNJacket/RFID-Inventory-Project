@@ -8063,25 +8063,79 @@ function code128Dots(data, module) {
 // print_agent.py (_sku_fits) - sticker and preview must always agree.
 const SKU_WIDTH_FUDGE = 1.13;
 const SKU_WRAP_LINE_RESERVE = 20;
+const SKU_WRAP_MARGIN = 10;
+const SKU_BREAK_CHARS = "-/ _.";
 function skuFits(text, size, lines) {
   const cap =
-    lines === 1 ? LABEL_PW : lines * (LABEL_PW - SKU_WRAP_LINE_RESERVE);
+    lines === 1
+      ? LABEL_PW
+      : lines * (LABEL_PW - 2 * SKU_WRAP_MARGIN - SKU_WRAP_LINE_RESERVE);
   return zplTextDots(text, size) * SKU_WIDTH_FUDGE <= cap;
+}
+function skuLineFits(text, size) {
+  return (
+    zplTextDots(text, size) * SKU_WIDTH_FUDGE <=
+    LABEL_PW - 2 * SKU_WRAP_MARGIN
+  );
+}
+// The chosen two-line break: an operator "|" wins outright, else the
+// dash/space/slash nearest the middle (break AFTER the separator).
+// Null when the text has no separator - ZPL auto-wrap handles those.
+function skuSplit(text) {
+  if (text.includes("|")) {
+    const i = text.indexOf("|");
+    const left = text.slice(0, i).trim();
+    const right = text
+      .slice(i + 1)
+      .replace(/\|/g, " ")
+      .trim();
+    if (left && right) return [left, right];
+  }
+  const cuts = [];
+  for (let i = 0; i < text.length - 1; i++)
+    if (SKU_BREAK_CHARS.includes(text[i])) cuts.push(i + 1);
+  if (!cuts.length) return null;
+  let best = cuts[0];
+  let bd = Infinity;
+  for (const i of cuts) {
+    const d = Math.abs(
+      zplTextDots(text.slice(0, i), 30) - zplTextDots(text.slice(i), 30)
+    );
+    if (d < bd) {
+      bd = d;
+      best = i;
+    }
+  }
+  const left = text.slice(0, best).replace(/\s+$/, "");
+  const right = text.slice(best).replace(/^\s+/, "");
+  return left && right ? [left, right] : null;
 }
 
 function renderSkuPreviewLine(elId, text) {
   const line = document.getElementById(elId);
   const t = (text || "").slice(0, 56);
-  line.textContent = t || "—";
-  const wraps = !!t && !skuFits(t, 30, 1);
+  const manual = t.includes("|");
+  const plain = t.replace(/\|/g, " ").replace(/\s+/g, " ").trim();
+  const wraps = !!plain && (manual || !skuFits(plain, 30, 1));
   line.classList.toggle("label-preview__sku--wrap", wraps);
+  if (!wraps) {
+    line.textContent = plain || "—";
+    line.style.fontSize = "";
+    return;
+  }
+  const split = skuSplit(t);
   let f = 30;
-  if (wraps) {
-    while (f > 20 && !skuFits(t, f, 2)) f -= 2;
+  if (split) {
+    while (f > 20 && !(skuLineFits(split[0], f) && skuLineFits(split[1], f)))
+      f -= 2;
+    line.textContent = split[0] + "\n" + split[1];
+  } else {
+    while (f > 20 && !skuFits(plain, f, 2)) f -= 2;
+    line.textContent = plain;
   }
   // Preview scale is 272px for the sticker's 431 dots (~0.63); the
   // normal 14px line IS font 30 at that scale.
-  line.style.fontSize = wraps ? Math.round(f * 0.46) + "px" : "";
+  line.style.fontSize = Math.round(f * 0.46) + "px";
 }
 
 // Mirrors the print agent's layout rules: the top zone holds at most two
@@ -8107,6 +8161,16 @@ function labelFitIssues(top, sku, barcode) {
   }
   if (sku && sku.length > 56)
     issues.push("SKU line: cut off after 56 characters.");
+  if (sku && sku.includes("|")) {
+    const parts = skuSplit(sku);
+    if (!parts)
+      issues.push('SKU line: the "|" break needs text on both sides.');
+    else if (!(skuLineFits(parts[0], 20) && skuLineFits(parts[1], 20)))
+      issues.push(
+        "SKU line: one side of the | break is too wide even at the " +
+          "smallest wrap font."
+      );
+  }
   if (barcode && code128Dots(barcode, 1) > LABEL_PW - 24)
     issues.push(
       "Barcode: too long for scannable bars (33 characters is the " +
@@ -11947,22 +12011,16 @@ function renderBinAudit() {
             "chip--warn",
           ]);
         }
+      } else if (silent > 0 && silent <= (r.unavailable || 0)) {
+        // A set-aside (unavailable) unit's tag stays on file but the
+        // box may sit off the shelf - silence covered by the bucket is
+        // the expected picture, not a warning (Nick, 2026-09-08).
+        flags.push([
+          `${silent} silent - likely the set-aside/unavailable unit${silent === 1 ? "" : "s"}`,
+          "chip--ok",
+        ]);
       } else if (silent > 0) {
         flags.push([`${silent} tagged box(es) silent`, "chip--warn"]);
-      }
-      // Extra units explained by Shopify's Unavailable bucket (Nick,
-      // 2026-09-01, W9160A): expected already subtracts unavailable,
-      // so an over-count within that bucket is the "unavailable" unit
-      // sitting on the shelf after all - explained, not an error.
-      if (r.expected_qty != null) {
-        const overBy =
-          r.units_here - (r.expected_qty + (r.backorder_debt || 0));
-        if (overBy > 0 && overBy <= (r.unavailable || 0)) {
-          flags.push([
-            `${overBy} over - matches its unavailable stock in Shopify`,
-            "chip--ok",
-          ]);
-        }
       }
       // Ghosts: presumed-sold (or replaced/dead) tags that ANSWERED -
       // the box never left. Treated as one more scan in the end; the
@@ -12015,14 +12073,24 @@ function renderBinAudit() {
       let expCell = "—";
       if (r.expected_qty != null) {
         // Uncleared backorder debt RAISES what the shelf should hold:
-        // those boxes arrived but Shopify's on-hand ran behind.
+        // those boxes arrived but Shopify's on-hand ran behind. So does
+        // the Unavailable bucket (Nick, 2026-09-08, the ASI432MM):
+        // expected_qty is the SELLABLE number, but the audit counts
+        // physical units and their tag records - the set-aside unit is
+        // one of them. Without the fold, a product whose only surplus
+        // IS its unavailable stock kept offering a "Set to N" raise
+        // that Shopify already had.
         const debt = r.backorder_debt || 0;
-        const expTotal = r.expected_qty + debt;
+        const unav = r.unavailable || 0;
+        const expTotal = r.expected_qty + debt + unav;
         const diff = r.units_here - expTotal;
         expCell =
           `${expTotal}` +
           (debt
             ? ` <span class="bexp--note">(incl. ${debt} backorder)</span>`
+            : "") +
+          (unav
+            ? ` <span class="bexp--note">(incl. ${unav} unavailable)</span>`
             : "") +
           (diff
             ? ` <span class="bexp--off">(${diff > 0 ? "+" : "−"}${Math.abs(diff)})</span>`
@@ -13110,38 +13178,41 @@ audsessKindEl.addEventListener("change", () => {
 document.getElementById("audsess-newbtn").addEventListener("click", () => {
   const form = document.getElementById("audsess-new");
   form.hidden = !form.hidden;
-  if (!form.hidden) document.getElementById("audsess-name").focus();
+  if (!form.hidden) audsessScopeEl.focus();
 });
 document.getElementById("audsess-cancel").addEventListener("click", () => {
   document.getElementById("audsess-new").hidden = true;
 });
 document.getElementById("audsess-create").addEventListener("click", async (ev) => {
-  const name = document.getElementById("audsess-name").value.trim();
-  if (!name) {
-    alert("Give the audit a name first.");
-    return;
-  }
   const kind = audsessKindEl.value;
   const scope = audsessScopeEl.value.trim();
-  const payload = { name, kind, worker: operatorEl.value || null };
+  // No naming step (Nick, 2026-09-08): the audit IS its scope, so the
+  // name derives from what the user specified - rack, bins or vendor.
+  const payload = { kind, worker: operatorEl.value || null };
   if (kind === "bins") {
     // Tokens with a dash are bins ("I1-3"); a bare token is a rack prefix.
     const tokens = scope.split(",").map((t) => t.trim()).filter(Boolean);
     payload.bins = tokens.filter((t) => t.includes("-"));
     const rack = tokens.find((t) => !t.includes("-"));
-    if (rack) payload.rack = rack;
+    if (rack) payload.rack = rack.toUpperCase();
     if (!payload.bins.length && !payload.rack) {
       alert("Name at least one bin, or a rack prefix like I1.");
       return;
     }
-  } else if (scope) {
-    payload.vendor = scope;
+    payload.name = payload.rack
+      ? `Rack ${payload.rack}` +
+        (payload.bins.length ? ` + ${payload.bins.join(", ")}` : "")
+      : payload.bins.length === 1
+        ? `Bin ${payload.bins[0]}`
+        : `Bins ${payload.bins.join(", ")}`;
+  } else {
+    if (scope) payload.vendor = scope;
+    payload.name = scope ? `1-left: ${scope}` : "1-left checks";
   }
   ev.currentTarget.disabled = true;
   try {
     const s = await postJson("/api/audit-sessions", payload);
     document.getElementById("audsess-new").hidden = true;
-    document.getElementById("audsess-name").value = "";
     audsessScopeEl.value = "";
     audSessShowDone = false;
     await loadAuditSessions();

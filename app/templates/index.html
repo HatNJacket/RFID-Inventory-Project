@@ -1241,10 +1241,10 @@
           <button class="reset" id="audsess-newbtn" type="button">+ New audit</button>
           <button class="reset" id="audsess-toggle" type="button">Show finished</button>
         </div>
+        <!-- No naming step (Nick, 2026-09-08): an audit IS its scope -
+             the rack or bins (or vendor) name it automatically. -->
         <div id="audsess-new" class="linkbox__actions" hidden
              style="margin-bottom:10px; flex-wrap:wrap; gap:8px">
-          <input id="audsess-name" class="recent__search" type="text"
-                 maxlength="120" placeholder="Name, e.g. Rack I1 walk" style="max-width:200px" />
           <select id="audsess-kind" class="reset">
             <option value="bins">Walk-scan bins</option>
             <option value="oneleft">1-left checks</option>
@@ -1453,7 +1453,7 @@
         <!-- Label lines: everyday territory, so they live OUTSIDE the
              options fold (Nick, 2026-08-18) -->
         <div id="phist-serial" hidden>
-          <p class="linkbox__extra-label" id="phist-label-hint">Edit the two label lines — saved store-wide, every future print uses them:</p>
+          <p class="linkbox__extra-label" id="phist-label-hint">Edit the two label lines — saved store-wide, every future print uses them. A long SKU line wraps to two lines on the sticker; type | where you want the break:</p>
           <div class="labeledit">
             <div class="labeledit__fields">
               <label class="step__label" for="phist-top">Top line</label>
@@ -1463,7 +1463,7 @@
               </div>
               <label class="step__label" for="phist-skuline">SKU line</label>
               <div class="phist-inputwrap">
-                <input id="phist-skuline" class="linkbox__input" type="text" maxlength="56" autocomplete="off" spellcheck="false" />
+                <input id="phist-skuline" class="linkbox__input" type="text" maxlength="56" autocomplete="off" spellcheck="false" title="A line too wide for the sticker wraps to two lines. Type | where you want the break; without one, it breaks at the dash or space nearest the middle." />
                 <button class="phist-clear" id="phist-skuline-reset" type="button" title="Back to the plain SKU">✕</button>
               </div>
               <p class="breprint__fitwarn" id="phist-fitwarn" hidden></p>

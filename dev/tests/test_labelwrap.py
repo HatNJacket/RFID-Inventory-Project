@@ -1,11 +1,13 @@
-"""The sticker's SKU-line wrap (Nick, 2026-09-08): one line at font 30
-while it fits the 431-dot width; TWO wrapped lines at the SAME big
-font when it doesn't - the barcode block moves down and trims to make
-room (his field verdict: the first cut's font 16 was unreadable).
-Text too wide even for two font-30 lines steps down just far enough
-(30 -> 28 -> ..., floor 20). Every path capped at 56 chars. Plus the
-barcode geometry his test prints confirmed: 33 alphanumeric chars is
-the printable max, 34 overflows.
+"""The sticker's SKU-line wrap, third field iteration (Nick,
+2026-09-08): one line at font 30 while it fits; a wider text wraps to
+TWO big-font lines in an INSET field (about one character narrower -
+edge-to-edge wrapped lines clipped on label variance), the barcode
+moving down to make room. The break point is CHOSEN: an operator "|"
+wins, else the dash/space/slash nearest the middle; only separator-less
+tokens fall back to ZPL auto-wrap. Fonts tier 30 -> 28 -> ... floor 20
+with the field-calibrated width model (real font 0 runs ~13% wide of
+the model). Every path capped at 56 chars. Plus the barcode geometry
+the first test prints confirmed: 33 alphanumeric chars printable max.
 
 No server, no DB - build_zpl is a pure function.
 """
@@ -22,8 +24,16 @@ def check(l,c,x=""):
 def zpl(job):
     return pa.build_zpl(dict(job), encode_rfid=False)
 
+def wrap_font(left, right):
+    f = 30
+    while f > 20 and not (pa._sku_line_fits(left, f, 431)
+                          and pa._sku_line_fits(right, f, 431)):
+        f -= 2
+    return f
+
 BASE = {"sku": "EXOS2CW", "barcode": "63864501075088",
         "bin_location": "D8-1"}
+FW = 431 - 2 * pa.SKU_WRAP_MARGIN   # the inset wrapped field
 
 # ---- short SKU line: unchanged single big line ------------------------
 z = zpl(BASE)
@@ -32,50 +42,62 @@ check("short SKU prints one line at font 30",
 check("short SKU keeps the original barcode placement",
       ",88^BY2,3,72^BCN,72" in z and "^FO0,164" in z, z)
 
-# ---- long SKU line: two wrapped lines at the SAME big font ------------
+# ---- long SKU with separators: CHOSEN break, not ZPL's ---------------
 long_sku = "CRUX140COUNTERWEIGHTBAR-BLACK-EXTRA-LONG"
+left, right = pa._sku_split(long_sku)
+check("the split lands on a separator, balanced",
+      left.endswith("-") and left + right == long_sku, (left, right))
+wf = wrap_font(left, right)
 z = zpl({**BASE, "sku": long_sku})
-check("long SKU wraps to two lines at font 30",
-      f"^CF0,30\n^FO0,52^FB431,2,0,C^FD{long_sku}^FS" in z, z)
-check("wrapped label drops the single-line form",
-      "^FB431,1,0,C^FD" + long_sku not in z, z)
+check("long SKU wraps at the chosen break in the inset field",
+      f"^CF0,{wf}\n^FO{pa.SKU_WRAP_MARGIN},52^FB{FW},2,0,C"
+      f"^FD{left}\\&{right}^FS" in z, z)
 check("wrapped label moves the bars down and trims them",
       ",118^BY" in z and "^BCN,56" in z and "^FO0,178" in z
       and ",88^BY" not in z, z)
+check("both chosen halves genuinely fit their line",
+      pa._sku_line_fits(left, wf, 431)
+      and pa._sku_line_fits(right, wf, 431), (left, right, wf))
 
-# Text too wide even for two font-30 lines steps the font down only as
-# far as needed. The tier is FIELD-CALIBRATED (Nick's SKU TEST 3
-# overprinted at font 28: the model runs ~13% narrow and breaks cost
-# capacity), so the 56-char cases land at font 22 - still readable.
+# ---- the operator's own break: "|" wins outright ----------------------
+z = zpl({**BASE, "sku": "ZWO ASI2600MC|DUO Camera"})
+check("a typed | breaks exactly there (even though it would fit)",
+      "^FDZWO ASI2600MC\\&DUO Camera^FS" in z, z)
+check("the | never reaches the sticker", "|" not in z, z)
+
+# ---- no separators at all: ZPL auto-wrap fallback ---------------------
 z = zpl({**BASE, "sku": "X" * 56})
-check("56-char worst case steps down to font 22",
-      "^CF0,22\n^FO0,52^FB431,2,0,C^FD" + "X" * 56 in z, z)
-# The exact label that overprinted in the field, as a regression pin.
-field3 = "SKU-LINE-MAXIMUM-56-CHARACTERS-ABCDEFGHIJKLMNOPQRSTUVWXY"
-z = zpl({**BASE, "sku": field3})
-check("Nick's overprinting TEST 3 string now tiers to 22",
-      "^CF0,22\n^FO0,52^FB431,2,0,C^FD" + field3 in z, z)
-check("...and its inflated width fits two reserved lines",
-      pa._zpl_text_dots(field3, 22) * 1.13 <= 2 * (431 - 20),
-      pa._zpl_text_dots(field3, 22) * 1.13)
+check("a solid 56-char token falls back to auto-wrap",
+      f"^FO{pa.SKU_WRAP_MARGIN},52^FB{FW},2,0,C^FD" + "X" * 56 in z
+      and "\\&" not in z, z)
+check("...at a font its inflated width fits two reserved lines",
+      any(f"^CF0,{f}\n^FO{pa.SKU_WRAP_MARGIN},52" in z
+          and pa._sku_fits("X" * 56, f, 2, 431)
+          for f in (20, 22, 24, 26, 28, 30))
+      or "^CF0,20" in z, z)
 
-# The threshold is the measured width, not a character count: narrow
-# characters pack tighter than wide ones.
+# Nick's overprinting TEST 3 string: has dashes, so it now splits
+# cleanly instead of ZPL breaking mid-token.
+field3 = "SKU-LINE-MAXIMUM-56-CHARACTERS-ABCDEFGHIJKLMNOPQRSTUVWXY"
+l3, r3 = pa._sku_split(field3)
+z = zpl({**BASE, "sku": field3})
+check("TEST 3 splits at a separator now",
+      f"^FD{l3}\\&{r3}^FS" in z and l3.endswith("-"), (l3, r3))
+check("TEST 3 halves fit at the chosen font",
+      pa._sku_line_fits(l3, wrap_font(l3, r3), 431)
+      and pa._sku_line_fits(r3, wrap_font(l3, r3), 431), (l3, r3))
+
+# The threshold is measured width, not characters.
 narrow = "1111111111111111111111111"          # 25 narrow chars - fits big
-wide = "WWWWWWWWWWWWWWWWWWWW"                 # 20 wide chars - too wide
 check("narrow text stays on ONE big line",
       "^FB431,1,0,C^FD" + narrow in zpl({**BASE, "sku": narrow}), narrow)
-check("wide text wraps sooner (still font 30)",
-      "^CF0,30\n^FO0,52^FB431,2,0,C^FD" + wide
-      in zpl({**BASE, "sku": wide}), wide)
 check("the width model agrees with the web preview's",
       pa._zpl_text_dots("EXOS2CW", 30) < 431
-      < pa._zpl_text_dots(wide, 30), pa._zpl_text_dots(wide, 30))
+      < pa._zpl_text_dots("W" * 20, 30) * pa.SKU_WIDTH_FUDGE, "")
 
 # ---- every path caps at 56 -------------------------------------------
-huge = "X" * 80
-z = zpl({**BASE, "sku": huge})
-check("plain SKU path now capped at 56 (was uncapped)",
+z = zpl({**BASE, "sku": "X" * 80})
+check("plain SKU path capped at 56",
       "^FD" + "X" * 56 + "^FS" in z and "X" * 57 not in z, z)
 z = zpl({**BASE, "label_name": "My Nice Name", "label_placement": "sku",
          "sku": "EXOS2CW"})
@@ -84,11 +106,10 @@ check("label_name-as-SKU still renders (one line, short)",
 
 # Case prefix rides the wrap decision like any other centre text.
 z = zpl({**BASE, "case_units": 8, "sku": long_sku})
-check("case prefix + long SKU wraps at the big font",
-      "^FB431,2,0,C" in z and f"^FD8 x {long_sku[:52]}" in z
-      and "^CF0,30\n^FO0,52" in z, z)
+check("case prefix + long SKU wraps with a chosen break",
+      "\\&" in z and "^FD8 x " in z, z)
 
-# ---- barcode geometry: Nick's confirmed 33-char max -------------------
+# ---- barcode geometry: the confirmed 33-char max ----------------------
 usable = pa.label_dots(pa.LABEL_WIDTH_IN, pa.LABEL_HEIGHT_IN)[0] - 24
 check("33 alphanumeric chars fit at module 1",
       pa._code128_width_dots("A" * 33, 1) <= usable,

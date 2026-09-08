@@ -78,13 +78,18 @@ LABEL_ZPL = """^XA
 # The centre (SKU) line: one line at font 30 while it fits the width.
 # A wider text WRAPS to two lines (2026-09-08, Nick) - the old
 # single-line ^FB overprinted itself instead of clipping, which is how
-# long SKU lines printed wrong. Field verdict on the first cut: font 16
-# was too small - the wrap keeps the BIG font and the barcode moves
-# down to make room instead. Texts too wide even for two font-30 lines
-# step the font down just far enough (30 -> 28 -> ... floor 20; the
-# 56-char cap lands at 28 for average text).
+# long SKU lines printed wrong. Field verdicts, in order: font 16 was
+# too small (the wrap keeps the big font, the barcode moves down);
+# edge-to-edge wrapped lines clip on label variance (wrapped lines run
+# in a field inset SKU_WRAP_MARGIN per side - about one character
+# narrower); and ZPL's own break lands mid-token, so the break point
+# is now CHOSEN: a "|" typed in the label editor wins, else the
+# dash/space/slash nearest the middle, else ZPL auto-wrap as a last
+# resort. Fonts step down just far enough (30 -> 28 -> ... floor 20).
 SKU_LINE_ONE = "^CF0,30\n^FO0,52^FB{pw},1,0,C^FD{sku}^FS\n"
-SKU_LINE_WRAP = "^CF0,{f}\n^FO0,52^FB{pw},2,0,C^FD{sku}^FS\n"
+SKU_LINE_WRAP = "^CF0,{f}\n^FO{m},52^FB{fw},2,0,C^FD{sku}^FS\n"
+SKU_WRAP_MARGIN = 10
+SKU_BREAK_CHARS = "-/ _."
 
 HEADER_STORE = "^CF0,34\n^FO0,10^FB{pw},1,0,C^FDTelescopes Canada^FS\n"
 
@@ -168,7 +173,37 @@ SKU_WRAP_LINE_RESERVE = 20
 
 
 def _sku_fits(text: str, size: int, lines: int, pw: int) -> bool:
-    cap = pw if lines == 1 else lines * (pw - SKU_WRAP_LINE_RESERVE)
+    if lines == 1:
+        cap = pw
+    else:
+        cap = lines * (pw - 2 * SKU_WRAP_MARGIN - SKU_WRAP_LINE_RESERVE)
+    return _zpl_text_dots(text, size) * SKU_WIDTH_FUDGE <= cap
+
+
+def _sku_split(text: str) -> tuple[str, str] | None:
+    """The chosen two-line break for a too-wide centre line: an
+    operator "|" wins outright; otherwise the dash/space/slash nearest
+    the middle (breaking AFTER the separator, like the printed test
+    labels did). None when the text has no separator to use."""
+    if "|" in text:
+        left, _, right = text.partition("|")
+        left, right = left.strip(), right.strip()
+        if left and right:
+            return left, right.replace("|", " ").strip()
+    cuts = [i + 1 for i, c in enumerate(text[:-1])
+            if c in SKU_BREAK_CHARS]
+    if not cuts:
+        return None
+    best = min(cuts, key=lambda i: abs(
+        _zpl_text_dots(text[:i], 30) - _zpl_text_dots(text[i:], 30)
+    ))
+    left, right = text[:best].rstrip(), text[best:].lstrip()
+    return (left, right) if left and right else None
+
+
+def _sku_line_fits(text: str, size: int, pw: int) -> bool:
+    """One WRAPPED line's capacity (the inset field, calibrated)."""
+    cap = pw - 2 * SKU_WRAP_MARGIN
     return _zpl_text_dots(text, size) * SKU_WIDTH_FUDGE <= cap
 
 
@@ -253,14 +288,32 @@ def build_zpl(job: dict, encode_rfid: bool,
     # two-line wrap by measured width. The wrap keeps font 30 whenever
     # two lines hold the text, stepping down only as far as needed.
     sku_text = sku_text[:56]
-    sku_wrapped = not _sku_fits(sku_text, 30, 1, pw)
+    manual_break = "|" in sku_text
+    plain = " ".join(sku_text.replace("|", " ").split())
+    sku_wrapped = manual_break or not _sku_fits(plain, 30, 1, pw)
     if not sku_wrapped:
-        sku_line = SKU_LINE_ONE.format(pw=pw, sku=sku_text)
+        sku_line = SKU_LINE_ONE.format(pw=pw, sku=plain)
     else:
-        wf = 30
-        while wf > 20 and not _sku_fits(sku_text, wf, 2, pw):
-            wf -= 2
-        sku_line = SKU_LINE_WRAP.format(pw=pw, f=wf, sku=sku_text)
+        fw = pw - 2 * SKU_WRAP_MARGIN
+        split = _sku_split(sku_text)
+        if split:
+            left, right = split
+            wf = 30
+            while wf > 20 and not (_sku_line_fits(left, wf, pw)
+                                   and _sku_line_fits(right, wf, pw)):
+                wf -= 2
+            sku_line = SKU_LINE_WRAP.format(
+                pw=pw, f=wf, m=SKU_WRAP_MARGIN, fw=fw,
+                sku=f"{left}\\&{right}",
+            )
+        else:
+            # No separator anywhere (one solid token): ZPL auto-wrap.
+            wf = 30
+            while wf > 20 and not _sku_fits(plain, wf, 2, pw):
+                wf -= 2
+            sku_line = SKU_LINE_WRAP.format(
+                pw=pw, f=wf, m=SKU_WRAP_MARGIN, fw=fw, sku=plain,
+            )
 
     barcode = clean(job.get("barcode"), fallback="")
     if not barcode:

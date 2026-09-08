@@ -1926,9 +1926,10 @@ a { color: var(--accent); }
    the same big font (2026-09-08) - the preview mirrors it exactly;
    the JS sets the tiered font size inline. */
 .label-preview__sku--wrap {
-  white-space: normal;
+  white-space: pre-line;
   overflow-wrap: anywhere;
   line-height: 1.15;
+  padding: 0 6px;
 }
 .label-preview__bc {
   font-family: "Libre Barcode 128", var(--mono);

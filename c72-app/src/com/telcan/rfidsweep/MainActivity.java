@@ -13954,9 +13954,12 @@ public class MainActivity extends Activity {
                     if (auditTagSet.contains(epc)) heard++;
                 }
             }
+            // Expected folds the Unavailable bucket in (Nick,
+            // 2026-09-08) - the physical shelf holds those units too.
             int exp = it.isNull("expected_qty") ? -1
                     : it.optInt("expected_qty")
-                      + it.optInt("backorder_debt");
+                      + it.optInt("backorder_debt")
+                      + it.optInt("unavailable");
             int fOpen = auditFindsOpen(skuU);
             int fPrinted = auditFindsPrinted(skuU);
             String bins = auditBinsText(it);
@@ -13968,6 +13971,10 @@ public class MainActivity extends Activity {
             if (it.optInt("backorder_debt") > 0) {
                 sb.append(" (incl ").append(it.optInt("backorder_debt"))
                         .append(" backorder)");
+            }
+            if (exp >= 0 && it.optInt("unavailable") > 0) {
+                sb.append(" (incl ").append(it.optInt("unavailable"))
+                        .append(" unavailable)");
             }
             if (fOpen > 0) sb.append("\n").append(fOpen)
                     .append(" tagless box(es) noted - label owed");
@@ -14502,10 +14509,17 @@ public class MainActivity extends Activity {
             int silent = here - det;
             JSONArray ghosts = it.optJSONArray("ghosts");
             int gh = ghosts == null ? 0 : ghosts.length();
+            // Expected folds the Unavailable bucket in (Nick,
+            // 2026-09-08, the ASI432MM): the audit counts physical
+            // units and tag records, and a set-aside unit is one of
+            // them - the sellable-only number kept every such product
+            // looking one over.
+            int unavail = it.optInt("unavailable");
             int exp = it.isNull("expected_qty") ? -1
                     : it.optInt("expected_qty")
-                      + it.optInt("backorder_debt");
+                      + it.optInt("backorder_debt") + unavail;
             int heardUnits = it.optInt("detected_units") + gh;
+            int unitsHere = it.optInt("units_here");
             int sold = it.optInt("sold_unretired");
             int fOpen = it.optInt("finds_open");
             int fPrinted = it.optInt("finds_printed");
@@ -14517,20 +14531,14 @@ public class MainActivity extends Activity {
             // rack audit lists several bins' products - say which
             // level each one lives on).
             String bins = auditBinsText(it);
-            int unavail = it.optInt("unavailable");
-            boolean overExplained = exp >= 0 && heardUnits > exp
-                    && heardUnits - exp <= unavail;
             StringBuilder sb = new StringBuilder();
             if (!bins.isEmpty()) sb.append(bins).append(" · ");
             sb.append(det).append("/").append(here).append(" heard");
-            if (exp >= 0) sb.append(" · expected ").append(exp)
-                    .append(" · on shelf ").append(heardUnits);
-            if (overExplained) {
-                // More than expected but Shopify's Unavailable bucket
-                // accounts for it (Nick, 2026-09-01, W9160A).
-                sb.append("\n✓ ").append(heardUnits - exp)
-                        .append(" over - matches its unavailable stock "
-                                + "in Shopify (reserved/damaged)");
+            if (exp >= 0) {
+                sb.append(" · expected ").append(exp);
+                if (unavail > 0) sb.append(" (incl ").append(unavail)
+                        .append(" unavailable)");
+                sb.append(" · on shelf ").append(heardUnits);
             }
             if (gh > 0) sb.append("\n⚠ ").append(gh).append(" tag(s) "
                     + "marked sold ANSWERED - box never left");
@@ -14550,16 +14558,29 @@ public class MainActivity extends Activity {
                     }
                 } else if (sold > 0) sb.append(" vs only ").append(sold)
                         .append(" sold - count off");
-                else sb.append(" - no sales explain it");
+                else if (silent <= unavail) {
+                    // A set-aside unit's tag stays on file while the
+                    // box sits off the shelf - expected, not a fault.
+                    sb.append(" - the set-aside/unavailable unit")
+                            .append(silent == 1 ? "" : "s");
+                } else sb.append(" - no sales explain it");
             }
             if (fOpen > 0) sb.append("\n").append(fOpen)
                     .append(" tagless box(es) - label owed");
             if (fPrinted > 0) sb.append("\n").append(fPrinted)
                     .append(" label(s) printed, not paired");
-            boolean bad = (silent > 0 && sold < silent) || fPrinted > 0
-                    || gh > 0;
-            boolean warn = silent > 0 || fOpen > 0
-                    || (exp >= 0 && heardUnits != exp && !overExplained);
+            // Silence the unavailable bucket fully explains (set-aside
+            // units off the shelf, no competing sales) is the EXPECTED
+            // picture - green, no flag. Sales-covered silence stays
+            // yellow (MARK SOLD is pending); unexplained stays red.
+            // The count check compares tag RECORDS to the folded
+            // expected - both include the unavailable unit(s).
+            boolean silentUnavailOk = silent > 0 && sold == 0
+                    && silent <= unavail;
+            boolean bad = (silent > 0 && sold < silent
+                    && !silentUnavailOk) || fPrinted > 0 || gh > 0;
+            boolean warn = (silent > 0 && !silentUnavailOk) || fOpen > 0
+                    || (exp >= 0 && unitsHere != exp);
             int color = bad ? C_OVER : warn ? C_WARN : C_OK;
             if (bad || warn) flagged++;
             LinearLayout row = auditCard(
