@@ -45,7 +45,7 @@ import requests
 # (Nick, 2026-09-01: the ZD220 silently wedged overnight and 16
 # labels piled up behind a Printing-Retained head).
 # tab shows it and marks re-align capability. Bump on behavior changes.
-AGENT_VERSION = "4"
+AGENT_VERSION = "5"
 
 # ---------------------------------------------------------------------------
 # Label geometry. Defaults match the warehouse RFID stickers (measured
@@ -120,18 +120,19 @@ RFID_ZPL = "^RS8\n^RFW,H^FD{epc}^FS\n"
 # misprints plus a blank. Prints nothing and encodes nothing.
 FEED_ZPL = "~PH\n"
 
-# Backfeed BEFORE printing (Nick, 2026-08-25): ripping labels at the
-# tear bar drags the liner forward a random amount, and with the default
-# backfeed-after sequence the next two labels print off-center before
-# the printer finds itself. ~JSB moves the backfeed to PRINT time.
-# FIELD VERDICT (Nick, 2026-08-26): it does NOT fix tear drift - the
-# backfeed is a fixed, dead-reckoned distance, not a sensor seek, so a
-# dragged liner stays dragged and the 2-bad-1-blank pattern survives.
-# Still sent (harmless, keeps tear-off behavior consistent), but the
-# real remedy is a ~PH feed, which DOES re-register on the gap sensor
-# at the cost of one label: the manual Queue-tab button, or
-# --realign-after-idle below.
-BACKFEED_BEFORE_ZPL = "~JSB\n"
+# Backfeed sequence. ~JSB (backfeed BEFORE printing) was tried
+# 2026-08-25 against tear drift; the 2026-08-26 verdict was it does NOT
+# fix drift, and the 2026-09-09 verdict was it is actively harmful: the
+# retraction runs at NEXT-print time, a fixed dead-reckoned distance
+# from wherever the operator's tear left the media, and on these short
+# labels it pulled the leading edge back BEHIND the platen roller - the
+# printer couldn't grab the media and someone had to pull it through by
+# hand before re-aligning. ~JSA (the factory default, backfeed right
+# AFTER printing) retracts while registration is still known and before
+# anyone touches the media, so the torn edge is never blindly reversed.
+# Sent at startup to overwrite the ~JSB any earlier agent left saved.
+# Tear drift's real remedy remains the ~PH re-align (gap-sensor seek).
+BACKFEED_BEFORE_ZPL = "~JSA\n"
 
 # Alignment test: a border box + corner ticks, no job needed. If the box
 # edges don't sit just inside the sticker edges, the size flags (or the
@@ -554,9 +555,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--no-backfeed-fix", action="store_true",
-        help="Skip the startup ~JSB (backfeed before printing). By "
-             "default the agent sets it so tear-bar pull self-corrects "
-             "at print time without wasting labels.",
+        help="Skip the startup ~JSA (backfeed after printing, the "
+             "factory default). By default the agent re-asserts it so "
+             "an old ~JSB never lingers in the printer.",
     )
     parser.add_argument(
         "--realign-after-idle", type=float, default=0, metavar="MIN",
@@ -628,8 +629,9 @@ def main() -> None:
     if not args.no_backfeed_fix and not args.dry_run:
         try:
             print_label(BACKFEED_BEFORE_ZPL)
-            print("  ~JSB sent (backfeed-before-print; field verdict: "
-                  "does NOT fix tear drift - ~PH re-align does).")
+            print("  ~JSA sent (backfeed-after-print, the factory "
+                  "default - undoes the ~JSB experiment that retracted "
+                  "torn media behind the roller, Nick 2026-09-09).")
         except Exception as error:  # noqa: BLE001 — printing still works
             print(f"! could not send the backfeed setting: {error}")
 

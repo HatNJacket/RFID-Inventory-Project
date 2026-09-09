@@ -3,6 +3,46 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-09.
 
+## 🏷 Label-not-paired watchdog is BACK for receiving — ✅ DEPLOYED 2026-09-09 (C72 3.95)
+
+Nick: workers label boxes without RFID-pairing them (fair - not walked
+through the system yet). The 2026-09-02 removal of pairing-incomplete
+tasks stands for BIN batches; receiving gets a dedicated watchdog:
+- Lazy + throttled (Review inbox read, 5-min gate): a receiving batch
+  whose printed labels are still unpaired 2+ hours after its last
+  print files ONE `label-unpaired` Review task (per-SKU breakdown).
+  Held vendor strips (the kept label sheets), dismissed labels and
+  companion labels never count. The task closes itself (resolved_by
+  "auto") once pairing/strips/dismissals account for everything.
+- Resolve window: "Resume receiving #N and pair the boxes" jumps
+  straight into the batch.
+- GET /api/batches tags receiving batches with `unpaired_labels`
+  (printed - paired - held, coarse). Web resume list wears a red
+  "🏷 N label(s) not RFID-paired" badge and grew a sort/filter select:
+  Newest first (default, youngest→oldest) / Oldest first / Not
+  RFID-paired only; limit raised 10→50. C72 3.95 batch picker shows
+  the same red chip on receiving cards.
+- test_labelunpaired.py (8 checks); suites 62/62.
+
+## 🖨 Printer backfeed reverted to ~JSA (factory) — ✅ LIVE 2026-09-09 (agent v5)
+
+Field verdict: ~JSB (backfeed-before-print, tried 2026-08-25) caused
+the pseudo-jams - the retraction runs at NEXT-print time, dead-
+reckoned from wherever the operator's tear left the media, and on
+these short labels it pulled the leading edge BEHIND the platen
+roller. Agent v5 sends ~JSA at startup (retract right after printing,
+before anyone touches the media); process bounced, printer updated.
+Nick will try a cleaner tear (maybe a blade/serrated edge below the
+opening). SEPARATE open issue (2026-09-09 afternoon): clanking +
+misfeeds + two reprints printing CENTERED ON THE GAPS across three
+labels - that arithmetic (fed ~label-length 253 dots instead of pitch
+~277) means the printer is NOT registering on the gap sensor: lost
+media calibration, a dirty/nudged movable sensor, or media stuck in
+the path from the jam-clearing era. Needs hands-on: inspect path +
+platen for stuck label/wrinkled liner, reseat head latch, check the
+movable sensor position, then SmartCal. No remote test prints while
+Nick is away (a jam would strand the queue).
+
 ## ⧉ Box sets lump on the collect screens + cross-bin awareness — ✅ DEPLOYED 2026-09-09 (C72 3.94)
 
 Nick's two field sets showed as loose part rows. Now:

@@ -9846,6 +9846,27 @@ public class MainActivity extends Activity {
             t2.setTextColor(C_MUTED);
             mid.addView(t2);
 
+            // Receiving batches wear the not-RFID-paired tag (Nick,
+            // 2026-09-09): labels came off the printer but the boxes
+            // were shelved without pairing - this batch is the way to
+            // go back and pair them.
+            int unpairedLabels = b.optInt("unpaired_labels", 0);
+            if (receiving && unpairedLabels > 0) {
+                TextView up = new TextView(this);
+                up.setText("🏷 " + unpairedLabels
+                        + " label(s) not RFID-paired");
+                up.setTextSize(11);
+                up.setTextColor(C_OVER);
+                up.setBackground(rr(C_OVER_BG, 0, 6));
+                up.setPadding(dp(7), dp(2), dp(7), dp(2));
+                LinearLayout.LayoutParams ul =
+                        new LinearLayout.LayoutParams(
+                                LinearLayout.LayoutParams.WRAP_CONTENT,
+                                LinearLayout.LayoutParams.WRAP_CONTENT);
+                ul.topMargin = dp(3);
+                mid.addView(up, ul);
+            }
+
             // A bin that already had a FULL tagging session gets one
             // extra line: the yellow heads-up that this is a RE-tag
             // (quiet collect, shelf sweep at Check). Chip only — not

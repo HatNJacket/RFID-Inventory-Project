@@ -404,6 +404,7 @@ const EVENT_META = {
   // never a person's click, so they wear their own tag.
   "review-autoclosed": ["Auto-Resolved", "#57748c"],
   "labels-not-printed": ["Labels Not Printed", "#c05717"],
+  "label-unpaired": ["Label Not Paired", "#d72c0d"],
   "stock-not-updated": ["Stock Not Updated", "#8250df"],
   "inventory-check": ["Inventory Check", "#8a6116"],
   "pairing-incomplete": ["Pairing Incomplete", "#d72c0d"],
@@ -4208,29 +4209,62 @@ function enterBatchTab() {
   bEl.bin.focus();
 }
 
+// Open-batch ordering (Nick, 2026-09-09): newest (youngest) first by
+// default, oldest first, or ONLY receiving batches wearing the
+// not-RFID-paired tag - boxes labelled without ever pairing a sticker.
+let resumeSortMode = "new";
+let resumeBatchesCache = [];
+
 async function loadResumeList() {
   try {
-    const { batches } = await apiJson("/api/batches?status=open&limit=10");
-    bEl.resumeList.innerHTML = "";
-    bEl.resumeWrap.hidden = !batches.length;
-    batches.forEach((b) => {
-      const li = document.createElement("li");
-      const label =
-        b.kind === "receiving"
-          ? "📦 Receiving"
-          : `Bin ${escapeHtml(b.bin_name)}`;
-      li.innerHTML =
-        `<b>${label}</b> — ${b.products} product(s), ` +
-        `${b.boxes} box(es), ${b.paired} paired · ${escapeHtml(b.status)} ` +
-        `<span class="mono">${escapeHtml(fmtWhen(b.created_at))}` +
-        `${b.created_by ? " · " + escapeHtml(b.created_by) : ""}</span>`;
-      li.addEventListener("click", () => resumeBatch(b.id));
-      bEl.resumeList.append(li);
-    });
+    const { batches } = await apiJson("/api/batches?status=open&limit=50");
+    resumeBatchesCache = batches;
+    renderResumeList();
   } catch (err) {
     bEl.resumeWrap.hidden = true;
   }
 }
+
+function renderResumeList() {
+  bEl.resumeList.innerHTML = "";
+  bEl.resumeWrap.hidden = !resumeBatchesCache.length;
+  let rows = resumeBatchesCache.slice();
+  if (resumeSortMode === "old") rows.reverse(); // server sends newest first
+  if (resumeSortMode === "unpaired")
+    rows = rows.filter((b) => (b.unpaired_labels || 0) > 0);
+  rows.forEach((b) => {
+    const li = document.createElement("li");
+    const label =
+      b.kind === "receiving"
+        ? "📦 Receiving"
+        : `Bin ${escapeHtml(b.bin_name)}`;
+    li.innerHTML =
+      `<b>${label}</b> — ${b.products} product(s), ` +
+      `${b.boxes} box(es), ${b.paired} paired · ${escapeHtml(b.status)} ` +
+      `<span class="mono">${escapeHtml(fmtWhen(b.created_at))}` +
+      `${b.created_by ? " · " + escapeHtml(b.created_by) : ""}</span>` +
+      (b.unpaired_labels
+        ? ` <span class="binlabel" style="color:#d72c0d;font-weight:650">🏷 ${b.unpaired_labels} label(s) not RFID-paired</span>`
+        : "");
+    li.addEventListener("click", () => resumeBatch(b.id));
+    bEl.resumeList.append(li);
+  });
+  if (!rows.length && resumeBatchesCache.length) {
+    const li = document.createElement("li");
+    li.className = "inventory__empty";
+    li.textContent =
+      "No open receiving batches with unpaired labels - clear the " +
+      "filter to see everything.";
+    bEl.resumeList.append(li);
+  }
+}
+
+document
+  .getElementById("batch-resume-sort")
+  ?.addEventListener("change", (ev) => {
+    resumeSortMode = ev.target.value;
+    renderResumeList();
+  });
 
 // --- Bin work board ---------------------------------------------------------
 // Every bin in the store (from the Shopify bin map) that hasn't been
@@ -10716,6 +10750,15 @@ function openResolveWindow(t) {
         Queue the missing labels
         <span class="rvw-choice__sub">Prints one label per unlabelled box on the receiving batch, each with its home bin - identical to the planner's Print labels. No-bin products are held out and named.</span>
       </button>`;
+  } else if (t.category === "label-unpaired") {
+    // The receiving watchdog, back by request (Nick, 2026-09-09):
+    // boxes were labelled but never RFID-paired. Held vendor strips
+    // (kept label sheets) never trip this - only loose labels do.
+    middle = `
+      <button class="reset rvw-wide rvw-choice rvw-choice--amber" id="rvw-resumebatch" type="button">
+        Resume receiving #${t.batch_id} and pair the boxes
+        <span class="rvw-choice__sub">Opens the batch's receiving list - pair each labelled box with the gun or the two-scan flow. This task closes itself once every label is paired, held on a vendor strip, or dismissed.</span>
+      </button>`;
   } else if (t.category === "stock-not-updated") {
     // The full-shipment watchdog (Nick, 2026-09-01): labels paired
     // over an hour ago but the planner never updated Shopify stock.
@@ -10943,6 +10986,15 @@ function openResolveWindow(t) {
       }
     });
   }
+
+  // Label-unpaired: jump straight into the receiving batch to pair.
+  const resumeBatchBtn = document.getElementById("rvw-resumebatch");
+  if (resumeBatchBtn)
+    resumeBatchBtn.addEventListener("click", () => {
+      document.getElementById("resolve-overlay").hidden = true;
+      document.querySelector('.tabs__tab[data-tab="batch"]')?.click();
+      resumeBatch(t.batch_id);
+    });
 
   // Queue-labels: the Update-stock safety net's one-click resolution.
   const openPlannerBtn = document.getElementById("rvw-openplanner");

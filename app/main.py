@@ -8288,6 +8288,31 @@ def list_batches(
         ).all():
             totals[r.batch_id] = r
     prev_done = _prev_done_map(session, [b.bin_name for b in rows])
+    # Receiving batches wear a "not RFID-paired" tag (Nick, 2026-09-09):
+    # labels printed minus tags paired minus labels resting on a held
+    # vendor strip. Coarse per-batch arithmetic - the Review task does
+    # the per-SKU version.
+    recv_ids = [b.id for b in rows if b.kind == "receiving"]
+    printed_by_batch: dict[int, int] = {}
+    held_by_batch: dict[int, int] = {}
+    if recv_ids:
+        for r in session.execute(
+            select(PrintJob.batch_id, func.count())
+            .where(
+                PrintJob.batch_id.in_(recv_ids),
+                PrintJob.status.in_(("pending", "printing", "done")),
+                _NOT_COMPANION,
+            )
+            .group_by(PrintJob.batch_id)
+        ):
+            printed_by_batch[r[0]] = int(r[1] or 0)
+        for r in session.execute(
+            select(HeldLabelList.batch_id, func.sum(HeldLabelItem.count))
+            .join(HeldLabelItem, HeldLabelItem.list_id == HeldLabelList.id)
+            .where(HeldLabelList.batch_id.in_(recv_ids))
+            .group_by(HeldLabelList.batch_id)
+        ):
+            held_by_batch[r[0]] = int(r[1] or 0)
     batches = []
     for b in rows:
         d = b.as_dict()
@@ -8295,6 +8320,13 @@ def list_batches(
         d["products"] = t.products if t else 0
         d["boxes"] = int(t.boxes or 0) if t else 0
         d["paired"] = int(t.paired or 0) if t else 0
+        if b.kind == "receiving":
+            d["unpaired_labels"] = max(
+                0,
+                printed_by_batch.get(b.id, 0)
+                - d["paired"]
+                - held_by_batch.get(b.id, 0),
+            )
         # A bin that already had a FULL tagging session: the C72 list
         # shows the yellow "Previous batch tagging: X ago" line, and the
         # batch itself runs the re-tag flow (quiet collect, shelf sweep
@@ -12178,6 +12210,162 @@ def _unpaired_label_counts(session: Session, batch: Batch) -> list[dict]:
     return out
 
 
+def _receiving_unpaired_net(session: Session, batch: Batch) -> list[dict]:
+    """Per SKU for a receiving batch: labels printed minus tags paired,
+    minus labels resting on the batch's held vendor strip, minus
+    operator-dismissed label EPCs. What's left is boxes someone labelled
+    without ever RFID-pairing them (Nick, 2026-09-09)."""
+    rows = _unpaired_label_counts(session, batch)
+    if not rows:
+        return []
+    held: dict[str, int] = {}
+    for hl in session.scalars(
+        select(HeldLabelList).where(HeldLabelList.batch_id == batch.id)
+    ):
+        for it in session.scalars(
+            select(HeldLabelItem).where(HeldLabelItem.list_id == hl.id)
+        ):
+            key = (it.sku or "").strip().upper()
+            held[key] = held.get(key, 0) + (it.count or 0)
+    dismissed: dict[str, int] = {}
+    job_by_epc = {
+        (j.epc or "").upper(): j
+        for j in session.scalars(
+            select(PrintJob).where(
+                PrintJob.batch_id == batch.id,
+                PrintJob.status.in_(("pending", "printing", "done")),
+                _NOT_COMPANION,
+            )
+        )
+        if j.epc
+    }
+    if job_by_epc:
+        for epc in session.scalars(
+            select(LabelDismissal.epc).where(
+                func.upper(LabelDismissal.epc).in_(
+                    sorted(job_by_epc)
+                )
+            )
+        ):
+            j = job_by_epc.get((epc or "").upper())
+            if j is not None:
+                key = (j.sku or "").strip().upper()
+                dismissed[key] = dismissed.get(key, 0) + 1
+    out = []
+    for r in rows:
+        key = (r["sku"] or "").strip().upper()
+        n = r["count"] - held.get(key, 0) - dismissed.get(key, 0)
+        if n > 0:
+            out.append({**r, "count": n})
+    return out
+
+
+# Throttle: the Review inbox is read often and this watchdog walks every
+# recent receiving batch - once per 5 minutes is plenty.
+_unpaired_check_last = 0.0
+
+
+def _check_unpaired_label_tasks(session: Session) -> None:
+    """Label-not-paired watchdog, brought BACK for receiving 2026-09-09
+    (Nick: workers label boxes without RFID-pairing them - fair, they
+    haven't been walked through the system). A receiving batch whose
+    printed labels are still unpaired 2+ hours after its last print
+    gets ONE open Review task; labels on a held vendor strip (the kept
+    sheets) and dismissed labels never count. The task closes itself
+    once pairing or a strip accounts for everything. Lazy + fail-soft,
+    run when the inbox is read."""
+    global _unpaired_check_last
+    if time.time() - _unpaired_check_last < 300:
+        return
+    _unpaired_check_last = time.time()
+    try:
+        now = datetime.utcnow()
+        open_tasks: dict[int, ReviewTask] = {}
+        for t in session.scalars(
+            select(ReviewTask).where(
+                ReviewTask.category == "label-unpaired",
+                ReviewTask.status == "open",
+            )
+        ):
+            if t.batch_id:
+                open_tasks[t.batch_id] = t
+        cutoff = now - timedelta(days=45)
+        dirty = False
+        for b in session.scalars(
+            select(Batch).where(Batch.kind == "receiving")
+        ):
+            created = b.created_at
+            if created is not None and created.tzinfo is not None:
+                created = created.astimezone(
+                    timezone.utc
+                ).replace(tzinfo=None)
+            # Old batches only stay in the walk while their task is open.
+            if (
+                created is not None and created < cutoff
+                and b.id not in open_tasks
+            ):
+                continue
+            newest = session.scalar(
+                select(func.max(PrintJob.created_at)).where(
+                    PrintJob.batch_id == b.id
+                )
+            )
+            if newest is None:
+                continue  # nothing was ever printed for this batch
+            if newest.tzinfo is not None:
+                newest = newest.astimezone(
+                    timezone.utc
+                ).replace(tzinfo=None)
+            task = open_tasks.get(b.id)
+            # Grace: while labels are still coming out, nobody is late.
+            if task is None and (now - newest).total_seconds() < 7200:
+                continue
+            net = _receiving_unpaired_net(session, b)
+            total = sum(u["count"] for u in net)
+            if total > 0 and task is None:
+                receipt = session.scalar(
+                    select(OrderReceipt)
+                    .where(OrderReceipt.batch_id == b.id)
+                    .order_by(OrderReceipt.id.desc())
+                )
+                who = (
+                    f"{receipt.reference or 'Stock order'}"
+                    + (f" · {receipt.vendor}" if receipt.vendor else "")
+                ) if receipt is not None else f"Receiving #{b.id}"
+                breakdown = ", ".join(
+                    f"{u['count']}× {u['sku']}" for u in net[:8]
+                ) + ("…" if len(net) > 8 else "")
+                session.add(ReviewTask(
+                    category="label-unpaired",
+                    product_title=who[:255],
+                    detail=(
+                        f"Receiving #{b.id}: {total} label(s) printed "
+                        "but never RFID-paired - the boxes were likely "
+                        f"labelled without pairing ({breakdown}). "
+                        "Resume the batch and pair each labelled box, "
+                        "or sweep genuinely unused labels into a held "
+                        "vendor strip. Closes itself when everything "
+                        "is accounted for."
+                    )[:500],
+                    batch_id=b.id,
+                    created_by="watchdog",
+                ))
+                dirty = True
+            elif total == 0 and task is not None:
+                task.status = "resolved"
+                task.resolved_by = "auto"
+                task.resolved_at = datetime.now(timezone.utc)
+                task.resolution_note = (
+                    "Every label is now paired, held or dismissed - "
+                    "closed itself."
+                )
+                dirty = True
+        if dirty:
+            session.commit()
+    except Exception:  # noqa: BLE001 — the inbox must still load
+        logger.exception("unpaired-label watchdog failed")
+
+
 class SettleShipmentIn(BaseModel):
     created_by: str | None = Field(default=None, max_length=100)
 
@@ -14340,9 +14528,11 @@ def list_review_tasks(
     limit: int = 100,
     session: Session = Depends(get_session),
 ):
-    # Lazy watchdog: settled full-shipment receives whose Shopify stock
-    # never updated file their task the next time anyone reads the inbox.
+    # Lazy watchdogs: settled full-shipment receives whose Shopify stock
+    # never updated, and receiving labels never RFID-paired, file their
+    # tasks the next time anyone reads the inbox.
     _check_stock_update_tasks(session)
+    _check_unpaired_label_tasks(session)
     stmt = select(ReviewTask).order_by(ReviewTask.id.desc())
     if status != "all":
         stmt = stmt.where(ReviewTask.status == status.strip())

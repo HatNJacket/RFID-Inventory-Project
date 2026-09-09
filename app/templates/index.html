@@ -670,7 +670,14 @@
              "Print labels" button, never by hand (Nick, 2026-08-25) —
              they appear in the resume list below when one is open. -->
         <div id="batch-resume-wrap" hidden>
-          <p class="linkbox__extra-label">Unfinished batches — click to resume:</p>
+          <p class="linkbox__extra-label" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <span>Unfinished batches — click to resume:</span>
+            <select id="batch-resume-sort" title="Order the open batches, or show only receiving batches whose printed labels were never RFID-paired">
+              <option value="new">Newest first</option>
+              <option value="old">Oldest first</option>
+              <option value="unpaired">Not RFID-paired only</option>
+            </select>
+          </p>
           <ul class="setbox__list" id="batch-resume-list"></ul>
         </div>
       </div>
