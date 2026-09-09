@@ -1725,6 +1725,9 @@ body {
   box-shadow: 0 0 0 1px #d72c0d, 0 0 10px rgba(215, 44, 13, 0.4);
 }
 .bcell--warn { border-left: 3px solid var(--warn-ink); }
+/* Pair step: "won't RFID scan" products are not pairing work (Nick,
+   2026-09-09) - greyed and sunk, still clickable for a by-hand pair. */
+.bcell--noscan { opacity: 0.55; }
 /* Multi-box SET lumping (Nick, 2026-09-09): a header row per set with
    its part boxes indented under it; a box whose home is a different bin
    renders muted and read-only. */

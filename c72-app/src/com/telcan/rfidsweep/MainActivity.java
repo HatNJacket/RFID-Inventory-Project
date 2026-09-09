@@ -10650,20 +10650,30 @@ public class MainActivity extends Activity {
                 // (red) rows on top, unfinished pairing in the middle
                 // by recency, green done rows at the very bottom with
                 // untouched rows just above them (Nick, 2026-08-25).
+                // "Won't RFID scan" products sink below even the done
+                // rows, greyed (Nick, 2026-09-09): their tags never
+                // answer on the box, so they are not pairing work.
                 List<BItem> red = new ArrayList<>();
                 List<BItem> work = new ArrayList<>();
                 List<BItem> done = new ArrayList<>();
+                List<BItem> noscan = new ArrayList<>();
                 for (BItem b : touched) {
-                    if (b.resolved && b.labelsTotal > 0
+                    if (b.noScan) noscan.add(b);
+                    else if (b.resolved && b.labelsTotal > 0
                             && b.paired > b.labelsTotal) red.add(b);
                     else if (b.resolved && b.labelsTotal > 0
                             && b.paired == b.labelsTotal) done.add(b);
                     else work.add(b);
                 }
+                List<BItem> waitReal = new ArrayList<>();
+                for (BItem b : waiting) {
+                    (b.noScan ? noscan : waitReal).add(b);
+                }
                 displayItems.addAll(red);
                 displayItems.addAll(work);
-                displayItems.addAll(waiting);
+                displayItems.addAll(waitReal);
                 displayItems.addAll(done);
+                displayItems.addAll(noscan);
             } else {
                 displayItems.addAll(touched);
                 displayItems.addAll(waiting);
@@ -10963,6 +10973,16 @@ public class MainActivity extends Activity {
                     trk = C_OK;
                 }
             }
+            // Past the check step a "won't RFID scan" product is not
+            // pairing work (Nick, 2026-09-09): greyed out, never red or
+            // demanding - manual pairing by barcode still possible.
+            boolean noScanPair = inBatch() && step == STEP_PAIR
+                    && b.noScan;
+            if (noScanPair) {
+                fill = C_PRESS;
+                stroke = C_LINE;
+                trk = C_MUTED;
+            }
             // Selection is the BORDER only — an unfinished row stays white,
             // so fill colour means one thing and one thing alone: done or
             // over-paired.
@@ -10995,6 +11015,10 @@ public class MainActivity extends Activity {
                 h.bc.setText("SKIPPED"
                         + (b.skipReason == null || b.skipReason.isEmpty()
                            ? "" : " — " + b.skipReason));
+            } else if (noScanPair) {
+                h.bc.setVisibility(View.VISIBLE);
+                h.bc.setText("⚠ Won't RFID scan - skipped for pairing "
+                        + "(scan its barcode to pair by hand)");
             } else if (inBatch() && step == STEP_CHECK && flags != null) {
                 h.bc.setVisibility(View.VISIBLE);
                 h.bc.setText(flags);
@@ -11534,6 +11558,11 @@ public class MainActivity extends Activity {
     private BItem nextNeedingTags(List<BItem> order, int from, int dir) {
         for (int i = from + dir; i >= 0 && i < order.size(); i += dir) {
             BItem b = order.get(i);
+            // "Won't RFID scan" products are never pairing work (Nick,
+            // 2026-09-09: 2459281/2459286 kept surfacing as next in
+            // line) - the walk steps straight over them. Pairing one
+            // BY HAND (scan its barcode) still works.
+            if (b.noScan) continue;
             int t = pairTarget(b);
             if (t > 0 && b.paired < t) return b;
         }

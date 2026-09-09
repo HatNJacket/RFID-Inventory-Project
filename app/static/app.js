@@ -8418,18 +8418,32 @@ function renderPairCard() {
 
 function renderPairItems() {
   bEl.pairItems.innerHTML = "";
-  batchItems
-    .filter((i) => i.resolved && i.qty_scanned > 0)
-    .forEach((item) => {
-      const li = itemCard(item, "pair");
-      li.addEventListener("click", () => {
-        pairActiveItemId = item.id;
-        renderPairItems();
-        renderPairCard();
-        bEl.pairInput.focus();
-      });
-      bEl.pairItems.append(li);
+  const rows = batchItems.filter((i) => i.resolved && i.qty_scanned > 0);
+  // "Won't RFID scan" products sink to the bottom, greyed (Nick,
+  // 2026-09-09): their tags never answer on the box, so past the
+  // check step they are not pairing work. Clicking one still selects
+  // it for a deliberate by-hand pair.
+  rows.sort(
+    (a, b) =>
+      (a.rfid_incompatible ? 1 : 0) - (b.rfid_incompatible ? 1 : 0)
+  );
+  rows.forEach((item) => {
+    const li = itemCard(item, "pair");
+    if (item.rfid_incompatible) {
+      li.classList.add("bcell--noscan");
+      const note = document.createElement("div");
+      note.className = "bcell__meta bcell__skipped";
+      note.textContent = "⚠ Won't RFID scan - skipped for pairing";
+      li.querySelector(".bcell__info").append(note);
+    }
+    li.addEventListener("click", () => {
+      pairActiveItemId = item.id;
+      renderPairItems();
+      renderPairCard();
+      bEl.pairInput.focus();
     });
+    bEl.pairItems.append(li);
+  });
 }
 
 bEl.pairInput.addEventListener("keydown", async (event) => {
