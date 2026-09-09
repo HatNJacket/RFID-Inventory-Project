@@ -861,7 +861,12 @@ _SECONDARY_TITLE = re.compile(r"open[\s-]?box|used|demo|refurb", re.I)
 
 def _candidate_rank(p: dict) -> tuple:
     title = f"{p.get('product_title') or ''} {p.get('variant_title') or ''}"
-    return (1 if _SECONDARY_TITLE.search(title) else 0,)
+    # The "-O" SKU suffix is the open-box convention (Nick, 2026-09-09)
+    # - same secondary standing as open-box wording in the title.
+    sku = (p.get("sku") or "").strip().upper()
+    return (
+        1 if _SECONDARY_TITLE.search(title) or sku.endswith("-O") else 0,
+    )
 
 
 def products_by_barcode_all(
@@ -893,6 +898,47 @@ def products_by_barcode_all(
                 candidates = [single]
         except HTTPException:
             candidates = []
+    # An open-box alias on this code names the TWIN listing explicitly
+    # (Nick, 2026-09-09): the physical barcode stays on the NEW listing,
+    # the open-box variant carries barcode+-O, and this link keeps a
+    # scan of the box surfacing BOTH listings in the Check step even
+    # though the catalog no longer shares the code. Only openbox-kind
+    # aliases join - nickname/legacy links point at products already
+    # found (or at vendor label text, which is not a product at all).
+    if db_ok:
+        try:
+            with Session(get_engine()) as _s:
+                for al in _s.scalars(
+                    select(BarcodeAlias).where(
+                        func.upper(BarcodeAlias.alias_barcode)
+                        == code.upper(),
+                        BarcodeAlias.kind == "openbox",
+                    )
+                ):
+                    row = _s.scalar(
+                        select(BinMapEntry).where(
+                            func.upper(BinMapEntry.sku)
+                            == (al.sku or "").strip().upper()
+                        )
+                    ) if al.sku else None
+                    candidates.append({
+                        "shopify_variant_id": (
+                            row.shopify_variant_id if row else None
+                        ),
+                        "shopify_product_id": (
+                            row.shopify_product_id if row else None
+                        ),
+                        "product_title": (
+                            row.product_title if row else al.product_title
+                        ),
+                        "variant_title": row.variant_title if row else None,
+                        "sku": al.sku,
+                        "barcode": row.barcode if row else al.barcode,
+                        "bin_location": row.bin if row else None,
+                        "image_url": row.image_url if row else None,
+                    })
+        except Exception as error:  # noqa: BLE001 - decoration only
+            logger.warning("openbox alias candidates failed: %s", error)
     # De-dup by case-insensitive SKU first (mirror + API can both
     # contribute, and the dead mirror's SKU casing drifts — same-SKU-
     # different-case IS the same product), variant id when there's no SKU.
@@ -2710,6 +2756,124 @@ def _touch_printer(session: Session, name: str, kind: str | None) -> None:
         row.last_seen = now
 
 
+def _openbox_write_enabled() -> bool:
+    parts = {
+        p.strip() for p in config.SHOPIFY_WRITE_MODE.split(",") if p.strip()
+    }
+    return "production" in parts or "openbox_barcode" in parts
+
+
+def _maybe_openbox_migrate(session: Session, job: PrintJob) -> None:
+    """Open-box convention (Nick, 2026-09-09): a SKU ending in -O marks
+    the OPEN-BOX twin of a product, and the twin must not SHARE the
+    physical barcode with the new-condition listing - shared codes made
+    counts ambiguous and let a manual barcode fix land on the wrong
+    variant. The first -O label to print migrates the listing:
+
+      - Shopify gets barcode+-O written to THE EXACT VARIANT GID THE
+        JOB CARRIES. Never re-resolved by code: a code lookup ranks the
+        primary twin first, which is exactly how a manual fix once
+        rewrote the NEW product's barcode instead (Nick, 2026-09-09).
+      - THIS label (and every later one) prints the -O barcode, so
+        open-box boxes become scannably distinct.
+      - The original barcode is linked to the open-box listing (alias
+        kind "openbox"), so scanning the physical box still surfaces
+        BOTH listings in the Check step.
+
+    Gated by the "openbox_barcode" write feature; fail-soft everywhere -
+    printing never waits on Shopify, a skipped migration just means the
+    label prints the shared barcode like before."""
+    sku = (job.sku or "").strip()
+    if not sku.upper().endswith("-O"):
+        return
+    bc = (job.barcode or "").strip()
+    if not bc or bc.upper().endswith("-O"):
+        return  # nothing to derive from, or already migrated
+    new_bc = f"{bc}-O"
+    if len(new_bc) > 64:
+        return
+    vid = (job.shopify_variant_id or "").strip()
+    pid = (job.shopify_product_id or "").strip()
+    # The suffixed code must not already belong to a DIFFERENT product
+    # (checked against the local map first - it is refreshed on every
+    # earlier migration, so repeats stay cheap and offline-safe).
+    bm_row = session.scalar(
+        select(BinMapEntry).where(BinMapEntry.shopify_variant_id == vid)
+    ) if vid else None
+    already = (
+        bm_row is not None
+        and (bm_row.barcode or "").strip().upper() == new_bc.upper()
+    )
+    if not already:
+        if not _openbox_write_enabled():
+            logger.info(
+                "openbox: %s label keeps barcode %s - the openbox_barcode "
+                "write feature is not enabled", sku, bc,
+            )
+            return
+        if not vid.startswith("gid://") or not pid.startswith("gid://"):
+            logger.warning(
+                "openbox: %s job carries no real Shopify ids (%r/%r) - "
+                "refusing to write blind", sku, vid, pid,
+            )
+            return
+        clash = _resolve(
+            new_bc, config.BARCODE_LOOKUP, database_configured(),
+            not config.check_shopify_env(),
+        )
+        if clash is not None and (
+            clash.get("shopify_variant_id") != vid
+            and (clash.get("sku") or "").strip().upper() != sku.upper()
+        ):
+            logger.warning(
+                "openbox: %s already belongs to %s - not migrating %s",
+                new_bc, clash.get("sku"), sku,
+            )
+            return
+        shopify.update_variant_barcode(pid, vid, new_bc)
+        session.add(BarcodeChange(
+            sku=job.sku,
+            product_title=job.product_title,
+            shopify_variant_id=vid,
+            old_barcode=bc,
+            new_barcode=new_bc,
+            changed_by="openbox-auto",
+        ))
+        for bm in session.scalars(
+            select(BinMapEntry).where(BinMapEntry.shopify_variant_id == vid)
+        ):
+            bm.barcode = new_bc
+        _refresh_item_idents(
+            session,
+            {"shopify_variant_id": vid, "sku": job.sku},
+            barcode=new_bc,
+        )
+    # THIS label prints the distinct code, migrated now or earlier.
+    job.barcode = new_bc
+    # Keep the physical code linked to the open-box listing. An alias
+    # slot already claimed by ANOTHER product is left alone (the Check
+    # step's SKU-root sibling scan still surfaces the twin).
+    alias = session.scalar(
+        select(BarcodeAlias).where(
+            func.upper(BarcodeAlias.alias_barcode) == bc.upper()
+        )
+    )
+    if alias is None:
+        session.add(BarcodeAlias(
+            alias_barcode=bc,
+            sku=job.sku,
+            barcode=new_bc,
+            product_title=job.product_title,
+            created_by="openbox-auto",
+            kind="openbox",
+        ))
+    elif (alias.sku or "").strip().upper() != sku.upper():
+        logger.warning(
+            "openbox: %s is already linked to %s - alias left alone",
+            bc, alias.sku,
+        )
+
+
 @app.post("/api/print-jobs/claim", dependencies=[Depends(require_agent_key)])
 def claim_print_jobs(
     limit: int = 5,
@@ -2740,6 +2904,15 @@ def claim_print_jobs(
     rows = session.scalars(stmt).all()
     for job in rows:
         job.status = "printing"
+        # Open-box (-O) labels migrate their listing's barcode the
+        # moment they head for the printer; a failure just prints the
+        # old shared code - never a lost label.
+        try:
+            _maybe_openbox_migrate(session, job)
+        except Exception as error:  # noqa: BLE001
+            logger.warning(
+                "openbox migration failed for job %s: %s", job.id, error
+            )
     session.commit()
     return {"count": len(rows), "jobs": [j.as_dict() for j in rows]}
 
@@ -3672,6 +3845,13 @@ class OverwriteIn(BaseModel):
     target: str = Field(max_length=100)  # current barcode or SKU
     changed_by: str | None = Field(default=None, max_length=100)
     confirmed: bool = False  # the UI checkbox; server refuses without it
+    # Pin the write to an exact variant (Nick, 2026-09-09): twin
+    # listings share barcodes, and resolving by code ranks the PRIMARY
+    # twin first - which once rewrote the NEW product's barcode when
+    # the operator was editing the open-box one. A client that knows
+    # which listing it is looking at sends the gid; the server then
+    # refuses to write anywhere else.
+    variant_gid: str | None = Field(default=None, max_length=64)
 
     @field_validator("new_barcode", "target")
     @classmethod
@@ -3789,6 +3969,33 @@ def overwrite_barcode(
         raise HTTPException(
             404, "No product found in Shopify for that barcode or SKU."
         )
+    # A pinned variant outranks whatever the code resolved to: shared
+    # barcodes rank the primary twin first, and without this the write
+    # landed on the WRONG listing (Nick, 2026-09-09, open-box twins).
+    if (
+        payload.variant_gid
+        and product.get("shopify_variant_id") != payload.variant_gid
+    ):
+        twins = []
+        try:
+            twins = shopify.lookup_barcode_all(payload.target)
+        except RuntimeError:
+            twins = []
+        pin = next(
+            (
+                t for t in twins
+                if t.get("shopify_variant_id") == payload.variant_gid
+            ),
+            None,
+        )
+        if pin is None:
+            raise HTTPException(
+                409,
+                "That code resolves to a DIFFERENT listing than the one "
+                "on screen (twin listings share it). Nothing was "
+                "written - reload the product and try again.",
+            )
+        product = pin
 
     db_ok = database_configured()
     existing = _resolve(payload.new_barcode, config.BARCODE_LOOKUP, db_ok, True)
@@ -7547,6 +7754,11 @@ def _sku_root(sku: str | None) -> str | None:
     if not sku:
         return None
     root = re.sub(r"open[\s-]*box", " ", sku, flags=re.I)
+    # A trailing "-O" is the open-box SKU convention (Nick, 2026-09-09):
+    # ZWO-EAF-O and ZWO-EAF are one product in two conditions, and the
+    # same suffix on a scanned "12345678-O" label barcode must find the
+    # base listing's siblings too.
+    root = re.sub(r"[-_ ]O$", "", root.strip(), flags=re.I)
     root = re.sub(r"[^0-9A-Za-z]+", "", root).strip()
     return root.upper() if len(root) >= 4 else None
 

@@ -1,4 +1,4 @@
-# RFID Terminal - Aesthetic Guidelines (DRAFT for discussion, 2026-09-09)
+# RFID Terminal - Aesthetic Guidelines (agreed with Nick, 2026-09-09)
 
 The web terminal's look is deliberate: **the Shopify-admin family** -
 light gray workspace, white cards with hairline borders, blue focus
@@ -142,15 +142,46 @@ it goes in styles.css with a name and a comment.
   ledger. When a rule changes by discussion, the change lands here in
   the same commit as the code that uses it.
 
-## Open questions for Nick
+## Nick's rules (2026-09-09 - these four outrank everything above)
 
-1. Density: is the current row height comfortable on the warehouse
-   iPad, or should list rows get taller tap targets?
-2. The chip hex palette: keep as-is (stable in both themes) or move
-   into tokens too?
-3. Emoji: keep the icon set, trim it, or replace with real SVG icons
-   over time?
-4. The inline-style cleanup pass (55 + 17 spots, visually identical):
-   worth doing now, or fold into future touches per-file?
-5. Anything on the site TODAY that reads wrong to you aesthetically -
-   concrete offenders to fix first?
+1. **At-a-glance readability: same fact, same spot.** Anything a
+   worker skims lives in a fixed position relative to its neighbours
+   so outliers pop without reading. Lists of like things are COLUMNS,
+   not prose: job numbers under job numbers, SKUs under SKUs, counts
+   under counts - even inside expanded sub-levels. (The offender that
+   set this rule: the Print queue's expanded Receiving jobs, where
+   SKUs and printed/voided/queued counts float mid-sentence.)
+
+2. **Relevant information first, per workflow.** Design each view
+   around what its user actually needs, in their order, and fold the
+   rest behind the expansion. Print queue's order: which TASK the job
+   belonged to, the most recent print, the SKU, then status / who /
+   when. Deep detail belongs inside that task's expansion, for the
+   person who came for that task.
+
+3. **Keep things flush.** Icons align to their text's line (an icon
+   must never make a button taller than its siblings); numbers in a
+   column share an edge; two adjacent text spans sit on one baseline
+   - underlines make a half-pixel slump obvious. Every mixed
+   icon+text control gets checked against its row-mates before
+   shipping.
+
+4. **Dark mode first; both modes finished.** Build and verify in dark
+   mode by default, then check light mode for anything that reads
+   out of place (dark padding around an image on a white backdrop,
+   for example). NEVER ship un-stylized native controls - plain
+   inputs, default dropdowns, unthemed color pickers included.
+
+## Settled decisions (2026-09-09)
+
+- iPad density: revisit once the tablet is actually in use.
+- Event-chip palette: tokenized AND user-editable. The Event colours
+  editor grows: grouped pages, an ✕ on any non-default colour to
+  reset just it, and a confirmation on "Reset all to defaults".
+- Emoji icons: keeping them - they work in limited amounts (batch
+  tagging buttons).
+- The inline-style cleanup pass (55 style= + 17 cssText): LATER, on
+  the ROADMAP as a standing TODO, not blocking feature work.
+- Freshness tags ("Up to date ✓" / "Showing saved numbers") are the
+  named offenders for rule 4: hard-coded light-theme hex, to be
+  rebuilt on the warn/ok tokens.

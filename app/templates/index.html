@@ -1411,11 +1411,13 @@
     <!-- Event colour editor: per-event chip colour, saved in this browser;
          edits repaint every chip on the page live. -->
     <div class="phist-overlay" id="evcolor-overlay" hidden>
-      <section class="linkbox serialbox phist-modal" style="max-width:560px">
+      <section class="linkbox serialbox phist-modal evcolor-modal">
         <div class="linkbox__title">Event colours</div>
-        <p class="linkbox__text">Pick a colour or type a hex value — the preview chip and every matching tag on the site update as you type. Saved on this device.</p>
-        <div id="evcolor-list" style="max-height:50vh;overflow-y:auto"></div>
-        <div class="linkbox__actions" style="margin-top:10px">
+        <p class="linkbox__text">Pick a colour or type a hex value - the preview chip and every matching tag on the site update as you type. An ✕ beside a customized colour puts that one back to its default. Saved on this device.</p>
+        <input id="evcolor-search" class="linkbox__input" type="search" placeholder="Filter events (like batch, sold, audit)…" autocomplete="off" />
+        <div id="evcolor-list"></div>
+        <div id="evcolor-pager"></div>
+        <div class="linkbox__actions">
           <button class="reset" id="evcolor-reset" type="button">Reset all to defaults</button>
           <button class="reset" id="evcolor-close" type="button">Close</button>
         </div>

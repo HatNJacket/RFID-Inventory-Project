@@ -506,23 +506,55 @@ function evChip(type, extraTitle) {
   );
 }
 
-// Settings → Event colours: a picker + hex box + live preview per event.
+// Settings → Event colours: a picker + hex box + live preview per
+// event. Pages of 10 with a search filter (Nick, 2026-09-09), an ✕ on
+// any customized colour to reset just that one, and a confirm on the
+// reset-all - ~90 types in one endless scroll was unusable.
+const EVCOLOR_PAGE_SIZE = 10;
+let evColorPage = 0;
+
 function renderEvColorList() {
   const wrap = document.getElementById("evcolor-list");
+  const pager = document.getElementById("evcolor-pager");
+  const q = (document.getElementById("evcolor-search").value || "")
+    .trim()
+    .toLowerCase();
   const overrides = eventColorOverrides();
-  wrap.innerHTML = "";
-  Object.keys(EVENT_META)
+  const types = Object.keys(EVENT_META)
     .sort((a, b) => evLabel(a).localeCompare(evLabel(b)))
+    .filter(
+      (t) =>
+        !q ||
+        evLabel(t).toLowerCase().includes(q) ||
+        t.toLowerCase().includes(q)
+    );
+  const pages = Math.max(1, Math.ceil(types.length / EVCOLOR_PAGE_SIZE));
+  if (evColorPage >= pages) evColorPage = pages - 1;
+  if (evColorPage < 0) evColorPage = 0;
+  wrap.innerHTML = "";
+  if (!types.length) {
+    wrap.innerHTML =
+      '<p class="linkbox__text">No event names match that.</p>';
+  }
+  types
+    .slice(
+      evColorPage * EVCOLOR_PAGE_SIZE,
+      (evColorPage + 1) * EVCOLOR_PAGE_SIZE
+    )
     .forEach((type) => {
       const current = overrides[type] || EVENT_META[type][1];
+      const custom = !!overrides[type];
       const row = document.createElement("div");
       row.className = "evcolor-row";
       row.innerHTML = `
         <span class="evcolor-preview">${evChip(type)}</span>
+        <button class="reset evcolor-clear" type="button"
+          title="Reset this colour to its default" ${custom ? "" : "hidden"}>✕</button>
         <input type="color" value="${current}" aria-label="colour for ${escapeHtml(evLabel(type))}" />
         <input type="text" class="linkbox__input evcolor-hex" value="${current}" maxlength="7" spellcheck="false" />`;
       const picker = row.querySelector('input[type="color"]');
       const hex = row.querySelector(".evcolor-hex");
+      const clear = row.querySelector(".evcolor-clear");
       const save = (value) => {
         if (!/^#[0-9a-fA-F]{6}$/.test(value)) return;
         const o = eventColorOverrides();
@@ -532,6 +564,7 @@ function renderEvColorList() {
           o[type] = value;
         }
         localStorage.setItem("eventColors", JSON.stringify(o));
+        clear.hidden = !o[type];
         applyEventColors(); // every chip on the page follows instantly
       };
       picker.addEventListener("input", () => {
@@ -545,9 +578,37 @@ function renderEvColorList() {
           save(v);
         }
       });
+      clear.addEventListener("click", () => {
+        const o = eventColorOverrides();
+        delete o[type];
+        localStorage.setItem("eventColors", JSON.stringify(o));
+        applyEventColors();
+        picker.value = EVENT_META[type][1];
+        hex.value = EVENT_META[type][1];
+        clear.hidden = true;
+      });
       wrap.append(row);
     });
+  pager.innerHTML = `
+    <button class="reset" id="evcolor-prev" type="button"
+      ${evColorPage === 0 ? "disabled" : ""}>‹ Prev</button>
+    <span class="recent__meta">Page ${evColorPage + 1} of ${pages}</span>
+    <button class="reset" id="evcolor-next" type="button"
+      ${evColorPage >= pages - 1 ? "disabled" : ""}>Next ›</button>`;
+  pager.querySelector("#evcolor-prev").addEventListener("click", () => {
+    evColorPage--;
+    renderEvColorList();
+  });
+  pager.querySelector("#evcolor-next").addEventListener("click", () => {
+    evColorPage++;
+    renderEvColorList();
+  });
 }
+
+document.getElementById("evcolor-search").addEventListener("input", () => {
+  evColorPage = 0;
+  renderEvColorList();
+});
 
 document.getElementById("evcolor-open").addEventListener("click", () => {
   document.getElementById("settings-menu").open = false;
@@ -558,6 +619,15 @@ document.getElementById("evcolor-close").addEventListener("click", () => {
   document.getElementById("evcolor-overlay").hidden = true;
 });
 document.getElementById("evcolor-reset").addEventListener("click", () => {
+  const n = Object.keys(eventColorOverrides()).length;
+  if (!n) return;
+  if (
+    !confirm(
+      `Reset ${n} customized event colour(s) back to the defaults? ` +
+        "This can't be undone."
+    )
+  )
+    return;
   localStorage.removeItem("eventColors");
   applyEventColors();
   renderEvColorList();
@@ -1690,6 +1760,11 @@ document
         target: editDefaults.sku || editDefaults.barcode,
         changed_by: operator,
         confirmed: true,
+        // Pin to the listing on screen - twins share codes, and an
+        // unpinned write once landed on the wrong variant (Nick,
+        // 2026-09-09, open-box).
+        variant_gid:
+          (pendingProduct && pendingProduct.shopify_variant_id) || null,
       });
       editDefaults.barcode = newBarcode;
       pendingProduct.barcode = newBarcode;
@@ -7310,6 +7385,7 @@ document.getElementById("bitem-bcsave").addEventListener("click", async () => {
       new_barcode: newBc,
       changed_by: operator,
       confirmed: true,
+      variant_gid: it.shopify_variant_id || null,
     });
     // No re-lookup here: the OLD barcode is what this row scanned as, so
     // a live search by it would now miss. The row's display just follows.
@@ -7724,6 +7800,7 @@ document.getElementById("bitem-oddapply").addEventListener("click", async () => 
       // The operator just answered "are you absolutely sure?" above; the
       // endpoint refuses to touch Shopify without this.
       confirmed: true,
+      variant_gid: p.shopify_variant_id || null,
     });
     // The unresolved row's count has to be re-scanned against the real
     // product, so take it out of the batch.
@@ -9793,8 +9870,10 @@ function queueJobRow(j, child) {
   if (child) tr.className = "queue-child";
   const canCancel = j.status === "pending";
   const canReprint = ["done", "error", "canceled"].includes(j.status);
+  // The empty qarrow spacer keeps job ids flush under the group rows'
+  // ids (STYLEGUIDE rule 3) - same column, same left edge, no indent.
   tr.innerHTML = `
-        <td class="mono">#${j.id}</td>
+        <td class="mono"><span class="qarrow"></span>#${j.id}</td>
         <td>${
           j.sku
             ? `<span class="prodopen queue-prod">${escapeHtml(j.label_name || j.product_title || "")}</span>`
@@ -9875,14 +9954,46 @@ function queueStatusSummary(jobs) {
   return parts.join(" · ");
 }
 
-function queueGroupRow(key, label, summary, level) {
+// Status counts as aligned chips - printed / queued / FAILED / voided
+// always in the Status column, so outliers pop while skimming.
+function queueCountChips(jobs) {
+  const c = {};
+  jobs.forEach((j) => (c[j.status] = (c[j.status] || 0) + 1));
+  const bit = (n, cls, word) =>
+    n
+      ? `<span class="chip-status chip-status--${cls}">${n} ${word}</span>`
+      : "";
+  return (
+    bit(c.done, "done", "printed") +
+    bit((c.pending || 0) + (c.printing || 0), "pending", "queued") +
+    bit(c.error, "error", "FAILED") +
+    bit((c.voided || 0) + (c.canceled || 0), "voided", "voided")
+  );
+}
+
+// Columnar tier rows (Nick, 2026-09-09, STYLEGUIDE rules 1-3): a tier
+// header carries the SAME columns as the job rows under it - id range
+// under Job, the task under Product, counts under Status, the newest
+// print's time under When - so the queue skims as columns at every
+// level. Tiers are OUTLINED (rails + tint via qt0/qt1/qin0/qin1
+// classes), never indented: indentation bumps columns out of line.
+function queueGroupRow(key, tier, g) {
   const open = queueOpen.has(key);
   const tr = document.createElement("tr");
-  tr.className = "queue-group" + (level > 0 ? " queue-group--sub" : "");
-  tr.innerHTML = `<td colspan="9">
-    <span class="queue-group__arrow">${open ? "▾" : "▸"}</span>
-    ${label}
-    <span class="recent__meta"> — ${escapeHtml(summary)}</span></td>`;
+  tr.className = `queue-group qt${tier}` + (open ? " qopen" : "");
+  const newest = g.jobs.reduce((a, b) => (b.id > a.id ? b : a), g.jobs[0]);
+  tr.innerHTML = `
+    <td class="mono"><span class="qarrow">${open ? "▾" : "▸"}</span>${queueIdRange(g.jobs)}</td>
+    <td>${g.label}</td>
+    <td class="mono">${g.sku ? escapeHtml(g.sku) : "—"}</td>
+    <td class="queue-bin">${escapeHtml(g.bin || "—")}</td>
+    <td class="mono">${g.batch ? "#" + g.batch : "—"}</td>
+    <td>${escapeHtml(g.by || "—")}</td>
+    <td class="qcounts">${queueCountChips(g.jobs)}</td>
+    <td class="recent__meta">${escapeHtml(
+      fmtWhen(newest.printed_at || newest.created_at)
+    )}</td>
+    <td></td>`;
   tr.addEventListener("click", () => {
     open ? queueOpen.delete(key) : queueOpen.add(key);
     renderQueue();
@@ -9953,6 +10064,18 @@ function renderQueue() {
     if (j.print_session) lastLoose = null;
   }
 
+  // Close each open task frame: every row after the header wears the
+  // rails (qin0), the last row closes the outline (qend0).
+  const flushFrame = (rows, open) => {
+    if (open && rows.length > 1) {
+      rows.forEach((r, i) => {
+        if (i > 0) r.classList.add("qin0");
+      });
+      rows[rows.length - 1].classList.add("qend0");
+    }
+    rows.forEach((r) => body.append(r));
+  };
+
   for (const entry of order) {
     if (entry.product) {
       const g = entry.product;
@@ -9963,85 +10086,109 @@ function renderQueue() {
       }
       const j0 = g.jobs[0];
       const key = `p|${g.key}`;
-      body.append(
-        queueGroupRow(
-          key,
-          `${escapeHtml(j0.product_title || g.key)} <span class="mono recent__meta">${escapeHtml(j0.sku || "")}</span> × ${g.jobs.length} · <span class="mono">${queueIdRange(g.jobs)}</span>`,
-          queueStatusSummary(g.jobs),
-          0
-        )
-      );
-      if (!queueOpen.has(key)) continue;
-      if (g.sessions.length === 1) {
-        // One print run — no sub level, straight to the labels.
-        g.jobs.forEach((j) => body.append(queueJobRow(j, true)));
-        continue;
+      const open = queueOpen.has(key);
+      const rows = [
+        queueGroupRow(key, 0, {
+          jobs: g.jobs,
+          label: escapeHtml(j0.product_title || g.key),
+          sku: j0.sku,
+          bin: j0.bin_location,
+          batch: null,
+          by: j0.requested_by,
+        }),
+      ];
+      if (open) {
+        if (g.sessions.length === 1) {
+          // One print run — no sub level, straight to the labels.
+          g.jobs.forEach((j) => rows.push(queueJobRow(j, true)));
+        } else {
+          for (const s of g.sessions) {
+            const subKey = `${key}|${s.key}`;
+            rows.push(
+              queueGroupRow(subKey, 1, {
+                jobs: s.jobs,
+                label: `Print run · ${s.jobs.length} label(s)`,
+                sku: j0.sku,
+                bin: j0.bin_location,
+                batch: null,
+                by: s.jobs[0].requested_by,
+              })
+            );
+            if (queueOpen.has(subKey)) {
+              s.jobs.forEach((j) => {
+                const r = queueJobRow(j, true);
+                r.classList.add("qin1");
+                rows.push(r);
+              });
+            }
+          }
+        }
       }
-      for (const s of g.sessions) {
-        const subKey = `${key}|${s.key}`;
-        body.append(
-          queueGroupRow(
-            subKey,
-            `<span class="mono">${queueIdRange(s.jobs)}</span> · ${s.jobs.length} label(s) <span class="recent__meta">${escapeHtml(fmtWhen(s.jobs[s.jobs.length - 1].created_at))}</span>`,
-            queueStatusSummary(s.jobs),
-            1
-          )
-        );
-        if (queueOpen.has(subKey))
-          s.jobs.forEach((j) => body.append(queueJobRow(j, true)));
-      }
+      flushFrame(rows, open);
       continue;
     }
     const g = entry.batch;
     const recv = g.info.kind === "receiving";
     const key = `b${g.id}`;
+    const open = queueOpen.has(key);
+    // The TASK is the identity (STYLEGUIDE rule 2); its number, bin
+    // and people sit in their own columns like every other row.
     // Receiving batches carry their planner reference in created_by
-    // ("TC-Planner · SO 123"); batch runs show their bin.
+    // ("TC-Planner · SO 123").
     const label = recv
-      ? `📦 Receiving #${g.id}${
+      ? `📦 Receiving${
           g.info.created_by
             ? ` <span class="recent__meta">${escapeHtml(g.info.created_by)}</span>`
             : ""
         }`
-      : `Batch #${g.id}${
-          g.info.bin_name
-            ? ` · bin <span class="mono">${escapeHtml(g.info.bin_name)}</span>`
-            : ""
-        }`;
-    body.append(
-      queueGroupRow(
-        key,
-        label + ` · <span class="mono">${queueIdRange(g.jobs)}</span>`,
-        `${g.jobs.length} label(s): ${queueStatusSummary(g.jobs)}`,
-        0
-      )
-    );
-    if (!queueOpen.has(key)) continue;
-    if (!recv) {
-      // Batch-tagging runs expand to the flat rows, exactly as before.
-      g.jobs.forEach((j) => body.append(queueJobRow(j, true)));
-      continue;
+      : "Batch tagging";
+    const rows = [
+      queueGroupRow(key, 0, {
+        jobs: g.jobs,
+        label,
+        sku: null,
+        // Receiving has no bin of its own (labels fan out to many);
+        // its placeholder bin name would just read as noise here.
+        bin: recv ? null : g.info.bin_name,
+        batch: g.id,
+        by: recv ? null : g.info.created_by,
+      }),
+    ];
+    if (open) {
+      if (!recv) {
+        // Batch-tagging runs expand to the flat rows, exactly as before.
+        g.jobs.forEach((j) => rows.push(queueJobRow(j, true)));
+      } else {
+        // Receiving: one sub-group per product, then the labels.
+        const bySku = new Map();
+        for (const j of g.jobs) {
+          const sk = (j.sku || j.product_title || "?").trim();
+          if (!bySku.has(sk)) bySku.set(sk, []);
+          bySku.get(sk).push(j);
+        }
+        for (const [sk, jobs] of bySku) {
+          const subKey = `${key}|${sk}`;
+          rows.push(
+            queueGroupRow(subKey, 1, {
+              jobs,
+              label: escapeHtml(jobs[0].product_title || sk),
+              sku: sk,
+              bin: jobs[0].bin_location,
+              batch: g.id,
+              by: jobs[0].requested_by,
+            })
+          );
+          if (queueOpen.has(subKey)) {
+            jobs.forEach((j) => {
+              const r = queueJobRow(j, true);
+              r.classList.add("qin1");
+              rows.push(r);
+            });
+          }
+        }
+      }
     }
-    // Receiving: one sub-group per product, then the individual labels.
-    const bySku = new Map();
-    for (const j of g.jobs) {
-      const sk = (j.sku || j.product_title || "?").trim();
-      if (!bySku.has(sk)) bySku.set(sk, []);
-      bySku.get(sk).push(j);
-    }
-    for (const [sk, jobs] of bySku) {
-      const subKey = `${key}|${sk}`;
-      body.append(
-        queueGroupRow(
-          subKey,
-          `${escapeHtml(jobs[0].product_title || sk)} <span class="mono recent__meta">${escapeHtml(sk)}</span> × ${jobs.length} · <span class="mono">${queueIdRange(jobs)}</span>`,
-          queueStatusSummary(jobs),
-          1
-        )
-      );
-      if (queueOpen.has(subKey))
-        jobs.forEach((j) => body.append(queueJobRow(j, true)));
-    }
+    flushFrame(rows, open);
   }
 }
 

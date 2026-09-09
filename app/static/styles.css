@@ -2352,14 +2352,29 @@ a { color: var(--accent); }
 }
 
 /* event colour editor rows */
+.evcolor-modal { max-width: 560px; }
+.evcolor-modal #evcolor-search { margin-bottom: 6px; }
+/* Tall enough that a full page of 10 rows never scrolls (Nick,
+   2026-09-09) - the fixed height also stops the pager jumping when a
+   filtered page has fewer rows. */
+#evcolor-list { min-height: 420px; }
+#evcolor-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin: 8px 0 2px;
+}
 .evcolor-row {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 6px 2px;
   border-bottom: 1px solid var(--line);
+  min-height: 41px;
 }
 .evcolor-preview { flex: 1; min-width: 0; }
+.evcolor-clear { color: var(--bad-ink); font-weight: 600; flex: none; }
 .evcolor-row input[type="color"] {
   width: 36px;
   height: 28px;
@@ -2383,6 +2398,20 @@ a { color: var(--accent); }
   padding: 2px 8px;
   background: var(--warn-bg);
   color: var(--warn-ink);
+}
+
+/* Icon+text buttons sit flush (Nick, 2026-09-09, STYLEGUIDE rule 3):
+   the eye svg centers on the text line instead of stretching the
+   button taller than its row-mates. */
+#binboard-showhidden, #binboard-oddfilter {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+#binboard-showhidden svg, #binboard-oddfilter svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
 }
 
 /* inventory SKUs open the product panel */
@@ -2651,23 +2680,54 @@ tr.binaudit-untagged td { opacity: 0.72; }
 .bcell--clickable { cursor: pointer; }
 .bcell--clickable:hover { border-color: var(--accent, #29845a); }
 
-/* Print queue: jobs grouped under their batch; receiving batches get a
-   per-product sub-level. */
+/* Print queue tiers (Nick, 2026-09-09, STYLEGUIDE rules 1-3):
+   [TASK] > [BUNDLE > [prints]] drawn as FRAMES, never indentation -
+   indenting bumped every column out of line. All rows share the same
+   columns; the side borders are pre-reserved transparent on EVERY
+   row (and the header), so opening a frame never shifts a pixel.
+   Tier 0 (task) = bold header + rails around its rows; tier 1
+   (bundle) = tinted block inside the rails. */
+#tab-queue th:first-child, #tab-queue td:first-child {
+  border-left: 3px solid transparent;
+}
+#tab-queue th:last-child, #tab-queue td:last-child {
+  border-right: 3px solid transparent;
+}
+#tab-queue td { vertical-align: middle; line-height: 1.35; }
 .queue-group > td {
   cursor: pointer;
   user-select: none;
+}
+.qt0 > td {
   font-weight: 600;
   background: var(--card-2);
   border-top: 2px solid var(--line);
 }
-.queue-group--sub > td {
-  padding-left: 34px !important;
+.qt0.qopen > td:first-child, .qin0 > td:first-child {
+  border-left-color: var(--line);
+}
+.qt0.qopen > td:last-child, .qin0 > td:last-child {
+  border-right-color: var(--line);
+}
+.qend0 > td { border-bottom: 2px solid var(--line); }
+.qt1 > td {
   font-weight: 550;
-  background: transparent;
   border-top: 1px dashed var(--line);
 }
-.queue-group__arrow { display: inline-block; width: 14px; color: var(--accent, #29845a); }
-.queue-child > td:first-child { padding-left: 26px !important; }
+.qt1.qopen > td, .qin1 > td {
+  background: color-mix(in srgb, var(--card-2) 91%, var(--accent));
+}
+/* Id ranges are one token, like bins - "#6 - #26" never wraps. */
+.queue-group > td:first-child { white-space: nowrap; }
+/* Fixed arrow slot in the Job column: group ids and job ids share a
+   left edge because CLOSED rows reserve the same 16px. */
+.qarrow {
+  display: inline-block;
+  width: 16px;
+  color: var(--accent);
+}
+.qcounts .chip-status { margin-right: 4px; }
+.chip-status--voided { background: var(--card-2); color: var(--ink-dim); }
 /* Bins are one token: "F2-3" must never wrap into "F2-" / "3" */
 .queue-bin { white-space: nowrap; }
 
@@ -2910,6 +2970,8 @@ tr.binaudit-untagged td { opacity: 0.72; }
 
 /* Freshness tags (Nick, 2026-09-08): snapshot data paints instantly in
    yellow, then flips green once the live numbers land. */
+/* Freshness tags ride the theme tokens (Nick, 2026-09-09: the
+   hard-coded light-theme hex glared in dark mode - STYLEGUIDE rule 4). */
 .freshtag {
   display: inline-block;
   margin: 6px 0 10px;
@@ -2917,12 +2979,12 @@ tr.binaudit-untagged td { opacity: 0.72; }
   border-radius: 12px;
   font-size: 0.8rem;
   font-weight: 600;
-  background: #fdf3d7;
-  color: #8a6116;
-  border: 1px solid #e7cf94;
+  background: var(--warn-bg);
+  color: var(--warn-ink);
+  border: 1px solid color-mix(in srgb, var(--warn-ink) 30%, transparent);
 }
 .freshtag--live {
-  background: #ddf5e4;
-  color: #1c7a3d;
-  border-color: #a9dfbc;
+  background: var(--ok-bg);
+  color: var(--ok-ink);
+  border-color: color-mix(in srgb, var(--ok-ink) 30%, transparent);
 }

@@ -3,6 +3,29 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-09.
 
+## 📦 Open-box (-O) products + queue/colour restyle — 🔶 BUILT 2026-09-09, AWAITING NICK'S GO TO DEPLOY
+
+**Open-box convention**: SKUs ending in -O are open-box twins. When a
+-O label is claimed for printing: Shopify gets barcode+-O written TO
+THE EXACT VARIANT GID THE JOB CARRIES (never re-resolved by code -
+code lookups rank the primary twin first, which is how a manual fix
+once rewrote the WRONG variant's barcode, Nick's field report); the
+label itself prints the -O code; the original barcode is linked to
+the open-box listing (alias kind "openbox") so scanning the physical
+box still surfaces BOTH listings in the Check step. Self-pruning
+edge handling: idempotent via the bin map, collision-checked before
+writing, refuses fake ids, fail-soft (printing never waits), gated by
+NEW write feature `openbox_barcode` - PROMOTE INTO SHOPIFY_WRITE_MODE
+AFTER the deploy (never during). _sku_root treats -O as open-box
+wording; _candidate_rank ranks -O SKUs secondary; manual
+/api/barcode-overwrites accepts a pinning variant_gid (web product
+window/check/candidate flows send it). test_openbox.py (17 checks).
+
+**Queue/colour restyle (previewed to Nick, approved pending deploy)**:
+columnar 3-tier print queue (frames not indentation), Event colours
+pages of 10 + search + per-colour ✕ + reset-all confirm, freshness
+tags on theme tokens, eye-button flush fix. Suites 63/63.
+
 ## 🏷 Label-not-paired watchdog is BACK for receiving — ✅ DEPLOYED 2026-09-09 (C72 3.95)
 
 Nick: workers label boxes without RFID-pairing them (fair - not walked
