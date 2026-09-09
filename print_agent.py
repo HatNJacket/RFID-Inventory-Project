@@ -208,15 +208,52 @@ def _sku_line_fits(text: str, size: int, pw: int) -> bool:
     return _zpl_text_dots(text, size) * SKU_WIDTH_FUDGE <= cap
 
 
+def _code128_symbols(data: str) -> int:
+    """Data symbols ZPL's automatic mode spends, subset switches
+    included. The old model charged MIXED codes one symbol per char,
+    but the encoder still packs digit RUNS into subset-C pairs - so
+    "12345678-O" (an open-box barcode, Nick 2026-09-09) really costs
+    4 pair symbols + a switch + 2 chars, not 10 symbols. Overstating
+    the width computed a centering x too far LEFT by half the error.
+
+    Rules mirrored from the encoder: start in C when the code opens
+    with 4+ digits; mid-stream, hop to C for a run of 6+ digits (or
+    4+ that finish the code); an odd trailing digit rides subset B."""
+    n = len(data)
+    i = 0
+    symbols = 0
+    subset = None
+    while i < n:
+        run = 0
+        while i + run < n and data[i + run].isdigit():
+            run += 1
+        use_c = (
+            (subset is None and run >= 4)
+            or (subset == "C" and run >= 2)
+            or (subset == "B" and (run >= 6 or (run >= 4
+                                                and i + run == n)))
+        )
+        if use_c:
+            if subset == "B":
+                symbols += 1  # subset switch
+            subset = "C"
+            pairs = run // 2
+            symbols += pairs
+            i += pairs * 2
+            # An odd digit left over falls through to subset B below.
+        else:
+            if subset == "C":
+                symbols += 1  # subset switch
+            subset = "B"
+            symbols += 1
+            i += 1
+    return symbols
+
+
 def _code128_width_dots(data: str, module: int = 2) -> int:
     """Printed width of a Code 128 barcode (mode A auto-encoding), so it
-    can be centered. Digit pairs pack into subset-C symbols; odd-length
-    numbers spend one extra symbol switching subsets for the last digit."""
-    n = len(data)
-    if n and data.isdigit():
-        symbols = n // 2 if n % 2 == 0 else (n - 1) // 2 + 2
-    else:
-        symbols = n
+    can be centered on the sticker."""
+    symbols = _code128_symbols(data)
     return (11 * (symbols + 2) + 13) * module  # start+data+check, then stop
 
 

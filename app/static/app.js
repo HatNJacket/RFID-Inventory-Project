@@ -8536,16 +8536,38 @@ function zplTextDots(text, size) {
 }
 
 // Printed width of a Code 128 barcode - the print agent's model
-// (_code128_width_dots). 33 alphanumeric chars is the confirmed max
-// (Nick's test prints, 2026-09-08): 34+ run off the sticker edge.
+// (_code128_width_dots / _code128_symbols). 33 alphanumeric chars is
+// the confirmed max (Nick's test prints, 2026-09-08): 34+ run off the
+// sticker edge. Subset-aware since 2026-09-09: digit RUNS inside a
+// mixed code ("12345678-O", the open-box barcodes) pack into subset-C
+// pairs - the flat one-symbol-per-char model overstated their width
+// and the sticker centered the bars too far left.
 function code128Dots(data, module) {
   const n = data.length;
-  const symbols =
-    n && /^\d+$/.test(data)
-      ? n % 2 === 0
-        ? n / 2
-        : (n - 1) / 2 + 2
-      : n;
+  let i = 0;
+  let symbols = 0;
+  let subset = null;
+  while (i < n) {
+    let run = 0;
+    while (i + run < n && data[i + run] >= "0" && data[i + run] <= "9")
+      run++;
+    const useC =
+      (subset === null && run >= 4) ||
+      (subset === "C" && run >= 2) ||
+      (subset === "B" && (run >= 6 || (run >= 4 && i + run === n)));
+    if (useC) {
+      if (subset === "B") symbols++;
+      subset = "C";
+      const pairs = Math.floor(run / 2);
+      symbols += pairs;
+      i += pairs * 2;
+    } else {
+      if (subset === "C") symbols++;
+      subset = "B";
+      symbols++;
+      i++;
+    }
+  }
   return (11 * (symbols + 2) + 13) * module;
 }
 
