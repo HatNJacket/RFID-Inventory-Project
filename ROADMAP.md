@@ -3,6 +3,29 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-09.
 
+## 🔢 SO numbers: history repaired + intake belt — ✅ DONE 2026-09-09
+
+Before TC-Planner's 2026-09-08 fix its Print-labels payload carried
+the planner's INTERNAL order id where the SO number belonged (batch
+219 read "SO 1268" for SO 945) - and the fix only reached the
+DEPLOYED planner with today's 20:53 UTC image, so wrong ids kept
+landing until then (batch #230 mixed "SO 943, SO 1266" - the same
+Svbony order twice). Fixed three ways:
+- dev/repair_so_numbers.py RUN ON PROD (dry-run first): 9 rows
+  repaired - receiving batch labels (History derives from them) and
+  the open #230 collapsed to the real numbers. Vendor-matched, and
+  ambiguous tokens (ids/references overlap: "SO 940" is also a closed
+  firefly-books id) deliberately left alone. Receipts turned out
+  already correct (their stock_order_id is the authoritative planner
+  id).
+- Intake belt (_normalize_so_reference): /api/receiving/prints now
+  translates an internal id in the incoming reference to the real SO
+  number - only when the planner order under that id names the SAME
+  vendor and is still open-ish (closed-status gate defeats the
+  same-vendor ancient-id collision). Fail-soft on planner outages.
+  test_sonumbers.py (9 checks); suites 67/67.
+- Planner side confirmed fixed and deployed (image 2026-09-09 20:53).
+
 ## ⏱ Stale-sweep guard on stock writes — ✅ DEPLOYED 2026-09-09 (C72 3.98)
 
 Nick's ASI676MC: 2 on hand, one sold 1PM, and a 4PM write from an

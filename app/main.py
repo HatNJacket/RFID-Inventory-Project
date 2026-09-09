@@ -11406,6 +11406,56 @@ class ReceivingPrintsIn(BaseModel):
     reference: str | None = Field(default=None, max_length=60)
 
 
+# Cache for the incoming-reference normalizer:
+# planner order id -> (real reference_number or None, vendor lower).
+_so_ref_cache: dict[int, tuple] = {}
+
+
+def _normalize_so_reference(ref: str) -> str:
+    """The planner's Print-labels payload has carried its INTERNAL order
+    id where the SO number belongs (Nick, 2026-09-09: History and open
+    batches read "SO 1266" for SO 943, and a fresh one landed even
+    after the 2026-09-08 planner fix). Translate on intake. Ids and
+    reference numbers overlap numerically, so a token only converts
+    when the planner order under that ID (a) names the SAME vendor the
+    label does AND (b) is still open-ish - the buggy payload always
+    names the order being received right now, never a closed one, so
+    a correct "SO n" colliding with the vendor's own ancient id n
+    stays untouched. Fail-soft: an unreachable planner keeps the
+    reference exactly as sent."""
+    if not ref or "SO" not in ref.upper():
+        return ref
+    parts = [p.strip() for p in ref.split("·")]
+    vendor = parts[1].lower() if len(parts) > 1 and parts[1] else None
+
+    def swap(m):
+        n = int(m.group(1))
+        if n not in _so_ref_cache:
+            try:
+                o = planner._get(f"/api/stock-orders/{n}")
+                ov = (o.get("vendor") or "").strip().lower()
+                rn = o.get("reference_number")
+                status = (o.get("status") or "").strip().lower()
+                openish = status not in ("closed", "received",
+                                         "cancelled", "canceled")
+                _so_ref_cache[n] = (
+                    str(rn)
+                    if rn and str(rn) != str(n) and ov and openish
+                    else None,
+                    ov,
+                )
+            except Exception:  # noqa: BLE001 - fail-soft, keep as sent
+                _so_ref_cache[n] = (None, None)
+        mapped, ov = _so_ref_cache[n]
+        if mapped and vendor and ov == vendor:
+            logger.info("receiving reference: planner id SO %s "
+                        "translated to SO %s (%s)", n, mapped, ov)
+            return f"SO {mapped}"
+        return m.group(0)
+
+    return re.sub(r"\bSO\s+(\d{2,6})\b", swap, ref)
+
+
 def _receiving_intake(
     session: Session, payload: ReceivingPrintsIn, queue_labels: bool,
     tag_prefix: str = "TC-Planner", merge_vendor: bool = True,
@@ -11423,6 +11473,12 @@ def _receiving_intake(
     one order's story, so folding them into a same-vendor planner batch
     would count that batch's unpaired boxes as never-shipped."""
     ref = (payload.reference or "").strip()
+    # Intake belt: whatever the planner sent, the label stores the REAL
+    # SO number (Nick, 2026-09-09 - internal ids kept leaking in).
+    try:
+        ref = _normalize_so_reference(ref)
+    except Exception:  # noqa: BLE001 - decoration, never blocks intake
+        pass
     parts = [p.strip() for p in ref.split("·")] if ref else []
     vendor = parts[1] if len(parts) > 1 and parts[1] else None
     so_part = parts[0] if parts else ""
