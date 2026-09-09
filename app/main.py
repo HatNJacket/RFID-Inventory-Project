@@ -1819,6 +1819,120 @@ def _boxset_unit_count(session: Session, set_sku: str) -> int | None:
     return min(counts) if counts else 0
 
 
+def _attach_box_sets(
+    session: Session, bin_name: str | None, payload: list[dict]
+) -> list[dict]:
+    """Collect-view grouping for multi-box SETS (Nick, 2026-09-09):
+    stamps every batch item that is a registered part with its set, and
+    returns one group per set involved - title, expected full-product
+    units, and EVERY box of the set, including boxes whose home is a
+    DIFFERENT bin. Those render read-only on the collect screens with
+    the bin they belong in and their known tag count, and the set's
+    unit rollup (min across boxes) uses that count."""
+    try:
+        all_parts = session.scalars(select(BoxSetPart)).all()
+    except Exception:  # noqa: BLE001 - grouping is decoration, never a 500
+        return []
+    if not all_parts:
+        return []
+    by_part: dict[str, BoxSetPart] = {}
+    by_set: dict[str, list[BoxSetPart]] = {}
+    for bp in all_parts:
+        by_part[bp.part_sku.strip().upper()] = bp
+        by_set.setdefault(bp.set_sku.strip().upper(), []).append(bp)
+    for plist in by_set.values():
+        plist.sort(key=lambda r: r.box_no)
+    item_by_sku: dict[str, dict] = {}
+    involved: list[str] = []
+    for d in payload:
+        sku_u = (d.get("sku") or "").strip().upper()
+        if not sku_u:
+            continue
+        bp = by_part.get(sku_u)
+        if bp is not None:
+            set_u = bp.set_sku.strip().upper()
+            d["boxset_of"] = bp.set_sku
+            d["boxset_box_no"] = bp.box_no
+            d["boxset_boxes"] = len(by_set.get(set_u) or [])
+            if set_u not in involved:
+                involved.append(set_u)
+        elif sku_u in by_set:
+            # The FULL product seeded as its own row (a batch from before
+            # the set existed): clients fold it into the group header
+            # instead of asking anyone to scan "the set".
+            d["boxset_set"] = True
+            if sku_u not in involved:
+                involved.append(sku_u)
+        item_by_sku.setdefault(sku_u, d)
+    if not involved:
+        return []
+    want: set[str] = set(involved)
+    for s in involved:
+        for bp in by_set[s]:
+            want.add(bp.part_sku.strip().upper())
+    # One query each: bin-map rows (a sku can hold one row PER bin) and
+    # tag unit counts, for every set and part named.
+    bm_rows: dict[str, list[BinMapEntry]] = {}
+    for r in session.scalars(
+        select(BinMapEntry).where(
+            func.upper(BinMapEntry.sku).in_(sorted(want))
+        )
+    ):
+        bm_rows.setdefault((r.sku or "").strip().upper(), []).append(r)
+    tag_units: dict[str, int] = {}
+    for t in session.scalars(
+        select(RfidAssignment).where(
+            func.upper(RfidAssignment.sku).in_(sorted(want))
+        )
+    ):
+        k = (t.sku or "").strip().upper()
+        tag_units[k] = tag_units.get(k, 0) + (t.case_units or 1)
+    here = (bin_name or "").strip()
+    out: list[dict] = []
+    for set_u in involved:
+        parts = by_set[set_u]
+        set_rows = bm_rows.get(set_u) or []
+        set_item = item_by_sku.get(set_u)
+        expected = None
+        if set_item is not None and set_item.get("expected_qty") is not None:
+            expected = set_item.get("expected_qty")
+        elif set_rows:
+            expected = set_rows[0].qty
+        title = parts[0].set_title or (
+            set_rows[0].product_title if set_rows else None
+        ) or parts[0].set_sku
+        part_rows = []
+        for bp in parts:
+            p_u = bp.part_sku.strip().upper()
+            p_rows = bm_rows.get(p_u) or []
+            item = item_by_sku.get(p_u)
+            home_bins = parse_bins(", ".join(
+                x for r in p_rows for x in (r.bin, r.other_bins) if x
+            ))
+            in_bin = item is not None or any(
+                b.lower() == here.lower() for b in home_bins
+            )
+            part_rows.append({
+                "sku": bp.part_sku,
+                "box_no": bp.box_no,
+                "barcode": bp.part_barcode,
+                "bin": " & ".join(home_bins) if home_bins else None,
+                "in_bin": bool(in_bin),
+                "item_id": item.get("id") if item is not None else None,
+                "known_units": tag_units.get(p_u, 0),
+            })
+        out.append({
+            "set_sku": parts[0].set_sku,
+            "set_title": title,
+            "image_url": set_rows[0].image_url if set_rows else None,
+            "bin": set_rows[0].bin if set_rows else None,
+            "expected_units": expected,
+            "boxes": len(parts),
+            "parts": part_rows,
+        })
+    return out
+
+
 class BoxSetPartIn(BaseModel):
     # The SKU printed on the box (S11230-1) and the barcode that scans.
     # A NEW box (create_draft) may give either or both: a missing SKU is
@@ -4154,6 +4268,86 @@ def get_c72_debug(
     ]}
 
 
+# The rolling "unlinked stickers" hunt (Nick, 2026-09-09): every sweep
+# upload stashes the EPCs it heard that belong to NOTHING - no tag
+# record, not retired, not dismissed, not a companion sticker - into
+# ONE locate-list entry the C72 hunts by raw EPC. Printed-but-never-
+# paired labels count too: they're exactly the "labels not linked to
+# the RFID system" that keep answering sweeps anonymously.
+UNLINKED_HUNT_SKU = "UNLINKED-TAGS"
+UNLINKED_HUNT_LABEL = "Unlinked stickers heard on sweeps"
+UNLINKED_HUNT_CAP = 500
+
+
+def _still_unlinked(session: Session, epcs: list[str]) -> set[str]:
+    """The subset of these EPCs that STILL belongs to nothing: no
+    assignment, not retired, not operator-dismissed, not a companion."""
+    left = {(e or "").strip().upper() for e in epcs if e and e.strip()}
+    if not left:
+        return set()
+    left -= {
+        (e or "").upper()
+        for e in session.scalars(
+            select(RfidAssignment.rfid_id).where(
+                func.upper(RfidAssignment.rfid_id).in_(sorted(left))
+            )
+        )
+    }
+    if left:
+        left -= {
+            (e or "").upper()
+            for e in session.scalars(
+                select(RetiredTag.rfid_id).where(
+                    func.upper(RetiredTag.rfid_id).in_(sorted(left))
+                )
+            )
+        }
+    if left:
+        left -= {
+            (e or "").upper()
+            for e in session.scalars(
+                select(LabelDismissal.epc).where(
+                    func.upper(LabelDismissal.epc).in_(sorted(left))
+                )
+            )
+        }
+    if left:
+        _, comp = _companions_heard(session, sorted(left))
+        left -= comp
+    return left
+
+
+def _stash_unlinked_tags(
+    session: Session, epcs: list[str], device: str | None = None
+) -> int:
+    """Fold a sweep's ownerless EPCs into the unlinked-stickers locate
+    entry (created on first use, merged after). Returns how many were
+    NEW; commits only when something changed."""
+    fresh = _still_unlinked(session, epcs)
+    if not fresh:
+        return 0
+    entry = session.scalar(
+        select(LocateQueueEntry).where(
+            func.upper(LocateQueueEntry.sku) == UNLINKED_HUNT_SKU
+        )
+    )
+    if entry is None:
+        entry = LocateQueueEntry(
+            sku=UNLINKED_HUNT_SKU, label=UNLINKED_HUNT_LABEL,
+            added_by=device,
+        )
+        session.add(entry)
+        have: set[str] = set()
+    else:
+        have = set(entry.epc_list())
+    new = fresh - have
+    if not new:
+        return 0
+    entry.epcs = "\n".join(sorted(have | new)[:UNLINKED_HUNT_CAP])
+    session.commit()
+    return len(new)
+
+
 class LocateQueueIn(BaseModel):
     """Queue a product for a physical tag hunt on the C72."""
 
@@ -4173,6 +4367,33 @@ def list_locate_queue(session: Session = Depends(get_session)):
     for e in session.scalars(
         select(LocateQueueEntry).order_by(LocateQueueEntry.id.desc())
     ):
+        if e.sku.strip().upper() == UNLINKED_HUNT_SKU:
+            # Self-pruning: a sticker paired, retired or dismissed since
+            # it was stashed drops off; an emptied entry disappears.
+            live = sorted(_still_unlinked(session, e.epc_list()))
+            if not live:
+                session.delete(e)
+                session.commit()
+                continue
+            if live != e.epc_list():
+                e.epcs = "\n".join(live)
+                session.commit()
+            entries.append({
+                "id": e.id,
+                "sku": e.sku,
+                "label": e.label or UNLINKED_HUNT_LABEL,
+                "image_url": None,
+                "added_by": e.added_by,
+                "created_at": (
+                    e.created_at.isoformat() if e.created_at else None
+                ),
+                "tag_count": len(live),
+                "bins": [],
+                "epcs": live,
+                # The C72 hunts these RAW - no product behind them.
+                "epc_hunt": True,
+            })
+            continue
         tags = session.scalars(
             select(RfidAssignment).where(
                 func.upper(RfidAssignment.sku) == e.sku.upper()
@@ -7738,11 +7959,29 @@ def create_batch(payload: BatchIn, session: Session = Depends(get_session)):
                 bc.bundle_sku.upper(), []
             ).append(bc.as_dict())
 
+    # Multi-box SETS (Nick, 2026-09-09): the FULL product's boxes ARE its
+    # part boxes, so the set itself is never a scannable row - its
+    # expected unit count seeds each part's expected instead (the part
+    # draft listings hold no stock of their own, so their bin-map qty
+    # reads 0 and the parts vanished as "noise"). The batch GET payload
+    # re-attaches the set as a visual group.
+    bs_part_to_set: dict[str, str] = {}
+    bs_set_orig: dict[str, str] = {}
+    for bsp in session.scalars(select(BoxSetPart)):
+        bs_part_to_set[bsp.part_sku.strip().upper()] = \
+            bsp.set_sku.strip().upper()
+        bs_set_orig.setdefault(bsp.set_sku.strip().upper(), bsp.set_sku)
+    set_expected: dict[str, int | None] = {}
+
     items = []
     dropped: list[str] = []
     covered: list[dict] = []
     no_tag = _non_taggable_skus(session)
     for p in expected:
+        sku_u = (p.get("sku") or "").strip().upper()
+        if sku_u in bs_set_orig:
+            set_expected[sku_u] = p.get("expected_qty")
+            continue
         sp = sp_by_sku.get(p.get("sku") or "")
         # The whole bin metafield, not just this shelf: counting box slots
         # is what tells a multi-box product from a bundle.
@@ -7791,6 +8030,36 @@ def create_batch(payload: BatchIn, session: Session = Depends(get_session)):
     if dropped:
         logger.info("bin %s: skipped %d excluded bundle(s): %s",
                     payload.bin, len(dropped), ", ".join(dropped[:10]))
+    # Parts in this bin inherit their set's expected units. A set shelved
+    # in ANOTHER bin isn't in this seed at all - fetch its live count
+    # once so its boxes here still read 0/N instead of 0/nothing.
+    part_items = [
+        i for i in items
+        if (i.sku or "").strip().upper() in bs_part_to_set
+    ]
+    if part_items:
+        missing_u = sorted({
+            bs_part_to_set[(i.sku or "").strip().upper()]
+            for i in part_items
+        } - set(set_expected))
+        if missing_u and not config.check_shopify_env():
+            try:
+                live_sets = shopify.get_stock_info_by_skus(
+                    [bs_set_orig[u] for u in missing_u]
+                )
+                for u in missing_u:
+                    info = live_sets.get(bs_set_orig[u])
+                    if info is not None:
+                        set_expected[u] = info["on_hand"]
+            except Exception as error:
+                logger.warning("box-set stock fetch failed for bin %s: %s",
+                               payload.bin, error)
+        for i in part_items:
+            exp = set_expected.get(
+                bs_part_to_set[(i.sku or "").strip().upper()]
+            )
+            if exp is not None:
+                i.expected_qty = exp
     session.add_all(items)
     session.commit()
     session.refresh(batch)
@@ -7799,6 +8068,9 @@ def create_batch(payload: BatchIn, session: Session = Depends(get_session)):
     result = batch.as_dict()
     result["items"] = [i.as_dict() for i in items]
     result["covered_bundles"] = covered
+    result["box_sets"] = _attach_box_sets(
+        session, batch.bin_name, result["items"]
+    )
     return result
 
 
@@ -8116,6 +8388,10 @@ def get_batch(batch_id: int, session: Session = Depends(get_session)):
     b["shelf_swept_at"] = (
         cap.created_at.isoformat() if cap and cap.created_at else None
     )
+    # Multi-box SET grouping rides the batch object so BOTH clients (web
+    # pullBatch keeps batch+items only; the C72 reads the batch object)
+    # see it without new plumbing. Items get their part stamps in place.
+    b["box_sets"] = _attach_box_sets(session, batch.bin_name, payload)
     return {"batch": b, "items": payload}
 
 
@@ -14962,10 +15238,21 @@ def create_capture(payload: CaptureIn, session: Session = Depends(get_session)):
     session.add(row)
     session.commit()
     session.refresh(row)
+    # Every sweep also stashes its ownerless EPCs on the unlinked-
+    # stickers locate entry (Nick, 2026-09-09) - applied-but-never-
+    # paired labels stop being invisible. Fail-soft: the capture itself
+    # never waits on it.
+    result = row.as_dict()
+    try:
+        added = _stash_unlinked_tags(session, epcs, payload.device)
+        if added:
+            result["unlinked_stashed"] = added
+    except Exception as error:  # noqa: BLE001
+        logger.warning("unlinked-tag stash failed: %s", error)
     # A sweep is a shelf physically read — old tags heard now are stock
     # discovered now, which may clear 1-left checks.
     oneleft.kick("C72 sweep", payload.device)
-    return row.as_dict()
+    return result
 
 
 @app.get("/api/epc-captures", dependencies=[Depends(require_user)])

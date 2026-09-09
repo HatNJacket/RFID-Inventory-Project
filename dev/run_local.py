@@ -22,8 +22,8 @@ os.environ.pop("PRINT_AGENT_KEY", None)
 from app.main import app  # noqa: E402  (env must be set first)
 from app.database import get_engine  # noqa: E402
 from app.models import (  # noqa: E402
-    AuditFind, Base, Batch, BatchItem, BinMapEntry, EpcCapture, PrintJob,
-    RetiredTag, ReviewTask, RfidAssignment, RfidIncompatible,
+    AuditFind, Base, Batch, BatchItem, BinMapEntry, BoxSetPart, EpcCapture,
+    PrintJob, RetiredTag, ReviewTask, RfidAssignment, RfidIncompatible,
 )
 from sqlalchemy.orm import Session  # noqa: E402
 
@@ -107,6 +107,44 @@ with Session(get_engine()) as s:
                           "Recommend a bin audit."),
     ])
     s.add(RfidIncompatible(sku="OPTO-LPRO", set_by="Steve"))
+    # Multi-box SET on the collect screen (Nick, 2026-09-09): a
+    # COLLECTING batch on T2-1 holding box 1 of a two-box set whose box 2
+    # lives in T9-9 with two known tags - the set header, indented part
+    # row and the read-only other-bin row all render locally.
+    s.add(BinMapEntry(sku="SETDEMO-KIT", barcode="880",
+                      product_title="Askar SQA55 Kit (box-set demo)",
+                      bin="T2-1", qty=3, shopify_variant_id="t:880"))
+    s.add(BinMapEntry(sku="SETDEMO-KIT-1", barcode="881",
+                      product_title="SQA55 Kit - tube box",
+                      bin="T2-1", qty=0, shopify_variant_id="t:881"))
+    s.add(BinMapEntry(sku="SETDEMO-KIT-2", barcode="882",
+                      product_title="SQA55 Kit - tripod box",
+                      bin="T9-9", qty=0, shopify_variant_id="t:882"))
+    s.add(BoxSetPart(set_sku="SETDEMO-KIT",
+                     set_title="Askar SQA55 Kit (box-set demo)",
+                     set_variant_id="t:880", part_sku="SETDEMO-KIT-1",
+                     part_barcode="881", box_no=1))
+    s.add(BoxSetPart(set_sku="SETDEMO-KIT",
+                     set_title="Askar SQA55 Kit (box-set demo)",
+                     set_variant_id="t:880", part_sku="SETDEMO-KIT-2",
+                     part_barcode="882", box_no=2))
+    for epc in ("5E7B0000000000000000000A", "5E7B0000000000000000000B"):
+        s.add(RfidAssignment(rfid_id=epc, shopify_variant_id="t:882",
+                             product_title="SQA55 Kit - tripod box",
+                             sku="SETDEMO-KIT-2", bin_location="T9-9"))
+    bset = Batch(bin_name="T2-1", status="collecting", created_by="Steve")
+    s.add(bset)
+    s.flush()
+    s.add(BatchItem(batch_id=bset.id, scanned_code="881", resolved=True,
+                    sku="SETDEMO-KIT-1", barcode="881",
+                    product_title="SQA55 Kit - tube box",
+                    shopify_variant_id="t:881", qty_scanned=1,
+                    bin_location="T2-1", expected_qty=3))
+    s.add(BatchItem(batch_id=bset.id, scanned_code="111", resolved=True,
+                    sku="NORMAL-1", barcode="111",
+                    product_title="Baader UHC Filter 2in",
+                    shopify_variant_id="t:1", qty_scanned=0,
+                    bin_location="T2-1", expected_qty=5))
     epcs = {
         "NORMAL-1": ["AAAA0000000000000000000A", "AAAA0000000000000000000B"],
         "OPTO-LPRO": ["BBBB0000000000000000000A", "BBBB0000000000000000000B"],

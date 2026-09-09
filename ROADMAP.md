@@ -1,7 +1,49 @@
 # RFID Inventory System — Roadmap
 
 Source of truth for project status. Updated by Claude each working session.
-Last updated: 2026-09-08.
+Last updated: 2026-09-09.
+
+## ⧉ Box sets lump on the collect screens + cross-bin awareness — ✅ DEPLOYED 2026-09-09 (C72 3.94)
+
+Nick's two field sets showed as loose part rows. Now:
+- **Batch seeding**: the SET product is never a scannable row (its
+  boxes ARE the parts); in-bin parts inherit the set's expected UNIT
+  count (their own draft listings read 0, which had them dropped as
+  noise). A set shelved in another bin gets one live stock fetch so a
+  stray box still reads 0/N.
+- **Batch GET carries `box_sets` on the batch object** (both clients,
+  no new plumbing): per set - title, expected units, and EVERY box
+  with its home bin, whether it's in this bin, its batch item id and
+  its known tag count. Items get `boxset_of`/`boxset_box_no` stamps;
+  a legacy batch that seeded the set itself gets `boxset_set` so
+  clients fold that row into the header.
+- **Web collect + C72 collect/pair**: one header row per set (⧉,
+  "N box SKUs = 1 unit", tracker = smallest box count / expected),
+  part rows lumped under it, and read-only rows for boxes whose home
+  is a DIFFERENT bin - named bin, known count used in the rollup.
+  Membership derives from the box_sets meta (not item stamps) so a
+  fresh scan groups before the next pull. Header/remote rows ignore
+  taps; CHECK/VERIFY lists stay flat.
+- run_local seeds a demo set (SETDEMO-KIT, box 2 in T9-9);
+  test_boxset_collect.py covers seeding, GET shape, cross-bin,
+  legacy-set folding. Suites 61/61.
+
+## 🏷 Unlinked stickers → locate list — ✅ DEPLOYED 2026-09-09 (C72 3.94)
+
+"There are a bunch of labels that aren't linked to the RFID system."
+Every sweep upload (SWEEP send, audit CHECK copy, batch sweeps - all
+land on POST /api/epc-captures) now stashes the EPCs that belong to
+NOTHING - no assignment, not retired, not dismissed, not a companion;
+printed-but-never-paired labels included - onto ONE locate-queue entry
+(sku `UNLINKED-TAGS`, capped 500). Self-pruning on every listing:
+stickers since paired/retired/dismissed drop off, an emptied entry
+deletes itself. The C72's Locate LIST hunts it RAW (`epc_hunt` flag,
+new locateHuntEpcs - no catalog lookup); each find goes through the
+normal FOUND flow whose EDIT sheet pairs or retires unknown stickers.
+Audit CHECK now says "N sticker(s) not linked to any product - saved
+to the locate list" instead of lumping them into neighbour noise; the
+web's locate overlay shows the entry with EPC tails.
+test_unlinked_hunt.py covers stash/merge/prune/delete.
 
 ## 📄 Inventory pages of 50 — ✅ DEPLOYED 2026-09-08
 

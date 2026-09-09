@@ -5306,8 +5306,112 @@ function renderBatchItems() {
     summary.hidden = true;
   }
   bEl.items.innerHTML = "";
+  // Multi-box SETS (Nick, 2026-09-09) lump visually on collect: one
+  // header row per set (full units = the smallest box count), its part
+  // rows right under it, and boxes whose home is a DIFFERENT bin shown
+  // read-only with the bin they belong in and their known count.
+  // Membership comes from batch.box_sets (not per-item stamps) so a
+  // freshly scanned row groups correctly before the next server pull.
+  const boxSets = {};
+  const partSet = {};
+  (batch.box_sets || []).forEach((s) => {
+    const key = (s.set_sku || "").toUpperCase();
+    boxSets[key] = s;
+    (s.parts || []).forEach((p) => {
+      if (p.sku) partSet[p.sku.toUpperCase()] = key;
+    });
+  });
+  const doneSets = new Set();
   batchItems.forEach((item) => {
-    const li = itemCard(item, "collect");
+    const skuU = (item.sku || "").toUpperCase();
+    const setKey = partSet[skuU] || (boxSets[skuU] ? skuU : null);
+    if (!setKey) {
+      bEl.items.append(collectItemCard(item));
+      return;
+    }
+    if (doneSets.has(setKey)) return;
+    doneSets.add(setKey);
+    const meta = boxSets[setKey];
+    bEl.items.append(boxSetHeaderCard(meta));
+    batchItems.forEach((p) => {
+      const pu = (p.sku || "").toUpperCase();
+      if (partSet[pu] === setKey)
+        bEl.items.append(collectItemCard(p, true));
+    });
+    (meta.parts || []).forEach((p) => {
+      const pu = (p.sku || "").toUpperCase();
+      const hasItem = batchItems.some(
+        (i) => (i.sku || "").toUpperCase() === pu
+      );
+      if (!hasItem) bEl.items.append(boxSetRemoteCard(meta, p));
+    });
+  });
+  renderMultibinBar();
+}
+
+// The set line the parts lump under: full units on hand = the SMALLEST
+// box count, out-of-bin boxes counted by what the system already knows.
+function boxSetHeaderCard(meta) {
+  const li = document.createElement("li");
+  li.className = "bcell bcell--sethead";
+  let units = null;
+  (meta.parts || []).forEach((p) => {
+    const pu = (p.sku || "").toUpperCase();
+    const it = batchItems.find(
+      (i) => (i.sku || "").toUpperCase() === pu
+    );
+    const n = it
+      ? it.units_total != null
+        ? it.units_total
+        : it.qty_scanned
+      : p.known_units || 0;
+    units = units == null ? n : Math.min(units, n);
+  });
+  const shown = units == null ? "?" : units;
+  const tracker =
+    meta.expected_units != null
+      ? `${shown}/${meta.expected_units}`
+      : `${shown}`;
+  li.innerHTML = `
+    ${
+      meta.image_url
+        ? `<img class="bcell__img" src="${escapeHtml(meta.image_url)}" alt="" loading="lazy" />`
+        : `<span class="bcell__img bcell__img--empty"></span>`
+    }
+    <div class="bcell__info">
+      <div class="bcell__name">⧉ ${escapeHtml(meta.set_title || meta.set_sku)}</div>
+      <div class="bcell__meta">MULTI-BOX SET · SKU: ${escapeHtml(meta.set_sku)} · ${meta.boxes} box SKUs = 1 unit</div>
+      <div class="bcell__meta">Full units here = the smallest box count below</div>
+    </div>
+    <span class="bcell__tracker">${escapeHtml(tracker)}</span>`;
+  return li;
+}
+
+// A box of the set whose home is a different bin: nothing to scan here,
+// so it shows the bin it belongs in and the count being used for it.
+function boxSetRemoteCard(meta, p) {
+  const li = document.createElement("li");
+  li.className = "bcell bcell--setpart bcell--remote";
+  const inBin = p.in_bin;
+  li.innerHTML = `
+    <span class="bcell__img bcell__img--empty"></span>
+    <div class="bcell__info">
+      <div class="bcell__name">Box ${p.box_no} · ${escapeHtml(p.sku || "?")}</div>
+      <div class="bcell__meta">${
+        inBin
+          ? "Expected in this bin but not on the batch list yet"
+          : `In bin <b>${escapeHtml(p.bin || "?")}</b> - collect it there`
+      }</div>
+      <div class="bcell__meta">Using its known count: ${p.known_units || 0} box(es)</div>
+    </div>
+    <span class="bcell__tracker">${p.known_units || 0}</span>`;
+  return li;
+}
+
+// One collect-mode item card, with its qty stepper and per-row actions.
+function collectItemCard(item, inSet) {
+  const li = itemCard(item, "collect");
+  if (inSet) li.classList.add("bcell--setpart");
     const qty = document.createElement("span");
     qty.className = "bqty";
     qty.innerHTML = `
@@ -5381,9 +5485,7 @@ function renderBatchItems() {
       });
       li.prepend(cb);
     }
-    bEl.items.append(li);
-  });
-  renderMultibinBar();
+    return li;
 }
 
 // --- Multi-box set builder (Nick, 2026-09-08, the S11230) -------------------
@@ -15313,8 +15415,21 @@ async function renderLocateOverlay() {
       return;
     }
     list.innerHTML = entries
-      .map(
-        (e) => `<li class="recent__item" style="display:flex;align-items:center;gap:10px">
+      .map((e) =>
+        e.epc_hunt
+          ? `<li class="recent__item" style="display:flex;align-items:center;gap:10px">
+        <div style="flex:1;min-width:0">
+          <b>${escapeHtml(e.label || "Unlinked stickers heard on sweeps")}</b>
+          <div class="binlabel">${e.tag_count} sticker(s) heard on sweeps with no product linked - hunt them from the C72's Locate list, pair or retire each one found</div>
+          <div class="binlabel">${(e.epcs || [])
+            .slice(0, 8)
+            .map((p) => "…" + escapeHtml(p.slice(-6)))
+            .join(", ")}${(e.epcs || []).length > 8 ? "…" : ""}</div>
+        </div>
+        <button class="reset" data-locq-rm="${e.id}" type="button"
+                title="Remove from the locate list">✕</button>
+      </li>`
+          : `<li class="recent__item" style="display:flex;align-items:center;gap:10px">
         <div style="flex:1;min-width:0">
           <a href="#" class="hist-sku" data-sku="${escapeHtml(e.sku)}"><b>${escapeHtml(e.sku)}</b></a>
           ${e.label ? ` <span class="binlabel">${escapeHtml(e.label)}</span>` : ""}

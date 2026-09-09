@@ -330,6 +330,11 @@ public class MainActivity extends Activity {
     private ListView batchListView;
     private BatchAdapter batchAdapter;
     private final List<BItem> displayItems = new ArrayList<>();
+    // Multi-box SETS in this batch (Nick, 2026-09-09), keyed by upper set
+    // SKU: title, expected full-product units, and every box of the set
+    // including ones shelved in a different bin. Rides the batch GET.
+    private final java.util.LinkedHashMap<String, JSONObject> batchBoxSets =
+            new java.util.LinkedHashMap<>();
     private LinearLayout batchBtnRow;
 
     // station widgets
@@ -387,6 +392,15 @@ public class MainActivity extends Activity {
         // order, which is also the order its labels printed. ISO string;
         // string comparison sorts it correctly.
         String firstScanned;
+        // Multi-box SET rows (Nick, 2026-09-09): 0 = a normal item,
+        // 1 = the synthetic set header line the parts lump under,
+        // 2 = a box of the set whose home is a DIFFERENT bin (read-only,
+        // shown with the bin it belongs in and its known count).
+        int rowKind;
+        int setBoxes;       // header: how many box SKUs make one unit
+        int boxNo;          // remote row: which box of the set
+        String remoteBin;   // remote row: the bin it belongs in
+        int knownUnits;     // remote row: the count already known for it
 
         static BItem from(JSONObject o) {
             BItem b = new BItem();
@@ -1001,6 +1015,8 @@ public class MainActivity extends Activity {
 
         batchListView.setOnItemClickListener((parent, view, pos, id) -> {
             if (!inBatch() || pos >= displayItems.size()) return;
+            // Box-set header/remote rows are labels, not products.
+            if (displayItems.get(pos).rowKind != 0) return;
             if (step == STEP_CHECK && pos < checkEntries.size()) {
                 openItemEditor(checkEntries.get(pos));
             } else {
@@ -2758,6 +2774,39 @@ public class MainActivity extends Activity {
         }).start();
     }
 
+    /** Hunt RAW EPCs that belong to no product (Nick, 2026-09-09: the
+     *  unlinked-stickers list every sweep feeds) - no catalog lookup,
+     *  the meter just listens for exactly these tags. Each one found
+     *  goes through the normal FOUND flow, whose EDIT sheet can pair
+     *  or retire an unknown sticker. */
+    private void locateHuntEpcs(String title,
+            final java.util.Set<String> epcs) {
+        if (epcs == null || epcs.isEmpty()) {
+            status.setText("No tags to hunt.");
+            return;
+        }
+        stopLocate(false);
+        if (locMode == 1) setLocMode(0);
+        stopRadarEngine();
+        locTags.clear();
+        locFound.clear();
+        locNarrow = null;
+        locEma = 0;
+        for (String e : epcs) {
+            locTags.put(e.toUpperCase(java.util.Locale.ROOT), -999.0);
+        }
+        locProduct = new JSONObject();
+        locName.setText(title == null || title.isEmpty()
+                ? "Unlinked stickers" : title);
+        locSku.setText(locTags.size() + " sticker(s) not linked to any "
+                + "product - pair or retire each one you find");
+        locImg.setImageBitmap(null);
+        beep(SOUND_OK);
+        updateLocateUi();
+        status.setText("Pull the trigger to hunt " + locTags.size()
+                + " unlinked tag(s).");
+    }
+
     /** The web terminal's to-hunt queue: pick a product to locate without
      *  typing anything. ✕ removes an entry (both sides see the change). */
     private void showLocateList() {
@@ -2889,13 +2938,25 @@ public class MainActivity extends Activity {
                 only.add(eps.optString(j).toUpperCase(
                         java.util.Locale.ROOT));
             }
-            if (!only.isEmpty()) {
+            // The unlinked-stickers entry (Nick, 2026-09-09) hunts its
+            // raw EPCs - there is no product behind them to look up.
+            final boolean epcHunt = e.optBoolean("epc_hunt", false);
+            if (epcHunt) {
+                meta.setText(only.size() + " sticker(s) heard on sweeps "
+                        + "with no product linked - hunt and fix them");
+            } else if (!only.isEmpty()) {
                 meta.setText(meta.getText() + " · 🎯 " + only.size()
                         + " silent tag(s) targeted");
             }
+            final String huntTitle = label != null && !label.isEmpty()
+                    ? label : sku;
             card.setOnClickListener(x -> {
                 if (dref[0] != null) dref[0].dismiss();
-                locateLookup(sku, only.isEmpty() ? null : only);
+                if (epcHunt) {
+                    locateHuntEpcs(huntTitle, only);
+                } else {
+                    locateLookup(sku, only.isEmpty() ? null : only);
+                }
             });
             LinearLayout.LayoutParams cl = new LinearLayout.LayoutParams(
                     LinearLayout.LayoutParams.MATCH_PARENT,
@@ -9892,7 +9953,20 @@ public class MainActivity extends Activity {
                 // only shows for those.
                 final JSONObject receipt = b.isNull("order_receipt")
                         ? null : b.optJSONObject("order_receipt");
+                // Multi-box SET groups ride the batch object (Nick,
+                // 2026-09-09): the collect list lumps each set's boxes
+                // under one header line.
+                final JSONArray bsArr = b.optJSONArray("box_sets");
                 ui.post(() -> {
+                    batchBoxSets.clear();
+                    for (int i = 0; bsArr != null && i < bsArr.length();
+                            i++) {
+                        JSONObject s = bsArr.optJSONObject(i);
+                        if (s != null) {
+                            batchBoxSets.put(s.optString("set_sku", "")
+                                    .toUpperCase(java.util.Locale.US), s);
+                        }
+                    }
                     if (scanning) toggleScan();
                     batchId = id;
                     batchBin = bin;
@@ -10574,7 +10648,131 @@ public class MainActivity extends Activity {
                 displayItems.addAll(waiting);
             }
         }
+        if (inBatch() && (step == STEP_COLLECT || step == STEP_PAIR)) {
+            groupBoxSetRows();
+        }
         batchAdapter.notifyDataSetChanged();
+    }
+
+    /** Which set (upper SKU) this product belongs to on the current
+     *  batch's box-set list - itself, one of its boxes, or null. */
+    private String boxSetKeyOf(String sku) {
+        if (sku == null || batchBoxSets.isEmpty()) return null;
+        String u = sku.toUpperCase(java.util.Locale.US);
+        if (batchBoxSets.containsKey(u)) return u;
+        for (java.util.Map.Entry<String, JSONObject> e
+                : batchBoxSets.entrySet()) {
+            JSONArray parts = e.getValue().optJSONArray("parts");
+            for (int i = 0; parts != null && i < parts.length(); i++) {
+                JSONObject p = parts.optJSONObject(i);
+                if (p != null && u.equals(p.optString("sku", "")
+                        .toUpperCase(java.util.Locale.US))) {
+                    return e.getKey();
+                }
+            }
+        }
+        return null;
+    }
+
+    private BItem itemBySku(String sku) {
+        if (sku == null) return null;
+        for (BItem b : bItems) {
+            if (b.sku != null && b.sku.equalsIgnoreCase(sku)) return b;
+        }
+        return null;
+    }
+
+    /** Full units of the set present, made up of its ingredients: the
+     *  SMALLEST box count, out-of-bin boxes counted by what the system
+     *  already knows about them. */
+    private Integer boxSetUnitsHere(String setKey) {
+        JSONObject meta = batchBoxSets.get(setKey);
+        if (meta == null) return null;
+        JSONArray parts = meta.optJSONArray("parts");
+        if (parts == null || parts.length() == 0) return null;
+        Integer min = null;
+        for (int i = 0; i < parts.length(); i++) {
+            JSONObject p = parts.optJSONObject(i);
+            if (p == null) continue;
+            BItem it = itemBySku(p.optString("sku", null));
+            int n = it != null ? it.unitsTotal
+                    : p.optInt("known_units", 0);
+            if (min == null || n < min) min = n;
+        }
+        return min;
+    }
+
+    /** Lump box-set part rows under one synthetic header per set (Nick,
+     *  2026-09-09), keeping their relative order. COLLECT also appends
+     *  the set's boxes that live in ANOTHER bin - read-only rows naming
+     *  the bin each belongs in and the count being used for it. */
+    private void groupBoxSetRows() {
+        if (batchBoxSets.isEmpty()) return;
+        List<BItem> out = new ArrayList<>();
+        java.util.HashSet<String> emitted = new java.util.HashSet<>();
+        for (BItem b : displayItems) {
+            String setKey = boxSetKeyOf(b.sku);
+            if (setKey == null) {
+                out.add(b);
+                continue;
+            }
+            if (!emitted.add(setKey)) continue;
+            JSONObject meta = batchBoxSets.get(setKey);
+            out.add(makeSetHeader(setKey, meta));
+            for (BItem p : displayItems) {
+                // The FULL product's own row (a batch seeded before the
+                // set existed) folds into the header instead of asking
+                // anyone to scan "the set".
+                if (p.rowKind == 0 && setKey.equals(boxSetKeyOf(p.sku))
+                        && !setKey.equalsIgnoreCase(
+                                p.sku == null ? "" : p.sku)) {
+                    out.add(p);
+                }
+            }
+            if (step == STEP_COLLECT && meta != null) {
+                JSONArray parts = meta.optJSONArray("parts");
+                for (int i = 0; parts != null && i < parts.length(); i++) {
+                    JSONObject pj = parts.optJSONObject(i);
+                    if (pj == null) continue;
+                    if (itemBySku(pj.optString("sku", null)) != null) {
+                        continue;
+                    }
+                    out.add(makeRemotePart(meta, pj));
+                }
+            }
+        }
+        displayItems.clear();
+        displayItems.addAll(out);
+    }
+
+    private BItem makeSetHeader(String setKey, JSONObject meta) {
+        BItem h = new BItem();
+        h.rowKind = 1;
+        h.id = -(setKey.hashCode() & 0x7fffffff) - 1;
+        h.resolved = true;
+        h.sku = meta != null ? meta.optString("set_sku", setKey) : setKey;
+        h.title = meta != null
+                ? meta.optString("set_title", h.sku) : setKey;
+        h.imageUrl = meta == null || meta.isNull("image_url")
+                ? null : meta.optString("image_url", null);
+        h.setBoxes = meta != null ? meta.optInt("boxes", 0) : 0;
+        h.expected = meta == null || meta.isNull("expected_units")
+                ? null : meta.optInt("expected_units");
+        return h;
+    }
+
+    private BItem makeRemotePart(JSONObject meta, JSONObject pj) {
+        BItem r = new BItem();
+        r.rowKind = 2;
+        r.sku = pj.optString("sku", "?");
+        r.id = -(r.sku.hashCode() & 0x7fffffff) - 2;
+        r.resolved = true;
+        r.boxNo = pj.optInt("box_no", 0);
+        r.knownUnits = pj.optInt("known_units", 0);
+        r.remoteBin = pj.isNull("bin") ? null : pj.optString("bin", null);
+        r.title = "Box " + r.boxNo + " of "
+                + (meta != null ? meta.optString("set_sku", "?") : "?");
+        return r;
     }
 
     // Tracker = two numbers only: scanned/expected while collecting,
@@ -10680,6 +10878,38 @@ public class MainActivity extends Activity {
             }
 
             BItem b = getItem(pos);
+            // Multi-box SET rows (Nick, 2026-09-09): the header line the
+            // parts lump under, and read-only rows for boxes shelved in
+            // a different bin. Neither is scannable or clickable.
+            if (b.rowKind != 0) {
+                boolean remote = b.rowKind == 2;
+                h.card.setBackground(rr(remote ? C_PRESS : C_BG,
+                        remote ? C_LINE : C_BLUE, 10));
+                h.tracker.setTextColor(remote ? C_MUTED : C_BLUE);
+                h.name.setText(remote ? b.title : "⧉ " + b.title);
+                if (remote) {
+                    h.sku.setText("SKU: " + b.sku + " - IN BIN "
+                            + (b.remoteBin != null ? b.remoteBin : "?")
+                            + ", collect it there");
+                    h.bc.setVisibility(View.VISIBLE);
+                    h.bc.setText("Using its known count: " + b.knownUnits
+                            + " box(es)");
+                    h.tracker.setText(String.valueOf(b.knownUnits));
+                } else {
+                    h.sku.setText("MULTI-BOX SET · " + b.setBoxes
+                            + " box SKUs = 1 unit");
+                    h.bc.setVisibility(View.VISIBLE);
+                    h.bc.setText("Full units here = smallest box count");
+                    Integer units = boxSetUnitsHere(b.sku == null ? ""
+                            : b.sku.toUpperCase(java.util.Locale.US));
+                    String u = units == null ? "?"
+                            : String.valueOf(units);
+                    h.tracker.setText(b.expected != null
+                            ? u + "/" + b.expected : u);
+                }
+                loadImage(b.imageUrl, h.img);
+                return convert;
+            }
             // While pairing, the card says at a glance whether this product
             // is done (green) or has more tags on it than labels printed
             // (red). The selected product keeps its blue border on top of
@@ -13680,9 +13910,12 @@ public class MainActivity extends Activity {
                 body.put("epcs", new JSONArray(epcs));
                 JSONObject resp = api("POST", "/api/epc-captures", body);
                 ok = true;
+                int unl = resp.optInt("unlinked_stashed", 0);
                 result = "Sent ✓ sweep #" + resp.optInt("id") + " ("
                         + epcs.size() + " tags). Pull it on the PC's verify "
-                        + "screen. CLEAR before the next shelf.";
+                        + "screen. CLEAR before the next shelf."
+                        + (unl > 0 ? " " + unl + " sticker(s) linked to "
+                           + "nothing went to the locate list." : "");
             } catch (Exception e) {
                 result = "Send FAILED (" + e.getMessage() + ") — tags kept; "
                         + "get Wi-Fi coverage and press SEND again.";
@@ -14924,13 +15157,22 @@ public class MainActivity extends Activity {
         for (Object[] c : cards) {
             list.addView((LinearLayout) c[2], auditRowLp());
         }
-        int extras = (foreign == null ? 0 : foreign.length())
-                + (unknown == null ? 0 : unknown.length());
-        if (extras > 0) {
-            list.addView(auditRowView(extras + " tag(s) from other "
-                    + "shelves or unknown - normal neighbour noise on a "
-                    + "big antenna; the web terminal lists each one.",
+        int nForeign = foreign == null ? 0 : foreign.length();
+        int nUnknown = unknown == null ? 0 : unknown.length();
+        if (nForeign > 0) {
+            list.addView(auditRowView(nForeign + " tag(s) from other "
+                    + "shelves - normal neighbour noise on a big "
+                    + "antenna; the web terminal lists each one.",
                     C_MUTED), auditRowLp());
+        }
+        // Stickers linked to NOTHING (Nick, 2026-09-09): the sweep
+        // upload already stashed them on the locate list's unlinked-
+        // stickers entry - say where to pick the hunt up.
+        if (nUnknown > 0) {
+            list.addView(auditRowView(nUnknown + " sticker(s) not "
+                    + "linked to any product - saved to the locate "
+                    + "list; hunt them from LOCATE, LIST button.",
+                    C_WARN), auditRowLp());
         }
         if (flagged == 0) {
             list.addView(auditRowView("✓ ALL CLEAR - every product is "
