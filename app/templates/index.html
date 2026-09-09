@@ -680,6 +680,10 @@
           </p>
           <ul class="setbox__list" id="batch-resume-list"></ul>
         </div>
+        <p class="linkbox__extra-label">
+          <button class="reset" id="unres-labels-open" type="button"
+                  title="Receiving labels (TC-Planner prints and Receive entire shipment) that were never RFID-paired - the boxes are on shelves wearing a sticker nobody linked. Dismiss retires a label for good.">🏷 Unresolved printed labels…</button>
+        </p>
       </div>
 
       <!-- Bin work board: what's left, and what was just finished -->
@@ -1420,6 +1424,20 @@
         <div class="linkbox__actions">
           <button class="reset" id="evcolor-reset" type="button">Reset all to defaults</button>
           <button class="reset" id="evcolor-close" type="button">Close</button>
+        </div>
+      </section>
+    </div>
+
+    <!-- Unresolved printed labels (Nick, 2026-09-09): receiving labels
+         never RFID-paired, per product per batch; Dismiss retires ONE
+         label instance for good (same dismissal audits honor). -->
+    <div class="phist-overlay" id="unres-overlay" hidden>
+      <section class="linkbox serialbox phist-modal unres-modal">
+        <div class="linkbox__title">Unresolved printed labels</div>
+        <p class="linkbox__text">Labels printed while receiving (TC-Planner's Print labels, or Receive entire shipment) whose boxes were never RFID-paired. Pair them from the batch, hold genuinely unused strips, or Dismiss one here to say that label is accounted for - dismissals stop counting as owed everywhere, audits included.</p>
+        <ul class="recent__list" id="unres-list"></ul>
+        <div class="linkbox__actions">
+          <button class="reset" id="unres-close" type="button">Close</button>
         </div>
       </section>
     </div>

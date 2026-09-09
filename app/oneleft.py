@@ -72,10 +72,13 @@ logger = logging.getLogger("rfid.oneleft")
 
 _TIMEOUT = 20
 # Their confirm endpoint validates against this fixed list — mirror of
-# their deployed source. Nick + Clay added to BOTH sides 2026-08-18
-# (their func redeployed), so RFID confirms attribute to the real
-# operator instead of falling back to Steve.
-VALID_EMPLOYEES = {"Clay", "Danielle", "Evie", "Matt", "Nick", "Noor", "Steve"}
+# their deployed source. Nick + Clay were added to both sides
+# 2026-08-18, but their func app has since REVERTED to the original
+# five (Nick's field report, 2026-09-09: auto-clear rejected him) and
+# redeploying their app is banned - so this mirror goes back to what
+# their side actually accepts. Anyone else falls back to the
+# configured default; OUR receipt rows always record the true actor.
+VALID_EMPLOYEES = {"Danielle", "Evie", "Matt", "Noor", "Steve"}
 
 # The pending queue barely moves minute to minute and every board build
 # starts with it; a short cache keeps kicks from hammering their app.

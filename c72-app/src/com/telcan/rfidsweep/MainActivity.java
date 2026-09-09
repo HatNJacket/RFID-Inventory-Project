@@ -1861,6 +1861,21 @@ public class MainActivity extends Activity {
         act.addView(locFoundBtn, new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         v.addView(act);
+        // Second action row: the Unpaired Tags hunt (Nick, 2026-09-09)
+        // and the undo for its last pair. ON state = the button lit.
+        LinearLayout act2 = new LinearLayout(this);
+        act2.setGravity(Gravity.CENTER);
+        act2.setPadding(0, dp(6), 0, 0);
+        locUnpairedBtn = smallBtn("UNPAIRED TAGS");
+        locUnpairedBtn.setOnClickListener(x -> toggleUnpairedHunt());
+        act2.addView(locUnpairedBtn, new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        locUndoBtn = smallBtn("UNDO PAIR");
+        locUndoBtn.setOnClickListener(x -> undoLastLocatePair());
+        locUndoBtn.setVisibility(View.GONE);
+        act2.addView(locUndoBtn, new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        v.addView(act2);
         paintSoundBtn();
 
         locHint = new TextView(this);
@@ -2697,6 +2712,8 @@ public class MainActivity extends Activity {
                         tagsResp.optJSONArray("assignments");
                 ui.post(() -> {
                     stopLocate(false);
+                    // Loading a real product ends any Unpaired Tags hunt.
+                    exitUnpairedHunt(false);
                     // A new product invalidates the old radar picture.
                     if (locMode == 1) setLocMode(0);
                     stopRadarEngine();
@@ -2786,6 +2803,7 @@ public class MainActivity extends Activity {
             return;
         }
         stopLocate(false);
+        exitUnpairedHunt(false);
         if (locMode == 1) setLocMode(0);
         stopRadarEngine();
         locTags.clear();
@@ -2805,6 +2823,408 @@ public class MainActivity extends Activity {
         updateLocateUi();
         status.setText("Pull the trigger to hunt " + locTags.size()
                 + " unlinked tag(s).");
+    }
+
+    // ------------------------------------------ Unpaired Tags hunt --------
+    private void toggleUnpairedHunt() {
+        if (unpairedHunt) {
+            exitUnpairedHunt(true);
+            return;
+        }
+        stopLocate(false);
+        if (locMode == 1) setLocMode(0);
+        stopRadarEngine();
+        locTags.clear();
+        locFound.clear();
+        locNarrow = null;
+        locEma = 0;
+        upKnown.clear();
+        synchronized (upPending) {
+            upPending.clear();
+        }
+        upChecked = 0;
+        upArmedProduct = null;
+        unpairedHunt = true;
+        locProduct = new JSONObject();
+        locName.setText("Unpaired tags");
+        locSku.setText("Listening for stickers linked to NOTHING - "
+                + "0 target(s) so far");
+        locImg.setImageBitmap(null);
+        paintUnpairedBtn();
+        beep(SOUND_OK);
+        status.setText("UNPAIRED TAGS: trigger to listen. Every sticker "
+                + "with no product becomes a target - walk the meter to "
+                + "one, then scan the box's barcode. Or scan a barcode "
+                + "FIRST and read the sticker in hand.");
+        updateLocateUi();
+    }
+
+    private void exitUnpairedHunt(boolean announce) {
+        if (!unpairedHunt) return;
+        unpairedHunt = false;
+        stopLocate(false);
+        if (upArmedProduct != null && upPrevPower >= 1) {
+            setPowerLevel(upPrevPower);
+        }
+        upArmedProduct = null;
+        locTags.clear();
+        locFound.clear();
+        locProduct = null;
+        paintUnpairedBtn();
+        if (announce) {
+            status.setText("Unpaired hunt closed.");
+            updateLocateUi();
+        }
+    }
+
+    private void paintUnpairedBtn() {
+        if (locUnpairedBtn == null) return;
+        locUnpairedBtn.setBackground(unpairedHunt
+                ? rr(C_OK_BG, C_OK, 8)
+                : btnBg(C_CARD, C_LINE, C_PRESS, 8));
+    }
+
+    /** Drain the pending reads into ONE classify call - 40 tags or
+     *  1.2s, whichever comes first; verdicts are cached for the whole
+     *  hunt so nothing is ever asked twice. */
+    private void upClassifyTick(long now) {
+        if (upClassifyBusy) return;
+        final java.util.ArrayList<String> batch = new java.util.ArrayList<>();
+        synchronized (upPending) {
+            if (upPending.isEmpty()) return;
+            if (upPending.size() < 40 && now - upLastClassify < 1200) {
+                return;
+            }
+            int n = 0;
+            for (java.util.Iterator<String> it = upPending.iterator();
+                    it.hasNext() && n < 300; n++) {
+                batch.add(it.next());
+                it.remove();
+            }
+        }
+        upClassifyBusy = true;
+        upLastClassify = now;
+        new Thread(() -> {
+            try {
+                JSONObject resp = api("POST", "/api/epcs/unlinked",
+                        new JSONObject().put("epcs", new JSONArray(batch)));
+                final JSONArray unl = resp.optJSONArray("unlinked");
+                ui.post(() -> {
+                    java.util.HashSet<String> targets =
+                            new java.util.HashSet<>();
+                    for (int i = 0; unl != null && i < unl.length(); i++) {
+                        targets.add(unl.optString(i)
+                                .toUpperCase(java.util.Locale.ROOT));
+                    }
+                    for (String e : batch) {
+                        if (targets.contains(e)) {
+                            if (!locTags.containsKey(e)) {
+                                locTags.put(e, -999.0);
+                            }
+                        } else {
+                            upKnown.add(e);
+                        }
+                    }
+                    upChecked += batch.size();
+                    if (unpairedHunt) {
+                        locSku.setText(locTags.size() + " unpaired "
+                                + "target(s) · " + upChecked
+                                + " tag(s) checked");
+                        updateLocateUi();
+                    }
+                });
+            } catch (Exception e) {
+                // Put the batch back - a Wi-Fi blip must not lose reads.
+                synchronized (upPending) {
+                    upPending.addAll(batch);
+                }
+            } finally {
+                upClassifyBusy = false;
+            }
+        }).start();
+    }
+
+    /** 99-100%: the sticker is in hand. This mode's OWN window (Nick,
+     *  2026-09-09): scan the box's barcode to pair the tag to that
+     *  product - no mark-as-found detour. */
+    private void showUnpairedPairSheet(final String epc) {
+        stopLocate(false);
+        final EditText in = themedEdit();
+        in.setHint("Scan the product's barcode");
+        in.setTextSize(16);
+        LinearLayout wrap = new LinearLayout(this);
+        wrap.setOrientation(LinearLayout.VERTICAL);
+        wrap.setPadding(dp(18), dp(6), dp(18), dp(2));
+        TextView msg = new TextView(this);
+        msg.setTextColor(C_TEXT);
+        msg.setTextSize(13);
+        msg.setText("Sticker …" + epc.substring(Math.max(0,
+                epc.length() - 6)) + " is in hand. Scan the barcode of "
+                + "the box wearing it - the tag pairs to that product "
+                + "and stops being unpaired.");
+        wrap.addView(msg);
+        LinearLayout.LayoutParams il = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        il.topMargin = dp(8);
+        wrap.addView(in, il);
+        final AlertDialog[] dref = new AlertDialog[1];
+        dref[0] = dlg()
+                .setTitle("PAIR THIS STICKER")
+                .setView(wrap)
+                .setPositiveButton("PAIR", (d, w) -> {
+                    locFullPromptUp = false;
+                    pairUnlinkedTag(epc, in.getText().toString().trim());
+                })
+                .setNegativeButton("KEEP HUNTING", (d, w) ->
+                        locFullPromptUp = false)
+                .setOnCancelListener(d -> locFullPromptUp = false)
+                .show();
+        // The BT wedge types the code + Enter into the focused box -
+        // pair on the spot, no PAIR tap needed.
+        in.setOnEditorActionListener((tv, actionId, ev) -> {
+            String code = in.getText().toString().trim();
+            if (!code.isEmpty()) {
+                locFullPromptUp = false;
+                if (dref[0] != null) dref[0].dismiss();
+                pairUnlinkedTag(epc, code);
+            }
+            return true;
+        });
+        in.requestFocus();
+    }
+
+    private void pairUnlinkedTag(final String epc, final String code) {
+        if (code == null || code.isEmpty()) {
+            status.setText("No barcode scanned - the tag stays on the "
+                    + "hunt.");
+            return;
+        }
+        status.setText("Pairing …" + epc.substring(Math.max(0,
+                epc.length() - 6)) + " to " + code + "…");
+        new Thread(() -> {
+            try {
+                JSONObject resp = api("POST", "/api/locate/pair-unlinked",
+                        new JSONObject()
+                                .put("epc", epc)
+                                .put("code", code)
+                                .put("worker",
+                                        prefs.getString("device", "C72")));
+                final String msg = resp.optString("message", "Paired ✓");
+                final int item = resp.optInt("bumped_item_id", 0);
+                ui.post(() -> {
+                    beep(SOUND_OK);
+                    locTags.remove(epc);
+                    locFound.remove(epc);
+                    upKnown.add(epc);
+                    upLastPairEpc = epc;
+                    upLastPairItem = item;
+                    if (locUndoBtn != null) {
+                        locUndoBtn.setVisibility(View.VISIBLE);
+                    }
+                    if (upArmedProduct != null && upPrevPower >= 1) {
+                        setPowerLevel(upPrevPower);
+                    }
+                    upArmedProduct = null;
+                    if (unpairedHunt) {
+                        locSku.setText(locTags.size() + " unpaired "
+                                + "target(s) · " + upChecked
+                                + " tag(s) checked");
+                    }
+                    status.setText(msg + " - UNDO PAIR reverses it. "
+                            + (locTags.size() > 0
+                               ? locTags.size() + " target(s) left."
+                               : "No unpaired targets in earshot."));
+                    updateLocateUi();
+                });
+            } catch (Exception e) {
+                ui.post(() -> {
+                    beep(SOUND_ERR);
+                    status.setText("Pair failed: " + e.getMessage());
+                });
+            }
+        }).start();
+    }
+
+    /** Barcode-first (Nick, 2026-09-09): the product is known, the
+     *  sticker isn't. Arm the product, drop to the favourited Station
+     *  power, and the next trigger reads the sticker in hand. */
+    private void upBarcodeFirst(final String code) {
+        status.setText("Looking up " + code + "…");
+        new Thread(() -> {
+            JSONObject p = null;
+            try {
+                p = api("GET", "/api/products/by-barcode/"
+                        + encPath(code), null);
+            } catch (Exception ignored) {
+            }
+            final JSONObject fp = p;
+            ui.post(() -> {
+                if (fp == null) {
+                    beep(SOUND_ERR);
+                    status.setText(code + " matches no product - link "
+                            + "it at the Scan Station first.");
+                    return;
+                }
+                stopLocate(false);
+                upArmedProduct = fp;
+                upPrevPower = prefs.getInt("power", 20);
+                int want = prefs.getInt("pow_tab_station", 0);
+                if (want >= 1 && want <= 30) setPowerLevel(want);
+                beep(SOUND_OK);
+                locName.setText(fp.optString("product_title", code));
+                locSku.setText("ARMED - trigger reads the sticker in "
+                        + "your hand and pairs it to this product");
+                loadImage(fp.isNull("image_url") ? null
+                        : fp.optString("image_url"), locImg);
+                status.setText(fp.optString("product_title", code)
+                        + " armed at Station power - hold the unpaired "
+                        + "sticker to the antenna and TRIGGER.");
+            });
+        }).start();
+    }
+
+    /** Trigger with a product armed: read the strongest tag in hand
+     *  and pair it. The server refuses tags that already belong to
+     *  something, so a shelf tag answering louder just errors safely. */
+    private void upReadAndPair() {
+        final JSONObject p = upArmedProduct;
+        if (p == null) return;
+        status.setText("Reading the sticker…");
+        new Thread(() -> {
+            final TagRead read = readStrongestTag(600);
+            final String epc = read == null ? null : read.epc;
+            ui.post(() -> {
+                if (epc == null || epc.isEmpty()) {
+                    beep(SOUND_ERR);
+                    status.setText("No tag read - get the sticker closer "
+                            + "and trigger again.");
+                    return;
+                }
+                String code = p.isNull("sku")
+                        ? p.optString("barcode", "")
+                        : p.optString("sku", "");
+                pairUnlinkedTag(epc.toUpperCase(java.util.Locale.ROOT),
+                        code);
+            });
+        }).start();
+    }
+
+    private void undoLastLocatePair() {
+        final String epc = upLastPairEpc;
+        if (epc == null) return;
+        final int item = upLastPairItem;
+        dlg()
+                .setTitle("UNDO THE LAST PAIR")
+                .setMessage("Unlink tag …" + epc.substring(Math.max(0,
+                        epc.length() - 6)) + "? The sticker goes back "
+                        + "to being unpaired"
+                        + (item > 0 ? " and the receiving label it "
+                           + "consumed is owed again." : "."))
+                .setPositiveButton("UNDO", (d, w) -> new Thread(() -> {
+                    try {
+                        JSONObject body = new JSONObject()
+                                .put("epc", epc)
+                                .put("worker",
+                                        prefs.getString("device", "C72"));
+                        if (item > 0) body.put("item_id", item);
+                        api("POST", "/api/locate/pair-unlinked/undo",
+                                body);
+                        ui.post(() -> {
+                            beep(SOUND_OTHER);
+                            upLastPairEpc = null;
+                            upLastPairItem = 0;
+                            if (locUndoBtn != null) {
+                                locUndoBtn.setVisibility(View.GONE);
+                            }
+                            if (unpairedHunt) {
+                                upKnown.remove(epc);
+                                locTags.put(epc, -999.0);
+                                locSku.setText(locTags.size()
+                                        + " unpaired target(s) · "
+                                        + upChecked + " tag(s) checked");
+                            }
+                            status.setText("Undone - …" + epc.substring(
+                                    Math.max(0, epc.length() - 6))
+                                    + " is unpaired again.");
+                            updateLocateUi();
+                        });
+                    } catch (Exception e) {
+                        ui.post(() -> status.setText("Undo failed: "
+                                + e.getMessage()));
+                    }
+                }).start())
+                .setNegativeButton("CANCEL", null)
+                .show();
+    }
+
+    /** Batch tab: the unresolved printed labels list - receiving labels
+     *  never RFID-paired (Nick, 2026-09-09). Read-only here; the web
+     *  terminal dismisses them. */
+    private void showUnresolvedLabels() {
+        status.setText("Loading unresolved printed labels…");
+        new Thread(() -> {
+            try {
+                JSONObject resp = api("GET",
+                        "/api/receiving/unpaired-labels", null);
+                final JSONArray rows = resp.optJSONArray("products");
+                final int total = resp.optInt("total_labels", 0);
+                ui.post(() -> {
+                    LinearLayout list = new LinearLayout(this);
+                    list.setOrientation(LinearLayout.VERTICAL);
+                    list.setPadding(dp(12), dp(8), dp(12), dp(8));
+                    if (rows == null || rows.length() == 0) {
+                        TextView t = new TextView(this);
+                        t.setTextColor(C_OK);
+                        t.setTextSize(13);
+                        t.setText("✓ Every receiving label is paired, "
+                                + "held or dismissed.");
+                        list.addView(t);
+                    }
+                    for (int i = 0; rows != null && i < rows.length();
+                            i++) {
+                        JSONObject r = rows.optJSONObject(i);
+                        if (r == null) continue;
+                        LinearLayout card = auditCard(
+                                r.optString("product_title",
+                                        r.optString("sku", "?")),
+                                "SKU " + r.optString("sku", "?")
+                                        + " · Receiving #"
+                                        + r.optInt("batch_id")
+                                        + (r.isNull("reference") ? ""
+                                           : " · " + r.optString(
+                                                   "reference"))
+                                        + (r.isNull("bin_location") ? ""
+                                           : "\nBin " + r.optString(
+                                                   "bin_location")),
+                                r.optInt("count") + "×", C_WARN, null);
+                        list.addView(card, auditRowLp());
+                    }
+                    TextView hint = new TextView(this);
+                    hint.setTextColor(C_MUTED);
+                    hint.setTextSize(11);
+                    hint.setPadding(0, dp(6), 0, 0);
+                    hint.setText("Pair them by resuming the receiving "
+                            + "batch, hunt the stickers from LOCATE - "
+                            + "UNPAIRED TAGS, or dismiss labels on the "
+                            + "web terminal (Batch tab).");
+                    list.addView(hint);
+                    ScrollView scroll = new ScrollView(this);
+                    scroll.addView(list);
+                    dlg()
+                            .setTitle("UNRESOLVED PRINTED LABELS ("
+                                    + total + ")")
+                            .setView(scroll)
+                            .setNegativeButton("CLOSE", null)
+                            .show();
+                    status.setText(total + " receiving label(s) never "
+                            + "RFID-paired.");
+                });
+            } catch (Exception e) {
+                ui.post(() -> status.setText("List failed: "
+                        + e.getMessage()));
+            }
+        }).start();
     }
 
     /** The web terminal's to-hunt queue: pick a product to locate without
@@ -3113,9 +3533,41 @@ public class MainActivity extends Activity {
         narrowFilterSet = false;
     }
 
+    // ---- Unpaired Tags hunt (Nick, 2026-09-09) ----------------------------
+    // Listen for stickers linked to NOTHING: every unknown EPC heard is
+    // classified against the server in BATCHES (40 tags or 1.2s, whichever
+    // first) and every verdict is cached, so a dense shelf costs a handful
+    // of calls, not one per tag. Unlinked tags become hunt targets; at 99%
+    // the pair sheet opens (scan the box's barcode); scanning a barcode
+    // FIRST arms the product, drops to the favourited Station power and
+    // pairs the sticker read in hand.
+    private boolean unpairedHunt = false;
+    private final java.util.HashSet<String> upKnown =
+            new java.util.HashSet<>();
+    private final java.util.HashSet<String> upPending =
+            new java.util.HashSet<>();
+    private volatile boolean upClassifyBusy = false;
+    private long upLastClassify = 0;
+    private int upChecked = 0;
+    private JSONObject upArmedProduct = null;
+    private int upPrevPower = 0;
+    private String upLastPairEpc = null;
+    private int upLastPairItem = 0;
+    private Button locUnpairedBtn, locUndoBtn;
+
     /** Called from the SDK callback thread for every read while locating. */
     private void onLocateRead(String epc, double rssi) {
         String key = epc.toUpperCase(java.util.Locale.ROOT);
+        if (unpairedHunt && !locTags.containsKey(key)) {
+            // An EPC this hunt hasn't judged yet: queue it for the next
+            // classify batch. Already-judged known tags cost nothing.
+            if (!upKnown.contains(key)) {
+                synchronized (upPending) {
+                    upPending.add(key);
+                }
+            }
+            return;
+        }
         if (!locTags.containsKey(key)) return;
         locTags.put(key, rssi);
         if (!locTargets().contains(key)) return;
@@ -3179,12 +3631,23 @@ public class MainActivity extends Activity {
             if (e.getValue() > -998) heard++;
         }
         locHeardCount = heard;
+        if (unpairedHunt) upClassifyTick(now);
         if (locMode == 1) radarTick(now);
         autoPowerTick(now, fresh, pct);
         // Pegged AT the top while hunting: offer to mark the loudest
         // tag found so the hunt moves on to the rest. Declining
-        // snoozes it for 10 s.
-        if (locating && pct >= 100 && heardThisTick
+        // snoozes it for 10 s. Unpaired Tags mode opens its OWN sheet
+        // at 99 (Nick, 2026-09-09): scan the box's barcode to pair the
+        // sticker, no mark-as-found detour.
+        if (unpairedHunt && locating && pct >= 99 && heardThisTick
+                && !locFullPromptUp && now - locFullPromptAt > 10000) {
+            final String epc = locLoudEpc;
+            if (epc != null && locTags.containsKey(epc)) {
+                locFullPromptUp = true;
+                locFullPromptAt = now;
+                showUnpairedPairSheet(epc);
+            }
+        } else if (!unpairedHunt && locating && pct >= 100 && heardThisTick
                 && !locFullPromptUp && now - locFullPromptAt > 10000) {
             final String epc = locLoudEpc;
             if (epc != null && !locFound.contains(epc)) {
@@ -5569,7 +6032,11 @@ public class MainActivity extends Activity {
                         + "or BACK to keep scanning.");
             } else batchScan(code);
         } else if (activeTab == TAB_LOCATE) {
-            locateLookup(code);
+            // Unpaired Tags mode: a barcode scan means "the PRODUCT is
+            // known" - arm it for an in-hand sticker read instead of
+            // loading a normal hunt (Nick, 2026-09-09).
+            if (unpairedHunt) upBarcodeFirst(code);
+            else locateLookup(code);
         } else if (activeTab == TAB_STATION) {
             // The bins wear barcodes of their own that scan as the bin
             // name ("D1-3"). With a product already up, that scan almost
@@ -5799,7 +6266,8 @@ public class MainActivity extends Activity {
         } else if (activeTab == TAB_SWEEP) {
             toggleScan();
         } else if (activeTab == TAB_LOCATE) {
-            if (locMode == 1 && radarEngine == 2) toggleChainwayRadar();
+            if (unpairedHunt && upArmedProduct != null) upReadAndPair();
+            else if (locMode == 1 && radarEngine == 2) toggleChainwayRadar();
             else toggleLocate();
         } else if (activeTab == TAB_LINK) {
             linkReadTag();
@@ -9932,7 +10400,16 @@ public class MainActivity extends Activity {
         list.addView(rcv, rl);
         Button srt = smallBtn("SORT A SHIPMENT…");
         srt.setOnClickListener(x -> sortStart());
-        list.addView(srt, new LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        sl.bottomMargin = dp(6);
+        list.addView(srt, sl);
+        // Receiving labels never RFID-paired (Nick, 2026-09-09): the
+        // same list the web's Batch tab shows, read-only here.
+        Button unres = smallBtn("UNRESOLVED PRINTED LABELS…");
+        unres.setOnClickListener(x -> showUnresolvedLabels());
+        list.addView(unres, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
     }

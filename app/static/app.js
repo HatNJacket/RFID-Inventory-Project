@@ -414,6 +414,7 @@ const EVENT_META = {
   "tags-rebinned": ["Tags Re-binned", "#0e7a8a"],
   "bundle-contents-set": ["Bundle Contents", "#6f42c1"],
   "locate-list": ["Locate List", "#5561c9"],
+  "locate-paired": ["Locate Assigned Tag", "#2f9e6e"],
   oneleft: ["1-left Check", "#b07d00"],
   "audit-session": ["Audit Session", "#0e7a8a"],
   "bin-audited": ["Audit Done", "#0b6e99"],
@@ -4340,6 +4341,69 @@ document
     resumeSortMode = ev.target.value;
     renderResumeList();
   });
+
+// --- Unresolved printed labels (Nick, 2026-09-09) ---------------------------
+// Receiving labels (TC-Planner prints / Receive entire shipment ONLY)
+// never RFID-paired, one row per product per batch. Dismiss retires ONE
+// label instance for good - the same LabelDismissal audits honor.
+async function renderUnresolvedLabels() {
+  const list = document.getElementById("unres-list");
+  list.innerHTML = '<li class="inventory__empty">Loading…</li>';
+  try {
+    const r = await apiJson("/api/receiving/unpaired-labels");
+    const rows = r.products || [];
+    if (!rows.length) {
+      list.innerHTML =
+        '<li class="inventory__empty">Every receiving label is paired, held or dismissed ✓</li>';
+      return;
+    }
+    list.innerHTML = "";
+    rows.forEach((p) => {
+      const li = document.createElement("li");
+      li.className = "recent__item unres-row";
+      li.innerHTML = `
+        <div class="unres-row__main">
+          <b>${escapeHtml(p.product_title || p.sku || "?")}</b>
+          <div class="binlabel"><span class="mono">${escapeHtml(p.sku || "?")}</span> · ${p.count} label(s) · Receiving #${p.batch_id}${
+            p.reference ? " · " + escapeHtml(p.reference) : ""
+          }${p.bin_location ? " · bin " + escapeHtml(p.bin_location) : ""}</div>
+        </div>
+        <button class="reset" type="button" data-dismiss
+          ${p.epcs && p.epcs.length ? "" : "disabled"}
+          title="Retire ONE of these labels for good - it stops counting as owed everywhere, audits included">Dismiss one</button>`;
+      li.querySelector("[data-dismiss]").addEventListener(
+        "click",
+        async (ev) => {
+          const btn = ev.currentTarget;
+          btn.disabled = true;
+          try {
+            await postJson("/api/audit/dismiss-labels", {
+              epcs: [p.epcs[0]],
+              by: operatorEl.value || null,
+            });
+            renderUnresolvedLabels();
+          } catch (err) {
+            alert(err.message);
+            btn.disabled = false;
+          }
+        }
+      );
+      list.append(li);
+    });
+  } catch (err) {
+    list.innerHTML = `<li class="inventory__empty">${escapeHtml(err.message)}</li>`;
+  }
+}
+document.getElementById("unres-labels-open").addEventListener("click", () => {
+  document.getElementById("unres-overlay").hidden = false;
+  renderUnresolvedLabels();
+});
+document.getElementById("unres-close").addEventListener("click", () => {
+  document.getElementById("unres-overlay").hidden = true;
+});
+document.getElementById("unres-overlay").addEventListener("click", (e) => {
+  if (e.target.id === "unres-overlay") e.target.hidden = true;
+});
 
 // --- Bin work board ---------------------------------------------------------
 // Every bin in the store (from the Shopify bin map) that hasn't been
@@ -15872,6 +15936,34 @@ async function undoHistoryEvent(e, btn) {
   // Multi-box sets: undo removes the set's part records - the Shopify
   // draft listings stay (Nick, 2026-09-08). The builder recreates it
   // in seconds if that was a mistake.
+  // Locate Assigned Tag (Nick, 2026-09-09): unlink the sticker the
+  // Unpaired Tags hunt paired, and give back the receiving label
+  // instance it consumed.
+  if (e.undo.kind === "locate-pair") {
+    if (
+      !confirm(
+        `Unlink tag …${(e.undo.epc || "").slice(-6)}?\n\nThe sticker ` +
+          `goes back to being unpaired (the hunt will hear it again)` +
+          (e.undo.item_id
+            ? `, and the receiving label it consumed is owed again.`
+            : `.`)
+      )
+    )
+      return;
+    btn.disabled = true;
+    try {
+      await postJson("/api/locate/pair-unlinked/undo", {
+        epc: e.undo.epc,
+        item_id: e.undo.item_id || null,
+        worker: operatorEl.value || null,
+      });
+      await loadHistory();
+    } catch (err) {
+      btn.disabled = false;
+      alert(err.message);
+    }
+    return;
+  }
   if (e.undo.kind === "box-set") {
     if (
       !confirm(

@@ -2355,6 +2355,12 @@ a { color: var(--accent); }
 }
 
 /* event colour editor rows */
+/* Unresolved printed labels (Nick, 2026-09-09): product rows with a
+   per-instance Dismiss, in the shared modal shell. */
+.unres-modal { max-width: 640px; }
+.unres-row { display: flex; align-items: center; gap: 10px; }
+.unres-row__main { flex: 1; min-width: 0; }
+
 .evcolor-modal { max-width: 560px; }
 .evcolor-modal #evcolor-search { margin-bottom: 6px; }
 /* Tall enough that a full page of 10 rows never scrolls (Nick,

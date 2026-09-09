@@ -223,9 +223,16 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
               for c in calls), str(calls))
 
     # ---- confirm with a counted number (the confirm window) ----------
-    # Nick is on their employee list now: attribution keeps his name.
-    check("Nick attributes as himself, not Steve",
-          oneleft.employee_for("Nick") == "Nick", oneleft.employee_for("Nick"))
+    # Their func app REVERTED to the original five employees (Nick's
+    # field report, 2026-09-09) and redeploying it is banned - names
+    # their side rejects fall back to the default; OUR receipt rows
+    # keep the true actor.
+    check("Nick falls back to the default their side accepts",
+          oneleft.employee_for("Nick") == "Steve",
+          oneleft.employee_for("Nick"))
+    check("listed employees still attribute as themselves",
+          oneleft.employee_for("Danielle") == "Danielle",
+          oneleft.employee_for("Danielle"))
     from app.models import ReviewTask as _RT
     from sqlalchemy import select as _sel
     with patch("app.shopify.get_quantity_breakdown",

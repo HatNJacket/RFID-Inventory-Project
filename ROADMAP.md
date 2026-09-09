@@ -3,6 +3,32 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-09.
 
+## 🕵 Unresolved printed labels + Unpaired Tags hunt — ✅ DEPLOYED 2026-09-09 (C72 3.97)
+
+- **Unresolved printed labels**: GET /api/receiving/unpaired-labels -
+  receiving-only (TC-Planner prints + Receive entire shipment), per
+  product per batch, printed minus paired minus held minus dismissed,
+  with EPC candidates. Web: button under the Batch tab's open-batches
+  list, overlay with per-instance "Dismiss one" (plain LabelDismissal,
+  so audits agree). C72 3.97: "UNRESOLVED PRINTED LABELS…" button on
+  the batch picker, read-only list.
+- **Unpaired Tags hunt** (Locate tab, UNPAIRED TAGS button): listens
+  for stickers linked to NOTHING. Reads are classified server-side in
+  batches (POST /api/epcs/unlinked, 40 tags/1.2s, verdicts cached for
+  the hunt) - unlinked EPCs become meter targets. At 99% the mode's
+  OWN pair sheet opens: scan the box's barcode, done. Barcode-FIRST
+  arms the product, drops to the favourited Station power, and the
+  trigger reads the sticker in hand; power restores after.
+- **Pairing** (POST /api/locate/pair-unlinked): refuses non-unlinked
+  EPCs, consumes ONE unresolved receiving label instance of that
+  product (newest owing batch's paired_count +1), logs the unique
+  "Locate Assigned Tag" History event with UNDO (web History + the
+  gun's UNDO PAIR button) that unlinks and gives the instance back.
+- oneleft VALID_EMPLOYEES mirrored back to their five (their func app
+  reverted; Nick's confirms fall back to Steve, our receipts keep the
+  true actor - redeploying their app stays banned).
+- test_unpairedhunt.py (17 checks); suites 64/64.
+
 ## 🤝 Pair step ignores won't-RFID-scan products — ✅ DEPLOYED 2026-09-09 (C72 3.96)
 
 Nick: 2459281/2459286 wear the flag but kept surfacing as next in

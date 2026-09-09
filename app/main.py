@@ -12578,6 +12578,259 @@ def _check_unpaired_label_tasks(session: Session) -> None:
         logger.exception("unpaired-label watchdog failed")
 
 
+@app.get(
+    "/api/receiving/unpaired-labels",
+    dependencies=[Depends(require_user)],
+)
+def receiving_unpaired_labels(session: Session = Depends(get_session)):
+    """The unresolved printed labels list (Nick, 2026-09-09): every
+    receiving label - printed via TC-Planner's Print labels or Receive
+    entire shipment, nothing else - that was never RFID-paired, is not
+    resting on a held vendor strip and was not dismissed. One row per
+    product per receiving batch, carrying the EPC candidates a web
+    dismissal retires one at a time. C72 shows the same list read-only."""
+    cutoff = datetime.utcnow() - timedelta(days=60)
+    products = []
+    for b in session.scalars(
+        select(Batch).where(Batch.kind == "receiving")
+        .order_by(Batch.id.desc())
+    ):
+        created = b.created_at
+        if created is not None and created.tzinfo is not None:
+            created = created.astimezone(timezone.utc).replace(tzinfo=None)
+        if created is not None and created < cutoff:
+            continue
+        net = _receiving_unpaired_net(session, b)
+        if not net:
+            continue
+        receipt = session.scalar(
+            select(OrderReceipt).where(OrderReceipt.batch_id == b.id)
+            .order_by(OrderReceipt.id.desc())
+        )
+        ref = (
+            f"{receipt.reference or 'Stock order'}"
+            + (f" · {receipt.vendor}" if receipt.vendor else "")
+        ) if receipt is not None else (b.created_by or "")
+        jobs = session.scalars(
+            select(PrintJob).where(
+                PrintJob.batch_id == b.id,
+                PrintJob.status.in_(("pending", "printing", "done")),
+                _NOT_COMPANION,
+            ).order_by(PrintJob.id.desc())
+        ).all()
+        dismissed = {
+            (e or "").upper()
+            for e in session.scalars(
+                select(LabelDismissal.epc).where(
+                    func.upper(LabelDismissal.epc).in_(
+                        sorted({j.epc.upper() for j in jobs if j.epc})
+                        or [""]
+                    )
+                )
+            )
+        }
+        by_sku: dict[str, list] = {}
+        for j in jobs:
+            key = (j.sku or "").strip().upper()
+            if key and (j.epc or "").upper() not in dismissed:
+                by_sku.setdefault(key, []).append(j)
+        for u in net:
+            key = (u["sku"] or "").strip().upper()
+            cand = by_sku.get(key, [])
+            products.append({
+                "batch_id": b.id,
+                "reference": ref or None,
+                "sku": u["sku"],
+                "product_title": u["product_title"],
+                "count": u["count"],
+                "bin_location": cand[0].bin_location if cand else None,
+                # Newest-first candidates, one per unpaired label - the
+                # web's Dismiss retires exactly one of these EPCs.
+                "epcs": [j.epc for j in cand[:u["count"]]],
+                "created_at": (
+                    b.created_at.isoformat() if b.created_at else None
+                ),
+            })
+    return {
+        "count": len(products),
+        "total_labels": sum(p["count"] for p in products),
+        "products": products,
+    }
+
+
+class EpcClassifyIn(BaseModel):
+    epcs: list[str] = Field(min_length=1, max_length=1000)
+
+
+@app.post("/api/epcs/unlinked", dependencies=[Depends(require_user)])
+def epcs_unlinked(
+    payload: EpcClassifyIn, session: Session = Depends(get_session)
+):
+    """The C72's Unpaired Tags hunt (Nick, 2026-09-09): which of these
+    swept EPCs belong to NOTHING - no tag record, not retired, not
+    dismissed, not a companion sticker. Batched (the gun sends reads in
+    bursts and caches every verdict) so a dense shelf costs a handful
+    of indexed queries, not one call per tag."""
+    unlinked = _still_unlinked(session, payload.epcs)
+    return {
+        "checked": len({
+            (e or "").strip().upper() for e in payload.epcs if e
+        }),
+        "unlinked": sorted(unlinked),
+    }
+
+
+class LocatePairIn(BaseModel):
+    epc: str = Field(min_length=8, max_length=64)
+    code: str = Field(min_length=1, max_length=100)
+    worker: str | None = Field(default=None, max_length=100)
+
+
+@app.post(
+    "/api/locate/pair-unlinked",
+    status_code=201,
+    dependencies=[Depends(require_user)],
+)
+def locate_pair_unlinked(
+    payload: LocatePairIn, session: Session = Depends(get_session)
+):
+    """Unpaired Tags mode's pairing (Nick, 2026-09-09): the hunt walked
+    the operator to a sticker nobody owns, they scanned the box's
+    barcode - link the tag to that product. When the product still owes
+    receiving labels (the unresolved printed labels list), one instance
+    is consumed: the newest owing receiving batch's item gains a
+    paired count, exactly as if the label had been paired at receiving.
+    History gets its own Locate Assigned Tag event, undoable."""
+    epc = payload.epc.strip().upper()
+    if not _still_unlinked(session, [epc]):
+        raise HTTPException(
+            409,
+            "That tag is no longer unlinked - it was paired, retired or "
+            "dismissed since the hunt started.",
+        )
+    try:
+        product = product_by_barcode(payload.code.strip())
+    except HTTPException:
+        product = None
+    if product is None:
+        raise HTTPException(
+            404, f"'{payload.code}' matches no product - link it at the "
+                 "Scan Station first.",
+        )
+    a = RfidAssignment(
+        rfid_id=epc,
+        shopify_variant_id=(product.get("shopify_variant_id") or "?"),
+        shopify_product_id=product.get("shopify_product_id"),
+        product_title=product.get("product_title") or "(unknown)",
+        variant_title=product.get("variant_title"),
+        sku=product.get("sku"),
+        barcode=product.get("barcode"),
+        bin_location=product.get("bin_location"),
+        assigned_by=(payload.worker or "").strip()[:100] or None,
+    )
+    session.add(a)
+    # Consume one unresolved printed label of this product, newest
+    # owing receiving batch first (Nick: "remove one instance").
+    bumped = None
+    sku_u = (product.get("sku") or "").strip().upper()
+    if sku_u:
+        cutoff = datetime.utcnow() - timedelta(days=60)
+        for b in session.scalars(
+            select(Batch).where(Batch.kind == "receiving")
+            .order_by(Batch.id.desc())
+        ):
+            created = b.created_at
+            if created is not None and created.tzinfo is not None:
+                created = created.astimezone(
+                    timezone.utc
+                ).replace(tzinfo=None)
+            if created is not None and created < cutoff:
+                continue
+            if not any(
+                (u["sku"] or "").strip().upper() == sku_u
+                for u in _receiving_unpaired_net(session, b)
+            ):
+                continue
+            item = session.scalar(
+                select(BatchItem).where(
+                    BatchItem.batch_id == b.id,
+                    func.upper(BatchItem.sku) == sku_u,
+                )
+            )
+            if item is not None:
+                item.paired_count = (item.paired_count or 0) + 1
+                bumped = item
+                break
+    session.add(BarcodeChange(
+        sku=product.get("sku"),
+        product_title=product.get("product_title"),
+        shopify_variant_id=product.get("shopify_variant_id"),
+        changed_field="locate-paired",
+        old_barcode=(
+            f"receiving item {bumped.id}" if bumped else "loose sticker"
+        )[:64],
+        new_barcode=epc[:64],
+        changed_by=(payload.worker or "").strip()[:100] or None,
+    ))
+    session.commit()
+    session.refresh(a)
+    return {
+        "assignment": a.as_dict(),
+        "bumped_item_id": bumped.id if bumped else None,
+        "message": (
+            f"Paired ✓ …{epc[-6:]} → {product.get('sku') or 'product'}"
+            + (
+                f" - one unresolved receiving label consumed "
+                f"(batch #{bumped.batch_id})" if bumped else ""
+            )
+        ),
+    }
+
+
+class LocatePairUndoIn(BaseModel):
+    epc: str = Field(min_length=8, max_length=64)
+    item_id: int | None = None
+    worker: str | None = Field(default=None, max_length=100)
+
+
+@app.post(
+    "/api/locate/pair-unlinked/undo",
+    dependencies=[Depends(require_user)],
+)
+def locate_pair_unlinked_undo(
+    payload: LocatePairUndoIn, session: Session = Depends(get_session)
+):
+    """Reverse a Locate Assigned Tag pair: delete the assignment and
+    give back the receiving label instance it consumed (if any)."""
+    epc = payload.epc.strip().upper()
+    a = session.scalar(
+        select(RfidAssignment).where(
+            func.upper(RfidAssignment.rfid_id) == epc
+        )
+    )
+    if a is None:
+        raise HTTPException(
+            404, "That tag is not assigned any more - nothing to undo."
+        )
+    if payload.item_id:
+        item = session.get(BatchItem, payload.item_id)
+        if item is not None and (item.paired_count or 0) > 0:
+            item.paired_count -= 1
+    session.add(BarcodeChange(
+        sku=a.sku,
+        product_title=a.product_title,
+        shopify_variant_id=a.shopify_variant_id,
+        changed_field="tag-unlinked",
+        old_barcode=epc[:64],
+        new_barcode="locate pair undone"[:64],
+        changed_by=(payload.worker or "").strip()[:100] or None,
+    ))
+    session.delete(a)
+    session.commit()
+    return {"ok": True, "message": f"…{epc[-6:]} unlinked - the sticker "
+            "is unpaired again and back on the hunt."}
+
+
 class SettleShipmentIn(BaseModel):
     created_by: str | None = Field(default=None, max_length=100)
 
@@ -17571,6 +17824,25 @@ def history(
                 )
             ) is not None:
                 event["undo"] = {"kind": "box-set", "set_sku": c.sku}
+        # Locate Assigned Tag (Nick, 2026-09-09): the Unpaired Tags hunt
+        # paired a sticker nobody owned. Undo while the assignment still
+        # stands - it also gives back the receiving label instance the
+        # pair consumed (encoded as "receiving item N").
+        elif c.changed_field == "locate-paired" and c.new_barcode:
+            if session.scalar(
+                select(RfidAssignment).where(
+                    func.upper(RfidAssignment.rfid_id)
+                    == c.new_barcode.strip().upper()
+                )
+            ) is not None:
+                mm = re.match(
+                    r"receiving item (\d+)$", c.old_barcode or ""
+                )
+                event["undo"] = {
+                    "kind": "locate-pair",
+                    "epc": c.new_barcode,
+                    "item_id": int(mm.group(1)) if mm else None,
+                }
         # A completed audit logs its location + one-line summary; the
         # generic "(none) → x" rendering would just add noise.
         elif c.changed_field == "bin-audited":
