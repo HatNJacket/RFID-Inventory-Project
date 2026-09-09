@@ -9481,6 +9481,19 @@ public class MainActivity extends Activity {
                     LinearLayout.LayoutParams.WRAP_CONTENT);
             bl.topMargin = dp(10);
             list.addView(done, bl);
+            // RE-PILE (Nick, 2026-09-09): recheck the open orders for a
+            // better packing - the fresh verdict offers the one-pile
+            // alternative when a single order's lines cover it all.
+            Button repile = smallBtn("RE-PILE - RECHECK ORDERS");
+            repile.setOnClickListener(x -> {
+                status.setText("Rechecking the open orders…");
+                sortMatchPost(true);
+            });
+            LinearLayout.LayoutParams rl2 = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            rl2.topMargin = dp(6);
+            list.addView(repile, rl2);
             Button back = smallBtn("BACK TO THE VERDICT");
             back.setOnClickListener(x -> {
                 pileMode = false;
@@ -9671,6 +9684,12 @@ public class MainActivity extends Activity {
                     .show();
             return;
         }
+        // One-pile alternative (Nick, 2026-09-09): a single order whose
+        // line list covers EVERYTHING scanned - exhausted lines
+        // included - so the pallet stays one pile; extras ride as
+        // flagged overflow for a manual planner fix.
+        final JSONObject alt = verdict.isNull("one_order_alternative")
+                ? null : verdict.optJSONObject("one_order_alternative");
         if (consolidated) {
             JSONObject o = orders.optJSONObject(0);
             final String ref = o.optString("reference_number");
@@ -9681,13 +9700,28 @@ public class MainActivity extends Activity {
             appendOverflow(sb, o);
             appendSkipped(sb, skipped);
             appendUnmatched(sb, unmatched);
-            dlg().setTitle(soft ? "SO " + ref + " (MOSTLY)"
+            if (soft && alt != null) {
+                sb.append("\n\nOR: SO ")
+                        .append(alt.optString("reference_number"))
+                        .append("'s line list covers EVERYTHING - one "
+                                + "pile, ")
+                        .append(alt.optInt("overflow_boxes"))
+                        .append(" box(es) flagged past its remaining "
+                                + "quantities.");
+            }
+            AlertDialog.Builder b1 = dlg()
+                    .setTitle(soft ? "SO " + ref + " (MOSTLY)"
                             : "ONE ORDER COVERS IT")
                     .setMessage(sb.toString())
                     .setPositiveButton("RECEIVE AS SO " + ref, (d, w) ->
                             beginSortReceiveSingle(o))
-                    .setNegativeButton("BACK", null)
-                    .show();
+                    .setNegativeButton("BACK", null);
+            if (soft && alt != null) {
+                b1.setNeutralButton("PACK ALL INTO SO "
+                        + alt.optString("reference_number"), (d, w) ->
+                        beginSortReceiveSingle(alt));
+            }
+            b1.show();
         } else {
             sb.append("No single order covers it. Best split:\n");
             for (int i = 0; i < orders.length(); i++) {
@@ -9703,17 +9737,34 @@ public class MainActivity extends Activity {
                 appendOverflow(sb, o);
             }
             appendUnmatched(sb, unmatched);
-            sb.append("\n\nSort the pallet into piles first (each scan "
-                    + "names its pile), then receive each order one "
-                    + "after another.");
-            dlg().setTitle(orders.length() + " ORDERS")
+            if (alt != null) {
+                sb.append("\n\nOR: SO ")
+                        .append(alt.optString("reference_number"))
+                        .append("'s line list covers EVERYTHING - one "
+                                + "pile, ")
+                        .append(alt.optInt("overflow_boxes"))
+                        .append(" box(es) flagged past its remaining "
+                                + "quantities.");
+            } else {
+                sb.append("\n\nSort the pallet into piles first (each "
+                        + "scan names its pile), then receive each "
+                        + "order one after another.");
+            }
+            AlertDialog.Builder b2 = dlg()
+                    .setTitle(orders.length() + " ORDERS")
                     .setMessage(sb.toString())
                     .setPositiveButton("SORT INTO PILES", (d, w) ->
                             enterPileMode())
-                    .setNeutralButton("SKIP PILES - RECEIVE", (d, w) ->
-                            beginSortReceive())
-                    .setNegativeButton("BACK", null)
-                    .show();
+                    .setNegativeButton("BACK", null);
+            if (alt != null) {
+                b2.setNeutralButton("PACK ALL INTO SO "
+                        + alt.optString("reference_number"), (d, w) ->
+                        beginSortReceiveSingle(alt));
+            } else {
+                b2.setNeutralButton("SKIP PILES - RECEIVE", (d, w) ->
+                        beginSortReceive());
+            }
+            b2.show();
         }
     }
 

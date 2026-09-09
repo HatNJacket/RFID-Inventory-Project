@@ -12231,17 +12231,22 @@ def receiving_sort_match(
                             or "The planner bridge isn't configured.")
 
     def order_tables(plan_out: dict) -> list[dict]:
-        """Every remaining line under its SKU and barcode keys
-        (case-insensitive, like all SKU compares)."""
+        """Every line under its SKU and barcode keys (case-insensitive,
+        like all SKU compares). `keys` holds lines with units still
+        remaining (all matching below stays as it was); `full_keys`
+        includes exhausted lines too, for the one-pile alternative."""
         out = []
         for o in plan_out["orders"]:
             keys: dict[str, dict] = {}
+            full: dict[str, dict] = {}
             for line in o["items"]:
                 for term in (line.get("sku"), line.get("barcode")):
                     key = (term or "").strip().upper()
                     if key:
-                        keys.setdefault(key, line)
-            out.append({**o, "keys": keys})
+                        full.setdefault(key, line)
+                        if int(line.get("remaining") or 0) > 0:
+                            keys.setdefault(key, line)
+            out.append({**o, "keys": keys, "full_keys": full})
         return out
 
     def rematch(order_rows: list[dict]) -> None:
@@ -12270,12 +12275,13 @@ def receiving_sort_match(
                   "title": p["title"], "count": p["count"]}
                  for p in products if not p["wanted_by"]]
 
-    def order_products(order: dict, rows: list[dict]) -> list[dict]:
+    def order_products(order: dict, rows: list[dict],
+                       keymap: dict | None = None) -> list[dict]:
+        km = keymap if keymap is not None else order["keys"]
         out = []
         for p in rows:
             line = next(
-                (order["keys"][k] for k in p["keys"]
-                 if k in order["keys"]), None,
+                (km[k] for k in p["keys"] if k in km), None,
             )
             remaining = int(line["remaining"]) if line else 0
             out.append({
@@ -12286,12 +12292,13 @@ def receiving_sort_match(
             })
         return out
 
-    def order_out(order: dict, rows: list[dict]) -> dict:
+    def order_out(order: dict, rows: list[dict],
+                  keymap: dict | None = None) -> dict:
         return {
             "order_id": order["order_id"],
             "reference_number": order["reference_number"],
             "vendor": order["vendor"],
-            "products": order_products(order, rows),
+            "products": order_products(order, rows, keymap),
         }
 
     def split_verdict() -> dict:
@@ -12368,6 +12375,42 @@ def receiving_sort_match(
     else:
         verdict = split_verdict()
 
+    # One-pile alternative (Nick, 2026-09-09): his 6-box pallet fit SO
+    # 943 entirely, but one LINE was already fully received, so strict
+    # coverage split a lone box off to SO 931. When some order's line
+    # list - exhausted lines included - covers every matched product,
+    # offer packing it ALL into that one order; boxes past a line's
+    # remaining ride as flagged overflow for a manual planner fix.
+    # Offered, never forced: the RE-PILE button and the verdict screen
+    # put it in front of the operator.
+    alternative = None
+    already_single = bool(verdict.get("consolidated")) \
+        and not verdict.get("skipped")
+    if matched and orders and not already_single:
+        cands = []
+        for o in orders:
+            fk = o.get("full_keys") or o["keys"]
+            if not all(
+                any(k in fk for k in p["keys"]) for p in matched
+            ):
+                continue
+            over = 0
+            for p in matched:
+                line = next(
+                    (fk[k] for k in p["keys"] if k in fk), None,
+                )
+                over += max(
+                    0, p["count"] - int((line or {}).get("remaining")
+                                        or 0),
+                )
+            cands.append((over, -int(o.get("order_id") or 0), o))
+        if cands:
+            over, _, o = min(cands)
+            alternative = {
+                **order_out(o, matched, o.get("full_keys")),
+                "overflow_boxes": over,
+            }
+
     return {
         "ok": True,
         "products": [
@@ -12375,7 +12418,11 @@ def receiving_sort_match(
              "count": p["count"], "wanted_by": p["wanted_by"]}
             for p in products
         ],
-        "verdict": {**verdict, "unmatched": unmatched},
+        "verdict": {
+            **verdict,
+            "unmatched": unmatched,
+            "one_order_alternative": alternative,
+        },
     }
 
 

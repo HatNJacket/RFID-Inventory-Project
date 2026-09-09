@@ -3,6 +3,19 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-09.
 
+## 📦 Sorter: one-pile alternative + RE-PILE — ✅ DEPLOYED 2026-09-09 (C72 3.99)
+
+Nick's 6-box pallet fit SO 943 entirely, but one product's LINE was
+already fully received there, so strict coverage split a lone box off
+to SO 931. sort-match now also answers `one_order_alternative`: the
+single order whose line list - exhausted lines included (planner
+open_orders_lines now carries them at remaining 0) - covers every
+matched product, extras flagged as overflow (least-overflow, then
+newest, wins). Offered, never forced: the C72 3.99 verdict shows
+"PACK ALL INTO SO X" beside the split/soft verdicts, and pile mode
+grew "RE-PILE - RECHECK ORDERS" that re-runs the match for a fresh
+verdict. test_sortrepile.py (6 checks); suites 68/68.
+
 ## 🔢 SO numbers: history repaired + intake belt — ✅ DONE 2026-09-09
 
 Before TC-Planner's 2026-09-08 fix its Print-labels payload carried

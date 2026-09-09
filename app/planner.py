@@ -223,20 +223,29 @@ def open_orders_lines(operator: str | None = None,
             except Exception:  # noqa: BLE001 — one bad order can't sink the sort
                 continue
             items = []
+            live = 0
             for item in detail.get("items") or []:
                 ordered = int(item.get("ordered_qty") or 0)
                 received = int(item.get("received_qty") or 0)
-                if ordered - received <= 0:
+                if ordered <= 0:
                     continue
+                remaining = max(0, ordered - received)
+                if remaining > 0:
+                    live += 1
+                # Fully-received lines ride along at remaining 0 (Nick,
+                # 2026-09-09): the sorter's one-pile alternative needs
+                # to know a product IS on the order even when its line
+                # is already exhausted - strict coverage split a lone
+                # box off to a second order over exactly this.
                 items.append({
                     "sku": item.get("sku"),
                     "barcode": item.get("barcode"),
                     "title": (item.get("title")
                               or item.get("product_title")
                               or item.get("name")),
-                    "remaining": ordered - received,
+                    "remaining": remaining,
                 })
-            if items:
+            if live:
                 orders.append({
                     "order_id": detail.get("id"),
                     "reference_number": detail.get("reference_number"),
