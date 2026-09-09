@@ -3,7 +3,27 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-09.
 
-## 📦 Open-box (-O) products + queue/colour restyle — 🔶 BUILT 2026-09-09, AWAITING NICK'S GO TO DEPLOY
+## 🤝 Pair step ignores won't-RFID-scan products — ✅ DEPLOYED 2026-09-09 (C72 3.96)
+
+Nick: 2459281/2459286 wear the flag but kept surfacing as next in
+line. Past the check step they are not pairing work: the C72's pair
+auto-advance steps straight over them, their rows sink below even the
+done rows and grey out (C72 + web pair list, "skipped for pairing"
+note), and a deliberate by-hand pair (scan the product barcode) still
+works. Collect/check behavior unchanged.
+
+## 📊 Code 128 centering: subset-aware width model — ✅ DEPLOYED 2026-09-09 (agent bounce)
+
+The -O barcodes exposed it: the width model charged MIXED codes one
+symbol per char, but ZPL's auto-encoder packs digit RUNS into
+subset-C pairs - "12345678-O" is 7 symbols, not 10. Overstating the
+width centered the bars visibly LEFT. _code128_symbols now mirrors
+the encoder's subset rules (print_agent.py + app.js code128Dots stay
+identical); pure-digit and pure-letter codes compute unchanged.
+Agent bounced 2:36 PM with the fix.
+
+## 📦 Open-box (-O) products + queue/colour restyle — ✅ DEPLOYED 2026-09-09
+(`openbox_barcode` promoted into SHOPIFY_WRITE_MODE after the deploy settled.)
 
 **Open-box convention**: SKUs ending in -O are open-box twins. When a
 -O label is claimed for printing: Shopify gets barcode+-O written TO
