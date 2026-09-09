@@ -3,6 +3,23 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-09.
 
+## ⏱ Stale-sweep guard on stock writes — ✅ DEPLOYED 2026-09-09 (C72 3.98)
+
+Nick's ASI676MC: 2 on hand, one sold 1PM, and a 4PM write from an
+11AM-sweep audit raised the count right back. Both on-hand endpoints
+(raise + guarded lower) now take optional `sweep_at`; when the count
+comes from sweep evidence and Shopify's on-hand bucket moved AFTER
+that sweep (shopify.get_onhand_updated_at), the write is refused with
+a re-sweep message - the lower's unconfirmed preview refuses too.
+Evidence freshness = the OLDEST sweep in a merged union. Senders: web
+bin audit (pinned/picked sweeps carry oldest_at), batch verify
+(verifySweepAt from arrived/pulled captures; live trigger reads never
+age it), C72 3.98 audit (auditEvidenceAt: local sweep = now, merged
+captures = their stamps, cleared with the tag set). Typed human
+counts send nothing and skip the guard; unreadable stamps never block
+(fail-open - the guard exists for KNOWN newer truth).
+test_stalesweep.py (6 checks); suites 66/66.
+
 ## ✅ 1-left Confirm actually confirms; the count box IS the on-hand — ✅ DEPLOYED 2026-09-09
 
 Root cause of "Confirm doesn't do anything": their func app answers

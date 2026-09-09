@@ -4700,6 +4700,53 @@ def remove_locate_queue(
     return {"ok": True, "sku": entry.sku}
 
 
+def _guard_stale_sweep(sku: str, sweep_at: str | None) -> None:
+    """Stale-evidence guard (Nick, 2026-09-09, the ASI676MC): an on-hand
+    write justified by a SWEEP is refused when Shopify's stock moved
+    AFTER that sweep ran - an 11AM sweep re-raised a count that a 1PM
+    sale had already taken down. Callers whose number comes from sweep
+    evidence send the sweep's timestamp (the OLDEST one, when several
+    were merged); a human counting the shelf right now sends nothing
+    and skips the guard. Best-effort: an unreadable stamp never blocks
+    - the guard protects against KNOWN newer truth, not hiccups."""
+    if not sweep_at:
+        return
+    try:
+        swept = datetime.fromisoformat(
+            sweep_at.strip().replace("Z", "+00:00")
+        )
+    except ValueError:
+        return
+    if swept.tzinfo is None:
+        swept = swept.replace(tzinfo=timezone.utc)
+    try:
+        stamp = shopify.get_onhand_updated_at(sku)
+    except Exception as error:  # noqa: BLE001
+        logger.warning(
+            "stale-sweep guard lookup failed for %s: %s", sku, error
+        )
+        return
+    if not stamp:
+        return
+    try:
+        changed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return
+    if changed.tzinfo is None:
+        changed = changed.replace(tzinfo=timezone.utc)
+    if changed > swept:
+        raise HTTPException(
+            409,
+            f"STALE SWEEP: this count comes from a sweep taken "
+            f"{swept.strftime('%Y-%m-%d %H:%M UTC')}, but {sku}'s "
+            f"Shopify stock last moved "
+            f"{changed.strftime('%Y-%m-%d %H:%M UTC')} - a sale or "
+            "edit happened AFTER the shelf was swept, so the sweep no "
+            "longer describes the shelf. Re-sweep and run the check "
+            "again before writing.",
+        )
+
+
 class OnHandUpdateIn(BaseModel):
     """Verify-step count correction: raise Shopify's on-hand to what the
     shelf walk physically found."""
@@ -4713,6 +4760,10 @@ class OnHandUpdateIn(BaseModel):
     # so the Verify table agrees with the store right after the write.
     batch_id: int | None = None
     item_id: int | None = None
+    # When the count comes from SWEEP evidence: the sweep's timestamp
+    # (oldest, when merged) - the stale-sweep guard refuses the write if
+    # Shopify stock moved after it. Absent = a live human count.
+    sweep_at: str | None = Field(default=None, max_length=40)
 
     @field_validator("sku")
     @classmethod
@@ -4798,6 +4849,7 @@ def update_on_hand(
             f"found. A count can be lowered from a bin audit or batch "
             f"verify when recorded sales account for the missing units.",
         )
+    _guard_stale_sweep(payload.sku, payload.sweep_at)
     try:
         before = shopify.set_on_hand(payload.sku, payload.new_qty)
     except RuntimeError as error:
@@ -4907,6 +4959,9 @@ class OnHandLowerIn(BaseModel):
     confirmed: bool = False
     batch_id: int | None = None
     item_id: int | None = None
+    # Sweep evidence timestamp for the stale-sweep guard (see
+    # OnHandUpdateIn.sweep_at).
+    sweep_at: str | None = Field(default=None, max_length=40)
 
     @field_validator("sku", "bin_name")
     @classmethod
@@ -4956,6 +5011,9 @@ def lower_on_hand(
     require_shopify_write("verify_onhand_lower")
     if config.check_shopify_env():
         raise HTTPException(500, "Shopify credentials are not configured.")
+    # Fires on the unconfirmed preview call too - the operator learns
+    # the sweep is stale BEFORE reading a confirmation prompt.
+    _guard_stale_sweep(payload.sku, payload.sweep_at)
     live = shopify.get_on_hand(payload.sku)
     if live is None:
         raise HTTPException(404, f"No Shopify product for SKU {payload.sku}.")

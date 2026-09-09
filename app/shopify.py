@@ -1102,6 +1102,47 @@ def get_bucket_details_by_skus(skus: list) -> dict:
     return out
 
 
+_ONHAND_STAMP_QUERY = """
+query($search: String!) {
+  productVariants(first: 5, query: $search) {
+    nodes {
+      sku
+      inventoryItem {
+        inventoryLevels(first: 5) {
+          nodes {
+            quantities(names: ["on_hand"]) { name quantity updatedAt }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+
+def get_onhand_updated_at(sku: str) -> str | None:
+    """Shopify's own last-change stamp on the ON-HAND bucket - when this
+    SKU's stock last moved (a sale, a receive, a manual edit). The
+    stale-sweep guard compares audit evidence against it (Nick,
+    2026-09-09: an 11AM sweep re-raised the ASI676MC count a 1PM sale
+    had already taken down). Newest stamp across locations wins."""
+    data = query_shopify(
+        _ONHAND_STAMP_QUERY, {"search": f'sku:"{_search_term(sku)}"'}
+    )
+    want = (sku or "").strip().upper()
+    best = None
+    for n in data["productVariants"]["nodes"]:
+        if (n.get("sku") or "").strip().upper() != want:
+            continue
+        for lv in ((n.get("inventoryItem") or {})
+                   .get("inventoryLevels") or {}).get("nodes", []):
+            for q in lv.get("quantities", []):
+                ts = q.get("updatedAt")
+                if ts and (best is None or ts > best):
+                    best = ts
+    return best
+
+
 def get_staff_comments_by_skus(skus: list) -> dict:
     """Upper SKU -> custom.staff_comments value, batched ~20 per query.
     Only SKUs with a non-empty comment appear. For the audit's

@@ -4223,6 +4223,14 @@ let batchStage = "collect";
 let pairActiveItemId = null;
 let pairHistory = []; // [{epc, item_id}] for undo
 let verifyEpcs = new Set();
+// Oldest SWEEP capture feeding verifyEpcs - the stale-sweep guard
+// judges on-hand writes by it (Nick, 2026-09-09: an 11AM sweep
+// re-raised a count a 1PM sale had taken down). Live trigger reads
+// are "now" and never age the evidence.
+let verifySweepAt = null;
+function noteVerifySweep(ts) {
+  if (ts && (!verifySweepAt || ts < verifySweepAt)) verifySweepAt = ts;
+}
 let batchPrintTimer = null;
 
 const bEl = {
@@ -5002,6 +5010,7 @@ async function checkForIncomingSweep() {
     const cap = await apiJson(`/api/epc-captures/${newest.id}`);
     if (batchStage !== "verify") showBatchStage("verify"); // this resets the set
     cap.epcs.forEach((e) => verifyEpcs.add(String(e).toUpperCase()));
+    noteVerifySweep(cap.created_at);
     bEl.verifyCount.textContent = `${verifyEpcs.size} unique tags collected.`;
     setBatchResult(
       `Sweep #${cap.id} arrived from ${cap.device || "the C72"} ` +
@@ -5141,6 +5150,7 @@ function showBatchStage(stage) {
     bEl.pairInput.focus();
   } else if (stage === "verify") {
     verifyEpcs = new Set();
+    verifySweepAt = null;
     bEl.verifyCount.textContent = "0 unique tags collected.";
     bEl.verifyReport.innerHTML = "";
     bEl.verifyInput.focus();
@@ -9264,6 +9274,7 @@ bEl.verifyReport.addEventListener("click", async (e) => {
           confirmed: true,
           batch_id: batch.id,
           item_id: parseInt(b.dataset.item, 10) || null,
+          sweep_at: verifySweepAt,
         });
         done++;
       } catch (err) {
@@ -9302,6 +9313,7 @@ bEl.verifyReport.addEventListener("click", async (e) => {
       confirmed: true,
       batch_id: batch.id,
       item_id: parseInt(btn.dataset.item, 10) || null,
+      sweep_at: verifySweepAt,
     });
     setBatchResult(res.message, "ok");
     await runVerifyCheck();
@@ -9345,6 +9357,7 @@ bEl.verifyReport.addEventListener("click", async (e) => {
       confirmed: true,
       batch_id: batch.id,
       item_id: parseInt(btn.dataset.item, 10) || null,
+      sweep_at: verifySweepAt,
     });
     setBatchResult(res.message, "ok");
     await runVerifyCheck();
@@ -9372,6 +9385,7 @@ document.getElementById("bverify-pull").addEventListener("click", async () => {
     const cap = await apiJson("/api/epc-captures/latest");
     const before = verifyEpcs.size;
     cap.epcs.forEach((e) => verifyEpcs.add(String(e).toUpperCase()));
+    noteVerifySweep(cap.created_at);
     bEl.verifyCount.textContent = `${verifyEpcs.size} unique tags collected.`;
     setBatchResult(
       `Pulled sweep #${cap.id} from ${cap.device || "the C72"} ` +
@@ -12704,16 +12718,22 @@ document
     try {
       const epcs = new Set();
       let newest = null;
+      let oldest = null;
       for (const id of ids) {
         const cap = await apiJson(`/api/epc-captures/${id}`);
         (cap.epcs || []).forEach((x) => epcs.add(String(x).toUpperCase()));
         if (!newest || cap.id > newest.id) newest = cap;
+        if (!oldest || cap.id < oldest.id) oldest = cap;
       }
       box.hidden = true;
       await runBinAudit({
         id: ids.length === 1 ? String(ids[0]) : ids.join("+"),
         device: newest.device,
         created_at: newest.created_at,
+        // The union is only as fresh as its OLDEST member - the
+        // stale-sweep guard judges stock writes by this (Nick,
+        // 2026-09-09, the ASI676MC).
+        oldest_at: oldest.created_at,
         epc_count: epcs.size,
         epcs: [...epcs],
       });
@@ -13121,6 +13141,14 @@ document
           new_qty: qty,
           changed_by: operatorEl.value || null,
           confirmed: true,
+          // The count came from THIS audit's sweep - the server
+          // refuses if Shopify stock moved after it (stale-sweep
+          // guard, Nick 2026-09-09).
+          sweep_at:
+            (binAudit &&
+              binAudit.cap &&
+              (binAudit.cap.oldest_at || binAudit.cap.created_at)) ||
+            null,
         });
         alert(res.message);
         document.getElementById("binaudit-run").click();

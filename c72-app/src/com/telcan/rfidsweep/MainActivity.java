@@ -14709,6 +14709,15 @@ public class MainActivity extends Activity {
                         auditTagSet.add(eps.optString(j).toUpperCase(
                                 java.util.Locale.ROOT));
                     }
+                    // The union is only as fresh as its OLDEST member -
+                    // ISO strings compare correctly as text.
+                    String at = cap.isNull("created_at") ? null
+                            : cap.optString("created_at", null);
+                    if (at != null && !at.isEmpty()
+                            && (auditEvidenceAt == null
+                                || at.compareTo(auditEvidenceAt) < 0)) {
+                        auditEvidenceAt = at;
+                    }
                     merged++;
                 } catch (Exception ignored) {
                     // A missing capture shouldn't kill the merge.
@@ -14877,8 +14886,18 @@ public class MainActivity extends Activity {
         }
     }
 
+    // When the audit's evidence was gathered: the OLDEST contribution
+    // to auditTagSet (a merged capture's stamp, or "now" for a live
+    // sweep). Stock writes send it so the server's stale-sweep guard
+    // can refuse counts Shopify has since moved past (Nick, 2026-09-09,
+    // the ASI676MC: an 11AM sweep re-raised a count sold at 1PM).
+    private String auditEvidenceAt = null;
+
     private void auditMergeTags() {
         synchronized (tags) {
+            if (!tags.isEmpty() && auditEvidenceAt == null) {
+                auditEvidenceAt = java.time.Instant.now().toString();
+            }
             for (String epc : tags.keySet()) {
                 auditTagSet.add(epc.toUpperCase(java.util.Locale.ROOT));
             }
@@ -14951,6 +14970,7 @@ public class MainActivity extends Activity {
                         + " collected tag(s)? (Finds and labels are kept.)")
                 .setPositiveButton("Clear", (d, w) -> {
                     auditTagSet.clear();
+                    auditEvidenceAt = null;
                     auditRender();
                     status.setText("Cleared - ready for the next sweep.");
                 })
@@ -15938,6 +15958,11 @@ public class MainActivity extends Activity {
                                                             heardUnits)
                                                     .put("changed_by",
                                                             device)
+                                                    .put("sweep_at",
+                                                            auditEvidenceAt
+                                                            == null
+                                                            ? JSONObject.NULL
+                                                            : auditEvidenceAt)
                                                     .put("confirmed",
                                                             true));
                                     ui.post(() -> {
@@ -15981,6 +16006,11 @@ public class MainActivity extends Activity {
                                                             silentEpcs))
                                                     .put("changed_by",
                                                             device)
+                                                    .put("sweep_at",
+                                                            auditEvidenceAt
+                                                            == null
+                                                            ? JSONObject.NULL
+                                                            : auditEvidenceAt)
                                                     .put("confirmed",
                                                             true));
                                     ui.post(() -> {
