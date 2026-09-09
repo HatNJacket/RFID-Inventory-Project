@@ -12578,6 +12578,163 @@ def _check_unpaired_label_tasks(session: Session) -> None:
         logger.exception("unpaired-label watchdog failed")
 
 
+# Sold-before-label dismissal (Nick, 2026-09-09): receiving stock that
+# sold before a label reached it. The dismissal is OUR accounting only -
+# the planner already pushed the count to Shopify, so nothing else may
+# move: no quantities, no Shopify, no review tasks. The marker keeps
+# these skips apart from could-not-scan skips everywhere they differ.
+SOLD_BEFORE_LABEL_REASON = "sold before labelling"
+
+
+class DismissSoldIn(BaseModel):
+    worker: str | None = Field(default=None, max_length=100)
+
+
+@app.post(
+    "/api/batches/{batch_id}/items/{item_id}/dismiss-sold",
+    dependencies=[Depends(require_user)],
+)
+def dismiss_sold_item(
+    batch_id: int,
+    item_id: int,
+    payload: DismissSoldIn,
+    session: Session = Depends(get_session),
+):
+    """Drop a receiving item from the working list because its stock
+    sold before it could be labelled. Touches ONLY our accounting: the
+    row is marked with the sold marker (so the shipment can still close
+    itself and completion files no review task), and the item's
+    outstanding printed labels are dismissed with a traceable marker so
+    the unresolved list, audits and the watchdog all stop asking for
+    them. Received counts, Shopify and the planner story are untouched.
+    History gets the event with an undo."""
+    batch = _get_batch(session, batch_id)
+    if not _is_receiving(batch):
+        raise HTTPException(
+            422, "Sold-before-label dismissal is for receiving batches - "
+                 "bin batches count what is physically on the shelf.",
+        )
+    item = session.get(BatchItem, item_id)
+    if item is None or item.batch_id != batch_id:
+        raise HTTPException(404, "No such item in this batch.")
+    if item.skipped and item.skip_reason == SOLD_BEFORE_LABEL_REASON:
+        raise HTTPException(409, "Already dismissed as sold.")
+    item.skipped = True
+    item.skip_reason = SOLD_BEFORE_LABEL_REASON
+    # Its outstanding printed labels are accounted for too - the sheet
+    # goes in the bin with the sale. Marker-stamped so undo is exact.
+    covered = 0
+    marker = f"dismiss-sold #{item.id}"
+    net = [
+        u for u in _receiving_unpaired_net(session, batch)
+        if (u["sku"] or "").strip().upper()
+        == (item.sku or "").strip().upper()
+    ]
+    owed = net[0]["count"] if net else 0
+    if owed > 0 and item.sku:
+        dismissed_already = {
+            (e or "").upper() for e in session.scalars(
+                select(LabelDismissal.epc)
+            )
+        }
+        for j in session.scalars(
+            select(PrintJob).where(
+                PrintJob.batch_id == batch_id,
+                func.upper(PrintJob.sku) == item.sku.strip().upper(),
+                PrintJob.status.in_(("pending", "printing", "done")),
+                _NOT_COMPANION,
+            ).order_by(PrintJob.id.desc())
+        ):
+            if covered >= owed:
+                break
+            if (j.epc or "").upper() in dismissed_already:
+                continue
+            session.add(LabelDismissal(epc=j.epc, dismissed_by=marker))
+            covered += 1
+    session.add(BarcodeChange(
+        sku=item.sku,
+        product_title=item.product_title,
+        shopify_variant_id=item.shopify_variant_id,
+        changed_field="receiving-dismissed",
+        old_barcode=f"item {item.id}"[:64],
+        new_barcode=(
+            f"sold before label - {covered} label(s) covered"
+        )[:64],
+        changed_by=(payload.worker or "").strip()[:100] or None,
+    ))
+    session.flush()
+    receiving_done = _maybe_close_receiving(session, batch)
+    session.commit()
+    return {
+        "item": item.as_dict(),
+        "labels_covered": covered,
+        "receiving_done": receiving_done,
+        "message": (
+            f"{item.product_title or item.sku} dismissed - sold before "
+            f"labelling. {covered} outstanding label(s) covered; counts "
+            "and Shopify untouched."
+            + (" Shipment complete ✓ - the batch closed itself."
+               if receiving_done else "")
+        ),
+    }
+
+
+class DismissSoldUndoIn(BaseModel):
+    worker: str | None = Field(default=None, max_length=100)
+
+
+@app.post(
+    "/api/batches/{batch_id}/items/{item_id}/dismiss-sold/undo",
+    dependencies=[Depends(require_user)],
+)
+def dismiss_sold_undo(
+    batch_id: int,
+    item_id: int,
+    payload: DismissSoldUndoIn,
+    session: Session = Depends(get_session),
+):
+    """Reverse a sold-before-label dismissal: the row rejoins the
+    working list and exactly the label dismissals it created are
+    removed (they carry its marker). A batch that closed itself in the
+    meantime stays closed - the message says so."""
+    batch = _get_batch(session, batch_id)
+    item = session.get(BatchItem, item_id)
+    if item is None or item.batch_id != batch_id:
+        raise HTTPException(404, "No such item in this batch.")
+    if not item.skipped or item.skip_reason != SOLD_BEFORE_LABEL_REASON:
+        raise HTTPException(
+            409, "That item is not dismissed as sold - nothing to undo."
+        )
+    item.skipped = False
+    item.skip_reason = None
+    marker = f"dismiss-sold #{item.id}"
+    removed = 0
+    for d in session.scalars(
+        select(LabelDismissal).where(LabelDismissal.dismissed_by == marker)
+    ):
+        session.delete(d)
+        removed += 1
+    session.add(BarcodeChange(
+        sku=item.sku,
+        product_title=item.product_title,
+        shopify_variant_id=item.shopify_variant_id,
+        changed_field="receiving-dismissed",
+        old_barcode="undone"[:64],
+        new_barcode=f"{removed} label(s) owed again"[:64],
+        changed_by=(payload.worker or "").strip()[:100] or None,
+    ))
+    session.commit()
+    return {
+        "item": item.as_dict(),
+        "labels_restored": removed,
+        "message": (
+            f"Dismissal undone - {removed} label(s) count as owed again."
+            + (" This batch already closed itself; its story stays as "
+               "completed." if batch.status == "done" else "")
+        ),
+    }
+
+
 @app.get(
     "/api/receiving/unpaired-labels",
     dependencies=[Depends(require_user)],
@@ -14578,6 +14735,11 @@ def _complete_receiving(session: Session, batch: Batch, payload) -> dict:
     for item in _batch_items(session, batch.id):
         name = item.label_name or item.product_title
         if item.skipped:
+            # A sold-before-label dismissal is a CLOSED story (Nick,
+            # 2026-09-09): the stock already reached Shopify and left -
+            # no review task, no follow-up anywhere.
+            if item.skip_reason == SOLD_BEFORE_LABEL_REASON:
+                continue
             tasks.append(ReviewTask(
                 category="could-not-scan",
                 sku=item.sku,
@@ -17843,6 +18005,22 @@ def history(
                     "epc": c.new_barcode,
                     "item_id": int(mm.group(1)) if mm else None,
                 }
+        # Sold-before-label dismissal (Nick, 2026-09-09): undo while the
+        # row is still dismissed - it rejoins the receiving list and its
+        # marker-stamped label dismissals are removed.
+        elif c.changed_field == "receiving-dismissed":
+            mm = re.match(r"item (\d+)$", c.old_barcode or "")
+            if mm:
+                it_row = session.get(BatchItem, int(mm.group(1)))
+                if (
+                    it_row is not None and it_row.skipped
+                    and it_row.skip_reason == SOLD_BEFORE_LABEL_REASON
+                ):
+                    event["undo"] = {
+                        "kind": "receiving-dismiss",
+                        "batch_id": it_row.batch_id,
+                        "item_id": it_row.id,
+                    }
         # A completed audit logs its location + one-line summary; the
         # generic "(none) → x" rendering would just add noise.
         elif c.changed_field == "bin-audited":

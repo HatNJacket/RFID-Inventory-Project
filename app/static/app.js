@@ -415,6 +415,7 @@ const EVENT_META = {
   "bundle-contents-set": ["Bundle Contents", "#6f42c1"],
   "locate-list": ["Locate List", "#5561c9"],
   "locate-paired": ["Locate Assigned Tag", "#2f9e6e"],
+  "receiving-dismissed": ["Sold Before Label", "#5c5f62"],
   oneleft: ["1-left Check", "#b07d00"],
   "audit-session": ["Audit Session", "#0e7a8a"],
   "bin-audited": ["Audit Done", "#0b6e99"],
@@ -6077,9 +6078,18 @@ function recvWant(item) {
   return (item.qty_scanned || 0) + (item.case_count || 0);
 }
 
+// Sold before a label reached it (Nick, 2026-09-09): dismissed rows
+// leave the working list like fully-paired ones - the stock already
+// went through Shopify and left, nothing here is owed.
+const SOLD_BEFORE_LABEL = "sold before labelling";
+function recvSoldDismissed(item) {
+  return !!item.skipped && item.skip_reason === SOLD_BEFORE_LABEL;
+}
+
 // Fully-paired products leave the list (Nick, 2026-08-31) - unless
 // they're OVER-paired, which stays as a flag until dismissed.
 function recvItemDone(item, dismissed) {
+  if (recvSoldDismissed(item)) return true;
   if (recvProblemText(item)) return false;
   const want = recvWant(item);
   const paired = item.paired_count || 0;
@@ -6132,11 +6142,15 @@ function renderReceivingList() {
   const printed = items.reduce((n, i) => n + (i.printed_count || 0), 0);
   const tagged = items.reduce((n, i) => n + (i.paired_count || 0), 0);
   const flagged = shown.filter((i) => recvProblemText(i)).length;
+  const soldOff = items.filter(recvSoldDismissed).length;
   summary.textContent = items.length
     ? `${items.length} product(s) · ${printed} label(s) printed · ` +
       `${tagged} tagged` +
       (flagged ? ` · ⚠ ${flagged} flagged` : "") +
-      (done.length ? ` · ${done.length} fully tagged (hidden)` : "")
+      (soldOff ? ` · ${soldOff} dismissed (sold)` : "") +
+      (done.length - soldOff > 0
+        ? ` · ${done.length - soldOff} fully tagged (hidden)`
+        : "")
     : "";
   summary.hidden = !items.length;
   empty.hidden = !!items.length;
@@ -6253,6 +6267,12 @@ function recvCard(item) {
           : ""
       }
       ${
+        focused && item.resolved && !item.skipped
+          ? `<button class="reset" type="button" data-act="soldout"
+              title="This stock sold before it could be labelled. The row leaves the list and its outstanding printed labels stop counting as owed - OUR accounting only. Received counts, Shopify and the planner are untouched (the sale already went through Shopify). Undoable from History.">💸 Sold - dismiss</button>`
+          : ""
+      }
+      ${
         focused && item.resolved && item.sku
           ? `<button class="reset" type="button" data-act="nickname"
               title="What the VENDOR calls this product (the box's own wording) - shown bracketed and highlighted on receiving lists, and typing it finds the product anywhere">🏷 ${item.nickname ? "Vendor name…" : "Add vendor name…"}</button>`
@@ -6290,6 +6310,8 @@ function recvCard(item) {
         openProductHistory(item.sku || item.barcode);
       } else if (btn.dataset.act === "nickname") {
         recvSetNickname(item);
+      } else if (btn.dataset.act === "soldout") {
+        recvDismissSold(item);
       } else if (btn.dataset.act === "overdismiss") {
         recvDismissOver(item.id);
         recvFocusId = null;
@@ -6307,6 +6329,32 @@ function recvCard(item) {
     renderReceivingList();
   });
   return li;
+}
+
+// Sold before a label reached it (Nick, 2026-09-09): drop the row from
+// the receiving list. OUR accounting only - the sale already went
+// through Shopify, so nothing else moves. Undoable from History.
+async function recvDismissSold(item) {
+  if (
+    !confirm(
+      `Dismiss ${itemDisplayName(item)} - sold before labelling?\n\n` +
+        `The row leaves this list and its outstanding printed labels ` +
+        `stop counting as owed. Received counts, Shopify and the ` +
+        `planner are untouched. Undoable from History.`
+    )
+  )
+    return;
+  try {
+    const res = await postJson(
+      `/api/batches/${batch.id}/items/${item.id}/dismiss-sold`,
+      { worker: operatorEl.value || null }
+    );
+    await pullBatch(false);
+    renderReceivingList();
+    setBatchResult(res.message, "ok");
+  } catch (err) {
+    setBatchResult(err.message, "err");
+  }
 }
 
 // Vendor nickname (Nick, 2026-09-01): what the BOX says when the
@@ -15936,6 +15984,31 @@ async function undoHistoryEvent(e, btn) {
   // Multi-box sets: undo removes the set's part records - the Shopify
   // draft listings stay (Nick, 2026-09-08). The builder recreates it
   // in seconds if that was a mistake.
+  // Sold-before-label dismissal: the row rejoins the receiving list
+  // and its label dismissals are removed (Nick, 2026-09-09).
+  if (e.undo.kind === "receiving-dismiss") {
+    if (
+      !confirm(
+        "Undo the sold-before-label dismissal?\n\nThe product rejoins " +
+          "the receiving list and its printed labels count as owed " +
+          "again. Nothing else changes."
+      )
+    )
+      return;
+    btn.disabled = true;
+    try {
+      await postJson(
+        `/api/batches/${e.undo.batch_id}/items/${e.undo.item_id}` +
+          `/dismiss-sold/undo`,
+        { worker: operatorEl.value || null }
+      );
+      await loadHistory();
+    } catch (err) {
+      btn.disabled = false;
+      alert(err.message);
+    }
+    return;
+  }
   // Locate Assigned Tag (Nick, 2026-09-09): unlink the sticker the
   // Unpaired Tags hunt paired, and give back the receiving label
   // instance it consumed.

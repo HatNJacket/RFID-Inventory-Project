@@ -3,6 +3,20 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-09.
 
+## 💸 Sold-before-label dismissal on receiving — ✅ DEPLOYED 2026-09-09 (web/server)
+
+Nick: stock sometimes sells before a label reaches it, and the count
+already went through Shopify. "💸 Sold - dismiss" on a focused
+receiving card: the row leaves the working list (summary shows
+"N dismissed (sold)"), its outstanding printed labels are dismissed
+with a traceable marker (unresolved list, audits and the watchdog all
+stop asking), the shipment can close itself, and completion files NO
+review task for it. OUR accounting only - received counts, Shopify
+and the planner story untouched. History "Sold Before Label" event
+with an exact undo (row rejoins, marker dismissals removed).
+POST /api/batches/{id}/items/{item}/dismiss-sold (+/undo);
+test_dismissold.py (16 checks); suites 65/65.
+
 ## 🕵 Unresolved printed labels + Unpaired Tags hunt — ✅ DEPLOYED 2026-09-09 (C72 3.97)
 
 - **Unresolved printed labels**: GET /api/receiving/unpaired-labels -
