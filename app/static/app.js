@@ -13611,7 +13611,8 @@ function renderOneleft() {
       </div>
       ${canWrite ? `<button class="binlist__go ol-confirm" type="button" data-sku="${escapeHtml(r.sku)}"
         data-title="${escapeHtml(r.product_title || "")}"
-        title="Open the confirm window — live stock breakdown + the actual shelf count. Undoable with re-queue.">Confirm ✓</button>` : ""}`;
+        data-bin="${escapeHtml(r.bin || "")}"
+        title="Open the confirm window — live stock breakdown + the count box (prefilled with on-hand; confirming makes your number THE on-hand). Undoable with re-queue.">Confirm ✓</button>` : ""}`;
     list.append(li);
   });
   if (total > rows.length) {
@@ -13669,7 +13670,11 @@ async function olRowClick(e) {
   }
   const confirmBtn = e.target.closest(".ol-confirm");
   if (confirmBtn) {
-    openOlConfirm(confirmBtn.dataset.sku, confirmBtn.dataset.title || "");
+    openOlConfirm(
+      confirmBtn.dataset.sku,
+      confirmBtn.dataset.title || "",
+      confirmBtn.dataset.bin || ""
+    );
     return;
   }
   const requeueBtn = e.target.closest(".ol-requeue");
@@ -13689,16 +13694,19 @@ async function olRowClick(e) {
 
 // --- 1-left confirm window ---------------------------------------------------
 // Like the inventory-check window: live tiles (Unavailable when present,
-// Committed, Available, On-hand) plus the ACTUAL shelf count. Equal
-// count = plain confirm; higher = the audited increase-only on-hand
-// write is offered first; lower = confirmed, and the discrepancy is
-// filed for Review (nothing here writes stock DOWN).
+// Committed, Available, On-hand) plus the count box, prefilled with the
+// live on-hand. THE NUMBER IS THE ON-HAND (Nick, 2026-09-09): equal (the
+// prefill) just confirms the known number; higher runs the audited raise;
+// lower runs the sales-guarded lower - if the guard refuses, the check
+// still confirms and the discrepancy is filed for Review.
 let olcSku = null;
 let olcOnHand = null;
+let olcBin = null;
 
-async function openOlConfirm(sku, title) {
+async function openOlConfirm(sku, title, bin) {
   olcSku = sku;
   olcOnHand = null;
+  olcBin = (bin || "").trim() || null;
   document.getElementById("olc-title").textContent =
     `Confirm stock check — ${sku}`;
   document.getElementById("olc-product").textContent = title || "";
@@ -13746,8 +13754,10 @@ document.getElementById("olc-go").addEventListener("click", async () => {
   const btn = document.getElementById("olc-go");
   btn.disabled = true;
   try {
-    // A higher count is physical proof: offer the audited increase-only
-    // on-hand write BEFORE confirming the check.
+    // The typed number IS the on-hand (Nick, 2026-09-09). Higher: the
+    // audited raise. Lower: the sales-guarded lower - refused when
+    // recorded sales don't cover the drop, in which case the check
+    // still confirms and the discrepancy is filed for Review.
     if (counted != null && olcOnHand != null && counted > olcOnHand) {
       if (
         confirm(
@@ -13764,19 +13774,36 @@ document.getElementById("olc-go").addEventListener("click", async () => {
           changed_by: operator,
         });
       }
+    } else if (counted != null && olcOnHand != null && counted < olcOnHand) {
+      if (
+        confirm(
+          `You counted ${counted} but Shopify on-hand is ${olcOnHand}.\n\n` +
+            `Lower on-hand ${olcOnHand} → ${counted}? Allowed only when ` +
+            `recorded sales cover the drop (audited, undoable from ` +
+            `History). Cancel confirms the check without touching stock.`
+        )
+      ) {
+        try {
+          await postJson("/api/onhand-updates/lower", {
+            sku: olcSku,
+            bin_name: olcBin || "?",
+            new_qty: counted,
+            confirmed: true,
+            changed_by: operator,
+          });
+        } catch (err) {
+          alert(
+            `Couldn't lower on-hand: ${err.message}\n\nThe check still ` +
+              `confirms - the discrepancy is filed for Review instead.`
+          );
+        }
+      }
     }
     await postJson("/api/oneleft/confirm", {
       sku: olcSku,
       worker: operator,
       counted,
     });
-    if (counted != null && olcOnHand != null && counted < olcOnHand) {
-      alert(
-        `Check confirmed. You counted ${counted} vs on-hand ${olcOnHand} ` +
-          `— nothing here writes stock DOWN, so the discrepancy was ` +
-          `filed in Review.`
-      );
-    }
     document.getElementById("olconfirm-overlay").hidden = true;
   } catch (err) {
     alert(err.message);

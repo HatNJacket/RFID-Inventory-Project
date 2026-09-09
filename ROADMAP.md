@@ -3,6 +3,21 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-09.
 
+## ✅ 1-left Confirm actually confirms; the count box IS the on-hand — ✅ DEPLOYED 2026-09-09
+
+Root cause of "Confirm doesn't do anything": their func app answers
+rejections (the invalid-employee case) as HTTP 200 + success:false,
+and oneleft._post only raised on status >= 400 - a refused confirm
+looked done here while their dashboard kept the check. _post now
+treats a 200 that SAYS it failed as a failure (surfaced as the
+endpoint's 502 alert); with the employee fallback from earlier today,
+Nick's confirms go through as Steve.
+The confirm window's count box (already prefilled with live on-hand)
+now MEANS on-hand: equal = plain confirm; higher = the audited raise;
+lower = the sales-guarded /api/onhand-updates/lower (bin rides the
+row) - if the guard refuses, the check still confirms and the
+discrepancy files for Review as before. Copy says so on the box.
+
 ## 💸 Sold-before-label dismissal on receiving — ✅ DEPLOYED 2026-09-09 (web/server)
 
 Nick: stock sometimes sells before a label reaches it, and the count

@@ -136,6 +136,16 @@ def _post(path: str, body: dict) -> dict:
         raise RuntimeError(
             str(data.get("error") or f"HTTP {response.status_code}")[:200]
         )
+    # Their func app also answers rejections as HTTP 200 with
+    # {"success": false, "error": ...} — the invalid-employee case rode
+    # exactly this shape, so a refused confirm looked "done" here while
+    # their dashboard kept the check (Nick, 2026-09-09: "Confirm doesn't
+    # do anything"). A 200 that SAYS it failed is a failure.
+    if data.get("error") or data.get("success") is False:
+        raise RuntimeError(
+            str(data.get("error") or "their endpoint answered "
+                "success=false")[:200]
+        )
     return data
 
 

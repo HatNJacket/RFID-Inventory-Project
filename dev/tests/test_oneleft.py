@@ -306,5 +306,29 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
         check("auto pass degrades on outage", res["ran"] is False, str(res))
     oneleft.invalidate_pending_cache()
 
+# ---- _post: an HTTP 200 that SAYS it failed is a failure ---------------
+# Runs OUTSIDE the harness (which patches _post itself). Their func app
+# answers rejections (invalid employee) as 200 + success:false; treating
+# that as done was Nick's silent Confirm button (2026-09-09).
+class _Resp:
+    def __init__(self, code, body):
+        self.status_code = code
+        self._b = body
+    def json(self):
+        return self._b
+with patch("app.oneleft.requests.post",
+           return_value=_Resp(200, {"success": False,
+                                    "error": "Invalid employee"})):
+    try:
+        oneleft._post("/confirm", {})
+        check("200 + success:false raises", False, "no exception")
+    except RuntimeError as e:
+        check("200 + success:false raises with their message",
+              "Invalid employee" in str(e), str(e))
+with patch("app.oneleft.requests.post",
+           return_value=_Resp(200, {"success": True})):
+    check("a clean 200 still passes",
+          oneleft._post("/confirm", {}) == {"success": True}, "")
+
 print()
 sys.exit(1 if fails else 0)
