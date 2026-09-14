@@ -2967,6 +2967,16 @@ async function stationTagScan(rfid) {
         "err",
         "rfid"
       );
+    } else if (saved.warning) {
+      // Over-pair guard (Nick, 2026-09-14): the pair stands, but this
+      // product now has more tag records than stock explains - the
+      // re-sticker-without-unlinking trap that made the bracket mess.
+      setResult(
+        `Assigned ${saved.rfid_id} → ${saved.product_title}. ` +
+          `⚠ ${saved.warning}`,
+        "warn-soft",
+        "rfid"
+      );
     } else {
       setResult(
         `Assigned ${saved.rfid_id} → ${saved.product_title}`,
@@ -2977,9 +2987,10 @@ async function stationTagScan(rfid) {
     prependRecent(saved);
     bulkTagged += 1;
     lastSweep = [saved.rfid_id];
-    if (saved.suspect || !el.autoReset.checked) {
-      // Keep the product loaded (stay-on-product mode, or so a flagged
-      // tag can be re-scanned immediately).
+    if (saved.suspect || saved.warning || !el.autoReset.checked) {
+      // Keep the product loaded (stay-on-product mode, a flagged tag
+      // to re-scan, or an over-pair warning that must be READ before
+      // the station moves on).
       el.rfid.value = "";
       el.rfid.focus();
       loadTags(pendingProduct);
@@ -3616,8 +3627,9 @@ bulkSweepBtn.addEventListener("click", async () => {
     setResult(
       `Sweep (${cap.epc_count} tag(s) heard): ${res.count} new assigned` +
         (dup ? ` · ${dup} already assigned — skipped` : "") +
-        ".",
-      res.count > 0 ? "ok" : "err",
+        "." +
+        (res.warning ? ` ⚠ ${res.warning}` : ""),
+      res.warning ? "warn-soft" : res.count > 0 ? "ok" : "err",
       "rfid"
     );
     loadTags(pendingProduct);
@@ -12744,6 +12756,8 @@ document.getElementById("binaudit-pick").addEventListener("click", async () => {
               title="Select this sweep - every bin check (and the ◀ ▶ arrows) uses it until replaced">${
                 String(c.id) === selId ? "SELECTED ✓" : "USE"
               }</button>
+            <button class="reset ba-sweeprow__retiresold" type="button"
+              title="Swept the boxes you packed for orders? Retires every heard tag as sold - but only as far as FULFILLED orders cover each product, so a stray read of something you weren't working on stays live. Preview first; History-logged; Shopify untouched.">retire sold</button>
             <button class="reset ba-sweeprow__writeoff" type="button"
               title="Dismiss this sweep's unpaired stickers from the locate list - for the blank roll and broken or test labels. Tags that belong to products are untouched. Undoable from History.">write off unpaired</button>
           </div>`
@@ -12773,6 +12787,73 @@ document
         alert(err.message);
       } finally {
         useBtn.disabled = false;
+      }
+      return;
+    }
+    // Packed-order sweep -> retire sold (Nick, 2026-09-14): preview
+    // the per-product plan, confirm, apply. The fulfilled-orders guard
+    // means a stray read never loses a live tag.
+    const rsBtn = e.target.closest(".ba-sweeprow__retiresold");
+    if (rsBtn) {
+      const id = parseInt(rsBtn.closest(".ba-sweeprow").dataset.cid, 10);
+      const operator = operatorEl.value;
+      if (!operator) {
+        alert("Pick who's scanning (top right) first.");
+        return;
+      }
+      rsBtn.disabled = true;
+      try {
+        const plan = await postJson("/api/epcs/retire-sold", {
+          capture_id: id,
+          worker: operator,
+          preview: true,
+        });
+        if (!plan.retire_total) {
+          alert(
+            `Nothing to retire from sweep #${id}: ` +
+              `${plan.heard} tag(s) heard, but none belong to a ` +
+              `product with an unretired fulfilled sale.` +
+              (plan.skip_total
+                ? ` ${plan.skip_total} owned tag(s) have no ` +
+                  `covering sale yet - re-run after those orders ` +
+                  `fulfill.`
+                : "")
+          );
+          return;
+        }
+        const lines = (plan.plan || [])
+          .filter((p) => p.retire || p.skipped)
+          .slice(0, 12)
+          .map(
+            (p) =>
+              `· ${p.sku || p.product_title}: ${p.retire} of ${
+                p.heard
+              } heard retire sold` +
+              (p.skipped ? ` (${p.skipped} not covered - stay live)` : "")
+          );
+        if ((plan.plan || []).length > 12) {
+          lines.push(`· …and ${plan.plan.length - 12} more product(s)`);
+        }
+        const ok = confirm(
+          `Retire sweep #${id}'s heard tags as SOLD?\n\n` +
+            lines.join("\n") +
+            `\n\nGuard: only tags covered by unretired FULFILLED ` +
+            `sales retire; the rest stay live.` +
+            (plan.unowned > 0
+              ? ` ${plan.unowned} unpaired tag(s) are ignored.`
+              : "") +
+            `\nHistory-logged, each tag restorable. Shopify untouched.`
+        );
+        if (!ok) return;
+        const res = await postJson("/api/epcs/retire-sold", {
+          capture_id: id,
+          worker: operator,
+        });
+        alert(res.message);
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        rsBtn.disabled = false;
       }
       return;
     }
@@ -13047,15 +13128,35 @@ function renderBinAudit() {
           // Silence fully covered by fulfilled orders: one click retires
           // the shipped boxes' tags against the sold ledger.
           const silent = r.tags_here - r.detected;
-          return silent > 0 &&
+          if (
+            silent > 0 &&
             (r.sold_unretired || 0) >= silent &&
             (r.silent_epcs || []).length &&
             r.sku
-            ? `<div><button class="reset binaudit-marksold" type="button"
+          )
+            return `<div><button class="reset binaudit-marksold" type="button"
                  data-sku="${escapeHtml(r.sku)}"
                  data-epcs="${escapeHtml((r.silent_epcs || []).join(","))}"
-                 title="These boxes shipped on fulfilled orders — remove their tag record(s) and retire the sale(s) in the ledger. History-logged; Shopify untouched.">MARK ${silent} SOLD</button></div>`
-            : "";
+                 title="These boxes shipped on fulfilled orders — remove their tag record(s) and retire the sale(s) in the ledger. History-logged; Shopify untouched.">MARK ${silent} SOLD</button></div>`;
+          // Ghost cleanup (Nick, 2026-09-14, the ASIAIR bracket): the
+          // sweep heard EXACTLY what Shopify expects, but MORE silent
+          // records linger than sales explain - re-sticker leftovers.
+          // Offered only on a confirmed shelf, so real missing stock
+          // never gets tidied away.
+          if (
+            silent > 0 &&
+            silent > (r.sold_unretired || 0) &&
+            r.expected_qty != null &&
+            r.detected_units === r.expected_qty &&
+            r.detected > 0 &&
+            (r.silent_epcs || []).length &&
+            r.sku
+          )
+            return `<div><button class="reset binaudit-cleanghosts" type="button"
+                 data-sku="${escapeHtml(r.sku)}"
+                 data-epcs="${escapeHtml((r.silent_epcs || []).join(","))}"
+                 title="The shelf reads exactly right, so these silent records are leftovers - usually stickers replaced without unlinking. Recorded sales cover the oldest ones (presumed sold); the rest retire as replaced. History-logged, each restorable; Shopify untouched.">CLEAN UP ${silent} GHOST TAG(S)…</button></div>`;
+          return "";
         })()}</td>
       </tr>`;
     })
@@ -13298,6 +13399,53 @@ document
       } catch (err) {
         alert(err.message);
         soldBtn.disabled = false;
+      }
+      return;
+    }
+    // Ghost cleanup: preview the sold/replaced split first, then apply
+    // (Nick, 2026-09-14 - the bracket flow, one guided click).
+    const ghostBtn = e.target.closest(".binaudit-cleanghosts");
+    if (ghostBtn) {
+      const sku = ghostBtn.dataset.sku;
+      const epcs = (ghostBtn.dataset.epcs || "").split(",").filter(Boolean);
+      const operator = operatorEl.value;
+      if (!operator) {
+        alert("Pick who's scanning (top right) first.");
+        return;
+      }
+      ghostBtn.disabled = true;
+      try {
+        const plan = await postJson("/api/assignments/cleanup-silent", {
+          sku,
+          epcs,
+          worker: operator,
+          preview: true,
+        });
+        const ok = confirm(
+          `Clean up ${epcs.length} ghost tag(s) of ${sku}?\n\n` +
+            `The sweep heard exactly what Shopify expects, so these ` +
+            `silent records are leftovers (usually stickers replaced ` +
+            `without unlinking the old tag).\n\n` +
+            `· ${plan.presumed_sold.length} oldest record(s) retire ` +
+            `PRESUMED SOLD - recorded sales cover them\n` +
+            `· ${plan.replaced.length} retire as REPLACED - their box ` +
+            `wears a newer sticker\n\n` +
+            `History-logged, each tag restorable. Shopify untouched.`
+        );
+        if (!ok) {
+          ghostBtn.disabled = false;
+          return;
+        }
+        const res = await postJson("/api/assignments/cleanup-silent", {
+          sku,
+          epcs,
+          worker: operator,
+        });
+        alert(res.message);
+        document.getElementById("binaudit-run").click();
+      } catch (err) {
+        alert(err.message);
+        ghostBtn.disabled = false;
       }
       return;
     }

@@ -3013,7 +3013,8 @@ tr.binaudit-untagged td { opacity: 0.72; }
 .ba-sweeprow__main { flex: 1; min-width: 0; }
 .ba-sweeprow__use { white-space: nowrap; }
 .ba-sweeprow--sel .ba-sweeprow__use { color: var(--ok-ink); }
-.ba-sweeprow__writeoff {
+.ba-sweeprow__writeoff,
+.ba-sweeprow__retiresold {
   white-space: nowrap;
   color: var(--ink-dim);
 }

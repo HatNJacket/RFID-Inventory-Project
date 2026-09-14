@@ -741,6 +741,37 @@ def refresh_duplicate_tasks(session: Session) -> dict:
                 pair_reasons.setdefault(
                     (a, b), "the same SKU written differently"
                 )
+    # One adjacent-swap apart (the ASIAIR/AISAIR class, Nick,
+    # 2026-09-14: the transposed twin hid the bracket's existing tags
+    # and the shelf got re-stickered). Deliberately NOT general edit
+    # distance - that drowned Review (2026-08-18): substitutions are
+    # how real SKU families differ (EAF-5V vs EAF-5C), but two
+    # tag-holding SKUs that are the same letters with two neighbours
+    # swapped are a typo.
+    def _adjacent_swap(a: str, b: str) -> bool:
+        if len(a) != len(b) or a == b:
+            return False
+        diff = [i for i in range(len(a)) if a[i] != b[i]]
+        return (
+            len(diff) == 2 and diff[1] == diff[0] + 1
+            and a[diff[0]] == b[diff[1]] and a[diff[1]] == b[diff[0]]
+        )
+
+    by_len: dict[int, list[str]] = {}
+    for k in eligible:
+        nk = _norm_sku(k)
+        if len(nk) >= 6:
+            by_len.setdefault(len(nk), []).append(k)
+    for keys in by_len.values():
+        keys.sort()
+        for i, a in enumerate(keys):
+            for b in keys[i + 1:]:
+                if _adjacent_swap(_norm_sku(a), _norm_sku(b)):
+                    pair_reasons.setdefault(
+                        (a, b),
+                        "the same letters with two neighbours swapped "
+                        "- a likely typo twin",
+                    )
 
     existing = session.scalars(
         select(ReviewTask).where(ReviewTask.category == DUP_CATEGORY)

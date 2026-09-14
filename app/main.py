@@ -1017,6 +1017,54 @@ def tags_for_product(
 
 
 # ---------------------------------------------------------- assignment API ---
+def _overpair_warning(session: Session, sku: str | None) -> str | None:
+    """After a Scan-Station pair: does this SKU now hold more tag
+    records than its stock can explain? (Nick, 2026-09-14 - the Aug-18
+    bracket re-stickers added 4 phantom records without a peep, and the
+    audit ate the mess weeks later.) Compares live tag units against
+    the full expected pool - bin-map on-hand + unretired sales +
+    backorder debt + Shopify's Unavailable bucket - so normal tagging
+    up to stock never trips it. Advisory only: the pair stands."""
+    key = (sku or "").strip().upper()
+    if not key:
+        return None
+    rows = session.scalars(
+        select(BinMapEntry).where(func.upper(BinMapEntry.sku) == key)
+    ).all()
+    if not rows:
+        return None  # no stock claim on file - nothing to compare
+    tags = session.scalars(
+        select(RfidAssignment).where(
+            func.upper(RfidAssignment.sku) == key
+        )
+    ).all()
+    units = sum(t.case_units or 1 for t in tags)
+    oh = sum(r.qty or 0 for r in rows)
+    unavail = sum(r.unavailable or 0 for r in rows)
+    sold = orders_sync.sold_unretired_map(session, [key]).get(key, 0)
+    debt = sum(
+        d.units or 0
+        for d in session.scalars(
+            select(BackorderDebt).where(
+                BackorderDebt.cleared_at.is_(None),
+                func.upper(BackorderDebt.sku) == key,
+            )
+        )
+    )
+    expected = oh + sold + debt + unavail
+    if units <= expected:
+        return None
+    return (
+        f"This product now carries {units} tag record(s) but stock only "
+        f"explains {expected} (on-hand {oh}"
+        + (f" + {sold} sold-unretired" if sold else "")
+        + (f" + {debt} backorder" if debt else "")
+        + (f" + {unavail} unavailable" if unavail else "")
+        + "). Replacing a lost or damaged label? Retire or unlink the "
+        "old tag, or the next audit reports ghosts."
+    )
+
+
 @app.post(
     "/api/rfid-assignments",
     status_code=201,
@@ -1065,7 +1113,11 @@ def create_assignment(
             f"first to reassign.",
         )
     session.refresh(assignment)
-    return assignment.as_dict()
+    result = assignment.as_dict()
+    warn = _overpair_warning(session, assignment.sku)
+    if warn:
+        result["warning"] = warn
+    return result
 
 
 class SweepAssignIn(BaseModel):
@@ -1166,12 +1218,16 @@ def sweep_assign(
         )
     for a in assigned:
         session.refresh(a)
-    return {
+    result = {
         "count": len(assigned),
         "assigned": [a.as_dict() for a in assigned],
         "duplicates": duplicates,
         "companions_skipped": companions_skipped,
     }
+    warn = _overpair_warning(session, payload.sku)
+    if warn:
+        result["warning"] = warn
+    return result
 
 
 class SweepUndoIn(BaseModel):
@@ -9337,6 +9393,120 @@ def unretire_tags(
     return {"restored": restored}
 
 
+class CleanupSilentIn(BaseModel):
+    """Guided ghost cleanup (Nick, 2026-09-14, born of the ASIAIR
+    bracket): the audit heard exactly what Shopify expects, yet silent
+    tag records linger - re-sticker leftovers. Split them: recorded
+    sales cover the oldest ones (presumed-sold, consuming the ledger),
+    the rest retire as replaced."""
+
+    sku: str = Field(min_length=1, max_length=100)
+    epcs: list[str] = Field(min_length=1, max_length=200)
+    worker: str | None = Field(default=None, max_length=100)
+    # True = report the split without writing anything.
+    preview: bool = False
+
+
+@app.post(
+    "/api/assignments/cleanup-silent",
+    dependencies=[Depends(require_user)],
+)
+def cleanup_silent_tags(
+    payload: CleanupSilentIn, session: Session = Depends(get_session)
+):
+    """Retire a confirmed shelf's silent tags in one audited move:
+    oldest records first up to the SKU's unretired sales go
+    presumed-sold (each consuming ledger units), the remainder retire
+    as replaced (their box wears a newer sticker). Tombstones + History
+    rows exactly like /api/assignments/retire; every tag is
+    individually restorable (unretire)."""
+    sku_u = payload.sku.strip().upper()
+    uppers = {(e or "").strip().upper() for e in payload.epcs if e}
+    rows = session.scalars(
+        select(RfidAssignment).where(
+            func.upper(RfidAssignment.rfid_id).in_(sorted(uppers))
+        ).order_by(RfidAssignment.id)
+    ).all()
+    if not rows:
+        raise HTTPException(404, "None of those tags are on file.")
+    wrong = [r.rfid_id for r in rows
+             if (r.sku or "").strip().upper() != sku_u]
+    if wrong:
+        raise HTTPException(
+            409,
+            f"{len(wrong)} of those tags belong to a different product "
+            f"({wrong[0]} …) - refusing a mixed cleanup.",
+        )
+    coverage = orders_sync.sold_unretired_map(session, [sku_u]).get(
+        sku_u, 0
+    )
+    sold_rows: list[RfidAssignment] = []
+    replaced_rows: list[RfidAssignment] = []
+    left = coverage
+    for r in rows:  # oldest first - the earliest stickers sold first
+        u = r.case_units or 1
+        if left >= u:
+            sold_rows.append(r)
+            left -= u
+        else:
+            replaced_rows.append(r)
+    plan = {
+        "sku": payload.sku.strip(),
+        "coverage": coverage,
+        "presumed_sold": [r.rfid_id for r in sold_rows],
+        "replaced": [r.rfid_id for r in replaced_rows],
+    }
+    if payload.preview:
+        return {**plan, "applied": False}
+    by = (payload.worker or "").strip()[:100] or None
+    moved_sold: list[tuple[RetiredTag, RfidAssignment]] = []
+    for kind, batch in (("presumed-sold", sold_rows),
+                        ("replaced", replaced_rows)):
+        note = (
+            "audit ghost cleanup: shelf confirmed correct; "
+            + ("box left the store (recorded sale)"
+               if kind == "presumed-sold"
+               else "record predates a re-label")
+        )[:255]
+        for r in batch:
+            rt = RetiredTag(
+                rfid_id=r.rfid_id,
+                sku=r.sku,
+                product_title=r.product_title,
+                shopify_variant_id=r.shopify_variant_id,
+                bin_location=r.bin_location,
+                case_units=r.case_units,
+                kind=kind,
+                retired_by=by,
+                note=note,
+            )
+            session.add(rt)
+            session.add(BarcodeChange(
+                sku=r.sku,
+                product_title=r.product_title,
+                shopify_variant_id=r.shopify_variant_id,
+                changed_field="tag-retired",
+                old_barcode=r.rfid_id,
+                new_barcode=kind,
+                changed_by=by,
+            ))
+            session.delete(r)
+            if kind == "presumed-sold":
+                moved_sold.append((rt, r))
+    if moved_sold:
+        _consume_ledger_for_retirements(session, moved_sold)
+    session.commit()
+    return {
+        **plan,
+        "applied": True,
+        "message": (
+            f"{len(sold_rows)} tag(s) presumed-sold against recorded "
+            f"sales and {len(replaced_rows)} retired as replaced - "
+            f"every one restorable from History."
+        ),
+    }
+
+
 class ReplaceTagIn(BaseModel):
     # The off-box read, when the peeled sticker still answered. Absent =
     # truly dead: the oldest unheard record for the SKU in this bin goes.
@@ -13271,6 +13441,150 @@ def epcs_ignore_heard(
             f"the locate list and stay ignored on future sweeps."
             + (f" ⚠ {len(printed)} of them were printed receiving "
                f"labels." if printed else "")
+        ),
+    }
+
+
+class EpcRetireSoldIn(BaseModel):
+    """Packed-order sweep (Nick, 2026-09-14): every box packed for
+    orders got swept on the way out - retire those tags as sold, but
+    ONLY as far as fulfilled orders cover them, so a stray read of
+    something not being worked on can't lose a live tag."""
+
+    epcs: list[str] | None = Field(default=None, max_length=4000)
+    capture_id: int | None = None
+    worker: str | None = Field(default=None, max_length=100)
+    # True = report the per-product plan without writing anything.
+    preview: bool = False
+
+
+@app.post("/api/epcs/retire-sold", dependencies=[Depends(require_user)])
+def epcs_retire_sold(
+    payload: EpcRetireSoldIn, session: Session = Depends(get_session)
+):
+    """For every OWNED tag the sweep heard: retire it presumed-sold and
+    consume the matching sold-ledger unit - capped per product at its
+    unretired fulfilled sales (the guard). Heard tags beyond coverage
+    stay live and are named ("re-run after those orders fulfill");
+    unowned and already-retired EPCs are counted, never touched.
+    Tombstones + History rows exactly like /api/assignments/retire, so
+    every tag is individually restorable (unretire hands the ledger
+    unit back)."""
+    epcs: list[str] = list(payload.epcs or [])
+    cap = None
+    if payload.capture_id:
+        cap = session.get(EpcCapture, payload.capture_id)
+        if cap is None:
+            raise HTTPException(404, "No such sweep on the server.")
+        epcs += cap.epcs.split("\n") if cap.epcs else []
+    heard = {(e or "").strip().upper() for e in epcs if e and e.strip()}
+    if not heard:
+        raise HTTPException(
+            400, "No EPCs - send a list or pick a sent sweep.")
+    owned = session.scalars(
+        select(RfidAssignment).where(
+            func.upper(RfidAssignment.rfid_id).in_(sorted(heard))
+        ).order_by(RfidAssignment.id)
+    ).all()
+    already = {
+        (r.rfid_id or "").upper()
+        for r in session.scalars(
+            select(RetiredTag).where(
+                func.upper(RetiredTag.rfid_id).in_(sorted(heard))
+            )
+        )
+    }
+    by_sku: dict[str, list[RfidAssignment]] = {}
+    for t in owned:
+        by_sku.setdefault((t.sku or "").strip().upper(), []).append(t)
+    coverage = orders_sync.sold_unretired_map(
+        session, sorted(k for k in by_sku if k)
+    )
+    plan = []
+    to_retire: list[RfidAssignment] = []
+    for key, tags in sorted(by_sku.items()):
+        if not key:
+            continue
+        left = coverage.get(key, 0)
+        take: list[RfidAssignment] = []
+        skip: list[RfidAssignment] = []
+        for t in tags:  # oldest records first
+            u = t.case_units or 1
+            if left >= u:
+                take.append(t)
+                left -= u
+            else:
+                skip.append(t)
+        to_retire.extend(take)
+        plan.append({
+            "sku": tags[0].sku,
+            "product_title": tags[0].product_title,
+            "heard": len(tags),
+            "covered": coverage.get(key, 0),
+            "retire": len(take),
+            "skipped": len(skip),
+        })
+    unowned = len(heard) - len(owned) - len(already)
+    base = {
+        "heard": len(heard),
+        "unowned": unowned,
+        "already_retired": len(already),
+        "plan": plan,
+        "retire_total": len(to_retire),
+        "skip_total": sum(p["skipped"] for p in plan),
+    }
+    if payload.preview:
+        return {**base, "applied": False}
+    if not to_retire:
+        return {
+            **base, "applied": False,
+            "message": (
+                "Nothing to retire - no heard tag is covered by an "
+                "unretired fulfilled sale."
+            ),
+        }
+    by = (payload.worker or "").strip()[:100] or None
+    note = ("packed-order sweep"
+            + (f" #{cap.id}" if cap else "")
+            + ": box shipped; sale fulfilled")[:255]
+    moved: list[tuple[RetiredTag, RfidAssignment]] = []
+    for t in to_retire:
+        rt = RetiredTag(
+            rfid_id=t.rfid_id,
+            sku=t.sku,
+            product_title=t.product_title,
+            shopify_variant_id=t.shopify_variant_id,
+            bin_location=t.bin_location,
+            case_units=t.case_units,
+            kind="presumed-sold",
+            retired_by=by,
+            note=note,
+        )
+        session.add(rt)
+        session.add(BarcodeChange(
+            sku=t.sku,
+            product_title=t.product_title,
+            shopify_variant_id=t.shopify_variant_id,
+            changed_field="tag-retired",
+            old_barcode=t.rfid_id,
+            new_barcode="presumed-sold",
+            changed_by=by,
+        ))
+        session.delete(t)
+        moved.append((rt, t))
+    _consume_ledger_for_retirements(session, moved)
+    session.commit()
+    skipped = base["skip_total"]
+    return {
+        **base, "applied": True,
+        "message": (
+            f"{len(to_retire)} tag(s) retired sold against fulfilled "
+            f"orders."
+            + (f" {skipped} heard tag(s) stayed live - no unretired "
+               f"sale covers them yet; re-run after those orders "
+               f"fulfill." if skipped else "")
+            + (f" {unowned} unpaired tag(s) ignored." if unowned > 0
+               else "")
         ),
     }
 

@@ -132,6 +132,26 @@ with patch("app.shopify.get_fulfilled_orders",
     r = cl.post("/api/orders-sync/run").json()
     check("dismissed pair never re-flagged", r.get("dupes_opened")==0, r)
 
+    # ---- adjacent-transposition twins (Nick, 2026-09-14, the ASIAIR/
+    # AISAIR class): flagged WITHOUT shared evidence - two swapped
+    # neighbours are a typo, unlike the substitutions real SKU
+    # families are made of (SV-105/106 above stays unflagged). --------
+    with Session(get_engine()) as s:
+        tag(s, "T1", "ANT ALPT-2", "Antlia filter", "801")
+        tag(s, "T2", "ANT APLT-2", "Antlia filter typo", "802")
+        s.commit()
+    r = cl.post("/api/orders-sync/run").json()
+    check("adjacent-swap SKUs flagged without shared evidence",
+          r.get("dupes_opened")==1, r)
+    t3 = [t for t in cl.get("/api/review-tasks?status=open").json()["tasks"]
+          if t["category"]=="duplicate-product"
+          and "ANT ALPT-2" in t["detail"]]
+    check("transposition reason named", len(t3)==1
+          and "neighbours swapped" in t3[0]["detail"],
+          [x["detail"] for x in t3])
+    cl.post(f"/api/review-tasks/{t3[0]['id']}/resolve",
+            json={"resolved_by":"Nick","dismissed":True})
+
     # OPEN tasks from the fuzzy era close themselves on the next run —
     # in BOTH stored formats: the original "⇄" and the "?" SQL Server's
     # VARCHAR mangled it into (the prod 8k-ghost-task bug).

@@ -2799,46 +2799,24 @@ public class MainActivity extends Activity {
         }).start();
     }
 
-    /** Hunt RAW EPCs that belong to no product (Nick, 2026-09-09: the
-     *  unlinked-stickers list every sweep feeds) - no catalog lookup,
-     *  the meter just listens for exactly these tags. Each one found
-     *  goes through the normal FOUND flow, whose EDIT sheet can pair
-     *  or retire an unknown sticker. */
+    /** Hunt the unlinked-stickers list (Nick, 2026-09-09; unified
+     *  2026-09-14): picking it from LIST enters the SAME Unpaired Tags
+     *  hunt as the button - the meter hunts these exact EPCs, live
+     *  classification keeps adding new ownerless stickers, and 100%
+     *  opens the pair-by-barcode window. */
     private void locateHuntEpcs(String title,
             final java.util.Set<String> epcs) {
         if (epcs == null || epcs.isEmpty()) {
             status.setText("No tags to hunt.");
             return;
         }
-        stopLocate(false);
-        exitUnpairedHunt(false);
-        if (locMode == 1) setLocMode(0);
-        stopRadarEngine();
-        locTags.clear();
-        locFound.clear();
-        locNarrow = null;
-        locEma = 0;
-        for (String e : epcs) {
-            locTags.put(e.toUpperCase(java.util.Locale.ROOT), -999.0);
-        }
-        locProduct = new JSONObject();
-        locName.setText(title == null || title.isEmpty()
-                ? "Unlinked stickers" : title);
-        locSku.setText(locTags.size() + " sticker(s) not linked to any "
-                + "product - pair or retire each one you find");
-        locImg.setImageBitmap(null);
-        beep(SOUND_OK);
-        updateLocateUi();
-        status.setText("Pull the trigger to hunt " + locTags.size()
-                + " unlinked tag(s).");
+        enterUnpairedHunt(epcs, title);
     }
 
     // ------------------------------------------ Unpaired Tags hunt --------
-    private void toggleUnpairedHunt() {
-        if (unpairedHunt) {
-            exitUnpairedHunt(true);
-            return;
-        }
+    /** Enter the hunt, optionally pre-seeded with targets. */
+    private void enterUnpairedHunt(java.util.Set<String> seed,
+            String title) {
         stopLocate(false);
         if (locMode == 1) setLocMode(0);
         stopRadarEngine();
@@ -2854,17 +2832,74 @@ public class MainActivity extends Activity {
         upArmedProduct = null;
         unpairedHunt = true;
         locProduct = new JSONObject();
-        locName.setText("Unpaired tags");
-        locSku.setText("Listening for stickers linked to NOTHING - "
-                + "0 target(s) so far");
+        locName.setText(title == null || title.isEmpty()
+                ? "Unpaired tags" : title);
+        if (seed != null) {
+            for (String e : seed) {
+                locTags.put(e.toUpperCase(java.util.Locale.ROOT),
+                        -999.0);
+            }
+        }
+        locSku.setText(locTags.size()
+                + " unpaired target(s) · listening for more");
         locImg.setImageBitmap(null);
         paintUnpairedBtn();
         beep(SOUND_OK);
-        status.setText("UNPAIRED TAGS: trigger to listen. Every sticker "
-                + "with no product becomes a target - walk the meter to "
-                + "one, then scan the box's barcode. Or scan a barcode "
+        status.setText("UNPAIRED TAGS: trigger to hunt "
+                + (locTags.isEmpty() ? "" : locTags.size() + " sticker(s)")
+                + (locTags.isEmpty() ? "- every ownerless sticker heard "
+                        + "becomes a target" : " (new ones join live)")
+                + ". 100% opens the pair window - or scan a barcode "
                 + "FIRST and read the sticker in hand.");
         updateLocateUi();
+    }
+
+    private void toggleUnpairedHunt() {
+        if (unpairedHunt) {
+            exitUnpairedHunt(true);
+            return;
+        }
+        enterUnpairedHunt(null, null);
+        // Seed with the server's unpaired list so the trigger hunts
+        // the known stickers immediately (Nick, 2026-09-14: the button
+        // used to CLEAR the targets, and the empty hunt's trigger just
+        // asked for a barcode).
+        new Thread(() -> {
+            try {
+                JSONObject resp = api("GET", "/api/locate-queue", null);
+                JSONArray entries = resp.optJSONArray("entries");
+                final java.util.HashSet<String> seed =
+                        new java.util.HashSet<>();
+                for (int i = 0;
+                        entries != null && i < entries.length(); i++) {
+                    JSONObject en = entries.optJSONObject(i);
+                    if (en == null || !en.optBoolean("epc_hunt")) {
+                        continue;
+                    }
+                    JSONArray eps = en.optJSONArray("epcs");
+                    for (int j = 0;
+                            eps != null && j < eps.length(); j++) {
+                        seed.add(eps.optString(j).toUpperCase(
+                                java.util.Locale.ROOT));
+                    }
+                }
+                if (seed.isEmpty()) return;
+                ui.post(() -> {
+                    if (!unpairedHunt) return;
+                    for (String e : seed) {
+                        if (!locTags.containsKey(e)) {
+                            locTags.put(e, -999.0);
+                        }
+                    }
+                    locSku.setText(locTags.size()
+                            + " unpaired target(s) · " + upChecked
+                            + " tag(s) checked");
+                    updateLocateUi();
+                });
+            } catch (Exception ignored) {
+                // Live classification still builds targets from reads.
+            }
+        }).start();
     }
 
     private void exitUnpairedHunt(boolean announce) {
@@ -3472,7 +3507,12 @@ public class MainActivity extends Activity {
     }
 
     private void toggleLocate() {
-        if (locProduct == null || locTags.isEmpty()) {
+        // The Unpaired Tags hunt may start EMPTY (Nick, 2026-09-14:
+        // this guard used to answer the trigger with "scan a barcode",
+        // dead-ending the mode) - listening is what builds its
+        // targets, so an empty list is a valid start there.
+        if (locProduct == null
+                || (locTags.isEmpty() && !unpairedHunt)) {
             beep(SOUND_ERR);
             status.setText("Scan or type a product barcode/SKU first.");
             return;
@@ -3481,7 +3521,7 @@ public class MainActivity extends Activity {
             stopLocate(true);
             return;
         }
-        if (locTargets().isEmpty()) {
+        if (locTargets().isEmpty() && !unpairedHunt) {
             beep(SOUND_ERR);
             status.setText("Every tag is marked found — RESET via "
                     + "TARGET… to hunt them again.");
@@ -14443,16 +14483,22 @@ public class MainActivity extends Activity {
                                 prefs.getString("device", "C72"));
                 JSONObject resp = api("POST", "/api/rfid-assignments", body);
                 final boolean suspect = resp.optBoolean("suspect");
+                // Over-pair guard (Nick, 2026-09-14): the pair stands,
+                // but this product now has more tag records than its
+                // stock explains - probably a re-sticker whose old tag
+                // was never unlinked.
+                final String warn = resp.optString("warning", "");
                 ui.post(() -> {
                     tagReadBusy = false;
                     stationTags++;
                     stationHistory.push(epc);
                     stationTracker.setText(String.valueOf(stationTags));
-                    beep(SOUND_OK);
+                    beep(warn.isEmpty() ? SOUND_OK : SOUND_OTHER);
                     status.setText((suspect ? "SUSPECT read saved — " : "")
                             + "Linked ✓ …" + epc.substring(
                                     Math.max(0, epc.length() - 6))
                             + "  (" + stationTags + " on file)"
+                            + (warn.isEmpty() ? "" : "\n⚠ " + warn)
                             + pickNote(read));
                 });
             } catch (Exception e) {
@@ -15621,10 +15667,12 @@ public class MainActivity extends Activity {
                                         : p.optString("bin_location"))
                         .put("assigned_by",
                                 prefs.getString("device", "C72"));
-                api("POST", "/api/rfid-assignments", body);
+                JSONObject resp = api("POST", "/api/rfid-assignments",
+                        body);
+                final String warn = resp.optString("warning", "");
                 ui.post(() -> {
                     tagReadBusy = false;
-                    beep(SOUND_OK);
+                    beep(warn.isEmpty() ? SOUND_OK : SOUND_OTHER);
                     // The new tag counts toward the audit right away -
                     // it IS on the shelf in front of the operator.
                     auditTagSet.add(epc.toUpperCase(
@@ -15632,7 +15680,8 @@ public class MainActivity extends Activity {
                     status.setText("Paired ✓ "
                             + p.optString("product_title", "")
                             + " …" + epc.substring(
-                                    Math.max(0, epc.length() - 6)));
+                                    Math.max(0, epc.length() - 6))
+                            + (warn.isEmpty() ? "" : "\n⚠ " + warn));
                     auditRefreshFinds();
                 });
             } catch (Exception e) {
