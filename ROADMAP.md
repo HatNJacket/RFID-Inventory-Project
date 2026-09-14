@@ -1,7 +1,63 @@
 # RFID Inventory System — Roadmap
 
 Source of truth for project status. Updated by Claude each working session.
-Last updated: 2026-09-14 (fourth round).
+Last updated: 2026-09-14 (fifth round).
+
+## 📦 Packed-orders audit v2 — ✅ DEPLOYED 2026-09-14
+
+Nick's six-point rework, all landed:
+1. Pager: the current page keeps its accent (inert via click guard,
+   never greyed).
+2. RETIRE SOLD is gone from the listings. Entering the audit runs a
+   fulfilled-orders sync (incremental; 5-min throttle, a row's ↻
+   forces it), and every sub-20-tag sweep auto-classifies against
+   fulfilled sales: GREEN "whole sweep matches orders fulfilled the
+   same day" (Toronto dates), YELLOW "part verified: N of M" at
+   >=50%, RED "most of the sweep cannot be verified" under 50%, RED
+   "doesn't look like packed orders" at zero. 20+ tags = shelf
+   sweep, no verdict. Rows carry the verdict tag, a spinner ↻ (rfbtn
+   family, no ETA text - Nick's spec) and CHECK AGAINST ORDERS…
+   Unowned tags never count against a sweep (unlabelled shipped
+   product is normal). /api/epcs/packed-classify.
+3. CHECK opens a native overlay window (mlOverlay shell): product
+   previews with images, per-product coverage + same-day/newest-sale
+   notes, and the RETIRE button lives in the window - no plain-text
+   alert. STYLEGUIDE grew the matching rule (no structured content
+   in alert()/confirm(); new plain alerts must be called out to Nick
+   before shipping).
+4. A sweep is spent ONCE: applying stamps rfid_epc_captures
+   (packed_retired_at/by - dev/alter_add_packed_retired.py RAN ON
+   PROD), the listing swaps its buttons for "Swept products retired
+   on DATE by NAME", and a second retire answers 409.
+5. History event "Packed Orders Retired" with a whole-sweep undo
+   (/api/epcs/retire-sold/undo): tags back live, ledger units handed
+   back, sweep un-spent.
+6. EVERY History undo pressed more than a day after its event now
+   confirms first, naming the age (days/weeks/months/years).
+
+## 🧹 Sweep hygiene + inventory-check guard 5 — ✅ DEPLOYED 2026-09-14
+
+- Batch-tagging sweeps (batch_id set) stay OUT of the big-picture
+  sweep lists: the audit pickers, the packed audit and the audit
+  hub's recent-sweeps card all fetch pickable=1; the audit "pull
+  latest" skips them too. They still exist for their batch's verify,
+  history and undo.
+- Drift guard 5: 3 Inventory Checks landed a minute after a collect
+  (the batch-open sync kick compared mid-window - tags jump at
+  pairing, on-hand catches up at the verify raise). The mismatch
+  checker now holds fire for SKUs on any OPEN batch and SKUs whose
+  newest pairing is under an hour old; the daily run still files
+  anything persistent.
+
+## 📐 Boxify dimensions — ❌ NO ACCESS (2026-09-14, investigated)
+
+Boxify keeps its dimensions in its own external database. A metafield
+sweep across the store found NOTHING dimension-shaped (only telescope
+specs); variants carry only native weight. So: no programmatic
+export, no missing-dimensions count, no RFID-site dimension editor,
+and no Audit-tab card - the export Nick heard about is the CSV
+export inside Boxify's own admin UI (manual). If Nick exports that
+CSV, a card + upload flow is buildable on top of it.
 
 ## 📦 Audit packed orders is its own audit + sweep-list pages — ✅ DEPLOYED 2026-09-14
 

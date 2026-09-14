@@ -1774,6 +1774,14 @@ class EpcCapture(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    # Stamped when the packed-orders audit retired this sweep's tags
+    # (Nick, 2026-09-14): the sweep can only be spent ONCE - the
+    # listing shows the stamp instead of buttons, and the History undo
+    # clears it. New columns: dev/alter_add_packed_retired.py on prod.
+    packed_retired_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    packed_retired_by: Mapped[str | None] = mapped_column(String(100))
 
     def as_dict(self, with_epcs: bool = False) -> dict:
         d = {
@@ -1785,6 +1793,11 @@ class EpcCapture(Base):
             "created_at": (
                 self.created_at.isoformat() if self.created_at else None
             ),
+            "packed_retired_at": (
+                self.packed_retired_at.isoformat()
+                if self.packed_retired_at else None
+            ),
+            "packed_retired_by": self.packed_retired_by,
         }
         if with_epcs:
             d["epcs"] = self.epcs.split("\n") if self.epcs else []

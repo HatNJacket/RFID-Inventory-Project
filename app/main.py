@@ -15,6 +15,7 @@ import time
 import unicodedata
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -13479,29 +13480,24 @@ class EpcRetireSoldIn(BaseModel):
     preview: bool = False
 
 
-@app.post("/api/epcs/retire-sold", dependencies=[Depends(require_user)])
-def epcs_retire_sold(
-    payload: EpcRetireSoldIn, session: Session = Depends(get_session)
-):
-    """For every OWNED tag the sweep heard: retire it presumed-sold and
-    consume the matching sold-ledger unit - capped per product at its
-    unretired fulfilled sales (the guard). Heard tags beyond coverage
-    stay live and are named ("re-run after those orders fulfill");
-    unowned and already-retired EPCs are counted, never touched.
-    Tombstones + History rows exactly like /api/assignments/retire, so
-    every tag is individually restorable (unretire hands the ledger
-    unit back)."""
-    epcs: list[str] = list(payload.epcs or [])
-    cap = None
-    if payload.capture_id:
-        cap = session.get(EpcCapture, payload.capture_id)
-        if cap is None:
-            raise HTTPException(404, "No such sweep on the server.")
-        epcs += cap.epcs.split("\n") if cap.epcs else []
-    heard = {(e or "").strip().upper() for e in epcs if e and e.strip()}
-    if not heard:
-        raise HTTPException(
-            400, "No EPCs - send a list or pick a sent sweep.")
+_TORONTO = ZoneInfo("America/Toronto")
+
+# A packing sweep is a handful of boxes on their way out the door;
+# anything this size or bigger is a shelf sweep and never
+# auto-classified (Nick, 2026-09-14).
+PACKED_SWEEP_MAX = 20
+
+
+def _packed_analysis(
+    session: Session, heard: set[str], cap: EpcCapture | None,
+    with_media: bool = False,
+) -> tuple[dict, list[RfidAssignment]]:
+    """The shared arithmetic of the packed-orders audit: which heard
+    tags are owned, which of those unretired FULFILLED sales cover
+    (oldest records first, per product), and - when the sweep is known
+    - whether the covering sales were fulfilled the SAME Toronto day
+    the sweep was sent (the "this really is today's packing pile"
+    signal). with_media adds product images for the check window."""
     owned = session.scalars(
         select(RfidAssignment).where(
             func.upper(RfidAssignment.rfid_id).in_(sorted(heard))
@@ -13518,9 +13514,45 @@ def epcs_retire_sold(
     by_sku: dict[str, list[RfidAssignment]] = {}
     for t in owned:
         by_sku.setdefault((t.sku or "").strip().upper(), []).append(t)
-    coverage = orders_sync.sold_unretired_map(
-        session, sorted(k for k in by_sku if k)
-    )
+    keys = sorted(k for k in by_sku if k)
+    coverage = orders_sync.sold_unretired_map(session, keys)
+    sweep_day = None
+    if cap is not None and cap.created_at is not None:
+        stamp = cap.created_at
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        sweep_day = stamp.astimezone(_TORONTO).date()
+    sold_meta: dict[str, dict] = {}
+    if keys:
+        for r in session.scalars(
+            select(SoldRecord).where(
+                func.upper(SoldRecord.sku).in_(keys)
+            )
+        ):
+            if max(0, (r.quantity or 0) - (r.retired or 0)) <= 0:
+                continue
+            k = (r.sku or "").strip().upper()
+            m = sold_meta.setdefault(
+                k, {"newest": None, "same_day": False}
+            )
+            f = orders_sync._as_utc(r.fulfilled_at)
+            if f is None:
+                continue
+            if m["newest"] is None or f > m["newest"]:
+                m["newest"] = f
+            if (sweep_day is not None
+                    and f.astimezone(_TORONTO).date() == sweep_day):
+                m["same_day"] = True
+    images: dict[str, str] = {}
+    if with_media and keys:
+        for e in session.scalars(
+            select(BinMapEntry).where(
+                func.upper(BinMapEntry.sku).in_(keys)
+            )
+        ):
+            k = (e.sku or "").strip().upper()
+            if e.image_url and k not in images:
+                images[k] = e.image_url
     plan = []
     to_retire: list[RfidAssignment] = []
     for key, tags in sorted(by_sku.items()):
@@ -13537,6 +13569,7 @@ def epcs_retire_sold(
             else:
                 skip.append(t)
         to_retire.extend(take)
+        m = sold_meta.get(key, {})
         plan.append({
             "sku": tags[0].sku,
             "product_title": tags[0].product_title,
@@ -13544,16 +13577,145 @@ def epcs_retire_sold(
             "covered": coverage.get(key, 0),
             "retire": len(take),
             "skipped": len(skip),
+            "same_day": bool(m.get("same_day")),
+            "newest_fulfilled_at": (
+                m["newest"].isoformat() if m.get("newest") else None
+            ),
+            **({"image_url": images.get(key)} if with_media else {}),
         })
     unowned = len(heard) - len(owned) - len(already)
     base = {
         "heard": len(heard),
+        "owned": len(owned),
         "unowned": unowned,
         "already_retired": len(already),
         "plan": plan,
         "retire_total": len(to_retire),
         "skip_total": sum(p["skipped"] for p in plan),
     }
+    return base, to_retire
+
+
+def _packed_verdict(base: dict) -> dict:
+    """The listing tag (Nick, 2026-09-14): green when the WHOLE sweep
+    matches same-day fulfilled orders, yellow at >=50% verifiable, red
+    below that, red 'unrelated' when nothing matches at all. Unlabelled
+    shipped products (unowned tags) are expected and never count
+    against the sweep."""
+    owned = base["owned"]
+    retirable = base["retire_total"]
+    covered_rows = [p for p in base["plan"] if p["retire"] > 0]
+    if owned > 0 and base["skip_total"] == 0 and covered_rows and all(
+        p["same_day"] for p in covered_rows
+    ):
+        return {
+            "verdict": "full",
+            "label": "whole sweep matches orders fulfilled the same "
+                     "day",
+        }
+    ratio = (retirable / owned) if owned else 0
+    if ratio >= 0.5:
+        return {
+            "verdict": "partial",
+            "label": f"part verified: {retirable} of {owned} tagged "
+                     f"box(es) match fulfilled orders",
+        }
+    if retirable > 0:
+        return {
+            "verdict": "low",
+            "label": f"most of the sweep cannot be verified as sold "
+                     f"through recent orders ({retirable} of {owned})",
+        }
+    return {
+        "verdict": "unrelated",
+        "label": "doesn't look like packed orders - nothing matches "
+                 "fulfilled sales",
+    }
+
+
+class PackedClassifyIn(BaseModel):
+    capture_ids: list[int] = Field(min_length=1, max_length=25)
+
+
+@app.post(
+    "/api/epcs/packed-classify", dependencies=[Depends(require_user)]
+)
+def epcs_packed_classify(
+    payload: PackedClassifyIn, session: Session = Depends(get_session)
+):
+    """Classify a page of sweeps for the packed-orders audit. Sweeps
+    of PACKED_SWEEP_MAX tags or more are shelf sweeps and answer
+    big=True (no verdict); already-spent sweeps answer their stamp."""
+    out = {}
+    for cid in payload.capture_ids:
+        cap = session.get(EpcCapture, cid)
+        if cap is None:
+            continue
+        if cap.packed_retired_at is not None:
+            out[str(cid)] = {
+                "retired_at": cap.packed_retired_at.isoformat(),
+                "retired_by": cap.packed_retired_by,
+            }
+            continue
+        if (cap.epc_count or 0) >= PACKED_SWEEP_MAX:
+            out[str(cid)] = {"big": True}
+            continue
+        heard = {
+            e.strip().upper()
+            for e in (cap.epcs or "").split("\n") if e.strip()
+        }
+        if not heard:
+            out[str(cid)] = {"big": False, "verdict": "unrelated",
+                             "label": "empty sweep"}
+            continue
+        base, _ = _packed_analysis(session, heard, cap)
+        out[str(cid)] = {
+            "big": False,
+            "owned": base["owned"],
+            "retire_total": base["retire_total"],
+            "skip_total": base["skip_total"],
+            "unowned": base["unowned"],
+            **_packed_verdict(base),
+        }
+    return {"sweeps": out}
+
+
+@app.post("/api/epcs/retire-sold", dependencies=[Depends(require_user)])
+def epcs_retire_sold(
+    payload: EpcRetireSoldIn, session: Session = Depends(get_session)
+):
+    """For every OWNED tag the sweep heard: retire it presumed-sold and
+    consume the matching sold-ledger unit - capped per product at its
+    unretired fulfilled sales (the guard). Heard tags beyond coverage
+    stay live and are named ("re-run after those orders fulfill");
+    unowned and already-retired EPCs are counted, never touched.
+    Tombstones + History rows exactly like /api/assignments/retire, so
+    every tag is individually restorable - and applying against a
+    sweep SPENDS it (one stamp, one History event, one whole-sweep
+    undo)."""
+    epcs: list[str] = list(payload.epcs or [])
+    cap = None
+    if payload.capture_id:
+        cap = session.get(EpcCapture, payload.capture_id)
+        if cap is None:
+            raise HTTPException(404, "No such sweep on the server.")
+        if cap.packed_retired_at is not None:
+            raise HTTPException(
+                409,
+                f"Sweep #{cap.id} was already retired on "
+                f"{cap.packed_retired_at.date().isoformat()} by "
+                f"{cap.packed_retired_by or '?'} - a sweep is spent "
+                f"once. Undo it from History first if that was wrong.",
+            )
+        epcs += cap.epcs.split("\n") if cap.epcs else []
+    heard = {(e or "").strip().upper() for e in epcs if e and e.strip()}
+    if not heard:
+        raise HTTPException(
+            400, "No EPCs - send a list or pick a sent sweep.")
+    base, to_retire = _packed_analysis(
+        session, heard, cap, with_media=True
+    )
+    base = {**base, **_packed_verdict(base)}
     if payload.preview:
         return {**base, "applied": False}
     if not to_retire:
@@ -13594,8 +13756,26 @@ def epcs_retire_sold(
         session.delete(t)
         moved.append((rt, t))
     _consume_ledger_for_retirements(session, moved)
+    if cap is not None:
+        # The sweep is SPENT: the listing shows the stamp instead of
+        # buttons, and the packed-retired History event carries the
+        # whole-sweep undo.
+        cap.packed_retired_at = datetime.now(timezone.utc)
+        cap.packed_retired_by = by
+        session.add(BarcodeChange(
+            sku=None,
+            product_title=(
+                f"{len(to_retire)} tag(s) retired sold from sweep "
+                f"#{cap.id}"
+            )[:255],
+            changed_field="packed-retired",
+            old_barcode=f"sweep #{cap.id}"[:64],
+            new_barcode=f"{len(to_retire)} tag(s)"[:64],
+            changed_by=by,
+        ))
     session.commit()
     skipped = base["skip_total"]
+    unowned = base["unowned"]
     return {
         **base, "applied": True,
         "message": (
@@ -13606,6 +13786,93 @@ def epcs_retire_sold(
                f"fulfill." if skipped else "")
             + (f" {unowned} unpaired tag(s) ignored." if unowned > 0
                else "")
+        ),
+    }
+
+
+class PackedUndoIn(BaseModel):
+    capture_id: int
+    worker: str | None = Field(default=None, max_length=100)
+
+
+@app.post(
+    "/api/epcs/retire-sold/undo", dependencies=[Depends(require_user)]
+)
+def epcs_retire_sold_undo(
+    payload: PackedUndoIn, session: Session = Depends(get_session)
+):
+    """Whole-sweep undo for a packed-orders retire: every tag the
+    operation retired comes back live (its ledger unit handed back),
+    and the sweep's spent stamp clears so it can be used again."""
+    cap = session.get(EpcCapture, payload.capture_id)
+    if cap is None:
+        raise HTTPException(404, "No such sweep on the server.")
+    if cap.packed_retired_at is None:
+        raise HTTPException(
+            409, f"Sweep #{cap.id} is not marked retired - nothing to "
+                 f"undo.")
+    heard = {
+        e.strip().upper()
+        for e in (cap.epcs or "").split("\n") if e.strip()
+    }
+    marker = f"packed-order sweep #{cap.id}"
+    restored = []
+    for r in session.scalars(
+        select(RetiredTag).where(
+            func.upper(RetiredTag.rfid_id).in_(sorted(heard) or [""]),
+            RetiredTag.kind == "presumed-sold",
+        )
+    ).all():
+        if not (r.note or "").startswith(marker):
+            continue
+        if session.scalar(
+            select(RfidAssignment).where(
+                func.upper(RfidAssignment.rfid_id)
+                == (r.rfid_id or "").upper()
+            )
+        ) is not None:
+            continue  # EPC re-used on a new box since - leave it alone
+        session.add(RfidAssignment(
+            rfid_id=r.rfid_id,
+            shopify_variant_id=r.shopify_variant_id or "",
+            product_title=r.product_title or r.sku or "(unknown)",
+            sku=r.sku,
+            bin_location=r.bin_location,
+            case_units=r.case_units,
+            assigned_by=(payload.worker or "").strip()[:100] or None,
+        ))
+        session.add(BarcodeChange(
+            sku=r.sku,
+            product_title=r.product_title,
+            shopify_variant_id=r.shopify_variant_id,
+            changed_field="tag-unretired",
+            old_barcode=r.rfid_id,
+            new_barcode=r.kind,
+            changed_by=(payload.worker or "").strip()[:100] or None,
+        ))
+        if r.sku and (r.ledger_consumed or 0) > 0:
+            orders_sync.unretire_units(session, r.sku, r.ledger_consumed)
+        session.delete(r)
+        restored.append(r.rfid_id)
+    cap.packed_retired_at = None
+    cap.packed_retired_by = None
+    session.add(BarcodeChange(
+        sku=None,
+        product_title=(
+            f"{len(restored)} tag(s) restored - sweep #{cap.id} "
+            f"un-spent"
+        )[:255],
+        changed_field="packed-unretired",
+        old_barcode=f"sweep #{cap.id}"[:64],
+        new_barcode="packed retire undone"[:64],
+        changed_by=(payload.worker or "").strip()[:100] or None,
+    ))
+    session.commit()
+    return {
+        "restored": len(restored),
+        "message": (
+            f"{len(restored)} tag(s) back live, their ledger units "
+            f"handed back - sweep #{cap.id} can be used again."
         ),
     }
 
@@ -16739,14 +17006,21 @@ def create_capture(payload: CaptureIn, session: Session = Depends(get_session)):
 
 @app.get("/api/epc-captures", dependencies=[Depends(require_user)])
 def list_captures(
-    limit: int = 20, offset: int = 0,
+    limit: int = 20, offset: int = 0, pickable: bool = False,
     session: Session = Depends(get_session),
 ):
     """Newest first. offset + total drive the sweep list's page
-    buttons (Nick, 2026-09-14)."""
-    total = session.scalar(select(func.count(EpcCapture.id))) or 0
+    buttons (Nick, 2026-09-14). pickable=1 hides batch-tagging sweeps
+    (batch_id set): they exist for that batch's verify and history,
+    not for audits or any other big-picture sweep pick."""
+    base = select(EpcCapture)
+    count_q = select(func.count(EpcCapture.id))
+    if pickable:
+        base = base.where(EpcCapture.batch_id.is_(None))
+        count_q = count_q.where(EpcCapture.batch_id.is_(None))
+    total = session.scalar(count_q) or 0
     rows = session.scalars(
-        select(EpcCapture).order_by(EpcCapture.id.desc())
+        base.order_by(EpcCapture.id.desc())
         .offset(max(0, offset)).limit(min(limit, 100))
     ).all()
     return {
@@ -16758,10 +17032,16 @@ def list_captures(
 
 
 @app.get("/api/epc-captures/latest", dependencies=[Depends(require_user)])
-def latest_capture(session: Session = Depends(get_session)):
-    row = session.scalar(
-        select(EpcCapture).order_by(EpcCapture.id.desc()).limit(1)
-    )
+def latest_capture(
+    pickable: bool = False, session: Session = Depends(get_session)
+):
+    """pickable=1 skips batch-tagging sweeps - the audit's "pull
+    latest" must never grab a batch's own pair sweep (Nick,
+    2026-09-14)."""
+    q = select(EpcCapture).order_by(EpcCapture.id.desc())
+    if pickable:
+        q = q.where(EpcCapture.batch_id.is_(None))
+    row = session.scalar(q.limit(1))
     if row is None:
         raise HTTPException(404, "No sweeps received yet.")
     return row.as_dict(with_epcs=True)
@@ -18717,6 +18997,21 @@ def history(
                 }
         elif c.changed_field == "unpaired-unignored":
             event["detail"] = c.product_title or "write-off undone"
+        # Packed-orders retire (Nick, 2026-09-14): one event per spent
+        # sweep; undo offered while the sweep still wears its stamp.
+        elif c.changed_field == "packed-retired":
+            event["detail"] = c.product_title or "packed sweep retired"
+            mm = re.match(r"sweep #(\d+)$", c.old_barcode or "")
+            if mm:
+                cap_row = session.get(EpcCapture, int(mm.group(1)))
+                if (cap_row is not None
+                        and cap_row.packed_retired_at is not None):
+                    event["undo"] = {
+                        "kind": "packed-retire",
+                        "capture_id": cap_row.id,
+                    }
+        elif c.changed_field == "packed-unretired":
+            event["detail"] = c.product_title or "packed retire undone"
         # A completed audit logs its location + one-line summary; the
         # generic "(none) → x" rendering would just add noise.
         elif c.changed_field == "bin-audited":

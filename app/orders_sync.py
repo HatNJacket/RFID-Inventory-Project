@@ -25,7 +25,7 @@ import os
 import re
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
@@ -431,6 +431,46 @@ def _receiving_in_flight_skus(session: Session) -> set[str]:
     return out
 
 
+def _tagging_in_flight_skus(session: Session) -> set[str]:
+    """Drift guard 5 (Nick, 2026-09-14): during BIN batch tagging the
+    tag count jumps at pairing but on-hand only catches up at the
+    verify step's raise - and the batch-open kick runs this check right
+    inside that window (3 Inventory Checks landed a minute after a
+    collect, against counts the operator had literally just verified).
+    Same story for bin-audit finds: labels print and pair before the
+    raise. In flight: every SKU on an OPEN batch of any kind, plus any
+    SKU whose newest pairing is under an hour old."""
+    out: set[str] = set()
+    open_ids = [
+        b.id for b in session.scalars(
+            select(Batch).where(
+                Batch.status.notin_(("done", "abandoned"))
+            )
+        )
+    ]
+    if open_ids:
+        for item in session.scalars(
+            select(BatchItem).where(BatchItem.batch_id.in_(open_ids))
+        ):
+            if item.sku:
+                out.add(item.sku.strip().upper())
+    cutoff = datetime.utcnow().replace(tzinfo=timezone.utc) - timedelta(
+        hours=1
+    )
+    # Newest pairings first; stop at the first one older than the
+    # window (id order tracks assignment order).
+    for a in session.scalars(
+        select(RfidAssignment).order_by(RfidAssignment.id.desc())
+        .limit(500)
+    ):
+        ts = _as_utc(a.assigned_at)
+        if ts is not None and ts < cutoff:
+            break
+        if a.sku:
+            out.add(a.sku.strip().upper())
+    return out
+
+
 def _log_onhand(
     session: Session, sku: str, value: int, source: str = "orders-sync"
 ) -> None:
@@ -476,7 +516,10 @@ def refresh_mismatch_tasks(session: Session) -> dict:
     debts = backorder_debt_map(session, skus)
     baselines = _sku_baselines(session, skus)
     sold = sold_unretired_since_map(session, skus, baselines)
-    in_flight = _receiving_in_flight_skus(session)
+    in_flight = (
+        _receiving_in_flight_skus(session)
+        | _tagging_in_flight_skus(session)
+    )
     try:
         stock = shopify.get_stock_info_by_skus(skus)
     except Exception as error:

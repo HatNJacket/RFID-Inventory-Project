@@ -146,6 +146,133 @@ with patch("app.main.oneleft") as ol:
     r = cl.post("/api/epcs/retire-sold", json={"epcs": []})
     check("empty sweep refused", r.status_code == 400, r.text[:200])
 
+    # ==== packed-orders audit: classify, spend once, undo =============
+    with Session(get_engine()) as s:
+        from app.models import BinMapEntry as _BME
+        for i in (50, 51, 52):
+            s.add(RfidAssignment(rfid_id=E(i), shopify_variant_id="t:p",
+                                 product_title="Prod P", sku="SKU-P",
+                                 bin_location="P1-1"))
+        for oid in ("p1", "p2", "p3"):
+            s.add(SoldRecord(order_id=oid, order_name="#"+oid,
+                             sku="SKU-P", quantity=1, retired=0,
+                             fulfilled_at=datetime.utcnow()))
+        s.add(_BME(sku="SKU-P", barcode="500", product_title="Prod P",
+                   bin="P1-1", qty=3, shopify_variant_id="t:p",
+                   image_url="https://img/p.png"))
+        s.add(EpcCapture(device="C72", epc_count=3,
+                         epcs="\n".join([E(50), E(51), E(52)]),
+                         note="packing pile"))
+        s.add(EpcCapture(device="C72", epc_count=25,
+                         epcs="\n".join(E(100 + i) for i in range(25))))
+        s.add(EpcCapture(device="C72", epc_count=1, epcs=E(60),
+                         batch_id=77))
+        s.commit()
+        newest = s.scalars(select(EpcCapture).order_by(
+            EpcCapture.id.desc()).limit(3)).all()
+        batch_cid, big_cid, pack_cid = [c.id for c in newest]
+
+    r = cl.get("/api/epc-captures?pickable=1&limit=50").json()
+    check("pickable list hides the batch-tagging sweep",
+          all(c["id"] != batch_cid for c in r["captures"])
+          and any(c["id"] == pack_cid for c in r["captures"]),
+          [c["id"] for c in r["captures"]])
+    r = cl.get("/api/epc-captures/latest?pickable=1").json()
+    check("pickable latest skips the batch sweep too",
+          r.get("id") == big_cid, r.get("id"))
+
+    r = cl.post("/api/epcs/packed-classify", json={
+        "capture_ids": [pack_cid, big_cid]}).json()["sweeps"]
+    check("whole-sweep same-day coverage classifies FULL (green)",
+          r[str(pack_cid)].get("verdict") == "full", r)
+    check("25-tag sweep answers big, no verdict",
+          r[str(big_cid)].get("big") is True
+          and "verdict" not in r[str(big_cid)], r)
+
+    with Session(get_engine()) as s:  # eat one sale: 2 of 3 covered -> partial
+        row = s.scalars(select(SoldRecord).where(
+            SoldRecord.sku == "SKU-P")).first()
+        row.retired = 1
+        s.commit()
+    r = cl.post("/api/epcs/packed-classify", json={
+        "capture_ids": [pack_cid]}).json()["sweeps"][str(pack_cid)]
+    check(">=50% coverage classifies PARTIAL (yellow)",
+          r.get("verdict") == "partial" and "2 of 3" in r["label"], r)
+    with Session(get_engine()) as s:  # eat another: 1 of 3 -> low (red)
+        rows = s.scalars(select(SoldRecord).where(
+            SoldRecord.sku == "SKU-P")).all()
+        rows[1].retired = 1
+        s.commit()
+    r = cl.post("/api/epcs/packed-classify", json={
+        "capture_ids": [pack_cid]}).json()["sweeps"][str(pack_cid)]
+    check("under 50% classifies LOW with the cannot-verify note",
+          r.get("verdict") == "low"
+          and "cannot be verified" in r["label"], r)
+    with Session(get_engine()) as s:  # eat all -> unrelated (red)
+        for row in s.scalars(select(SoldRecord).where(
+                SoldRecord.sku == "SKU-P")):
+            row.retired = row.quantity
+        s.commit()
+    r = cl.post("/api/epcs/packed-classify", json={
+        "capture_ids": [pack_cid]}).json()["sweeps"][str(pack_cid)]
+    check("no coverage classifies UNRELATED",
+          r.get("verdict") == "unrelated", r)
+    with Session(get_engine()) as s:  # restore all three sales
+        for row in s.scalars(select(SoldRecord).where(
+                SoldRecord.sku == "SKU-P")):
+            row.retired = 0
+        s.commit()
+
+    # ---- preview media + spend-once + history undo --------------------
+    r = cl.post("/api/epcs/retire-sold", json={
+        "capture_id": pack_cid, "worker": "Nick", "preview": True}).json()
+    check("preview carries the product image for the check window",
+          r["plan"][0].get("image_url") == "https://img/p.png", r["plan"])
+    r = cl.post("/api/epcs/retire-sold", json={
+        "capture_id": pack_cid, "worker": "Nick"})
+    check("packed apply retires all three", r.status_code == 200
+          and r.json().get("retire_total") == 3, r.text[:300])
+    with Session(get_engine()) as s:
+        cap = s.get(EpcCapture, pack_cid)
+        check("sweep stamped spent by Nick",
+              cap.packed_retired_at is not None
+              and cap.packed_retired_by == "Nick",
+              (cap.packed_retired_at, cap.packed_retired_by))
+    r = cl.post("/api/epcs/retire-sold", json={
+        "capture_id": pack_cid, "worker": "Nick"})
+    check("a spent sweep refuses a second retire",
+          r.status_code == 409 and "already retired" in r.text,
+          r.text[:200])
+    r = cl.post("/api/epcs/packed-classify", json={
+        "capture_ids": [pack_cid]}).json()["sweeps"][str(pack_cid)]
+    check("classify reports the stamp on a spent sweep",
+          r.get("retired_by") == "Nick" and r.get("retired_at"), r)
+    hist = cl.get("/api/history?limit=40").json()["events"]
+    ev = next((x for x in hist
+               if (x.get("undo") or {}).get("kind") == "packed-retire"),
+              None)
+    check("Packed Orders Retired event carries the whole-sweep undo",
+          ev is not None
+          and ev["undo"].get("capture_id") == pack_cid, ev)
+
+    r = cl.post("/api/epcs/retire-sold/undo", json={
+        "capture_id": pack_cid, "worker": "Nick"})
+    check("undo restores all three tags", r.status_code == 200
+          and r.json().get("restored") == 3, r.text[:200])
+    with Session(get_engine()) as s:
+        cap = s.get(EpcCapture, pack_cid)
+        live = s.scalars(select(RfidAssignment).where(
+            RfidAssignment.sku == "SKU-P")).all()
+        led = s.scalars(select(SoldRecord).where(
+            SoldRecord.sku == "SKU-P")).all()
+        check("undo un-spends the sweep and hands the ledger back",
+              cap.packed_retired_at is None and len(live) == 3
+              and all((x.retired or 0) == 0 for x in led),
+              (cap.packed_retired_at, len(live)))
+    r = cl.post("/api/epcs/retire-sold/undo", json={
+        "capture_id": pack_cid, "worker": "Nick"})
+    check("second undo refused", r.status_code == 409, r.text[:200])
+
     # ==== over-pair guard =============================================
     with Session(get_engine()) as s:
         s.add(BinMapEntry(sku="SKU-C", barcode="777",

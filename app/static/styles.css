@@ -3044,7 +3044,40 @@ tr.binaudit-untagged td { opacity: 0.72; }
   color: var(--accent);
   font-weight: 600;
   opacity: 1;
+  cursor: default;
 }
+
+/* Packed-orders audit (Nick, 2026-09-14): verdict tags per sweep,
+   spent-sweep stamp rows, and the no-ETA spinner refresh. */
+.packed-tag {
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 2px 8px;
+  white-space: normal;
+  max-width: 340px;
+}
+.packed-tag--wait { background: var(--card-2); color: var(--ink-dim); }
+.packed-tag--na   { background: var(--card-2); color: var(--ink-dim); }
+.packed-tag--full    { background: var(--ok-bg);   color: var(--ok-ink); }
+.packed-tag--partial { background: var(--warn-bg); color: var(--warn-ink); }
+.packed-tag--low,
+.packed-tag--unrelated {
+  background: var(--bad-bg);
+  color: var(--bad-ink);
+}
+.packed-tag--spent { background: var(--card-2); color: var(--ink-dim); }
+.ba-sweeprow--spent { opacity: 0.75; }
+.mlrow--dim { opacity: 0.6; }
+.rf-glyph { display: inline-block; }
+.rfbtn--spin .rf-glyph {
+  animation: rfspin 0.9s linear infinite;
+}
+.rfbtn--spin { pointer-events: none; }
+@keyframes rfspin {
+  to { transform: rotate(360deg); }
+}
+.packed-go { color: var(--ok-ink); font-weight: 600; }
 .sortsel { width: 18px; height: 18px; }
 
 /* Rows inside the site-native overlay windows (linked barcodes,

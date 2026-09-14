@@ -129,6 +129,14 @@ it goes in styles.css with a name and a comment.
 - Anything the system did on its own (auto-resolved, self-closed)
   wears the muted "system" tone, never the green "a human confirmed
   it" tone.
+- **No plain-text alert()/confirm() windows for anything with
+  structure** (Nick, 2026-09-14). A flow that shows products, lists,
+  plans or offers a choice gets a native overlay window (the
+  phist-overlay/linkbox shell, mlOverlay in app.js) with previews and
+  real buttons. Browser alerts are acceptable only for one-line
+  guard messages ("Pick who's scanning first") and dead-simple
+  confirmations with no content to show - and any NEW plain-text
+  alert being added must be called out to Nick before it ships.
 
 ## 8. Process (how we keep to this)
 

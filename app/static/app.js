@@ -418,6 +418,8 @@ const EVENT_META = {
   "receiving-dismissed": ["Sold Before Label", "#5c5f62"],
   "unpaired-ignored": ["Unpaired Write-off", "#7a7d80"],
   "unpaired-unignored": ["Write-off Undone", "#5561c9"],
+  "packed-retired": ["Packed Orders Retired", "#2f9e6e"],
+  "packed-unretired": ["Packed Retire Undone", "#5561c9"],
   oneleft: ["1-left Check", "#b07d00"],
   "audit-session": ["Audit Session", "#0e7a8a"],
   "bin-audited": ["Audit Done", "#0b6e99"],
@@ -12638,7 +12640,7 @@ async function jumpToBinAudit(bin) {
     return;
   }
   try {
-    const cap = await apiJson("/api/epc-captures/latest");
+    const cap = await apiJson("/api/epc-captures/latest?pickable=1");
     const ageMs = Date.now() - tsDate(cap.created_at).getTime();
     if (Number.isFinite(ageMs) && ageMs <= 5 * 60000) {
       document.getElementById("binaudit-run").click();
@@ -12758,7 +12760,7 @@ document.getElementById("binaudit-run").addEventListener("click", async () => {
   }
   out.innerHTML = `<p class="result">Pulling the latest sweep…</p>`;
   try {
-    const cap = await apiJson("/api/epc-captures/latest");
+    const cap = await apiJson("/api/epc-captures/latest?pickable=1");
     await runBinAudit(cap);
   } catch (err) {
     out.innerHTML = `<p class="result result--err">${escapeHtml(err.message)}</p>`;
@@ -12793,11 +12795,12 @@ function sweepPagerHtml(page, total) {
       title="Newer sweeps">←</button>
     ${nums
       .map(
+        // The current page is inert but NOT greyed (Nick, 2026-09-14):
+        // it keeps its accent so you can see where you are - the click
+        // guard, not a disabled attribute, is what makes it a no-op.
         (n) => `<button class="reset ba-pager__btn${
           n === page ? " ba-pager__btn--cur" : ""
-        }" type="button" data-page="${n}"${
-          n === page ? " disabled" : ""
-        }>${n}</button>`
+        }" type="button" data-page="${n}">${n}</button>`
       )
       .join("")}
     <button class="reset ba-pager__btn" type="button"
@@ -12811,7 +12814,7 @@ async function loadBinauditSweeps(page) {
   box.innerHTML = `<p class="result">Loading recent sweeps…</p>`;
   try {
     const body = await apiJson(
-      `/api/epc-captures?limit=${SWEEP_PAGE}&offset=${
+      `/api/epc-captures?pickable=1&limit=${SWEEP_PAGE}&offset=${
         (page - 1) * SWEEP_PAGE
       }`
     );
@@ -12887,7 +12890,9 @@ document
       return;
     }
     const pgBtn = e.target.closest(".ba-pager__btn");
-    if (pgBtn && !pgBtn.disabled) {
+    if (pgBtn) {
+      if (pgBtn.disabled || pgBtn.classList.contains("ba-pager__btn--cur"))
+        return;
       loadBinauditSweeps(parseInt(pgBtn.dataset.page, 10) || 1);
       return;
     }
@@ -12954,22 +12959,84 @@ document
     }
   });
 
-// === Audit packed orders (Nick, 2026-09-14) ================================
+// === Audit packed orders (Nick, 2026-09-14; reworked same day) ===========
 // A packed-orders sweep isn't bound to any bin, so retiring it as sold
-// is its OWN audit: pick the sweep, confirm the per-product plan, and
-// the guard (only unretired FULFILLED sales cover retirements) keeps
-// stray reads alive. Reached from + New audit -> Audit packed orders.
-async function loadPackedSweeps(page) {
+// is its OWN audit. Entering it re-syncs fulfilled orders, every small
+// sweep (under 20 tags - packing-pile sized) is auto-checked against
+// them, and the CHECK window shows the product previews before
+// anything retires. Spending a sweep stamps it: it can only be
+// retired ONCE, and the History event's undo un-spends it.
+let packedPageNow = 1;
+let packedSyncedAt = 0;
+const PACKED_SWEEP_MAX_UI = 20;
+
+async function packedSyncOrders(force) {
+  // The verdicts are only as fresh as the sold ledger - entering the
+  // audit runs the fulfilled-orders sync (incremental after its first
+  // run of the day), throttled unless a row's ↻ forces it.
+  if (!force && Date.now() - packedSyncedAt < 300000) return;
+  const note = document.getElementById("packed-sync-note");
+  if (note) {
+    note.hidden = false;
+    note.textContent = "Syncing fulfilled orders…";
+  }
+  try {
+    await postJson("/api/orders-sync/run", {});
+    packedSyncedAt = Date.now();
+    if (note) note.textContent = "Fulfilled orders synced ✓";
+  } catch (err) {
+    if (note) note.textContent = "Order sync failed: " + err.message;
+  }
+  if (note) setTimeout(() => (note.hidden = true), 2500);
+}
+
+async function packedOpen() {
+  document.getElementById("packed-report").innerHTML = "";
+  await loadPackedSweeps(1, true);
+  await packedSyncOrders(false);
+  packedClassifyPage();
+}
+
+function packedRowHtml(c) {
+  const info = `<span class="ba-sweeprow__main">#${c.id} · ${escapeHtml(
+    c.device || "C72"
+  )}${c.note ? " · " + escapeHtml(c.note) : ""}
+      <span class="ba-sweeprow__meta">${
+        c.epc_count
+      } tag(s) · ${escapeHtml(fmtWhen(c.created_at))}</span>
+    </span>`;
+  // A spent sweep shows its stamp and nothing else (Nick: a sweep is
+  // retired once).
+  if (c.packed_retired_at) {
+    return `<div class="ba-sweeprow ba-sweeprow--spent" data-cid="${c.id}">
+      ${info}
+      <span class="packed-tag packed-tag--spent">Swept products retired on ${escapeHtml(
+        fmtWhen(c.packed_retired_at)
+      )} by ${escapeHtml(c.packed_retired_by || "?")}</span>
+    </div>`;
+  }
+  return `<div class="ba-sweeprow" data-cid="${c.id}">
+    ${info}
+    <span class="packed-tag packed-tag--wait" data-cid="${c.id}">checking against orders…</span>
+    <button class="reset packed-sync rfbtn" type="button" data-cid="${c.id}"
+      title="Re-sync fulfilled orders and re-check this sweep"><span class="rf-glyph">↻</span></button>
+    <button class="reset ba-sweeprow__use packed-check" type="button" data-cid="${c.id}"
+      title="Open the check window: which heard tags fulfilled orders cover, product by product - retiring is confirmed in there">CHECK AGAINST ORDERS…</button>
+  </div>`;
+}
+
+async function loadPackedSweeps(page, skipClassify) {
+  packedPageNow = page;
   const box = document.getElementById("packed-sweeps");
   box.innerHTML = `<p class="result">Loading recent sweeps…</p>`;
   try {
     const body = await apiJson(
-      `/api/epc-captures?limit=${SWEEP_PAGE}&offset=${
+      `/api/epc-captures?pickable=1&limit=${SWEEP_PAGE}&offset=${
         (page - 1) * SWEEP_PAGE
       }`
     );
     if (!body.captures.length && page > 1) {
-      loadPackedSweeps(1);
+      loadPackedSweeps(1, skipClassify);
       return;
     }
     if (!body.captures.length) {
@@ -12977,90 +13044,157 @@ async function loadPackedSweeps(page) {
       return;
     }
     box.innerHTML =
-      body.captures
-        .map(
-          (c) => `<div class="ba-sweeprow" data-cid="${c.id}">
-            <span class="ba-sweeprow__main">#${c.id} · ${escapeHtml(
-              c.device || "C72"
-            )}${c.note ? " · " + escapeHtml(c.note) : ""}
-              <span class="ba-sweeprow__meta">${
-                c.epc_count
-              } tag(s) · ${escapeHtml(fmtWhen(c.created_at))}</span>
-            </span>
-            <button class="reset ba-sweeprow__use packed-retire" type="button"
-              title="Preview which heard tags fulfilled orders cover, confirm, and retire them as sold. Uncovered, unpaired and already-retired tags are named and left alone. History-logged with a whole-batch undo; Shopify untouched.">RETIRE SOLD…</button>
-          </div>`
-        )
-        .join("") + sweepPagerHtml(page, body.total);
+      `<p class="linkbox__text" id="packed-sync-note" hidden></p>` +
+      body.captures.map(packedRowHtml).join("") +
+      sweepPagerHtml(page, body.total);
+    if (!skipClassify) packedClassifyPage();
   } catch (err) {
     box.innerHTML = `<p class="result result--err">${escapeHtml(err.message)}</p>`;
   }
 }
 
-document
-  .getElementById("packed-sweeps")
-  .addEventListener("click", async (e) => {
-    const pgBtn = e.target.closest(".ba-pager__btn");
-    if (pgBtn && !pgBtn.disabled) {
-      loadPackedSweeps(parseInt(pgBtn.dataset.page, 10) || 1);
-      return;
-    }
-    const rsBtn = e.target.closest(".packed-retire");
-    if (!rsBtn) return;
-    const id = parseInt(rsBtn.closest(".ba-sweeprow").dataset.cid, 10);
-    const operator = operatorEl.value;
-    const report = document.getElementById("packed-report");
-    if (!operator) {
-      alert("Pick who's scanning (top right) first.");
-      return;
-    }
-    rsBtn.disabled = true;
-    try {
-      const plan = await postJson("/api/epcs/retire-sold", {
-        capture_id: id,
-        worker: operator,
-        preview: true,
-      });
-      if (!plan.retire_total) {
-        report.innerHTML = `<p class="result result--warn-soft">Nothing to retire from sweep #${id}: ${
-          plan.heard
-        } tag(s) heard, but none belong to a product with an unretired fulfilled sale.${
-          plan.skip_total
-            ? ` ${plan.skip_total} owned tag(s) have no covering sale yet - re-run after those orders fulfill.`
-            : ""
-        }</p>`;
+function packedPaintTag(el, s) {
+  if (!el) return;
+  if (s.big) {
+    el.textContent =
+      `${PACKED_SWEEP_MAX_UI}+ tags - looks like a shelf sweep, ` +
+      `not a packing pile`;
+    el.className = "packed-tag packed-tag--na";
+    return;
+  }
+  el.textContent = s.label || "?";
+  el.className = "packed-tag packed-tag--" + (s.verdict || "na");
+}
+
+async function packedClassifyPage(onlyCid) {
+  const box = document.getElementById("packed-sweeps");
+  const ids = [
+    ...box.querySelectorAll(".ba-sweeprow:not(.ba-sweeprow--spent)"),
+  ]
+    .map((r) => parseInt(r.dataset.cid, 10))
+    .filter((n) => Number.isFinite(n))
+    .filter((n) => onlyCid == null || n === onlyCid);
+  if (!ids.length) return;
+  try {
+    const res = await postJson("/api/epcs/packed-classify", {
+      capture_ids: ids,
+    });
+    for (const [cid, s] of Object.entries(res.sweeps || {})) {
+      const el = box.querySelector(`.packed-tag[data-cid="${cid}"]`);
+      if (s.retired_at) {
+        // Spent since render (another terminal) - redraw the page.
+        await loadPackedSweeps(packedPageNow, true);
+        packedClassifyPage();
         return;
       }
-      const lines = (plan.plan || [])
-        .filter((p) => p.retire || p.skipped)
-        .slice(0, 12)
-        .map(
-          (p) =>
-            `· ${p.sku || p.product_title}: ${p.retire} of ${
-              p.heard
-            } heard retire sold` +
-            (p.skipped ? ` (${p.skipped} not covered - stay live)` : "")
-        );
-      if ((plan.plan || []).length > 12) {
-        lines.push(`· …and ${plan.plan.length - 12} more product(s)`);
+      packedPaintTag(el, s);
+    }
+  } catch (err) {
+    ids.forEach((cid) => {
+      const el = box.querySelector(`.packed-tag[data-cid="${cid}"]`);
+      if (el) {
+        el.textContent = "check failed - ↻ to retry";
+        el.className = "packed-tag packed-tag--na";
       }
-      const ok = confirm(
-        `Retire sweep #${id}'s heard tags as SOLD?\n\n` +
-          lines.join("\n") +
-          `\n\nGuard: only tags covered by unretired FULFILLED ` +
-          `sales retire; the rest stay live.` +
-          (plan.unowned > 0
-            ? ` ${plan.unowned} unpaired tag(s) are ignored.`
-            : "") +
-          `\nHistory-logged, each tag restorable. Shopify untouched.`
-      );
-      if (!ok) return;
+    });
+  }
+}
+
+// The check window: product previews + exactly what would retire,
+// with the retire button INSIDE it (no plain-text alert dance).
+async function packedCheckWindow(cid) {
+  const operator = operatorEl.value;
+  if (!operator) {
+    alert("Pick who's scanning (top right) first.");
+    return;
+  }
+  let plan;
+  try {
+    plan = await postJson("/api/epcs/retire-sold", {
+      capture_id: cid,
+      worker: operator,
+      preview: true,
+    });
+  } catch (err) {
+    document.getElementById(
+      "packed-report"
+    ).innerHTML = `<p class="result result--err">${escapeHtml(err.message)}</p>`;
+    return;
+  }
+  const { wrap, box } = mlOverlay(`Sweep #${cid} vs fulfilled orders`);
+  const sum = document.createElement("p");
+  sum.className = "linkbox__text";
+  sum.textContent =
+    `${plan.label}. ${plan.heard} tag(s) heard: ${plan.owned} in the ` +
+    `system, ${plan.unowned} without a label yet (expected), ` +
+    `${plan.already_retired} already retired.`;
+  box.appendChild(sum);
+  const rows = plan.plan || [];
+  if (!rows.length) {
+    const none = document.createElement("p");
+    none.className = "linkbox__text";
+    none.textContent =
+      "No tagged products in this sweep - nothing to retire.";
+    box.appendChild(none);
+  }
+  for (const p of rows) {
+    const card = document.createElement("div");
+    card.className = "mlrow";
+    const img = document.createElement("img");
+    img.src = p.image_url || "";
+    img.alt = "";
+    img.className = p.image_url
+      ? "mlrow__img"
+      : "mlrow__img mlrow__img--none";
+    card.appendChild(img);
+    const col = document.createElement("div");
+    col.className = "mlrow__main";
+    const nm = document.createElement("div");
+    nm.className = "mlrow__name";
+    nm.textContent = p.product_title || p.sku || "(unknown)";
+    col.appendChild(nm);
+    const meta = document.createElement("div");
+    meta.className = "mlrow__meta";
+    meta.textContent =
+      `SKU ${p.sku || "?"} · ${p.retire} of ${p.heard} heard covered ` +
+      `by fulfilled sales` +
+      (p.same_day
+        ? " · fulfilled the same day ✓"
+        : p.newest_fulfilled_at
+          ? ` · newest sale ${fmtWhen(p.newest_fulfilled_at)}`
+          : " · no unretired sale on file") +
+      (p.skipped ? ` · ${p.skipped} NOT covered - stays live` : "");
+    col.appendChild(meta);
+    card.appendChild(col);
+    if (p.skipped && !p.retire) card.classList.add("mlrow--dim");
+    box.appendChild(card);
+  }
+  const actions = document.createElement("div");
+  actions.className = "linkbox__actions linkbox__actions--end u-mt10";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "reset";
+  cancel.textContent = "Cancel";
+  cancel.addEventListener("click", () => wrap.remove());
+  actions.appendChild(cancel);
+  const go = document.createElement("button");
+  go.type = "button";
+  go.className = "reset packed-go";
+  go.textContent = plan.retire_total
+    ? `RETIRE ${plan.retire_total} TAG(S) AS SOLD`
+    : "Nothing retirable";
+  go.disabled = !plan.retire_total;
+  go.addEventListener("click", async () => {
+    go.disabled = true;
+    try {
       const res = await postJson("/api/epcs/retire-sold", {
-        capture_id: id,
+        capture_id: cid,
         worker: operator,
       });
-      report.innerHTML =
-        `<p class="result result--ok">${escapeHtml(res.message)}</p>` +
+      wrap.remove();
+      document.getElementById("packed-report").innerHTML =
+        `<p class="result result--ok">${escapeHtml(res.message)} ` +
+        `Undo lives in History.</p>` +
         (res.plan || [])
           .filter((p) => p.retire || p.skipped)
           .map(
@@ -13073,12 +13207,61 @@ document
             }</p>`
           )
           .join("");
+      await loadPackedSweeps(packedPageNow, true);
+      packedClassifyPage();
     } catch (err) {
-      report.innerHTML = `<p class="result result--err">${escapeHtml(err.message)}</p>`;
-    } finally {
-      rsBtn.disabled = false;
+      go.disabled = false;
+      alert(err.message);
     }
   });
+  actions.appendChild(go);
+  box.appendChild(actions);
+}
+
+document
+  .getElementById("packed-sweeps")
+  .addEventListener("click", async (e) => {
+    const pgBtn = e.target.closest(".ba-pager__btn");
+    if (pgBtn) {
+      if (
+        pgBtn.disabled ||
+        pgBtn.classList.contains("ba-pager__btn--cur")
+      )
+        return;
+      loadPackedSweeps(parseInt(pgBtn.dataset.page, 10) || 1);
+      return;
+    }
+    const syncBtn = e.target.closest(".packed-sync");
+    if (syncBtn) {
+      const cid = parseInt(syncBtn.dataset.cid, 10);
+      spinRefresh(syncBtn, async () => {
+        await packedSyncOrders(true);
+        await packedClassifyPage(cid);
+      });
+      return;
+    }
+    const ckBtn = e.target.closest(".packed-check");
+    if (ckBtn) {
+      packedCheckWindow(parseInt(ckBtn.dataset.cid, 10));
+      return;
+    }
+  });
+
+// The rfbtn family's spinner variant (Nick, 2026-09-14): same class
+// look, NO estimated-time text - the glyph just spins until done.
+async function spinRefresh(btn, run) {
+  if (btn.dataset.rfRunning) return;
+  btn.dataset.rfRunning = "1";
+  btn.classList.add("rfbtn--spin");
+  try {
+    await run();
+  } finally {
+    btn.classList.remove("rfbtn--spin");
+    delete btn.dataset.rfRunning;
+  }
+}
+
+
 
 // --- Bin arrows (Nick, 2026-09-01): several bins in a row is the normal
 // walk, so ◀ ▶ step the picker through every known bin in natural order
@@ -13928,7 +14111,9 @@ async function auditsChecksLoad() {
   }
   const sweeps = document.getElementById("sweep-list");
   try {
-    const { captures } = await apiJson("/api/epc-captures?limit=10");
+    // Batch-tagging sweeps stay out of the big-picture lists (Nick,
+    // 2026-09-14) - they belong to their batch, not to audits.
+    const { captures } = await apiJson("/api/epc-captures?limit=10&pickable=1");
     sweeps.innerHTML = "";
     if (!captures.length) {
       audSetCard("ahc-sweep", "—", "no sweeps from the C72 yet", null);
@@ -14642,7 +14827,7 @@ document.getElementById("audsess-create").addEventListener("click", async (ev) =
   if (kind === "packed") {
     document.getElementById("audsess-new").hidden = true;
     audShowPane("packed");
-    loadPackedSweeps(1);
+    packedOpen();
     return;
   }
   // No naming step (Nick, 2026-09-08): the audit IS its scope, so the
@@ -16511,8 +16696,37 @@ document
 // Undoable events carry an `undo` descriptor from the server. Today that's
 // barcode links (alias rows are live, so deleting one IS the undo — the
 // scanned code simply stops resolving to that product).
+// An old undo deserves a second look (Nick, 2026-09-14): anything
+// pressed more than a day after the event asks first, naming the age.
+function undoAgeConfirmed(e) {
+  const at = e && e.at ? tsDate(e.at).getTime() : NaN;
+  if (!Number.isFinite(at)) return true;
+  const ms = Date.now() - at;
+  if (ms <= 86400000) return true;
+  const days = Math.floor(ms / 86400000);
+  let span;
+  if (days >= 365) {
+    const y = Math.floor(days / 365);
+    span = `${y} year${y === 1 ? "" : "s"}`;
+  } else if (days >= 30) {
+    const m = Math.floor(days / 30);
+    span = `${m} month${m === 1 ? "" : "s"}`;
+  } else if (days >= 7) {
+    const w = Math.floor(days / 7);
+    span = `${w} week${w === 1 ? "" : "s"}`;
+  } else {
+    span = `${days} day${days === 1 ? "" : "s"}`;
+  }
+  return confirm(
+    `This event happened ${span} ago. Undo it anyway?\n\n` +
+      `A lot can change in ${span} - make sure nothing since ` +
+      `depends on it.`
+  );
+}
+
 async function undoHistoryEvent(e, btn) {
   if (!e || !e.undo) return;
+  if (!undoAgeConfirmed(e)) return;
   // Resolved/dismissed review tasks: undo = reopen — the task returns to
   // the Review inbox and this resolution entry leaves History (the task
   // is simply open again, as if never closed).
@@ -16563,6 +16777,30 @@ async function undoHistoryEvent(e, btn) {
       await postJson("/api/locate/pair-unlinked/undo", {
         epc: e.undo.epc,
         item_id: e.undo.item_id || null,
+        worker: operatorEl.value || null,
+      });
+      await loadHistory();
+    } catch (err) {
+      btn.disabled = false;
+      alert(err.message);
+    }
+    return;
+  }
+  // Packed-orders retire (Nick, 2026-09-14): the whole sweep's tags
+  // come back live, ledger units handed back, the sweep un-spent.
+  if (e.undo.kind === "packed-retire") {
+    if (
+      !confirm(
+        "Undo this packed-orders retire?\n\nEvery tag it retired " +
+          "comes back live, the sold-ledger units are handed back, " +
+          "and the sweep can be used again."
+      )
+    )
+      return;
+    btn.disabled = true;
+    try {
+      await postJson("/api/epcs/retire-sold/undo", {
+        capture_id: e.undo.capture_id,
         worker: operatorEl.value || null,
       });
       await loadHistory();

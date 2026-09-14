@@ -137,6 +137,50 @@ with patch("app.shopify.lookup_barcode", side_effect=look), \
         check("the check fires once the receive settles",
               flight is not None, flight)
 
+    # ---- drift guard 5: batch tagging in flight (Nick, 2026-09-14) ---
+    # 3 checks landed a minute after a collect: tags jump at pairing,
+    # on-hand catches up at the verify raise. Open BIN batches and
+    # fresh pairings both hold their fire.
+    with Session(get_engine()) as s:
+        STOCK["G5-A"] = 0
+        STOCK["G5-B"] = 0
+        # Two tags, one covering sale: tags 2 vs expected 1 would file.
+        tag(s, "C100000000000000000000G1", "G5-A")
+        tag(s, "C100000000000000000000G3", "G5-A")
+        s.add(SoldRecord(order_id="o5a", order_name="#5a", sku="G5-A",
+                         quantity=1, fulfilled_at=NOW))
+        gb = Batch(bin_name="V1-1", created_by="n")
+        s.add(gb); s.flush()
+        s.add(BatchItem(batch_id=gb.id, scanned_code="G5-A", sku="G5-A",
+                        resolved=True, qty_scanned=2,
+                        product_title="Guard5 A",
+                        shopify_variant_id="t:G"))
+        # G5-B: no batch, but one pairing is SECONDS old.
+        tag(s, "C100000000000000000000G2", "G5-B")
+        tag(s, "C100000000000000000000G4", "G5-B", when=NOW)
+        s.add(SoldRecord(order_id="o5b", order_name="#5b", sku="G5-B",
+                         quantity=1, fulfilled_at=NOW))
+        s.commit()
+        orders_sync.refresh_mismatch_tasks(s); s.commit()
+        g5 = s.scalars(select(ReviewTask).where(
+            ReviewTask.sku.in_(("G5-A", "G5-B")),
+            ReviewTask.status == "open")).all()
+        check("open bin batch + fresh pairing both hold fire",
+              g5 == [], [(t.sku, t.detail[:40]) for t in g5])
+        gb.status = "done"
+        fresh = s.scalar(select(RfidAssignment).where(
+            RfidAssignment.sku == "G5-B",
+            RfidAssignment.rfid_id == "C100000000000000000000G4"))
+        fresh.assigned_at = NOW - timedelta(hours=2)
+        s.commit()
+        orders_sync.refresh_mismatch_tasks(s); s.commit()
+        g5 = s.scalars(select(ReviewTask).where(
+            ReviewTask.sku.in_(("G5-A", "G5-B")),
+            ReviewTask.status == "open")).all()
+        check("both fire once the batch closes and the pairing ages",
+              sorted(t.sku for t in g5) == ["G5-A", "G5-B"],
+              [(t.sku) for t in g5])
+
     # ---- drift guard 4: unavailable counts as agreement --------------
     with Session(get_engine()) as s:
         for e in ("C100000000000000000000U1", "C100000000000000000000U2"):

@@ -137,6 +137,14 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
 
     # --- C) expected count carries the debt ----------------------------
     with Session(get_engine()) as s:
+        # Drift guard 5 (2026-09-14) holds fire while pairings are
+        # fresh - age them so this suite tests the backorder
+        # ARITHMETIC, not the in-flight window.
+        for a in s.scalars(select(RfidAssignment)):
+            a.assigned_at = (datetime.now(timezone.utc)
+                             - timedelta(hours=2))
+        s.commit()
+    with Session(get_engine()) as s:
         out = orders_sync.refresh_mismatch_tasks(s); s.commit()
         open_kit = s.scalars(select(ReviewTask).where(
             ReviewTask.sku == KIT, ReviewTask.status == "open")).all()
