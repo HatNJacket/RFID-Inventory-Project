@@ -7761,15 +7761,17 @@ def boxify_status(
         return {"imported": False, "total_variants": 0,
                 "missing_variants": 0, "missing_products": 0,
                 "imported_at": None, "items": []}
-    missing_q = select(BoxifyDim).where(BoxifyDim.has_dims.is_(False))
+    missing_q = select(BoxifyDim).where(
+        BoxifyDim.has_dims == False  # noqa: E712 - SQL Server needs = 0, not IS 0
+    )
     missing_total = session.scalar(
         select(func.count(BoxifyDim.id)).where(
-            BoxifyDim.has_dims.is_(False)
+            BoxifyDim.has_dims == False  # noqa: E712 - SQL Server needs = 0, not IS 0
         )
     ) or 0
     missing_products = session.scalar(
         select(func.count(func.distinct(BoxifyDim.product_id))).where(
-            BoxifyDim.has_dims.is_(False)
+            BoxifyDim.has_dims == False  # noqa: E712 - SQL Server needs = 0, not IS 0
         )
     ) or 0
     stamp = session.scalar(select(func.max(BoxifyDim.imported_at)))
