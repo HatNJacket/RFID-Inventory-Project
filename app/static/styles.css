@@ -3218,6 +3218,16 @@ tr.binaudit-untagged td { opacity: 0.72; }
 .boxset__in--newsku { flex: 0 0 150px; }
 .boxset__in--bin { flex: 0 0 90px; }
 .boxset__fullin { flex: 1; font-size: 14px; padding: 7px 10px; }
+/* A ticked row that scanned AS the full product (a box carrying the
+   full listing's barcode) gets this under its title. */
+.boxset__fullhint { font-size: 11px; color: var(--warn-ink); margin-top: 2px; }
+/* The premade-listing question (server 409) shown inside the builder. */
+.boxset__premade {
+  background: var(--warn-bg);
+  color: var(--warn-ink);
+  border-radius: 6px;
+  padding: 8px 10px;
+}
 
 /* Mis-label overlay product cards (mlrow with a thumbnail) */
 .mlrow__img {

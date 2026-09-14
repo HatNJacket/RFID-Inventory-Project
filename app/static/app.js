@@ -5823,7 +5823,7 @@ function openBoxSetBuilder(seedItem) {
     });
     row.append(cb, name, skuIn);
     list.appendChild(row);
-    rows.push({ it, cb, skuIn });
+    rows.push({ it, cb, skuIn, nameEl: name, hint: null });
   });
   box.appendChild(list);
 
@@ -5890,8 +5890,57 @@ function openBoxSetBuilder(seedItem) {
   const fullIn = document.createElement("input");
   fullIn.className = "linkbox__input boxset__fullin";
   fullIn.placeholder = "Barcode or SKU, e.g. S11230";
+  // A resolved seed row is the best guess at the full product - the
+  // usual entry is a box carrying the full listing's barcode (Nick's
+  // S11230-1, 2026-09-14), which scans AS the full set.
+  if (seedItem.resolved) {
+    fullIn.value = seedItem.sku || seedItem.barcode || "";
+  }
   fullRow.append(fullLbl, fullIn);
   box.appendChild(fullRow);
+
+  // Rows that scanned AS the full product are still individual boxes:
+  // flag them and blank the pre-filled full SKU so the operator gives
+  // each box its own (a premade draft's SKU works).
+  function syncFullHints() {
+    const fv = fullIn.value.trim().toUpperCase();
+    rows.forEach((r) => {
+      const keys = [r.it.sku, r.it.barcode, r.it.scanned_code]
+        .map((v) => (v || "").trim().toUpperCase())
+        .filter(Boolean);
+      const isFull = !!fv && keys.includes(fv);
+      if (isFull && !r.hint) {
+        r.hint = document.createElement("div");
+        r.hint.className = "boxset__fullhint";
+        r.hint.textContent =
+          "Scanned as the FULL product - give this box its own SKU " +
+          "(a premade draft's SKU works)";
+        r.nameEl.appendChild(r.hint);
+        const cur = r.skuIn.value.trim().toUpperCase();
+        if (cur === fv || cur === (r.it.sku || "").trim().toUpperCase()) {
+          r.skuIn.value = "";
+          r.skuIn.placeholder = "own box SKU (e.g. -1 / -2)";
+        }
+      } else if (!isFull && r.hint) {
+        r.hint.remove();
+        r.hint = null;
+        r.skuIn.placeholder = "SKU on the box";
+        if (!r.skuIn.value)
+          r.skuIn.value = r.it.sku || r.it.scanned_code || "";
+      }
+    });
+  }
+  fullIn.addEventListener("input", syncFullHints);
+  syncFullHints();
+
+  // A new-box SKU that already has a Shopify listing: the server asks
+  // (409) and this note + re-click uses the premade listing instead of
+  // creating a duplicate draft.
+  const premadeNote = document.createElement("p");
+  premadeNote.className = "linkbox__text boxset__premade";
+  premadeNote.hidden = true;
+  box.appendChild(premadeNote);
+  let useExisting = false;
 
   const foot = document.createElement("div");
   foot.className = "linkbox__actions linkbox__actions--end";
@@ -5949,6 +5998,7 @@ function openBoxSetBuilder(seedItem) {
         parts,
         batch_id: batch.id,
         changed_by: operatorEl.value || null,
+        use_existing: useExisting,
       });
       wrap.remove();
       setBatchResult(r.message, "ok");
@@ -5982,6 +6032,20 @@ function openBoxSetBuilder(seedItem) {
         }
       }
     } catch (err) {
+      // The premade-listing question stays INSIDE the builder: show
+      // the server's finding, arm the flag, let the same button
+      // confirm (no bare confirm() - STYLEGUIDE).
+      if (/Confirm to use the premade/.test(err.message)) {
+        useExisting = true;
+        premadeNote.textContent =
+          err.message.replace(/\s*Confirm to use the premade[\s\S]*/, "") +
+          " Click again to use the premade listing(s) as the box(es) " +
+          "instead of creating new drafts.";
+        premadeNote.hidden = false;
+        create.textContent = "Use premade + create set";
+        create.disabled = false;
+        return;
+      }
       alert(err.message);
       create.disabled = false;
     }

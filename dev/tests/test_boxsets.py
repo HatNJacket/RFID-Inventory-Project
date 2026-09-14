@@ -32,6 +32,7 @@ def fake_stock_info(skus):
 
 with patch("app.shopify.lookup_barcode", return_value=None), \
      patch("app.shopify.lookup_barcode_all", return_value=[]), \
+     patch("app.shopify.find_sku_listing", return_value=None), \
      patch("app.shopify.fetch_all_variant_bins", return_value=[]), \
      patch("app.shopify.get_on_hand", return_value=None), \
      patch("app.shopify.get_stock_info_by_skus",
@@ -401,6 +402,84 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
     check("two plain entries sharing a barcode are refused",
           r.status_code == 422 and "ONE box" in r.json()["detail"],
           r.text)
+
+    # ---- premade listings (Nick, 2026-09-14, the S11230S drafts): a
+    # NEW-box SKU that already has a Shopify listing asks first, then
+    # USES the premade listing instead of creating a duplicate --------
+    cl.delete("/api/box-sets/S11230?by=Nick")
+    PREMADE = {"S11230-2": {
+        "shopify_variant_id": "gid://v/premade2",
+        "shopify_product_id": "gid://p/premade2",
+        "product_title": "DRAFT LISTING - INGREDIENT Dob S11230-2",
+        "status": "DRAFT", "sku": "S11230-2",
+        "barcode": "7411230002"}}
+    saved_mode = config.SHOPIFY_WRITE_MODE
+    config.SHOPIFY_WRITE_MODE = "scan_station_only,draft_listings"
+    draft_calls.clear()
+    with patch("app.shopify.find_sku_listing",
+               side_effect=lambda sku: PREMADE.get((sku or "").upper())), \
+         patch("app.shopify.create_draft_listing",
+               side_effect=fake_draft):
+        r = cl.post("/api/box-sets", json={
+            "set_code": "S11230",
+            "parts": [
+                {"sku": "S11230-1", "barcode": "7411230001",
+                 "create_draft": True},
+                {"sku": "S11230-2", "create_draft": True},
+            ], "changed_by": "Nick"})
+        check("a premade SKU asks before creating a duplicate draft",
+              r.status_code == 409
+              and "Confirm to use the premade" in r.text
+              and "S11230-2" in r.text and "draft" in r.text,
+              r.text[:300])
+        check("...and nothing was created yet", draft_calls == []
+              and cl.get("/api/box-sets").json()["count"] == 0,
+              draft_calls)
+        r = cl.post("/api/box-sets", json={
+            "set_code": "S11230",
+            "parts": [
+                {"sku": "S11230-1", "barcode": "7411230001",
+                 "create_draft": True},
+                {"sku": "S11230-2", "create_draft": True},
+            ], "use_existing": True, "changed_by": "Nick"})
+    d = r.json()
+    check("confirmed: premade listing used, only the other draft made",
+          r.status_code == 201
+          and d["drafts_created"] == ["S11230-1"]
+          and d.get("premade_used") == ["S11230-2"]
+          and "premade" in d["message"], r.text[:400])
+    check("the premade listing's barcode fills the blank entry",
+          next(p["part_barcode"] for p in d["parts"]
+               if p["part_sku"] == "S11230-2") == "7411230002",
+          str(d["parts"])[:300])
+
+    # Probe trouble (network) falls back to the plain create path.
+    cl.delete("/api/box-sets/S11230?by=Nick")
+    draft_calls.clear()
+    def probe_boom(sku): raise RuntimeError("net down")
+    with patch("app.shopify.find_sku_listing", side_effect=probe_boom), \
+         patch("app.shopify.create_draft_listing",
+               side_effect=fake_draft):
+        r = cl.post("/api/box-sets", json={
+            "set_code": "S11230",
+            "parts": [
+                {"sku": "S11230-1", "barcode": "7411230001"},
+                {"sku": "S11230-2", "barcode": "7411230099",
+                 "create_draft": True},
+            ]})
+    config.SHOPIFY_WRITE_MODE = saved_mode
+    check("a failed probe still creates the draft as before",
+          r.status_code == 201 and len(draft_calls) == 1,
+          r.text[:200])
+
+    # A box scanned AS the full product still needs its own SKU - the
+    # refusal now says so instead of a bare "parts are the boxes".
+    r = cl.post("/api/box-sets", json={
+        "set_code": "S11230", "parts": [
+            {"sku": "S11230"}, {"sku": "S11230-9"}]})
+    check("full-SKU part refused with the own-SKU guidance",
+          r.status_code == 422 and "its OWN SKU" in r.json()["detail"],
+          r.text[:200])
 
     # ---- History carries an UNDO on the create while the set stands --
     r = cl.get("/api/history?limit=50")

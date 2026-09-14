@@ -1,7 +1,33 @@
 # RFID Inventory System — Roadmap
 
 Source of truth for project status. Updated by Claude each working session.
-Last updated: 2026-09-14 (fifth round).
+Last updated: 2026-09-14 (sixth round).
+
+## ⧉ Box-set builder: full-set rows + premade drafts — ✅ DEPLOYED 2026-09-14 (C72 4.03)
+
+Nick's S11230S: box 1 carries the FULL product's barcode (scans as
+the whole set), box 2's barcode resolves nowhere, and he had already
+hand-made draft listings S11230-1/-2 in Shopify. Three holes closed:
+- **Rows that scanned AS the full product convert to a box in
+  place**: opening the builder from a resolved row pre-fills the Full
+  product field with that row's identity, and any ticked row matching
+  the full code gets a warn hint ("Scanned as the FULL product - give
+  this box its own SKU") with the pre-filled full SKU blanked so the
+  operator types the box's own. The server's full-SKU-as-part refusal
+  now says the same thing. Unresolved rows keep linking as before.
+- **Premade listings are reused, never duplicated**: every new-box
+  SKU is probed against live Shopify (shopify.find_sku_listing -
+  exact match, drafts and archived included; a failed probe falls
+  back to plain create). A hit answers 409 naming the listing(s);
+  the web builder shows the question INSIDE the overlay (no bare
+  confirm()) and the same button confirms; the C72 (4.03, code 121)
+  asks with a USE PREMADE dialog. Confirmed = the premade listing is
+  used as the box, its barcode filling a blank entry, and no draft is
+  created (`use_existing` on POST /api/box-sets; response carries
+  `premade_used`).
+- run_local: `-2`-suffixed new-box SKUs fake a premade draft so the
+  ask is demoable end to end; draft_listings write enabled locally.
+test_boxsets.py +6 checks. Suites 72/72.
 
 ## 📦 Packed-orders audit v2 — ✅ DEPLOYED 2026-09-14
 

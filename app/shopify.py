@@ -1222,6 +1222,44 @@ def get_on_hand(sku: str) -> int | None:
     return None
 
 
+_SKU_PROBE_QUERY = """
+query FindBySku($search: String!) {
+  productVariants(first: 5, query: $search) {
+    nodes {
+      id
+      sku
+      barcode
+      product { id title status }
+    }
+  }
+}
+"""
+
+
+def find_sku_listing(sku: str) -> dict | None:
+    """Does ANY listing - active, DRAFT or archived - already carry
+    this exact SKU? The box-set builder uses it to offer a premade
+    draft listing instead of creating a duplicate (Nick, 2026-09-14,
+    his hand-made S11230-1/-2 drafts). The search is fuzzy-ish, so
+    hits are re-checked for an exact case-insensitive match."""
+    quoted = _search_term(sku)
+    data = query_shopify(_SKU_PROBE_QUERY, {"search": f'sku:"{quoted}"'})
+    want = sku.strip().upper()
+    for v in data["productVariants"]["nodes"]:
+        if (v.get("sku") or "").strip().upper() != want:
+            continue
+        product = v["product"]
+        return {
+            "shopify_variant_id": v["id"],
+            "shopify_product_id": product["id"],
+            "product_title": product["title"],
+            "status": (product.get("status") or "").upper(),
+            "sku": v["sku"],
+            "barcode": v.get("barcode"),
+        }
+    return None
+
+
 def lookup_barcode(term: str) -> dict | None:
     """Look up a variant by barcode — or by SKU when the barcode search
     misses, since some products have bad or missing barcodes. Returns a

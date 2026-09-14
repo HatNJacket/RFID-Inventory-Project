@@ -2057,6 +2057,10 @@ class BoxSetIn(BaseModel):
     changed_by: str | None = Field(default=None, max_length=100)
     # When given, matching rows of this open batch re-resolve as parts.
     batch_id: int | None = None
+    # Operator confirmed: a new-box SKU that ALREADY has a Shopify
+    # listing (Nick's hand-made drafts, 2026-09-14) is used as-is
+    # instead of creating a duplicate draft.
+    use_existing: bool = False
 
 
 @app.post(
@@ -2156,8 +2160,9 @@ def create_box_set(
         if sku_p.upper() == set_sku.upper():
             raise HTTPException(
                 422,
-                f"{sku_p} is the full product itself - parts are the "
-                "individual boxes.",
+                f"{sku_p} is the full product itself - a box that "
+                "scanned as the full listing still needs its OWN SKU "
+                f"(e.g. {sku_p}-1, or a premade draft's SKU).",
             )
         if sku_p.upper() in seen:
             raise HTTPException(422, f"{sku_p} is listed twice.")
@@ -2171,6 +2176,48 @@ def create_box_set(
             "After merging same-barcode entries the set has fewer than "
             "two boxes.",
         )
+
+    # A new-box SKU that ALREADY has a Shopify listing - Nick's
+    # hand-made drafts (2026-09-14, S11230-1/-2 pre-created under
+    # S11230S): ask, then USE the premade listing instead of creating
+    # a duplicate. A failed probe (network) falls back to the plain
+    # create path - the probe must never block a set.
+    premade_used: list[dict] = []
+    if drafts_wanted:
+        existing: list[tuple[int, dict]] = []
+        for idx, _bin_p in drafts_wanted:
+            sku_p, _bc = cleaned[idx]
+            try:
+                hit = shopify.find_sku_listing(sku_p)
+            except Exception:  # noqa: BLE001 - probe only
+                hit = None
+            if hit:
+                existing.append((idx, hit))
+        if existing and not payload.use_existing:
+            names = "; ".join(
+                f"{h['sku']} = \"{h['product_title']}\""
+                f" ({(h.get('status') or 'listed').lower()})"
+                for _i, h in existing
+            )
+            raise HTTPException(
+                409,
+                f"Already in Shopify: {names}. Confirm to use the "
+                "premade listing(s) as the box(es) instead of creating "
+                "new draft listings.",
+            )
+        if existing:
+            used_idx = set()
+            for idx, hit in existing:
+                sku_p, bc_p = cleaned[idx]
+                # The premade listing's own barcode fills a blank
+                # entry so the physical box still scans.
+                if not bc_p and (hit.get("barcode") or "").strip():
+                    cleaned[idx] = (sku_p, hit["barcode"].strip())
+                premade_used.append(hit)
+                used_idx.add(idx)
+            drafts_wanted = [
+                (i, b) for i, b in drafts_wanted if i not in used_idx
+            ]
 
     # Real DRAFT listings for the new boxes (Nick, 2026-09-08): a
     # gated Shopify write, done BEFORE any local rows so a failure
@@ -2319,6 +2366,7 @@ def create_box_set(
         "batch_items_updated": items_updated,
         "aliases_cleared": aliases_cleared,
         "drafts_created": [d["sku"] for d in drafts_made],
+        "premade_used": [h["sku"] for h in premade_used],
         "full_tags": full_tags,
         "message": (
             f"{set_sku} is now a {len(rows)}-box set "
@@ -2328,6 +2376,11 @@ def create_box_set(
                 f" {len(drafts_made)} draft listing(s) created in "
                 f"Shopify: {', '.join(d['sku'] for d in drafts_made)}."
                 if drafts_made else ""
+            )
+            + (
+                f" {len(premade_used)} premade listing(s) used as "
+                f"boxes: {', '.join(h['sku'] for h in premade_used)}."
+                if premade_used else ""
             )
             + (
                 f" {aliases_cleared} old barcode link(s) on the part "

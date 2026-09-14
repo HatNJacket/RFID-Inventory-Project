@@ -13515,6 +13515,12 @@ public class MainActivity extends Activity {
 
     private void postBoxSet(final String setCode,
             final java.util.List<JSONObject> parts) {
+        postBoxSet(setCode, parts, false);
+    }
+
+    private void postBoxSet(final String setCode,
+            final java.util.List<JSONObject> parts,
+            final boolean useExisting) {
         status.setText("Creating the set…");
         new Thread(() -> {
             try {
@@ -13526,6 +13532,7 @@ public class MainActivity extends Activity {
                         .put("set_code", setCode)
                         .put("parts", pj)
                         .put("batch_id", batchId)
+                        .put("use_existing", useExisting)
                         .put("changed_by",
                                 prefs.getString("device", "C72"));
                 JSONObject resp = api("POST", "/api/box-sets", body);
@@ -13542,9 +13549,28 @@ public class MainActivity extends Activity {
                     }
                 });
             } catch (Exception e) {
+                final String msg = e.getMessage() == null
+                        ? "" : e.getMessage();
+                // A new-box SKU that already has a Shopify listing:
+                // the server asks (409) - offer to use the premade
+                // listing instead of creating a duplicate draft
+                // (Nick, 2026-09-14, his hand-made S11230 drafts).
+                if (msg.contains("Confirm to use the premade")) {
+                    ui.post(() -> {
+                        beep(SOUND_OTHER);
+                        dlg().setTitle("Listing already in Shopify")
+                                .setMessage(msg)
+                                .setPositiveButton("USE PREMADE",
+                                        (d, w) -> postBoxSet(setCode,
+                                                parts, true))
+                                .setNegativeButton("CANCEL", null)
+                                .show();
+                    });
+                    return;
+                }
                 ui.post(() -> {
                     beep(SOUND_ERR);
-                    status.setText("Set failed: " + e.getMessage());
+                    status.setText("Set failed: " + msg);
                 });
             }
         }).start();

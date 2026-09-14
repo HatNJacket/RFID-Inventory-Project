@@ -14,7 +14,7 @@ os.environ["SHOPIFY_STORE"] = "t.myshopify.com"
 os.environ["SHOPIFY_CLIENT_ID"] = "x"
 os.environ["SHOPIFY_CLIENT_SECRET"] = "x"
 os.environ["SHOPIFY_WRITE_MODE"] = (
-    "scan_station_only,verify_onhand,verify_onhand_lower")
+    "scan_station_only,verify_onhand,verify_onhand_lower,draft_listings")
 os.environ["ONELEFT_MODE"] = "confirm"  # the bridge itself is faked below
 os.environ.pop("STATION_KEY", None)
 os.environ.pop("PRINT_AGENT_KEY", None)
@@ -513,6 +513,22 @@ _sh.get_variant_idents = lambda vid: (
 # the MISMATCH-1 demo product answers as a bundle of 4 × NORMAL-1.
 _sh.get_bundle_components = lambda gid: (
     [{"component_sku": "NORMAL-1", "qty": 4}] if gid == "t:MM" else [])
+# Box-set builder demo (Nick, 2026-09-14): any new-box SKU ending in
+# "-2" already exists as a premade DRAFT listing, so the "use the
+# premade listing?" ask can be exercised end to end; drafts otherwise
+# "create" locally with a receipt in the console.
+_sh.find_sku_listing = lambda sku: (
+    {"shopify_variant_id": f"t:premade-{sku}",
+     "shopify_product_id": f"t:premade-p-{sku}",
+     "product_title": f"DRAFT LISTING - INGREDIENT Demo {sku}",
+     "status": "DRAFT", "sku": sku, "barcode": f"PRE-{sku}"}
+    if (sku or "").upper().endswith("-2") else None)
+def _fake_draft_listing(title, sku, barcode, bin_value):
+    print(f"[fake shopify] draft listing created: {sku} ({title})")
+    return {"product_gid": f"t:draft-p-{sku}",
+            "variant_gid": f"t:draft-{sku}",
+            "sku": sku, "barcode": barcode, "title": title}
+_sh.create_draft_listing = _fake_draft_listing
 
 # Fake TC-Planner bridge: NORMAL-1 sits on an open PO so the on-order
 # hint shows on both the Scan Station card and receiving collect.
