@@ -877,7 +877,7 @@ async function stationBarcodeScan(barcode) {
     acceptProduct(
       product,
       product.serial_brand
-        ? `${product.serial_brand} serial number recognized — the first ` +
+        ? `${product.serial_brand} serial number recognized - the first ` +
           `digits identify the product. Scan the RFID tag.`
         : product.charfold_from
           ? `Matched via broken-character fix (scan said ` +
@@ -942,19 +942,19 @@ function labelFitProblems(p, serialName) {
     const size = label.length <= 26 ? 28 : label.length <= 56 ? 20 : 16;
     if (label.length > 76)
       problems.push(
-        `the label name is ${label.length} characters — it gets cut off ` +
+        `the label name is ${label.length} characters - it gets cut off ` +
           `at 76 and prints crowded`
       );
     else if (label.length > zplLineChars(size, 2))
       problems.push(
-        "the label name is too long for two printed lines — they would " +
+        "the label name is too long for two printed lines - they would " +
           "overlap"
       );
   }
   const sku = String(p.sku || "").trim();
   if (sku.length > zplLineChars(30, 1))
     problems.push(
-      `the SKU (${sku}) is longer than one printed line — it overlaps itself`
+      `the SKU (${sku}) is longer than one printed line - it overlaps itself`
     );
   const bin =
     p.bin_location && p.bin_location !== "No bin assigned"
@@ -962,7 +962,7 @@ function labelFitProblems(p, serialName) {
       : "";
   if (bin && `BIN: ${bin}`.length > zplLineChars(30, 1))
     problems.push(
-      `the bin line (BIN: ${bin}) is longer than one printed line — it ` +
+      `the bin line (BIN: ${bin}) is longer than one printed line - it ` +
         `overlaps itself`
     );
   return problems;
@@ -981,7 +981,7 @@ function updateFitWarn(p) {
     : [];
   warnEl.hidden = !problems.length;
   if (problems.length)
-    warnEl.textContent = `⚠ Label will print badly: ${problems[0]} — update the text before printing.`;
+    warnEl.textContent = `⚠ Label will print badly: ${problems[0]} - update the text before printing.`;
 }
 
 function maybeAutoPrint() {
@@ -1000,7 +1000,7 @@ function maybeAutoPrint() {
   }
   if (isSerial && !pendingProduct.serial_label_saved) {
     setResult(
-      "Auto-print skipped: the label name isn't confirmed yet — check the " +
+      "Auto-print skipped: the label name isn't confirmed yet - check the " +
         "name below and press Enter to confirm it.",
       "err"
     );
@@ -1012,7 +1012,7 @@ function maybeAutoPrint() {
   const bin = pendingProduct.bin_location;
   if (el.requireBin.checked && (!bin || bin === "No bin assigned")) {
     setResult(
-      "Auto-print held: no bin assigned — click the bin chip to set one " +
+      "Auto-print held: no bin assigned - click the bin chip to set one " +
         "and the label will print.",
       "err"
     );
@@ -1153,7 +1153,7 @@ function showCaseScan(data) {
   document.getElementById("casebox-title").textContent =
     "Box of multiple products";
   document.getElementById("casebox-intro").textContent =
-    `${data.barcode} isn't a product of its own — it's a box holding ` +
+    `${data.barcode} isn't a product of its own - it's a box holding ` +
     `${data.units} of one.`;
   // "8 x" in front of the normal preview, per the product it contains.
   document.getElementById("casebox-mult").textContent = `${data.units} ×`;
@@ -1196,7 +1196,7 @@ function openCaseForm(code, existing, docked = false) {
   document.getElementById("casebox-title").textContent =
     existing ? "Edit this box" : "Box of multiple products";
   document.getElementById("casebox-intro").textContent =
-    `${code} — record what's inside so every scan of it says so.`;
+    `${code} - record what's inside so every scan of it says so.`;
   document.getElementById("casebox-sku").value = existing ? existing.sku : "";
   document.getElementById("casebox-units").value = existing
     ? existing.units
@@ -1410,7 +1410,7 @@ function openLinkbox(scannedCode, info = null) {
   linkboxInfo = info;
   hideLinkboxExtras();
   el.linkboxTitle.textContent = info
-    ? "Serial recognized — store SKU outdated"
+    ? "Serial recognized - store SKU outdated"
     : "Unknown barcode";
   el.linkboxText.textContent = info
     ? `${info.message} Look up the product below (by its current barcode ` +
@@ -1431,7 +1431,7 @@ function openLinkbox(scannedCode, info = null) {
 function openConfirmBox(product) {
   el.flow.classList.add("flow--side");
   aliasCandidate = product.alias_barcode;
-  el.linkboxTitle.textContent = "Linked barcode — confirm the item";
+  el.linkboxTitle.textContent = "Linked barcode - confirm the item";
   el.linkboxText.textContent =
     `"${product.alias_barcode}" doesn't match internal barcodes; it was ` +
     `previously linked to this product. Confirm this is the right item.`;
@@ -1496,7 +1496,7 @@ function openSetbox(seedSerial) {
   el.setbox.hidden = false;
   renderSetSlots();
   setResult(
-    "Serial not recognized — set flow opened. Scan the remaining filters, " +
+    "Serial not recognized - set flow opened. Scan the remaining filters, " +
       "or mark it a single product.",
     null
   );
@@ -1522,7 +1522,7 @@ el.setScanInput.addEventListener("keydown", (event) => {
   }
   if (setSerials.some((s) => s.slice(0, 4) === code.slice(0, 4))) {
     setResult(
-      "That filter's prefix is already in a slot — scan a different one.",
+      "That filter's prefix is already in a slot - scan a different one.",
       "err"
     );
     return;
@@ -1542,7 +1542,7 @@ async function loadSetCandidates() {
     el.setCandidates.innerHTML = "";
     sets.forEach((s) => {
       const li = document.createElement("li");
-      li.innerHTML = `${escapeHtml(s.title)} — ${escapeHtml(s.variant || "")}
+      li.innerHTML = `${escapeHtml(s.title)} - ${escapeHtml(s.variant || "")}
         <span class="mono">(SKU ${escapeHtml(s.sku || "?")})</span>`;
       li.addEventListener("click", () => {
         setSelectedSku = s.sku;
@@ -1587,7 +1587,7 @@ el.setConfirm.addEventListener("click", async () => {
     }
     const seed = setSerials[0];
     closeSetbox();
-    setResult("Filter set registered — rescanning…", "ok");
+    setResult("Filter set registered - rescanning…", "ok");
     retryLookup(seed);
   } catch (err) {
     setResult("Network error during set registration.", "err");
@@ -1806,7 +1806,7 @@ document.getElementById("edit-note-save").addEventListener("click", async () => 
     pendingProduct.scan_note = note || null;
     if (phistData && phistData.product) phistData.product.scan_note = note || null;
     updateScanNote(pendingProduct);
-    editMsg(note ? "Scan note saved ✓ — it shows on every scan." : "Scan note cleared ✓");
+    editMsg(note ? "Scan note saved ✓ - it shows on every scan." : "Scan note cleared ✓");
   } catch (err) {
     editMsg(err.message);
   }
@@ -2104,7 +2104,7 @@ el.prefixSave.addEventListener("click", async () => {
       return;
     }
     if (aliasCandidate) {
-      setResult(`Prefix ${prefix} saved — rescanning…`, "ok");
+      setResult(`Prefix ${prefix} saved - rescanning…`, "ok");
       retryLookup(aliasCandidate);
     } else {
       // Edit mode: stay on the loaded product.
@@ -2345,7 +2345,7 @@ async function showPlannerHint(sku, elId) {
       )
       .join(" · ");
     hint.textContent =
-      `📦 On order: ${data.total_remaining} more expected — ${pos}`;
+      `📦 On order: ${data.total_remaining} more expected - ${pos}`;
     hint.hidden = false;
   } catch (err) {
     /* hint only — a failure just means no hint */
@@ -2464,7 +2464,7 @@ async function loadTags(p) {
         li.innerHTML = `
           <span class="recent__epc">${escapeHtml(a.rfid_id)}</span>${
             a.suspect
-              ? '<span class="suspect" title="Probably a bad read — ' +
+              ? '<span class="suspect" title="Probably a bad read - ' +
                 're-scan this tag.">⚠</span>'
               : ""
           }
@@ -2713,7 +2713,7 @@ function printerBtnRender() {
   btn.hidden = !printingEnabled;
   btn.textContent = "🖨";
   btn.title = selectedPrinter
-    ? `Printer: ${selectedPrinter} — click to change`
+    ? `Printer: ${selectedPrinter} - click to change`
     : "Choose which printer prints this device's labels";
   btn.classList.toggle("printerbtn--set", !!selectedPrinter);
 }
@@ -2734,7 +2734,7 @@ function renderPrinterCards(printers) {
   wrap.innerHTML = "";
   if (!printers.length) {
     wrap.innerHTML =
-      `<p class="linkbox__text" style="grid-column:1/-1">No printers detected yet. ` +
+      `<p class="linkbox__text u-span-all">No printers detected yet. ` +
       `Start <span class="mono">print_agent.py</span> on the PC next to a printer and it registers itself here.</p>`;
     confirmBtn.disabled = true;
     return;
@@ -2763,7 +2763,7 @@ function renderPrinterCards(printers) {
       confirmBtn.disabled = false;
       confirmBtn.textContent = p.online
         ? "Use this printer"
-        : "Use it anyway (offline — labels wait)";
+        : "Use it anyway (offline - labels wait)";
       confirmBtn.classList.add("print__btn--armed");
     });
     wrap.append(card);
@@ -2850,7 +2850,7 @@ function openBigPrint(qty) {
       pendingProduct?.sku || pendingProduct?.product_title || "this product"
     }? Each one is a live RFID sticker.`;
   document.getElementById("bigprint-ack-text").textContent =
-    `Yes — print all ${qty}`;
+    `Yes - print all ${qty}`;
   bigprintAck.checked = false;
   bigprintGo.disabled = true;
   bigprintOverlay.hidden = false;
@@ -2897,7 +2897,7 @@ async function watchPrintJobs(ids) {
           setResult(
             failed.length
               ? `Label FAILED: ${failed[0].error || "printer error"}`
-              : `Label printed ✓ — scan the RFID tag.`,
+              : `Label printed ✓ - scan the RFID tag.`,
             failed.length ? "err" : "ok"
           );
           if (pendingProduct) loadTags(pendingProduct);
@@ -2910,7 +2910,7 @@ async function watchPrintJobs(ids) {
     }
     await new Promise((r) => setTimeout(r, 2500));
   }
-  el.printStatus.textContent += " (still queued — agent will print when up)";
+  el.printStatus.textContent += " (still queued - agent will print when up)";
 }
 
 // --- Step 2: rfid -> save assignment ---------------------------------------
@@ -2924,7 +2924,7 @@ el.rfid.addEventListener("keydown", async (event) => {
 // Callable form of the RFID-input Enter handler — the C72 LINK relay path.
 async function stationTagScan(rfid) {
   if (!pendingProduct) {
-    setResult("No product loaded — scan a barcode first.", "err", "rfid");
+    setResult("No product loaded - scan a barcode first.", "err", "rfid");
     return;
   }
   const operator = requireOperator();
@@ -2962,7 +2962,7 @@ async function stationTagScan(rfid) {
     if (saved.suspect) {
       setResult(
         `Saved, but tag ${saved.rfid_id} is ${saved.rfid_id.length} ` +
-          `characters (tags are normally 24) — likely a bad read. ` +
+          `characters (tags are normally 24) - likely a bad read. ` +
           `Re-scan this tag into inventory to be safe.`,
         "err",
         "rfid"
@@ -3045,7 +3045,7 @@ function renderLinkWarn() {
   }
   if (warn) {
     const n = linkOthers + 1;
-    const note = ` · ⚠ ${n} terminals listening — labels can print twice.`;
+    const note = ` · ⚠ ${n} terminals listening - labels can print twice.`;
     if (!linkStatus.textContent.includes("terminals listening")) {
       linkStatus.textContent =
         (linkStatus.textContent + note).slice(0, 200);
@@ -3055,21 +3055,21 @@ function renderLinkWarn() {
 
 function linkGunStatusText(guns) {
   if (!guns.length) {
-    return "Listening — no C72 checking in right now. Scans will act " +
+    return "Listening - no C72 checking in right now. Scans will act " +
       "here once a gun is on its LINK tab.";
   }
   const onLink = guns.filter((g) => g.tab === "link");
   if (onLink.length) {
-    return `Listening — "${onLink[0].device}" is on its LINK tab. ` +
+    return `Listening - "${onLink[0].device}" is on its LINK tab. ` +
       "Gun scans act here now.";
   }
   if (guns.length === 1) {
     const tab = guns[0].tab ? ` (on the ${guns[0].tab} tab)` : "";
-    return `Listening — "${guns[0].device}" is online${tab}. ` +
+    return `Listening - "${guns[0].device}" is online${tab}. ` +
       "Open LINK on the gun.";
   }
   const names = guns.map((g) => `"${g.device}"`).join(", ");
-  return `Listening — ${guns.length} guns online (${names}). ` +
+  return `Listening - ${guns.length} guns online (${names}). ` +
     "Open LINK on one.";
 }
 
@@ -3300,7 +3300,7 @@ async function actOnLinkScan(s) {
     await stationBarcodeScan(s.value);
     out = stationOutcome("barcode");
   } else if (!pendingProduct) {
-    out = { ok: false, text: "No product loaded — scan a barcode first." };
+    out = { ok: false, text: "No product loaded - scan a barcode first." };
     setResult(out.text, "err", "rfid");
   } else {
     el.rfid.value = s.value;
@@ -3356,7 +3356,7 @@ async function pollLink() {
       linkSuspended = false;
       if (skipped > 0) {
         linkStatus.textContent =
-          `Resumed — ${skipped} scan(s) sent while this screen was ` +
+          `Resumed - ${skipped} scan(s) sent while this screen was ` +
           "away were skipped.";
       }
       renderLinkWarn();
@@ -3399,13 +3399,13 @@ async function startLink({ interactive } = { interactive: true }) {
         .join(", ");
       const go = interactive && confirm(
         `Another terminal is already listening to the C72: ${who}.\n\n` +
-        "Gun scans act on EVERY listening terminal — a label scan " +
+        "Gun scans act on EVERY listening terminal - a label scan " +
         "would print twice.\n\nTurn LINK ON here anyway?"
       );
       if (!go) {
         linkRelease();
         linkStatus.textContent = interactive
-          ? `Left OFF — ${listeners[0].operator || "another terminal"} ` +
+          ? `Left OFF - ${listeners[0].operator || "another terminal"} ` +
             "is already listening."
           : "";
         return false;
@@ -3421,7 +3421,7 @@ async function startLink({ interactive } = { interactive: true }) {
     linkTimer = setInterval(pollLink, 1000);
     return true;
   } catch (err) {
-    linkStatus.textContent = "Could not reach the server — try again.";
+    linkStatus.textContent = "Could not reach the server - try again.";
     return false;
   }
 }
@@ -3505,10 +3505,10 @@ function renderBulk() {
         ? `${bulkTagged} of ${bulkPrinted} label(s) printed this visit ` +
           `are tagged` +
           (bulkTagged < bulkPrinted
-            ? ` — ${bulkPrinted - bulkTagged} to go.`
+            ? ` - ${bulkPrinted - bulkTagged} to go.`
             : ".")
         : `${bulkTagged} tag(s) assigned · no labels printed this visit, ` +
-          `so no auto-reset target — Reset (Esc) when done.`;
+          `so no auto-reset target - Reset (Esc) when done.`;
   }
 }
 
@@ -3580,7 +3580,7 @@ function bulkCheckpoint() {
   if (!bulkPrinted) return;
   if (bulkTagged === bulkPrinted) {
     setResult(
-      `All ${bulkPrinted} label(s) printed this visit are tagged ✓ — ` +
+      `All ${bulkPrinted} label(s) printed this visit are tagged ✓ - ` +
         `resetting.`,
       "ok",
       "rfid"
@@ -3590,7 +3590,7 @@ function bulkCheckpoint() {
   } else if (bulkTagged > bulkPrinted && bulkTagged > bulkWarnedAt) {
     document.getElementById("bulk-warn-text").textContent =
       `${bulkTagged} tag(s) assigned against ${bulkPrinted} label(s) ` +
-      `printed this visit — a spare or blank label in range may have ` +
+      `printed this visit - a spare or blank label in range may have ` +
       `been swept and wrongly assigned. Undo removes only the ` +
       `${lastSweep.length} tag(s) this last action assigned.`;
     document.getElementById("bulk-warn-undo").textContent =
@@ -3608,7 +3608,7 @@ bulkSweepBtn.addEventListener("click", async () => {
     const capRes = await apiFetch("/api/epc-captures/latest");
     if (capRes.status === 404) {
       setResult(
-        "No C72 sweeps received yet — SWEEP then SEND on the gun first.",
+        "No C72 sweeps received yet - SWEEP then SEND on the gun first.",
         "err",
         "rfid"
       );
@@ -3626,7 +3626,7 @@ bulkSweepBtn.addEventListener("click", async () => {
     const dup = (res.duplicates || []).length;
     setResult(
       `Sweep (${cap.epc_count} tag(s) heard): ${res.count} new assigned` +
-        (dup ? ` · ${dup} already assigned — skipped` : "") +
+        (dup ? ` · ${dup} already assigned - skipped` : "") +
         "." +
         (res.warning ? ` ⚠ ${res.warning}` : ""),
       res.warning ? "warn-soft" : res.count > 0 ? "ok" : "err",
@@ -3667,7 +3667,7 @@ document
       lastSweep = [];
       bulkWarnEl.hidden = true;
       setResult(
-        `Sweep undone — ${res.count} tag(s) unlinked (History has the ` +
+        `Sweep undone - ${res.count} tag(s) unlinked (History has the ` +
           `receipt).`,
         "ok",
         "rfid"
@@ -3684,7 +3684,7 @@ document
 document.getElementById("bulk-warn-keep").addEventListener("click", () => {
   bulkWarnedAt = bulkTagged; // don't re-ask until the count grows again
   bulkWarnEl.hidden = true;
-  setResult("Kept — the over-count stands.", "ok", "rfid");
+  setResult("Kept - the over-count stands.", "ok", "rfid");
 });
 
 // --- Recent list -----------------------------------------------------------
@@ -3701,7 +3701,7 @@ function recentRow(a) {
     <span class="recent__epc">${escapeHtml(a.rfid_id)}</span>${
       a.suspect
         ? '<span class="suspect" title="Tag doesn\'t look like a normal ' +
-          '24-character EPC — probably a bad read. Re-scan this tag into ' +
+          '24-character EPC - probably a bad read. Re-scan this tag into ' +
           'inventory.">⚠</span>'
         : ""
     }
@@ -4023,7 +4023,7 @@ function renderInventory() {
     body.innerHTML = `<tr><td colspan="7" class="inventory__empty">${
       filtered
         ? "Nothing matches those filters."
-        : "No products yet — assign or print a first tag."
+        : "No products yet - assign or print a first tag."
     }</td></tr>`;
     return;
   }
@@ -4044,7 +4044,7 @@ function renderInventory() {
     pager.hidden = false;
     pager.innerHTML =
       `<button class="reset" id="inv-prev" type="button" ${invPage === 0 ? "disabled" : ""}>← Prev</button>` +
-      `<span style="font-size:13px">rows ${invPage * PAGE + 1}–${Math.min(rows.length, (invPage + 1) * PAGE)} of ${rows.length} · page ${invPage + 1} of ${pages}</span>` +
+      `<span class="u-fs13">rows ${invPage * PAGE + 1}–${Math.min(rows.length, (invPage + 1) * PAGE)} of ${rows.length} · page ${invPage + 1} of ${pages}</span>` +
       `<button class="reset" id="inv-next" type="button" ${invPage >= pages - 1 ? "disabled" : ""}>Next →</button>`;
     pager.querySelector("#inv-prev").addEventListener("click", () => {
       invPage = Math.max(0, invPage - 1);
@@ -4067,7 +4067,7 @@ function renderInventory() {
           : "") +
         (p.rfid_incompatible
           ? ' <span class="noscan-chip" title="tag won\'t scan when on ' +
-            'box — sweeps don\'t expect it to answer">⊘ no RFID</span>'
+            'box - sweeps don\'t expect it to answer">⊘ no RFID</span>'
           : "") +
         (p.boxset_part_of
           ? ` <span class="noscan-chip" title="One box of the ${escapeHtml(p.boxset_part_of)} multi-box set - counts toward its unit total, never audited alone">📦 box ${p.box_no || "?"} of ${escapeHtml(p.boxset_part_of)}</span>`
@@ -4086,7 +4086,7 @@ function renderInventory() {
         <td>${escapeHtml(p.vendor || "—")}</td>
         <td class="mono">${
           p.sku
-            ? `<span class="skulink" data-sku="${escapeHtml(p.sku)}" title="Open this product — label editor, RFID flag, full history">${escapeHtml(p.sku)}</span>`
+            ? `<span class="skulink" data-sku="${escapeHtml(p.sku)}" title="Open this product - label editor, RFID flag, full history">${escapeHtml(p.sku)}</span>`
             : "—"
         }</td>
         <td>${p.bin_location && p.bin_location !== "No bin assigned"
@@ -4138,7 +4138,7 @@ document.getElementById("inv-body").addEventListener("click", async (e) => {
       !confirm(
         `Set the Shopify bin for ${sku} to ${bin}?\n\n` +
           `Shopify currently says: ${was}. This is the normal audited ` +
-          `bin write — Shopify, the bin map and this product's tags all ` +
+          `bin write - Shopify, the bin map and this product's tags all ` +
           `follow, with a History entry.`
       )
     )
@@ -4338,12 +4338,12 @@ function renderResumeList() {
         ? "📦 Receiving"
         : `Bin ${escapeHtml(b.bin_name)}`;
     li.innerHTML =
-      `<b>${label}</b> — ${b.products} product(s), ` +
+      `<b>${label}</b> - ${b.products} product(s), ` +
       `${b.boxes} box(es), ${b.paired} paired · ${escapeHtml(b.status)} ` +
       `<span class="mono">${escapeHtml(fmtWhen(b.created_at))}` +
       `${b.created_by ? " · " + escapeHtml(b.created_by) : ""}</span>` +
       (b.unpaired_labels
-        ? ` <span class="binlabel" style="color:#d72c0d;font-weight:650">🏷 ${b.unpaired_labels} label(s) not RFID-paired</span>`
+        ? ` <span class="binlabel binlabel--bad">🏷 ${b.unpaired_labels} label(s) not RFID-paired</span>`
         : "");
     li.addEventListener("click", () => resumeBatch(b.id));
     bEl.resumeList.append(li);
@@ -4451,7 +4451,7 @@ async function loadBinBoard() {
         `<span class="binlist__name">${escapeHtml(r.bin)}</span>` +
         (r.side_trip
           ? '<span class="binlist__sidetrip" title="Only the boxes ' +
-            "carried over were tagged — the rest of this shelf was " +
+            "carried over were tagged - the rest of this shelf was " +
             'never checked">side trip</span>'
           : "") +
         `<div class="binlist__count">${r.products} product(s) · ` +
@@ -4571,7 +4571,7 @@ function renderBinBoard() {
         : hideOddBins && oddInList
           ? `Nothing left but ${oddInList} odd-named bin(s), which are hidden.`
           : binBoard.hidden_count && !showHiddenBins
-            ? `Nothing left to do — ${binBoard.hidden_count} bin(s) are hidden.`
+            ? `Nothing left to do - ${binBoard.hidden_count} bin(s) are hidden.`
             : "Every bin has been done ✓"
     }</li>`;
     return;
@@ -4596,7 +4596,7 @@ function renderBinBoard() {
       `<span class="binlist__name">${escapeHtml(b.bin)}</span>` +
       `${
         b.malformed
-          ? `<span class="binlist__odd" title="Bin name doesn't match the A1-2 format (one letter, then 1-99, dash, 1-99). Usually means one product's stock is split across shelves — worth fixing in Shopify before tagging this bin.">⚠ odd name</span>`
+          ? `<span class="binlist__odd" title="Bin name doesn't match the A1-2 format (one letter, then 1-99, dash, 1-99). Usually means one product's stock is split across shelves - worth fixing in Shopify before tagging this bin.">⚠ odd name</span>`
           : ""
       }` +
       `${
@@ -4766,7 +4766,7 @@ document.getElementById("batch-baseline").addEventListener("click", async () => 
     cap = await apiJson("/api/epc-captures/latest");
   } catch (err) {
     setBatchResult(
-      "No sweep on file yet — on the C72, open SWEEP, hold the trigger " +
+      "No sweep on file yet - on the C72, open SWEEP, hold the trigger " +
         "over the shelf, then hit SEND. Then click this again.",
       "err"
     );
@@ -4779,7 +4779,7 @@ document.getElementById("batch-baseline").addEventListener("click", async () => 
     !confirm(
       `Use the last C72 sweep as the baseline for ${batch.bin_name}?\n\n` +
         `${cap.epc_count} tag(s), from ${cap.device || "C72"} at ${when}.\n\n` +
-        `Every tag read marks its product as already tagged — those boxes ` +
+        `Every tag read marks its product as already tagged - those boxes ` +
         `won't get labels. Make sure that sweep was THIS shelf.`
     )
   )
@@ -4848,10 +4848,10 @@ async function startBatch() {
       .join(", ");
     setBatchResult(
       (batchItems.length
-        ? `${batchItems.length} product(s) expected in bin ${batch.bin_name} — start scanning boxes.`
-        : `Nothing on file for bin ${batch.bin_name} — scan boxes and they'll be added.`) +
+        ? `${batchItems.length} product(s) expected in bin ${batch.bin_name} - start scanning boxes.`
+        : `Nothing on file for bin ${batch.bin_name} - scan boxes and they'll be added.`) +
         (covered
-          ? ` 📦 ${batch.covered_bundles.length} bundle listing(s) covered by their components — no separate count needed: ${covered}.`
+          ? ` 📦 ${batch.covered_bundles.length} bundle listing(s) covered by their components - no separate count needed: ${covered}.`
           : ""),
       "ok"
     );
@@ -5028,7 +5028,7 @@ async function checkForIncomingSweep() {
     bEl.verifyCount.textContent = `${verifyEpcs.size} unique tags collected.`;
     setBatchResult(
       `Sweep #${cap.id} arrived from ${cap.device || "the C72"} ` +
-        `(${cap.epc_count} tags) — checking the bin…`,
+        `(${cap.epc_count} tags) - checking the bin…`,
       "ok"
     );
     await runVerifyCheck();
@@ -5191,7 +5191,7 @@ document.getElementById("batch-switch").addEventListener("click", () => {
   stopBatchPrintPoll();
   stopBatchLive();
   enterBatchTab();
-  setBatchResult("Batch left open — pick it up any time.", "ok");
+  setBatchResult("Batch left open - pick it up any time.", "ok");
 });
 
 bEl.abandon.addEventListener("click", async () => {
@@ -5199,7 +5199,7 @@ bEl.abandon.addEventListener("click", async () => {
   const ties = batchItems.reduce((n, i) => n + (i.paired_count || 0), 0);
   const msg = ties
     ? `Abandon the batch for bin ${batch.bin_name}?\n\n${ties} tag(s) were ` +
-      `paired in this batch — those ties will be REMOVED so the products ` +
+      `paired in this batch - those ties will be REMOVED so the products ` +
       `aren't left tied to unverified labels. Counts stay in History.`
     : `Abandon the batch for bin ${batch.bin_name}? Collected counts are ` +
       `kept in History but the batch closes.`;
@@ -5209,7 +5209,7 @@ bEl.abandon.addEventListener("click", async () => {
       remove_ties: true,
     });
     if (res.ties_removed)
-      setBatchResult(`Batch abandoned — ${res.ties_removed} tie(s) released.`, "ok");
+      setBatchResult(`Batch abandoned - ${res.ties_removed} tie(s) released.`, "ok");
   } catch (err) {
     /* already closed is fine */
   }
@@ -5352,28 +5352,28 @@ function itemCard(item, mode) {
       ${
         item.skipped
           ? `<div class="bcell__meta bcell__skipped">⊘ Skipped${
-              item.skip_reason ? " — " + escapeHtml(item.skip_reason) : ""
+              item.skip_reason ? " - " + escapeHtml(item.skip_reason) : ""
             } · no label, nothing counted</div>`
           : ""
       }
       ${
         item.tagged_before
-          ? `<div class="bcell__meta bcell__done">✓ ${item.tagged_before} already tagged — no labels will print for those</div>`
+          ? `<div class="bcell__meta bcell__done">✓ ${item.tagged_before} already tagged - no labels will print for those</div>`
           : ""
       }
       ${
         unitBreakdown(item)
           ? `<div class="bcell__meta bcell__cases" title="${escapeHtml(
-              `${item.qty_scanned} loose box(es) plus ${item.case_count} sealed case(s) of ${item.case_units} — ${item.labels_total} label(s) in total`
-            )}">${escapeHtml(unitBreakdown(item))} — ${item.labels_total} label(s)</div>`
+              `${item.qty_scanned} loose box(es) plus ${item.case_count} sealed case(s) of ${item.case_units} - ${item.labels_total} label(s) in total`
+            )}">${escapeHtml(unitBreakdown(item))} - ${item.labels_total} label(s)</div>`
           : ""
       }
       ${
         item.other_bins
           ? `<div class="bcell__meta bcell__split">${
               item.kind === "bundle"
-                ? `Components on ${escapeHtml(item.other_bins)} — a bundle, not a box of its own`
-                : `Also on ${escapeHtml(item.other_bins)} — ${
+                ? `Components on ${escapeHtml(item.other_bins)} - a bundle, not a box of its own`
+                : `Also on ${escapeHtml(item.other_bins)} - ${
                     item.kind === "multi_box"
                       ? `ships as ${boxSlots(item)} boxes`
                       : "this item is split across shelves"
@@ -5420,8 +5420,8 @@ async function batchCollectScan(code) {
           `${c.product_title || ""}\n` +
           (c.scan_note ? `\n⚠ ${c.scan_note}\n` : "") +
           `\nAre you opening it?\n\n` +
-          `OK  — opened: counts ${c.units} units and prints ${c.units} labels.\n` +
-          `Cancel — left sealed: counts ${c.units} units but prints ONE ` +
+          `OK  - opened: counts ${c.units} units and prints ${c.units} labels.\n` +
+          `Cancel - left sealed: counts ${c.units} units but prints ONE ` +
           `label reading "${c.units} x ${c.sku}".`
       );
       data = await postJson(`/api/batches/${batch.id}/scan`, {
@@ -5441,28 +5441,28 @@ async function batchCollectScan(code) {
     batchSound(!item.resolved ? "err" : wasListed ? "ok" : "other");
     if (!item.resolved) {
       setBatchResult(
-        `"${code}" isn't in the system — kept in the count as unresolved. ` +
+        `"${code}" isn't in the system - kept in the count as unresolved. ` +
           `Link it later at the Scan Station.`,
         "err"
       );
     } else if (data.serial_note) {
       setBatchResult(
-        `⚠ ${data.serial_note} — ${itemDisplayName(item)}: ${item.qty_scanned} scanned.`,
+        `⚠ ${data.serial_note} - ${itemDisplayName(item)}: ${item.qty_scanned} scanned.`,
         "err"
       );
     } else if (data.case) {
       // Say both numbers: a case makes units and labels diverge.
       setBatchResult(
-        (data.case.scan_note ? `⚠ ${data.case.scan_note} — ` : "") +
-          `${itemDisplayName(item)} — ${item.units_total} unit(s)` +
+        (data.case.scan_note ? `⚠ ${data.case.scan_note} - ` : "") +
+          `${itemDisplayName(item)} - ${item.units_total} unit(s)` +
           (unitBreakdown(item) ? ` (${unitBreakdown(item)})` : "") +
           `, ${item.labels_total} label(s)` +
-          (data.case_action === "sealed" ? " — box left sealed." : "."),
+          (data.case_action === "sealed" ? " - box left sealed." : "."),
         data.case.scan_note ? "err" : "ok"
       );
     } else {
       setBatchResult(
-        `${itemDisplayName(item)} — ${item.qty_scanned} scanned` +
+        `${itemDisplayName(item)} - ${item.qty_scanned} scanned` +
           (item.expected_qty != null
             ? ` (Shopify on-hand ${item.expected_qty})`
             : ""),
@@ -5653,8 +5653,7 @@ function collectItemCard(item, inSet) {
     // first.
     const lump = document.createElement("button");
     lump.type = "button";
-    lump.className = "reset";
-    lump.style.cssText = "font-size:11px;opacity:.8";
+    lump.className = "reset bcell__lump";
     lump.textContent = "⧉ Multi-box set…";
     lump.title =
       "This box is one of several boxes (each with its own barcode/SKU) " +
@@ -5721,10 +5720,9 @@ function openBoxSetBuilder(seedItem) {
       `<span class="mlrow__meta"> · scanned ${escapeHtml(it.scanned_code || it.barcode || "—")}` +
       `${it.resolved ? "" : " · unresolved"}</span>`;
     const skuIn = document.createElement("input");
-    skuIn.className = "linkbox__input";
+    skuIn.className = "linkbox__input boxset__in boxset__in--sku";
     skuIn.placeholder = "SKU on the box";
     skuIn.value = it.sku || it.scanned_code || "";
-    skuIn.style.cssText = "flex:0 0 160px;font-size:13px;padding:6px 9px";
     skuIn.disabled = !cb.checked;
     cb.addEventListener("change", () => {
       skuIn.disabled = !cb.checked;
@@ -5739,9 +5737,7 @@ function openBoxSetBuilder(seedItem) {
   // creates real DRAFT listings in Shopify. − / + set how many; each
   // gets barcode/SKU (blank SKU = auto SET-X) and a bin.
   const draftHead = document.createElement("div");
-  draftHead.style.cssText =
-    "display:flex;align-items:center;gap:8px;margin:10px 0 4px;" +
-    "font-size:12px";
+  draftHead.className = "boxset__drafthead";
   const minus = document.createElement("button");
   minus.type = "button";
   minus.className = "reset";
@@ -5768,21 +5764,17 @@ function openBoxSetBuilder(seedItem) {
     while (draftRows.length < n) {
       const i = draftRows.length;
       const row = document.createElement("div");
-      row.style.cssText =
-        "display:flex;gap:6px;margin:4px 0;align-items:center";
+      row.className = "boxset__row";
       const bcIn = document.createElement("input");
-      bcIn.className = "linkbox__input";
+      bcIn.className = "linkbox__input boxset__in boxset__in--bc";
       bcIn.placeholder = `new box ${i + 1}: barcode`;
-      bcIn.style.cssText = "flex:1;font-size:13px;padding:6px 9px";
       const skuIn = document.createElement("input");
-      skuIn.className = "linkbox__input";
+      skuIn.className = "linkbox__input boxset__in boxset__in--newsku";
       skuIn.placeholder = "SKU (blank = auto -X)";
-      skuIn.style.cssText = "flex:0 0 150px;font-size:13px;padding:6px 9px";
       const binIn = document.createElement("input");
-      binIn.className = "linkbox__input";
+      binIn.className = "linkbox__input boxset__in boxset__in--bin";
       binIn.placeholder = "bin";
       binIn.value = batch ? batch.bin_name || "" : "";
-      binIn.style.cssText = "flex:0 0 90px;font-size:13px;padding:6px 9px";
       row.append(bcIn, skuIn, binIn);
       draftList.appendChild(row);
       draftRows.push({ row, bcIn, skuIn, binIn });
@@ -5797,20 +5789,18 @@ function openBoxSetBuilder(seedItem) {
   );
 
   const fullRow = document.createElement("div");
-  fullRow.style.cssText = "display:flex;gap:6px;margin:10px 0;align-items:center";
+  fullRow.className = "boxset__row boxset__row--full";
   const fullLbl = document.createElement("span");
-  fullLbl.style.cssText = "font-size:13px;white-space:nowrap";
+  fullLbl.className = "boxset__lbl";
   fullLbl.textContent = "Full product (active listing):";
   const fullIn = document.createElement("input");
-  fullIn.className = "linkbox__input";
+  fullIn.className = "linkbox__input boxset__fullin";
   fullIn.placeholder = "Barcode or SKU, e.g. S11230";
-  fullIn.style.cssText = "flex:1;font-size:14px;padding:7px 10px";
   fullRow.append(fullLbl, fullIn);
   box.appendChild(fullRow);
 
   const foot = document.createElement("div");
-  foot.className = "linkbox__actions";
-  foot.style.cssText = "justify-content:flex-end";
+  foot.className = "linkbox__actions linkbox__actions--end";
   const cancel = document.createElement("button");
   cancel.type = "button";
   cancel.className = "reset";
@@ -5968,7 +5958,7 @@ function renderMultibinBar() {
     await refreshBatch();
     setBatchResult(
       `${ok} of ${skus.length} product(s) moved to ${target}` +
-        (errs.length ? ` — failed: ${errs.join("; ").slice(0, 200)}` : "") +
+        (errs.length ? ` - failed: ${errs.join("; ").slice(0, 200)}` : "") +
         `.`,
       errs.length ? "err" : "ok"
     );
@@ -6840,11 +6830,11 @@ function kindRow(item) {
   row.innerHTML = `
     <span class="kindrow__what">${
       bundle
-        ? "Bundle — made of separate products, so nothing here gets a tag"
-        : `Multi-box product — ${n} boxes, one label each`
+        ? "Bundle - made of separate products, so nothing here gets a tag"
+        : `Multi-box product - ${n} boxes, one label each`
     }</span>
     <button class="reset" type="button" data-act="toggle">${
-      bundle ? "No — it's one product in " + n + " boxes" : "No — it's a bundle"
+      bundle ? "No - it's one product in " + n + " boxes" : "No - it's a bundle"
     }</button>
     ${
       bundle
@@ -6861,7 +6851,7 @@ function kindRow(item) {
         !confirm(
           `Drop "${itemDisplayName(item)}" from the RFID system?\n\n` +
             `It won't be added to future batches and will never be ` +
-            `labelled. Its component products are unaffected — they keep ` +
+            `labelled. Its component products are unaffected - they keep ` +
             `their own tags.\n\nYou can undo this from the product's panel ` +
             `in History.`
         )
@@ -6930,7 +6920,7 @@ async function moveItemBin(item) {
 
 bEl.toLabels.addEventListener("click", () => {
   if (!labelItems().length) {
-    setBatchResult("Nothing scanned yet — scan at least one known product.", "err");
+    setBatchResult("Nothing scanned yet - scan at least one known product.", "err");
     return;
   }
   showBatchStage("labels");
@@ -6944,30 +6934,30 @@ function labelItems() {
 }
 
 const FLAG_TEXT = {
-  skipped: "skipped — couldn't be scanned, nothing counted",
+  skipped: "skipped - couldn't be scanned, nothing counted",
   "tagged-not-detected":
-    "tags on file for this shelf, but the sweep read none — find the " +
+    "tags on file for this shelf, but the sweep read none - find the " +
     "tagged box(es) before printing more",
-  bundle: "a bundle — no box of its own to tag",
+  bundle: "a bundle - no box of its own to tag",
   "not-on-shelf":
-    "Shopify expects this here, but none was scanned — it's in another " +
+    "Shopify expects this here, but none was scanned - it's in another " +
     "bin or the count is wrong",
   ambiguous: "barcode matches several listings",
   "count-mismatch": "count differs from Shopify",
   "unconfirmed-name": "serial name not confirmed",
   unresolved: "unknown barcode",
   "bad-chars":
-    "the SKU or barcode has a broken special character — records can't " +
+    "the SKU or barcode has a broken special character - records can't " +
     "match until it's fixed",
   "tags-unheard":
-    "the shelf sweep heard fewer tags than expected — tap to resolve " +
+    "the shelf sweep heard fewer tags than expected - tap to resolve " +
     "(scan one-by-one on the gun, or count by eye)",
   "tags-silent":
-    "tags were expected on this shelf but the sweep heard NONE — find " +
+    "tags were expected on this shelf but the sweep heard NONE - find " +
     "the stickered boxes before printing more",
   "wrong-bin": "saved bin is a different shelf",
   "double-count":
-    "boxes scanned AND marked already-tagged — if the stickered boxes " +
+    "boxes scanned AND marked already-tagged - if the stickered boxes " +
     "were among the scans, lower the scan count (−/+ in the editor)",
 };
 
@@ -7022,7 +7012,7 @@ function renderStrayBins(bins) {
     row.className = "kindrow";
     row.innerHTML = `
       <span class="kindrow__what">${b.count} product(s) here actually live in
-        <b>${escapeHtml(b.bin)}</b> — ${escapeHtml(b.skus.filter(Boolean).join(", "))}</span>
+        <b>${escapeHtml(b.bin)}</b> - ${escapeHtml(b.skus.filter(Boolean).join(", "))}</span>
       <button class="reset" type="button">Take them to ${escapeHtml(b.bin)}…</button>`;
     row.querySelector("button").addEventListener("click", () => divertToBin(b.bin));
     wrap.append(row);
@@ -7066,7 +7056,7 @@ function renderSideTrip() {
   // would invite a side trip from inside a side trip.
   document.getElementById("bcheck-strays").innerHTML = "";
   document.getElementById("sidetrip-what").textContent =
-    `Side trip — tagging strays into ${batch.bin_name}` +
+    `Side trip - tagging strays into ${batch.bin_name}` +
     (parentBatch ? `, then back to ${parentBatch.bin_name}` : "") +
     `. These labels say ${batch.bin_name}.`;
 }
@@ -7197,7 +7187,7 @@ function renderCheckList() {
         "⚠ " +
         entry.flags.map(flagText).join(" · ") +
         (sh && sh.on_file
-          ? ` — sweep heard ${sh.heard} of ${sh.on_file} on file, expected ${sh.expected}` +
+          ? ` - sweep heard ${sh.heard} of ${sh.on_file} on file, expected ${sh.expected}` +
             (sh.presumed_sold ? ` (${sh.presumed_sold} presumed sold)` : "") +
             (sh.over_heard
               ? ` · heard ${sh.over_heard} more tag(s) than boxes collected, check for a neighboring shelf or uncollected stock`
@@ -7208,7 +7198,7 @@ function renderCheckList() {
           : "");
       li.querySelector(".bcell__info").append(flags);
     }
-    li.style.cursor = "pointer";
+    li.classList.add("u-pointer");
     li.addEventListener("click", () => openBitem(entry));
     list.append(li);
   });
@@ -7265,7 +7255,7 @@ function renderBitem() {
       cands[bitemIdx].shopify_variant_id === it.shopify_variant_id;
     pos.textContent =
       `Listing ${bitemIdx + 1} of ${cands.length} sharing this barcode` +
-      (current ? " — currently selected" : "");
+      (current ? " - currently selected" : "");
     const useWrap = document.getElementById("bitem-usewrap");
     useWrap.hidden = false;
     // Never disabled: confirming the CURRENT listing is the usual move
@@ -7314,7 +7304,7 @@ function renderBitem() {
       // Reset: the element is shared across opens.
       warnSpan.innerHTML =
         "⚠ The SKU or barcode contains a character the database can't " +
-        "store (it shows as <b>?</b>) — records won't match until it's " +
+        "store (it shows as <b>?</b>) - records won't match until it's " +
         "replaced. Fix it below; the change writes to Shopify.";
     }
     const skuIn = document.getElementById("bitem-sku");
@@ -7484,7 +7474,7 @@ document.getElementById("bitem-skusave").addEventListener("click", async () => {
       );
       if (r.item) bitemEntry.item = r.item;
       if (!r.resolved)
-        note = " (batch row catches up in a few seconds — hit ↻ if needed)";
+        note = " (batch row catches up in a few seconds - hit ↻ if needed)";
     } catch (e) {
       note = ` (batch row refresh failed: ${e.message})`;
     }
@@ -7492,7 +7482,7 @@ document.getElementById("bitem-skusave").addEventListener("click", async () => {
     renderBitem();
     renderCheckList();
     msg.textContent =
-      `SKU saved ✓ — now ${newSku}${note}.` +
+      `SKU saved ✓ - now ${newSku}${note}.` +
       (ow.legacy_linked
         ? " The old broken value stays linked, so old labels still scan."
         : "");
@@ -7530,7 +7520,7 @@ document.getElementById("bitem-bcsave").addEventListener("click", async () => {
     renderBitem();
     renderCheckList();
     msg.textContent =
-      `Barcode saved ✓ — now ${newBc}.` +
+      `Barcode saved ✓ - now ${newBc}.` +
       (ow.legacy_linked
         ? " The old broken value stays linked, so old labels still scan."
         : "");
@@ -7569,14 +7559,14 @@ document.getElementById("bitem-labelsave").addEventListener("click", async () =>
     it._labelText = name;
     it._labelPlacement = bitemLabelMode;
     msg.textContent = name
-      ? `Saved ✓ — labels print this as the ${
+      ? `Saved ✓ - labels print this as the ${
           bitemLabelMode === "both"
             ? "name and SKU"
             : bitemLabelMode === "sku"
               ? "SKU line"
               : "name"
         }.`
-      : "Cleared ✓ — standard label.";
+      : "Cleared ✓ - standard label.";
   } catch (err) {
     msg.textContent = err.message;
   }
@@ -7592,7 +7582,7 @@ document.getElementById("bitem-binwarn").addEventListener("click", async (ev) =>
     ignoredBinItems.add(it.id);
     document.getElementById("bitem-overlay").hidden = true;
     setBatchResult(
-      "Ignored for this batch — it'll come up again next time.",
+      "Ignored for this batch - it'll come up again next time.",
       "ok"
     );
     loadBatchReview();
@@ -7603,7 +7593,7 @@ document.getElementById("bitem-binwarn").addEventListener("click", async (ev) =>
       !confirm(
         `Drop ${it.product_title || it.sku} from this batch? ` +
           `Its ${it.qty_scanned} box(es) stop counting here and no labels ` +
-          `print for it — take them to bin ${it.bin_location}.`
+          `print for it - take them to bin ${it.bin_location}.`
       )
     )
       return;
@@ -7705,7 +7695,7 @@ document.getElementById("bitem-kind-drop").addEventListener("click", () => {
     !confirm(
       `Drop "${itemDisplayName(it)}" from the RFID system?\n\n` +
         `It won't be added to future batches and will never be labelled. ` +
-        `Its component products are unaffected — they keep their own tags.`
+        `Its component products are unaffected - they keep their own tags.`
     )
   )
     return;
@@ -7745,10 +7735,10 @@ document.getElementById("bcheck-recheck").addEventListener("click", async () => 
   await pullBatch(false);
   loadBatchReview();
   if (fixed && !stuck.length) {
-    setBatchResult(`Re-checked ✓ — ${fixed} now resolved.`, "ok");
+    setBatchResult(`Re-checked ✓ - ${fixed} now resolved.`, "ok");
   } else if (fixed) {
     setBatchResult(
-      `${fixed} now resolved ✓ — still unknown: ${stuck.join(", ")}.`,
+      `${fixed} now resolved ✓ - still unknown: ${stuck.join(", ")}.`,
       "ok"
     );
   } else {
@@ -7947,7 +7937,7 @@ document.getElementById("bitem-oddapply").addEventListener("click", async () => 
     await pullBatch(false);
     loadBatchReview();
     setBatchResult(
-      `Barcode updated in Shopify ✓ — now RE-SCAN those ` +
+      `Barcode updated in Shopify ✓ - now RE-SCAN those ` +
         `${it.qty_scanned} box(es); they'll come up as ${p.product_title}.`,
       "ok"
     );
@@ -7961,7 +7951,7 @@ document.getElementById("bitem-drop").addEventListener("click", async () => {
   if (
     !confirm(
       `Remove this unresolved scan (${it.scanned_code}, ${it.qty_scanned} ` +
-        `box(es)) from the list? Nothing permanent changes — scanning it ` +
+        `box(es)) from the list? Nothing permanent changes - scanning it ` +
         `again brings it back.`
     )
   )
@@ -8007,17 +7997,15 @@ function openSplitForm() {
   rows.innerHTML = "";
   cands.forEach((c, i) => {
     const row = document.createElement("div");
-    row.className = "linkbox__form";
-    row.style.marginBottom = "6px";
+    row.className = "linkbox__form u-mb6";
     // The row it's currently sitting on starts with the full count; the
     // operator moves boxes off it.
     const startQty =
       c.shopify_variant_id === it.shopify_variant_id ? it.qty_scanned : 0;
     row.innerHTML = `
-      <input type="number" class="linkbox__input bitem-split-qty" min="0"
+      <input type="number" class="linkbox__input bitem-split-qty u-maxw70" min="0"
              max="${it.qty_scanned}" value="${startQty}"
-             data-variant="${escapeHtml(c.shopify_variant_id)}"
-             style="max-width:70px" />
+             data-variant="${escapeHtml(c.shopify_variant_id)}" />
       <span class="linkbox__text">${escapeHtml(
         c.product_title || c.sku || "?"
       )}${c.sku ? ` · ${escapeHtml(c.sku)}` : ""}</span>`;
@@ -8031,7 +8019,7 @@ function openSplitForm() {
     const ok = total === it.qty_scanned;
     document.getElementById("bitem-split-count").textContent = ok
       ? `${total} of ${it.qty_scanned} assigned ✓`
-      : `${total} of ${it.qty_scanned} assigned — every box needs a home`;
+      : `${total} of ${it.qty_scanned} assigned - every box needs a home`;
     document.getElementById("bitem-split-go").disabled = !ok;
   };
   rows.querySelectorAll(".bitem-split-qty").forEach((inp) =>
@@ -8160,7 +8148,7 @@ document.getElementById("batch-skip-print").addEventListener("click", async () =
     const b = await postJson(`/api/batches/${batch.id}/skip-print`, {});
     batch.status = b.status;
     showBatchStage("pair");
-    setBatchResult("Straight to pairing — no labels queued.", "ok");
+    setBatchResult("Straight to pairing - no labels queued.", "ok");
   } catch (err) {
     setBatchResult(err.message, "err");
   }
@@ -8179,7 +8167,7 @@ document.getElementById("bitem-print").addEventListener("click", async () => {
   if (
     !confirm(
       `Print ${qty} label(s) for ${it.product_title || it.sku}?\n\n` +
-        `They join the print queue with the rest — the other products in ` +
+        `They join the print queue with the rest - the other products in ` +
         `this bin aren't reprinted.`
     )
   )
@@ -8192,7 +8180,7 @@ document.getElementById("bitem-print").addEventListener("click", async () => {
       { quantity: qty, requested_by: operatorEl.value || null }
     );
     batchSound("ok");
-    msg.textContent = `${res.count} label(s) queued — collect them at the printer.`;
+    msg.textContent = `${res.count} label(s) queued - collect them at the printer.`;
   } catch (err) {
     batchSound("err");
     msg.textContent = err.message;
@@ -8226,9 +8214,9 @@ bEl.queue.addEventListener("click", async () => {
     if (
       !confirm(
         `No untagged boxes were counted` +
-          (tagged ? ` — all ${tagged} box(es) here already wear a tag` : "") +
+          (tagged ? ` - all ${tagged} box(es) here already wear a tag` : "") +
           `, so there are no labels to queue and nothing to pair.\n\n` +
-          `Sure there's nothing to print? OK skips straight ahead — ` +
+          `Sure there's nothing to print? OK skips straight ahead - ` +
           `run the verify sweep to finish the bin.`
       )
     )
@@ -8238,7 +8226,7 @@ bEl.queue.addEventListener("click", async () => {
       await postJson(`/api/batches/${batch.id}/skip-print`, {});
       batch.status = "pairing";
       setBatchResult(
-        "No labels — go to Verify and sweep the shelf to finish.",
+        "No labels - go to Verify and sweep the shelf to finish.",
         "ok"
       );
       showBatchStage("verify");
@@ -8424,7 +8412,7 @@ async function pollBatchPrint() {
           ? ""
           : " · running OLD code: the rip re-align fixes are inactive " +
             "until print_agent.py is updated and its task restarted")
-      : "Printer agent: OFFLINE — is the warehouse PC on? Jobs stay queued.";
+      : "Printer agent: OFFLINE - is the warehouse PC on? Jobs stay queued.";
     // Voided/canceled labels are HISTORY, not part of the run's math —
     // counting them used to render nonsense like "Printed 2/4" after a
     // reprint.
@@ -8439,9 +8427,9 @@ async function pollBatchPrint() {
     const total = live.length;
     bEl.printStatus.textContent =
       `Printed ${counts.done}/${total}` +
-      (counts.error ? ` — ${counts.error} FAILED` : "") +
+      (counts.error ? ` - ${counts.error} FAILED` : "") +
       (counts.pending + counts.printing
-        ? ` — ${counts.pending + counts.printing} in the queue…`
+        ? ` - ${counts.pending + counts.printing} in the queue…`
         : " ✓ (tick any bad ones below to reprint them)");
     renderBatchPrintRun(jobs.jobs);
   } catch (err) {
@@ -8541,7 +8529,7 @@ function renderPairCard() {
   bEl.pairActive.textContent = itemDisplayName(item);
   document.getElementById("bpair-norfid").textContent =
     item.rfid_incompatible
-      ? "⊘ RFID flag ON — remove"
+      ? "⊘ RFID flag ON - remove"
       : "⊘ Won't RFID scan";
   bEl.pairProgress.textContent =
     `${item.paired_count} of ${goal} label(s) paired · ` +
@@ -8612,7 +8600,7 @@ bEl.pairInput.addEventListener("keydown", async (event) => {
   // …anything else is an RFID tag for the active product.
   if (!pairActiveItemId) {
     setBatchResult(
-      "Scan a product barcode from this batch first — then its tags.",
+      "Scan a product barcode from this batch first - then its tags.",
       "err"
     );
     return;
@@ -8648,7 +8636,7 @@ async function batchPairTag(code) {
     renderPairCard();
     setBatchResult(
       data.assignment.suspect
-        ? `Saved, but ${code} doesn't look like a normal 24-char EPC — ` +
+        ? `Saved, but ${code} doesn't look like a normal 24-char EPC - ` +
             `probably a bad read. Re-scan it to be safe.`
         : `Tag paired → ${itemDisplayName(data.item)} ` +
             `(${data.item.paired_count}/${pairLabelGoal(data.item)}).`,
@@ -8822,7 +8810,7 @@ function labelFitIssues(top, sku, barcode) {
     const lines = Math.max(1, Math.ceil(zplTextDots(top, size) / LABEL_PW));
     if (lines > 2)
       issues.push(
-        "Top line: needs more than the two lines available — the text " +
+        "Top line: needs more than the two lines available - the text " +
           "will overprint itself."
       );
     else if (lines === 2 && size === 28)
@@ -8845,7 +8833,7 @@ function labelFitIssues(top, sku, barcode) {
   if (barcode && code128Dots(barcode, 1) > LABEL_PW - 24)
     issues.push(
       "Barcode: too long for scannable bars (33 characters is the " +
-        "printable max) — the bars will run off the sticker's edge."
+        "printable max) - the bars will run off the sticker's edge."
     );
   return issues;
 }
@@ -8882,7 +8870,7 @@ function updateReprintFitWarn() {
   );
   warnEl.hidden = !issues.length;
   warnEl.textContent = issues.length
-    ? "⚠ " + issues.join("\n⚠ ") + "\nYou can still print — this is a warning, not a block."
+    ? "⚠ " + issues.join("\n⚠ ") + "\nYou can still print - this is a warning, not a block."
     : "";
 }
 
@@ -8897,10 +8885,10 @@ document.getElementById("bpair-reprint").addEventListener("click", async () => {
     item.labels_total ?? item.qty_scanned;
   document.getElementById("breprint-warn").textContent = item.paired_count
     ? `⚠ ${item.paired_count} tag(s) are already paired to the old labels. ` +
-      `PEEL THOSE STICKERS OFF the boxes before printing — a leftover ` +
+      `PEEL THOSE STICKERS OFF the boxes before printing - a leftover ` +
       `sticker answers sweeps alongside the new one. You'll be asked to ` +
       `confirm they're off.`
-    : `The old printed labels become invalid — bin them so they never ` +
+    : `The old printed labels become invalid - bin them so they never ` +
       `end up on a box.`;
   document.getElementById("breprint-msg").textContent = "";
   breprintItem = item;
@@ -9000,7 +8988,7 @@ document.getElementById("bpair-norfid").addEventListener("click", async () => {
     want &&
     !confirm(
       `Flag ${itemDisplayName(item)} as "won't RFID scan"?\n\n` +
-        `Labels still print and pairing still counts — but sweeps and ` +
+        `Labels still print and pairing still counts - but sweeps and ` +
         `Verify stop expecting its tags to answer. Applies to this ` +
         `product store-wide, and is logged.`
     )
@@ -9025,7 +9013,7 @@ document.getElementById("bpair-norfid").addEventListener("click", async () => {
     renderPairCard();
     setBatchResult(
       want
-        ? `⊘ ${itemDisplayName(item)} flagged — sweeps won't expect it to answer.`
+        ? `⊘ ${itemDisplayName(item)} flagged - sweeps won't expect it to answer.`
         : `Flag removed from ${itemDisplayName(item)}.`,
       "ok"
     );
@@ -9062,7 +9050,7 @@ document.getElementById("bpair-reset").addEventListener("click", async () => {
   if (
     !confirm(
       `Release all ${paired} tag(s) paired in this batch?\n\nThe printed ` +
-        `labels stay valid — you just re-scan them onto their products. ` +
+        `labels stay valid - you just re-scan them onto their products. ` +
         `Nothing in Shopify changes.`
     )
   )
@@ -9075,7 +9063,7 @@ document.getElementById("bpair-reset").addEventListener("click", async () => {
     renderPairItems();
     renderPairCard();
     setBatchResult(
-      `${res.removed} tie(s) released — pair the shelf again.`,
+      `${res.removed} tie(s) released - pair the shelf again.`,
       "ok"
     );
   } catch (err) {
@@ -9110,9 +9098,9 @@ bEl.verifyReport.addEventListener("click", async (e) => {
           updated_by: operatorEl.value || null,
         }),
       });
-      await runVerifyCheck();
+      await runVerifyCheck(id);
       setBatchResult(
-        "Counts corrected ✓ — batch records only. If Shopify's on-hand " +
+        "Counts corrected ✓ - batch records only. If Shopify's on-hand " +
           "should change too, use the row's Set-to button.",
         "ok"
       );
@@ -9133,7 +9121,7 @@ bEl.verifyReport.addEventListener("click", async (e) => {
       !confirm(
         `Set the Shopify bin for ${sku} to ${batch.bin_name}?\n\n` +
           `Shopify currently says: ${was}. This is the normal audited ` +
-          `bin write — Shopify, the bin map and this product's tags all ` +
+          `bin write - Shopify, the bin map and this product's tags all ` +
           `follow, with a History entry.`
       )
     )
@@ -9149,7 +9137,11 @@ bEl.verifyReport.addEventListener("click", async (e) => {
         `Shopify bin for ${sku} set to ${batch.bin_name} ✓`,
         "ok"
       );
-      await runVerifyCheck();
+      await runVerifyCheck(
+        (setBin.closest("tr") || {}).dataset
+          ? setBin.closest("tr").dataset.vrow || null
+          : null
+      );
     } catch (err) {
       setBatchResult(err.message, "err");
       setBin.disabled = false;
@@ -9200,7 +9192,11 @@ bEl.verifyReport.addEventListener("click", async (e) => {
         `${epcs.length} tag(s) manually retired ✓ (undo in History)`,
         "ok"
       );
-      await runVerifyCheck();
+      await runVerifyCheck(
+        (manualBtn.closest("tr.bvx-detail") || {}).dataset
+          ? manualBtn.closest("tr.bvx-detail").dataset.for || null
+          : null
+      );
     } catch (err) {
       manualBtn.disabled = false;
       setBatchResult(err.message, "err");
@@ -9221,7 +9217,7 @@ bEl.verifyReport.addEventListener("click", async (e) => {
         `Retire ${epcs.length} tag record(s) for ${retireBtn.dataset.sku} ` +
           `as presumed sold?\n\nThe sweep never heard them and the ` +
           `shortfall matches the sales/on-hand numbers. Records move to ` +
-          `the retired list (kept forever — returns recoverable), ` +
+          `the retired list (kept forever - returns recoverable), ` +
           `History-logged with Undo. Shopify is not touched.`
       )
     )
@@ -9238,7 +9234,11 @@ bEl.verifyReport.addEventListener("click", async (e) => {
         `${epcs.length} tag(s) retired as presumed sold ✓ (undo in History)`,
         "ok"
       );
-      await runVerifyCheck();
+      await runVerifyCheck(
+        (retireBtn.closest("tr") || {}).dataset
+          ? retireBtn.closest("tr").dataset.vrow || null
+          : null
+      );
     } catch (err) {
       setBatchResult(err.message, "err");
       retireBtn.disabled = false;
@@ -9271,7 +9271,7 @@ bEl.verifyReport.addEventListener("click", async (e) => {
       !confirm(
         `Raise Shopify ON-HAND for ${btns.length} product(s)?\n\n` +
           lines.join("\n") +
-          `\n\nEach writes separately — every product gets its own ` +
+          `\n\nEach writes separately - every product gets its own ` +
           `History entry and Undo.`
       )
     )
@@ -9299,7 +9299,7 @@ bEl.verifyReport.addEventListener("click", async (e) => {
     setBatchResult(
       `${done} on-hand value(s) raised` +
         (failed.length
-          ? ` · ${failed.length} FAILED — ${failed.join(" · ")}`
+          ? ` · ${failed.length} FAILED - ${failed.join(" · ")}`
           : " ✓ (each has its own Undo in History)"),
       failed.length ? "err" : "ok"
     );
@@ -9330,7 +9330,8 @@ bEl.verifyReport.addEventListener("click", async (e) => {
       sweep_at: verifySweepAt,
     });
     setBatchResult(res.message, "ok");
-    await runVerifyCheck();
+    // Only this product's row re-checks and repaints (Nick, 2026-09-14).
+    await runVerifyCheck(parseInt(btn.dataset.item, 10) || null);
   } catch (err) {
     btn.disabled = false;
     setBatchResult(err.message, "err");
@@ -9374,7 +9375,7 @@ bEl.verifyReport.addEventListener("click", async (e) => {
       sweep_at: verifySweepAt,
     });
     setBatchResult(res.message, "ok");
-    await runVerifyCheck();
+    await runVerifyCheck(parseInt(btn.dataset.item, 10) || null);
   } catch (err) {
     btn.disabled = false;
     setBatchResult(err.message, "err");
@@ -9403,7 +9404,7 @@ document.getElementById("bverify-pull").addEventListener("click", async () => {
     bEl.verifyCount.textContent = `${verifyEpcs.size} unique tags collected.`;
     setBatchResult(
       `Pulled sweep #${cap.id} from ${cap.device || "the C72"} ` +
-        `(${cap.epc_count} tags, ${fmtWhen(cap.created_at)}) — ` +
+        `(${cap.epc_count} tags, ${fmtWhen(cap.created_at)}) - ` +
         `${verifyEpcs.size - before} new. Checking…`,
       "ok"
     );
@@ -9413,7 +9414,13 @@ document.getElementById("bverify-pull").addEventListener("click", async () => {
   }
 });
 
-async function runVerifyCheck() {
+// With onlyItemId set, the check still runs in full but only that
+// item's row (and its expandable detail) is swapped into the live
+// table - the page, scroll, open panels and the other rows never move
+// (Nick, 2026-09-14: raising a count kept re-painting the whole bin).
+// The verdict/summary lines above the table refresh on the next full
+// run; a per-product write only changes that product's story.
+async function runVerifyCheck(onlyItemId = null) {
   if (!batch) return;
   const rep = await postJson(`/api/batches/${batch.id}/verify`, {
     epcs: [...verifyEpcs],
@@ -9512,7 +9519,7 @@ async function runVerifyCheck() {
                   r.reason ? `${escapeHtml(r.reason)}. ` : ""
                 }${
                   !paired && !r.reason
-                    ? `${r.paired_count} tag(s) paired vs ${r.qty_scanned} box(es) scanned — finish pairing at the gun, or fix the scan count below. `
+                    ? `${r.paired_count} tag(s) paired vs ${r.qty_scanned} box(es) scanned - finish pairing at the gun, or fix the scan count below. `
                     : ""
                 }The sweep heard <b>${r.detected}</b> tag(s) of this product (${
                   r.detected_batch ?? 0
@@ -9542,14 +9549,14 @@ async function runVerifyCheck() {
             </div>
           </td></tr>`
         : "";
-      return `<tr${lowClean ? ' data-low="1"' : ""}${
+      return `<tr data-vrow="${r.item_id}"${lowClean ? ' data-low="1"' : ""}${
         flaggedRow
-          ? ` class="bvx-flag${yel && !red ? " bvx-flag--yel" : ""}" data-item="${r.item_id}" title="Click to review — what the sweep heard vs this batch's counts"`
+          ? ` class="bvx-flag${yel && !red ? " bvx-flag--yel" : ""}" data-item="${r.item_id}" title="Click to review - what the sweep heard vs this batch's counts"`
           : ""
       }>
         <td>${productLink(r.product_title, r.shopify_product_id, r.sku)}${
           na
-            ? ' <span class="noscan-chip" title="tag won\'t scan when on box — sweeps don\'t expect it to answer">⊘</span>'
+            ? ' <span class="noscan-chip" title="tag won\'t scan when on box - sweeps don\'t expect it to answer">⊘</span>'
             : ""
         }${
           // Presumed-sold cleanup: the shelf reconciliation matched the
@@ -9566,7 +9573,7 @@ async function runVerifyCheck() {
                   r.shelf.basis === "sales"
                     ? "sales since tagging"
                     : "the live on-hand"
-                } — retire them (local records only, undoable from History)">Retire ${r.shelf.presumed_sold} presumed sold</button>`
+                } - retire them (local records only, undoable from History)">Retire ${r.shelf.presumed_sold} presumed sold</button>`
             : ""
         }${
           r.bin_differs && r.sku
@@ -9612,7 +9619,7 @@ async function runVerifyCheck() {
             : red || !paired
               ? "⚠ ▸"
               : yel
-                ? '<span class="bexp--warn" title="earlier tags silent — likely sold or moved before this batch">⚠ ▸</span>'
+                ? '<span class="bexp--warn" title="earlier tags silent - likely sold or moved before this batch">⚠ ▸</span>'
                 : "✓"
         }</td>
       </tr>${detail}`;
@@ -9638,12 +9645,12 @@ async function runVerifyCheck() {
   if (!detectedOk)
     mismatches.push("tags paired in THIS batch are missing from the sweep");
   const verdict = mismatches.length
-    ? `<p class="result result--err">⚠ This batch's own chain (printed → paired → heard) does NOT hold — ${mismatches.join(
+    ? `<p class="result result--err">⚠ This batch's own chain (printed → paired → heard) does NOT hold - ${mismatches.join(
         " · "
       )}. Check the ⚠ rows.</p>`
     : `<p class="result result--ok">✓ Every label printed here was paired, and every tag paired here answered the sweep.</p>`;
   const yellowNote = yellowCount
-    ? `<p class="result result--warn-soft">⚠ ${yellowCount} product(s) have EARLIER tags that stayed silent — likely sold or moved before this batch. Yellow rows; the retire buttons clean their records.</p>`
+    ? `<p class="result result--warn-soft">⚠ ${yellowCount} product(s) have EARLIER tags that stayed silent - likely sold or moved before this batch. Yellow rows; the retire buttons clean their records.</p>`
     : "";
   // Expected silence is stated out loud, not hidden inside a green tick:
   // flagged products were paired but no sweep will ever hear them.
@@ -9651,21 +9658,21 @@ async function runVerifyCheck() {
     (r) => r.rfid_incompatible && r.paired_count > 0 && r.detected === 0
   ).length;
   const naNote = naSilent
-    ? `<p class="result">⊘ ${naSilent} product(s) flagged "won't RFID scan" answered nothing, as expected — their tags are paired and counted; the sweep can't hear them on the box.</p>`
+    ? `<p class="result">⊘ ${naSilent} product(s) flagged "won't RFID scan" answered nothing, as expected - their tags are paired and counted; the sweep can't hear them on the box.</p>`
     : "";
   // The already-tagged exception is said out loud too: 0 scanned and 0
   // paired on those rows is CORRECT, not a miss — the boxes arrived with
   // stickers from an earlier session and only need to answer the sweep.
   const tbRows = rep.items.filter((r) => (r.tagged_before || 0) > 0);
   const tbNote = tbRows.length
-    ? `<p class="result">✓ ${tbRows.length} product(s) had boxes already RFID tagged before this batch (side trip or earlier session) — 0 scans and 0 pairs there is expected; their tags are counted in Detected instead.</p>`
+    ? `<p class="result">✓ ${tbRows.length} product(s) had boxes already RFID tagged before this batch (side trip or earlier session) - 0 scans and 0 pairs there is expected; their tags are counted in Detected instead.</p>`
     : "";
   // Unresolved codes are a heads-up, never a blocker: completing simply
   // drops them (same as removing them by hand) — no Review task is filed.
   const unresolvedNote = (rep.unresolved_codes || []).length
     ? `<p class="result result--warn-soft">⚠ ${rep.unresolved_codes.length} unresolved barcode(s) still in this batch (${rep.unresolved_codes
         .map(escapeHtml)
-        .join(", ")}) — they never matched a product. Completing drops them; nothing goes to Review. Link them at the Scan Station first if they matter.</p>`
+        .join(", ")}) - they never matched a product. Completing drops them; nothing goes to Review. Link them at the Scan Station first if they matter.</p>`
     : "";
 
   // One button to press every eligible "Set to N" in turn — each write
@@ -9678,9 +9685,9 @@ async function runVerifyCheck() {
   );
   const fixAll =
     fixable.length > 1
-      ? `<div class="linkbox__actions" style="margin-top:8px">
+      ? `<div class="linkbox__actions u-mt8">
            <button class="reset" id="bverify-fixall" type="button"
-             title="Runs each row's Set-to button in turn — every product gets its own confirmation summary line, History entry and Undo">
+             title="Runs each row's Set-to button in turn - every product gets its own confirmation summary line, History entry and Undo">
              Raise on-hand for all ${fixable.length} short products…</button>
          </div>`
       : "";
@@ -9696,10 +9703,51 @@ async function runVerifyCheck() {
           (t) =>
             `${escapeHtml(t.sku || t.product_title || "?")} <span class="mono">${escapeHtml(
               t.epc
-            )}</span> — ${escapeHtml(t.message)}`
+            )}</span> - ${escapeHtml(t.message)}`
         )
         .join(" · ")}</p>`
     : "";
+
+  // Surgical single-row swap (see the function comment): graft the
+  // fresh row pair over the live one and leave everything else alone.
+  if (onlyItemId != null) {
+    const tmp = document.createElement("tbody");
+    tmp.innerHTML = rows;
+    const freshMain = tmp.querySelector(`tr[data-vrow="${onlyItemId}"]`);
+    const liveMain = bEl.verifyReport.querySelector(
+      `tr[data-vrow="${onlyItemId}"]`
+    );
+    if (freshMain && liveMain) {
+      const freshDetail = tmp.querySelector(
+        `tr.bvx-detail[data-for="${onlyItemId}"]`
+      );
+      const liveDetail = bEl.verifyReport.querySelector(
+        `tr.bvx-detail[data-for="${onlyItemId}"]`
+      );
+      const detailWasOpen = liveDetail && !liveDetail.hidden;
+      if (liveDetail) liveDetail.remove();
+      liveMain.replaceWith(freshMain);
+      if (freshDetail) {
+        freshMain.after(freshDetail);
+        if (detailWasOpen) {
+          freshDetail.hidden = false;
+          updateBvxSum(freshDetail);
+        }
+      }
+      return;
+    }
+    if (liveMain && !freshMain) {
+      // The item left the report entirely - drop its row(s).
+      const liveDetail = bEl.verifyReport.querySelector(
+        `tr.bvx-detail[data-for="${onlyItemId}"]`
+      );
+      if (liveDetail) liveDetail.remove();
+      liveMain.remove();
+      return;
+    }
+    // Row not on screen (first render, filter, anything odd): fall
+    // through to the honest full repaint below.
+  }
 
   const lowCount = (rows.match(/data-low="1"/g) || []).length;
   bEl.verifyReport.innerHTML = `
@@ -9710,7 +9758,7 @@ async function runVerifyCheck() {
     </table></div>${fixAll}
     ${
       lowCount
-        ? `<div class="linkbox__actions" style="margin-top:8px">
+        ? `<div class="linkbox__actions u-mt8">
              <button class="reset" id="bverify-lowfilter" type="button"
                title="Products where every tag answered and the counts agree, but the shelf simply holds FEWER than Shopify expects - the ⇩ lower-count candidates. Rows with unheard tags are a different problem and stay out of this filter.">Show only below-expected (${lowCount})</button>
            </div>`
@@ -9718,7 +9766,7 @@ async function runVerifyCheck() {
     }
     ${
       otherCount
-        ? `<div class="linkbox__actions" style="margin-top:8px">
+        ? `<div class="linkbox__actions u-mt8">
              <button class="reset" id="bverify-others" type="button">See other detected items (${otherCount})</button>
            </div>
            <ul class="recent__list" id="bverify-otherlist" hidden>${otherRows}</ul>`
@@ -9798,7 +9846,7 @@ bEl.verifyCheck.addEventListener("click", async () => {
       )
       .join("");
     bEl.verifyReport.innerHTML = `
-      <p class="result">Bin <b>${escapeHtml(rep.bin)}</b> checked against ${rep.swept} swept tag(s) — ${rep.count} product(s) on file there.</p>
+      <p class="result">Bin <b>${escapeHtml(rep.bin)}</b> checked against ${rep.swept} swept tag(s) - ${rep.count} product(s) on file there.</p>
       <div class="inventory__scroll"><table class="inventory__table">
         <thead><tr><th>Product</th><th>SKU</th><th class="num">On hand</th><th class="num">Tags on file</th><th class="num">Detected</th></tr></thead>
         <tbody>${rows || '<tr><td colspan="5" class="inventory__empty">Nothing on file for that bin.</td></tr>'}</tbody>
@@ -9854,7 +9902,7 @@ bEl.complete.addEventListener("click", async () => {
       )
       .join("\n");
     msg =
-      `⚠ ${unpaired.length} product(s) — ${missingBoxes} box(es) — ` +
+      `⚠ ${unpaired.length} product(s) - ${missingBoxes} box(es) - ` +
       `have NOT been entered into inventory with RFID tags yet:\n\n` +
       `${names}${unpaired.length > 6 ? "\n…" : ""}\n\n` +
       `Are you sure you want to finish? The missing ones will be filed ` +
@@ -9864,7 +9912,7 @@ bEl.complete.addEventListener("click", async () => {
   // checked against the shelf — worth one more question.
   if (!batch.verified_at) {
     msg =
-      `This bin has never been verified — no RFID sweep has been checked ` +
+      `This bin has never been verified - no RFID sweep has been checked ` +
       `against it.\n\n${msg}`;
   }
   if (!confirm(msg)) return;
@@ -9884,7 +9932,7 @@ bEl.complete.addEventListener("click", async () => {
     setBatchResult(
       n
         ? `Batch done. ${n} item(s) sent to Review (count/pairing follow-ups).`
-        : "Batch done — no follow-ups. Clean bin ✓",
+        : "Batch done - no follow-ups. Clean bin ✓",
       "ok"
     );
   } catch (err) {
@@ -10092,7 +10140,7 @@ function queueJobRow(j, child) {
       const reprintBtn = tr.querySelector('[data-act="reprint"]');
       if (reprintBtn)
         reprintBtn.addEventListener("click", async () => {
-          if (!confirm(`Reprint one label for ${j.sku || j.product_title}? (New EPC — the damaged label's tag stays unassigned.)`)) return;
+          if (!confirm(`Reprint one label for ${j.sku || j.product_title}? (New EPC - the damaged label's tag stays unassigned.)`)) return;
           try {
             await postJson("/api/print-jobs", {
               quantity: 1,
@@ -10489,45 +10537,45 @@ async function loadReview() {
 const REVIEW_NOTES = {
   "inventory-check":
     "The number of units counted on the shelf during batch tagging " +
-    "didn't match Shopify's on-hand. Nothing was changed anywhere — " +
+    "didn't match Shopify's on-hand. Nothing was changed anywhere - " +
     "each of these is a recommendation to go count that product " +
     "properly (the bin audit's Set-to-N button is the sanctioned fix).",
   "pairing-incomplete":
     "Labels were printed for these products but not every label got " +
-    "its RFID tag scanned in. An unpaired label is an orphan sticker — " +
+    "its RFID tag scanned in. An unpaired label is an orphan sticker - " +
     "pair it at the Scan Station or reprint before it ends up on a box.",
   "unresolved-barcode":
-    "LEGACY entries — new batches no longer file these (2026-08-08): " +
+    "LEGACY entries - new batches no longer file these (2026-08-08): " +
     "unresolved codes now show as a heads-up at the verify step and are " +
     "simply dropped at completion. For these old ones: link the code to " +
     "its product at the Scan Station, or resolve/dismiss.",
   "could-not-scan":
     "Someone physically couldn't scan these during tagging (damaged " +
-    "box, unreachable shelf, dead label). They were NOT counted — " +
+    "box, unreachable shelf, dead label). They were NOT counted - " +
     "each one still needs identifying and tagging by hand.",
   "bin-check":
     "These bins received stock (receiving) or were manually marked for " +
-    "a check. Each one wants a quick RFID walk-scan of the shelf — the " +
+    "a check. Each one wants a quick RFID walk-scan of the shelf - the " +
     "run audit button opens the Audits tab with the bin loaded.",
   "bin-mismatch":
     "The RFID tags for these products were physically placed on a " +
     "different shelf than the bin Shopify has on file. These entries " +
-    "are LIVE — they clear themselves when either side is fixed: write " +
+    "are LIVE - they clear themselves when either side is fixed: write " +
     "the tags' shelf to Shopify (the boxes are where the tags say), or " +
     "move the boxes and update the tags. Nothing to dismiss.",
   "tag-onhand-mismatch":
     "System arithmetic, not a human count: the units this product's " +
     "tags stand for don't equal Shopify on-hand + boxes sold since the " +
     "last audit. Different from Inventory Check (someone counted a " +
-    "shelf) — this one files AND clears itself as the daily order sync " +
+    "shelf) - this one files AND clears itself as the daily order sync " +
     "re-checks. The fix is a bin audit: a sweep that hears the " +
     "remaining tags can mark the sold ones.",
   "duplicate-product":
     "Two tagged SKUs share the SAME saved barcode, or are the same SKU " +
-    "written differently (exact evidence only — open-box products are " +
+    "written differently (exact evidence only - open-box products are " +
     "ignored; checked once per sync run, never per scan). Resolve to " +
-    "MERGE the tags into one product — you pick the surviving SKU and " +
-    "which name it keeps — which also files an inventory check for the " +
+    "MERGE the tags into one product - you pick the surviving SKU and " +
+    "which name it keeps - which also files an inventory check for the " +
     "merged product. Dismiss if they really are two products; a " +
     "dismissed pair is never re-flagged.",
 };
@@ -10565,13 +10613,13 @@ function renderReview() {
         ? "Nothing matches that search."
         : reviewFilter
           ? "No open tasks of that type."
-          : "Inbox zero — nothing needs review."
+          : "Inbox zero - nothing needs review."
     }</li>`;
     return;
   }
   tasks.forEach((t) => {
     const li = document.createElement("li");
-    li.style.display = "block";
+    li.classList.add("u-block");
     const open = reviewOpenIds.has(t.id);
     // The boilerplate recommendation sentence lives behind the expansion,
     // on its own line — the collapsed row keeps just the facts.
@@ -10589,12 +10637,12 @@ function renderReview() {
         ${
           checkBin
             ? `<button class="rv-btn rv-btn--audit" data-act="audit" type="button"
-                 title="Open the Audits tab with ${escapeHtml(checkBin[1])} loaded — runs right away if a fresh C72 sweep is waiting">run audit</button>`
+                 title="Open the Audits tab with ${escapeHtml(checkBin[1])} loaded - runs right away if a fresh C72 sweep is waiting">run audit</button>`
             : ""
         }
         ${
           (t.notes || []).length
-            ? `<span class="rv-noteflag" data-act="notes" title="${(t.notes || []).length} note(s) — click to read">📝 ${(t.notes || []).length}</span>`
+            ? `<span class="rv-noteflag" data-act="notes" title="${(t.notes || []).length} note(s) - click to read">📝 ${(t.notes || []).length}</span>`
             : ""
         }
         <button class="rv-btn rv-btn--resolve" data-act="resolve" type="button">resolve</button>
@@ -10603,7 +10651,7 @@ function renderReview() {
       </div>` +
       (dismissConfirmIds.has(t.id)
         ? `<div class="rv-confirm">
-             <span>This task has ${(t.notes || []).length} note(s) — dismiss anyway?</span>
+             <span>This task has ${(t.notes || []).length} note(s) - dismiss anyway?</span>
              <button class="rv-btn rv-btn--dismiss" data-act="dismiss-yes" type="button">YES, DISMISS</button>
              <button class="rv-btn" data-act="dismiss-no" type="button">Cancel</button>
            </div>`
@@ -10618,17 +10666,17 @@ function renderReview() {
             <div>
               <div>${
                 t.sku
-                  ? `<b class="prodopen rv-prod" title="Open this product — label editor, RFID flag, full history">${escapeHtml(t.product_title || "")}</b>`
+                  ? `<b class="prodopen rv-prod" title="Open this product - label editor, RFID flag, full history">${escapeHtml(t.product_title || "")}</b>`
                   : `<b>${escapeHtml(t.product_title || "")}</b>`
               }${
                 t.sku
                   ? ` <span class="mono recent__meta">· ${escapeHtml(t.sku)}</span>`
                   : ""
               }</div>
-              <div class="recent__meta" style="margin-top:2px">${escapeHtml(short)}</div>
+              <div class="recent__meta u-mt2">${escapeHtml(short)}</div>
               ${
                 rec
-                  ? `<div class="recent__meta" style="margin-top:4px"><i>${escapeHtml(rec[0].trim())}</i></div>`
+                  ? `<div class="recent__meta u-mt4"><i>${escapeHtml(rec[0].trim())}</i></div>`
                   : ""
               }
               <div class="rv-timeline"><div class="rv-note__empty">Loading timeline…</div></div>
@@ -11018,7 +11066,7 @@ function openResolveWindow(t) {
   const expectedThen = counts ? Number(counts[2]) : null;
 
   const notesHtml = (t.notes || []).length
-    ? `<div class="rv-notes" style="margin:10px 0">
+    ? `<div class="rv-notes u-my10">
          <div class="rv-notes__title">Notes on this task</div>
          ${(t.notes || [])
            .map(
@@ -11049,7 +11097,7 @@ function openResolveWindow(t) {
         <div class="rvw-stat" id="rvw-tile-heard"><div class="rvw-stat__l">Last Heard</div><div class="rvw-stat__n" id="rvw-heard">…</div></div>
         <div class="rvw-stat rvw-stat--live" id="rvw-tile-oh"><div class="rvw-stat__l">Shopify On-hand</div><div class="rvw-stat__n" id="rvw-live">…</div></div>
       </div>
-      <div class="recent__meta" id="rvw-liveline" style="margin-bottom:8px">Checking the live numbers… (hover a tile for its story)</div>
+      <div class="recent__meta u-mb8" id="rvw-liveline">Checking the live numbers… (hover a tile for its story)</div>
       <div class="rvw-verdict" id="rvw-verdict" hidden></div>
       <div id="rvw-actions"></div>
       ${counted != null ? `<button class="reset rvw-wide rvw-choice rvw-choice--amber" id="rvw-userfid" type="button">
@@ -11094,10 +11142,10 @@ function openResolveWindow(t) {
     // The link-or-adopt actions live right in the window (Nick,
     // 2026-09-02): once the code resolves, the context offers closure.
     middle = `
-      <div class="recent__meta" id="rvw-liveline" style="margin-bottom:8px">Re-checking the code…</div>
+      <div class="recent__meta u-mb8" id="rvw-liveline">Re-checking the code…</div>
       <div id="rvw-actions"></div>
       <div id="rvw-linkrow" hidden>
-        <input id="rvw-linktarget" class="rv-notein" type="text" maxlength="100" placeholder="Known SKU or barcode of the real product…" style="margin-bottom:6px" />
+        <input id="rvw-linktarget" class="rv-notein u-mb6" type="text" maxlength="100" placeholder="Known SKU or barcode of the real product…" />
         <button class="reset rvw-wide rvw-choice rvw-choice--blue" id="rvw-linkalias" type="button">
           Link the scanned code as an alias
           <span class="rvw-choice__sub">The code finds that product from now on. Shopify untouched; unlinkable from History.</span>
@@ -11110,12 +11158,12 @@ function openResolveWindow(t) {
       <button class="reset rvw-wide" id="rvw-station" type="button">Open at the Scan Station</button>`;
   } else if (t.category === "pairing-incomplete") {
     middle = `
-      <div class="recent__meta" id="rvw-liveline" style="margin-bottom:8px">Checking the live pairing state…</div>
+      <div class="recent__meta u-mb8" id="rvw-liveline">Checking the live pairing state…</div>
       <div id="rvw-actions"></div>
       <button class="reset rvw-wide" id="rvw-station" type="button">Open at the Scan Station (pair the stragglers)</button>`;
   } else if (t.category === "bin-check") {
     middle = `
-      <div class="recent__meta" id="rvw-liveline" style="margin-bottom:8px"></div>
+      <div class="recent__meta u-mb8" id="rvw-liveline"></div>
       ${binFromDetail ? `<button class="reset rvw-wide" id="rvw-audit" type="button">Run ${escapeHtml(binFromDetail)}'s bin audit</button>` : ""}`;
   } else if (t.category === "bin-mismatch") {
     middle = `
@@ -11126,11 +11174,11 @@ function openResolveWindow(t) {
       </div>
       <button class="reset rvw-wide rvw-choice rvw-choice--amber" id="rvw-shopwrong" type="button">
         Shopify is wrong → write ${escapeHtml(t.tag_bin || "?")} to Shopify
-        <span class="rvw-choice__sub">The audited bin update — Shopify, map and tags follow. Undoable.</span>
+        <span class="rvw-choice__sub">The audited bin update - Shopify, map and tags follow. Undoable.</span>
       </button>
       <button class="reset rvw-wide rvw-choice rvw-choice--blue" id="rvw-shopright" type="button">
         Shopify is right → boxes moved to ${escapeHtml(t.shopify_bin || "?")}
-        <span class="rvw-choice__sub">Updates the tag records only — Shopify already says ${escapeHtml(t.shopify_bin || "?")}.</span>
+        <span class="rvw-choice__sub">Updates the tag records only - Shopify already says ${escapeHtml(t.shopify_bin || "?")}.</span>
       </button>`;
   } else if (t.category === "duplicate-product") {
     middle = `<div id="rvw-dupe" class="recent__meta">Loading both sides…</div>`;
@@ -11140,7 +11188,7 @@ function openResolveWindow(t) {
     // their component list (or the one-time contents setup) injected
     // into the actions slot once the context answers.
     middle = `
-      <div class="recent__meta" id="rvw-liveline" style="margin-bottom:8px"></div>
+      <div class="recent__meta u-mb8" id="rvw-liveline"></div>
       <div id="rvw-actions"></div>
       <button class="reset rvw-wide" id="rvw-station" type="button">Open at the Scan Station</button>`;
   }
@@ -11151,15 +11199,15 @@ function openResolveWindow(t) {
       <span class="rvw-head__title">${escapeHtml(t.product_title || t.sku || t.detail.slice(0, 40))}</span>
       <span class="rvw-close" id="rvw-close" title="Close">✕</span>
     </div>
-    <div class="recent__meta" style="margin-bottom:10px">${
+    <div class="recent__meta u-mb10">${
       t.sku ? `SKU ${escapeHtml(t.sku)} · ` : ""
-    }${escapeHtml(t.synthetic ? "live entry — clears itself once the bins agree" : `filed ${fmtAgo(t.created_at)}${t.created_by ? ` by ${t.created_by}` : ""}`)}</div>
+    }${escapeHtml(t.synthetic ? "live entry - clears itself once the bins agree" : `filed ${fmtAgo(t.created_at)}${t.created_by ? ` by ${t.created_by}` : ""}`)}</div>
     ${
       // The duplicate resolver writes its own concise reason line — the
       // raw task detail would repeat the SKUs already on the cards.
       t.category === "duplicate-product"
         ? ""
-        : `<div class="recent__meta" style="margin-bottom:10px">${escapeHtml(t.detail || "")}</div>`
+        : `<div class="recent__meta u-mb10">${escapeHtml(t.detail || "")}</div>`
     }
     ${notesHtml}
     ${middle}
@@ -11167,11 +11215,11 @@ function openResolveWindow(t) {
     <div class="rvw-foot">
       ${
         t.synthetic
-          ? `<button class="rv-btn rv-btn--dismiss rvw-grow" id="rvw-dismiss" type="button" title="Suppressed for this exact disagreement — reappears only if either bin changes">Dismiss this mismatch</button>`
+          ? `<button class="rv-btn rv-btn--dismiss rvw-grow" id="rvw-dismiss" type="button" title="Suppressed for this exact disagreement - reappears only if either bin changes">Dismiss this mismatch</button>`
           : t.category === "duplicate-product"
             ? // Merge or split IS the resolution — the only other honest
               // exit is a dismissal (which this pair-flag never re-raises).
-              `<button class="rv-btn rv-btn--dismiss rvw-grow" id="rvw-dupedismiss" type="button" title="They're fine as they are — closes the flag without changing anything, and this pair is never flagged again">Dismiss</button>`
+              `<button class="rv-btn rv-btn--dismiss rvw-grow" id="rvw-dupedismiss" type="button" title="They're fine as they are - closes the flag without changing anything, and this pair is never flagged again">Dismiss</button>`
             : `<button class="rv-btn rv-btn--resolve rvw-grow" id="rvw-resolve" type="button">Mark resolved</button>`
       }
       <button class="rv-btn" id="rvw-cancel" type="button">Cancel</button>
@@ -11194,7 +11242,7 @@ function openResolveWindow(t) {
         resolveBtn.dataset.armed = "1";
         document.getElementById("rvw-note").focus();
         document.getElementById("rvw-note").placeholder =
-          "What did the recount find? (required — press Mark resolved again)";
+          "What did the recount find? (required - press Mark resolved again)";
         return;
       }
       commitResolve(t, noteVal());
@@ -11542,7 +11590,7 @@ function openResolveWindow(t) {
         !confirm(
           `Set the Shopify bin for ${t.sku} to ${t.tag_bin}?\n\n` +
             `Shopify currently says: ${t.shopify_bin}. This is the normal ` +
-            `audited bin write — Shopify, the bin map and this product's ` +
+            `audited bin write - Shopify, the bin map and this product's ` +
             `tags all follow, with a History entry.`
         )
       )
@@ -11575,7 +11623,7 @@ function openResolveWindow(t) {
         !confirm(
           `Move the TAG RECORDS for ${t.sku} to ${t.shopify_bin}?\n\n` +
             `For when the boxes physically moved (or are moving) to ` +
-            `Shopify's shelf. Local only — nothing in Shopify changes.`
+            `Shopify's shelf. Local only - nothing in Shopify changes.`
         )
       )
         return;
@@ -11692,7 +11740,7 @@ async function loadResolveContext(t, counted) {
               }
             });
         } else if (v.kind === "agree" || v.kind === "unavailable") {
-          actions.innerHTML = `<button class="reset rvw-wide rvw-ok" id="rvw-agree" type="button">Nothing to fix — resolve</button>`;
+          actions.innerHTML = `<button class="reset rvw-wide rvw-ok" id="rvw-agree" type="button">Nothing to fix - resolve</button>`;
           document.getElementById("rvw-agree").addEventListener("click", () =>
             commitResolve(t, v.text)
           );
@@ -11751,7 +11799,7 @@ async function loadResolveContext(t, counted) {
         line.textContent = "";
         actions.innerHTML = `<button class="reset rvw-wide rvw-ok" id="rvw-nowresolves" type="button">The code now resolves to ${escapeHtml(
           ctx.resolves_to.product_title || ctx.resolves_to.sku || "?"
-        )} — resolve</button>`;
+        )} - resolve</button>`;
         document
           .getElementById("rvw-nowresolves")
           .addEventListener("click", () =>
@@ -11821,7 +11869,7 @@ async function loadResolveContext(t, counted) {
         if (ctx.paired_count >= ctx.labels_total) {
           line.textContent = `Pairing has CAUGHT UP since (${ctx.paired_count} of ${ctx.labels_total}).`;
           document.getElementById("rvw-actions").innerHTML =
-            `<button class="reset rvw-wide rvw-ok" id="rvw-caught" type="button">Pairing complete now — resolve</button>`;
+            `<button class="reset rvw-wide rvw-ok" id="rvw-caught" type="button">Pairing complete now - resolve</button>`;
           document.getElementById("rvw-caught").addEventListener("click", () =>
             commitResolve(t, `Pairing complete (${ctx.paired_count}/${ctx.labels_total}).`)
           );
@@ -11833,12 +11881,12 @@ async function loadResolveContext(t, counted) {
       }
     } else if (t.category === "could-not-scan") {
       if (ctx.units_on_file != null)
-        line.textContent = `The RFID system now holds ${ctx.units_on_file} unit(s) for this SKU${ctx.units_on_file > 0 ? " — if that covers this box, resolve below." : "."}`;
+        line.textContent = `The RFID system now holds ${ctx.units_on_file} unit(s) for this SKU${ctx.units_on_file > 0 ? " - if that covers this box, resolve below." : "."}`;
       // The world moved since the skip (Nick, 2026-09-02): tags were
       // added AFTER this was filed - one-click closure, never auto.
       if ((ctx.tags_added_since || 0) > 0) {
         const actions = document.getElementById("rvw-actions");
-        actions.innerHTML = `<button class="reset rvw-wide rvw-ok" id="rvw-tagged" type="button">${ctx.tags_added_since} tag(s) added since this was filed — resolve</button>`;
+        actions.innerHTML = `<button class="reset rvw-wide rvw-ok" id="rvw-tagged" type="button">${ctx.tags_added_since} tag(s) added since this was filed - resolve</button>`;
         document.getElementById("rvw-tagged").addEventListener("click", () =>
           commitResolve(
             t,
@@ -12062,9 +12110,9 @@ function renderDupeMerge(t, ctx) {
     else if (ba && bb && normId(ba) === normId(bb))
       problem = "The two barcodes are still the same.";
     else if (ba && normId(ba) === normId(sb))
-      problem = `${sa}'s barcode equals the other SKU — they'd still collide.`;
+      problem = `${sa}'s barcode equals the other SKU - they'd still collide.`;
     else if (bb && normId(bb) === normId(sa))
-      problem = `${sb}'s barcode equals the other SKU — they'd still collide.`;
+      problem = `${sb}'s barcode equals the other SKU - they'd still collide.`;
     document.getElementById("dupe2-splitgo").disabled = !!problem;
     document.getElementById("dupe2-hint").textContent = problem || "";
   };
@@ -12082,7 +12130,7 @@ function renderDupeMerge(t, ctx) {
         mode === "merge"
           ? `<button class="reset rvw-ok dupe2__act" id="dupe2-merge" type="button" disabled>Merge products into one</button>
              <button class="reset dupe2__act" id="dupe2-split" type="button"
-               title="They really are two products — give each its own SKU and barcode">Split products into two</button>`
+               title="They really are two products - give each its own SKU and barcode">Split products into two</button>`
           : `<button class="reset rvw-ok dupe2__act" id="dupe2-splitgo" type="button" disabled>Confirm split</button>
              <button class="reset dupe2__act" id="dupe2-splitback" type="button">Back</button>`
       }</div>` +
@@ -12140,7 +12188,7 @@ function renderDupeMerge(t, ctx) {
             `Merge ${from.sku} into ${into.sku}?\n\n${from.units} tag ` +
               `unit(s) move over, the merged product is named ` +
               `"${title || into.sku}", and an inventory check is filed. ` +
-              `RFID records only — Shopify is not touched.`
+              `RFID records only - Shopify is not touched.`
           )
         )
           return;
@@ -12157,7 +12205,7 @@ function renderDupeMerge(t, ctx) {
           renderReview();
           loadReview();
           alert(
-            `Merged ✓ — ${r.moved_tags} tag(s) now under ${r.into_sku}. ` +
+            `Merged ✓ - ${r.moved_tags} tag(s) now under ${r.into_sku}. ` +
               `An inventory check was filed for it.`
           );
         } catch (err) {
@@ -12207,7 +12255,7 @@ function renderDupeMerge(t, ctx) {
           renderReview();
           loadReview();
           alert(
-            `Split ✓ — ${r.sides.map((s) => s.sku).join(" and ")} are two ` +
+            `Split ✓ - ${r.sides.map((s) => s.sku).join(" and ")} are two ` +
               `distinct products now.`
           );
         } catch (err) {
@@ -12240,8 +12288,8 @@ function renderBundleActions(t, ctx) {
   const contents = ctx.bundle_contents || [];
   if (contents.length) {
     slot.innerHTML =
-      `<div class="recent__meta" style="margin-bottom:6px">This is a
-       bundle — bundles aren't tagged, their components are. One bundle
+      `<div class="recent__meta u-mb6">This is a
+       bundle - bundles aren't tagged, their components are. One bundle
        contains:</div>` +
       contents
         .map(
@@ -12249,7 +12297,7 @@ function renderBundleActions(t, ctx) {
             `<button class="reset rvw-wide" data-comp="${i}" type="button">Tag ${c.qty}× ${escapeHtml(c.component_sku)} at the Scan Station</button>`
         )
         .join("") +
-      `<div class="recent__meta" style="margin:2px 0 8px"><a href="#" id="rvw-bundle-edit">Edit bundle contents…</a></div>`;
+      `<div class="recent__meta u-mt2 u-mb8"><a href="#" id="rvw-bundle-edit">Edit bundle contents…</a></div>`;
     slot.querySelectorAll("[data-comp]").forEach((btn) =>
       btn.addEventListener("click", () => {
         const c = contents[Number(btn.dataset.comp)];
@@ -12275,19 +12323,19 @@ function renderBundleSetup(t, slot, existing) {
     .map((c) => `${c.component_sku} x ${c.qty}`)
     .join(", ");
   slot.innerHTML = `
-    <div class="recent__meta" style="margin-bottom:6px">${
+    <div class="recent__meta u-mb6">${
       existing.length
         ? "Edit what one bundle contains"
-        : "This looks like a bundle. Define what ONE bundle contains — set once, used everywhere (batch collect stops counting it separately)."
+        : "This looks like a bundle. Define what ONE bundle contains - set once, used everywhere (batch collect stops counting it separately)."
     }</div>
-    <div class="rv-notes__add" style="margin:0 0 8px">
+    <div class="rv-notes__add rv-notes__add--flush">
       <input class="rv-notein" id="rvw-bundle-in" type="text"
              placeholder="e.g. W9184B x 10, 51701-1 x 3"
              value="${escapeHtml(prefill)}" />
       <button class="reset" id="rvw-bundle-save" type="button">Save contents</button>
     </div>
     <button class="reset rvw-wide" id="rvw-bundle-import" type="button"
-            title="Reads the component list straight from Shopify (the Bundles app relationship) — no typing">⇣ Import contents from Shopify</button>`;
+            title="Reads the component list straight from Shopify (the Bundles app relationship) - no typing">⇣ Import contents from Shopify</button>`;
   document
     .getElementById("rvw-bundle-import")
     .addEventListener("click", async () => {
@@ -12316,7 +12364,7 @@ function renderBundleSetup(t, slot, existing) {
         const m = /^(.+?)\s*[x×]\s*(\d+)$/i.exec(part.trim());
         if (!m) {
           alert(
-            `Couldn't read "${part.trim()}" — write each piece as ` +
+            `Couldn't read "${part.trim()}" - write each piece as ` +
               `SKU x QTY, separated by commas.`
           );
           return;
@@ -12324,7 +12372,7 @@ function renderBundleSetup(t, slot, existing) {
         contents.push({ component_sku: m[1].trim(), qty: Number(m[2]) });
       }
       if (!contents.length) {
-        alert("Nothing to save — write at least one SKU x QTY.");
+        alert("Nothing to save - write at least one SKU x QTY.");
         return;
       }
       try {
@@ -12372,7 +12420,7 @@ async function renderOrderSyncNote() {
     const last = st.last_run;
     if (!last) {
       note.textContent =
-        "Order sync hasn't run yet — it runs daily at 8 AM, or press " +
+        "Order sync hasn't run yet - it runs daily at 8 AM, or press " +
         "↻ Sync orders.";
       note.hidden = false;
       return;
@@ -12439,7 +12487,7 @@ function renderAuditBins() {
   meta.textContent =
     `(on-hand from Shopify ` +
     (auditData.onhand_age_minutes == null
-      ? "— age unknown"
+      ? "- age unknown"
       : auditData.onhand_age_minutes < 60
         ? `${auditData.onhand_age_minutes} min ago`
         : `${Math.round(auditData.onhand_age_minutes / 60)} h ago`) +
@@ -12489,13 +12537,13 @@ function renderAuditBins() {
     list.innerHTML = `<li class="recent__empty">${
       q
         ? "No bins match that."
-        : "No batch-tagged bins yet — complete a batch first."
+        : "No batch-tagged bins yet - complete a batch first."
     }</li>`;
     return;
   }
   rows.forEach((b) => {
     const li = document.createElement("li");
-    li.style.display = "block";
+    li.classList.add("u-block");
     const clean = b.score === 0;
     const open = auditOpenBins.has(b.bin);
     li.innerHTML =
@@ -12504,7 +12552,7 @@ function renderAuditBins() {
          <span class="auditrow__num ${clean ? "auditrow__num--ok" : ""}" title="sum of |Shopify − RFID| across this bin's products">${
            clean ? "✓" : b.score
          }</span>
-         <span class="binlist__count" style="margin-left:auto">${b.product_count} product(s)${
+         <span class="binlist__count u-mlauto">${b.product_count} product(s)${
            clean
              ? " · all match"
              : ` · ${b.mismatched_count} mismatched`
@@ -12518,7 +12566,7 @@ function renderAuditBins() {
          <span class="auditrow__chev">${open ? "▾" : "▸"}</span>
        </div>` +
       (open
-        ? `<div class="inventory__scroll" style="margin:6px 0 10px 30px"><table class="inventory__table">
+        ? `<div class="inventory__scroll inventory__scroll--inset"><table class="inventory__table">
              <thead><tr><th>Product</th><th>SKU</th><th class="num">Shopify</th><th class="num">RFID</th><th class="num">Diff</th></tr></thead>
              <tbody>${b.products
                .map(
@@ -12535,7 +12583,7 @@ function renderAuditBins() {
                    <td class="mono"><span class="skulink" data-sku="${escapeHtml(p.sku || "")}">${escapeHtml(p.sku || "—")}</span></td>
                    <td class="num">${p.on_hand == null ? "—" : p.on_hand}${
                      p.sold_unretired
-                       ? ` <span class="bexp--note" title="Boxes sold on fulfilled orders whose tag is still on file — they raise the expected tag count until an audit marks them sold">(+${p.sold_unretired} sold)</span>`
+                       ? ` <span class="bexp--note" title="Boxes sold on fulfilled orders whose tag is still on file - they raise the expected tag count until an audit marks them sold">(+${p.sold_unretired} sold)</span>`
                        : ""
                    }</td>
                    <td class="num">${p.unlabelable ? "—" : p.rfid_units}</td>
@@ -12597,7 +12645,7 @@ async function jumpToBinAudit(bin) {
       return;
     }
     out.innerHTML = `<p class="result">Walk-scan ${escapeHtml(bin)} with the C72
-      (SWEEP → SEND), then hit RUN — the newest sweep on file is
+      (SWEEP → SEND), then hit RUN - the newest sweep on file is
       ${escapeHtml(fmtAgo(cap.created_at))}.</p>`;
   } catch (err) {
     out.innerHTML = `<p class="result">Walk-scan ${escapeHtml(bin)} with the C72
@@ -12968,6 +13016,240 @@ document
   .getElementById("binaudit-next")
   .addEventListener("click", () => binAuditStep(1));
 
+// One audit item scored for display: its warning chips and whether it
+// counts as untagged. Shared by the full render AND the single-row
+// refresh (Nick, 2026-09-14: a write must not repaint the page).
+function binAuditScoreRow(r) {
+  const flags = [];
+  const silent = r.tags_here - r.detected;
+  if (r.rfid_incompatible) {
+    flags.push(["⊘ won't scan on box", "chip--na"]);
+  } else if (silent > 0 && (r.sold_unretired || 0) > 0) {
+    // Sales explain some or all of the silence: offer MARK SOLD for
+    // the covered tags; anything beyond the sold count is still a
+    // real silence (and the daily sync files the mismatch task).
+    if (silent <= r.sold_unretired) {
+      flags.push([
+        `${silent} silent - ${r.sold_unretired} sold since last audit`,
+        "chip--ok",
+      ]);
+    } else {
+      flags.push([
+        `${silent} silent vs ${r.sold_unretired} sold - count off`,
+        "chip--warn",
+      ]);
+    }
+  } else if (silent > 0 && silent <= (r.unavailable || 0)) {
+    // A set-aside (unavailable) unit's tag stays on file but the
+    // box may sit off the shelf - silence covered by the bucket is
+    // the expected picture, not a warning (Nick, 2026-09-08).
+    flags.push([
+      `${silent} silent - likely the set-aside/unavailable unit${silent === 1 ? "" : "s"}`,
+      "chip--ok",
+    ]);
+  } else if (silent > 0) {
+    flags.push([`${silent} tagged box(es) silent`, "chip--warn"]);
+  }
+  // Multi-box sets: part rows say which set (and audit against the
+  // SET's shelf number); the set's own row defers to its parts.
+  if (r.boxset_of)
+    flags.push([
+      `box ${r.box_no || "?"} of ${r.boxset_of} - expected is the set's shelf count`,
+      "chip--na",
+    ]);
+  if (r.boxset)
+    flags.push([
+      "multi-box set - audits by its box SKUs above",
+      "chip--na",
+    ]);
+  // Ghosts: presumed-sold (or replaced/dead) tags that ANSWERED -
+  // the box never left. Treated as one more scan in the end; the
+  // chip says why the numbers moved (Nick, 2026-09-01).
+  if ((r.ghosts || []).length) {
+    flags.push([
+      `${r.ghosts.length} retired tag(s) answered - box still here`,
+      "chip--warn",
+    ]);
+  }
+  if (r.finds_open > 0) {
+    flags.push([
+      `${r.finds_open} tagless box(es) scanned - labels not printed`,
+      "chip--warn",
+    ]);
+  }
+  if (r.finds_printed > 0) {
+    flags.push([
+      `${r.finds_printed} label(s) printed, not yet paired`,
+      "chip--warn",
+    ]);
+  }
+  // Untagged: Shopify expects stock here but the RFID system holds
+  // nothing for it. On a part-tagged shelf that's most of the list,
+  // so it sits behind a toggle, below everything that IS tagged.
+  const untagged = r.tags_here === 0 && r.detected === 0;
+  return { r, flags, untagged };
+}
+
+// One scored item as its table row. data-rowsku is what lets a write
+// repaint JUST this row (Nick, 2026-09-14: raising a count must not
+// refresh the page).
+function binAuditRowHtml({ r, flags, untagged }) {
+  const tagsNote = (units, tags) =>
+    units !== tags
+      ? ` <span class="bexp--note">(${tags} tag${tags === 1 ? "" : "s"})</span>`
+      : "";
+  // Expected reads exactly like the batch-tagging verify table:
+  // Shopify's number with the difference in brackets, and the
+  // increase-only on-hand write offered when the shelf holds more
+  // than Shopify knows about.
+  let expCell = "—";
+  if (r.expected_qty != null) {
+    // Uncleared backorder debt RAISES what the shelf should hold:
+    // those boxes arrived but Shopify's on-hand ran behind. So does
+    // the Unavailable bucket (Nick, 2026-09-08, the ASI432MM):
+    // expected_qty is the SELLABLE number, but the audit counts
+    // physical units and their tag records - the set-aside unit is
+    // one of them. Without the fold, a product whose only surplus
+    // IS its unavailable stock kept offering a "Set to N" raise
+    // that Shopify already had.
+    const debt = r.backorder_debt || 0;
+    const unav = r.unavailable || 0;
+    const expTotal = r.expected_qty + debt + unav;
+    const diff = r.units_here - expTotal;
+    expCell =
+      `${expTotal}` +
+      (debt
+        ? ` <span class="bexp--note">(incl. ${debt} backorder)</span>`
+        : "") +
+      (unav
+        ? ` <span class="bexp--note">(incl. ${unav} unavailable)</span>`
+        : "") +
+      (diff
+        ? ` <span class="bexp--off">(${diff > 0 ? "+" : "−"}${Math.abs(diff)})</span>`
+        : "");
+    if (diff > 0 && r.sku) {
+      expCell += `<div><button class="reset binaudit-fix" type="button"
+        data-sku="${escapeHtml(r.sku)}" data-qty="${r.units_here}"
+        data-exp="${expTotal}"
+        title="Write the tagged count to Shopify on-hand - confirmed, logged, undoable from History">Set to ${r.units_here}</button></div>`;
+    }
+  }
+  return `<tr data-rowsku="${escapeHtml((r.sku || "").toUpperCase())}"${
+    untagged ? ' class="binaudit-untagged"' : ""
+  }>
+    <td>${
+      r.image_url
+        ? `<img class="bvx__img bvx__img--sm" src="${escapeHtml(r.image_url)}" alt="">`
+        : ""
+    }</td>
+    <td>${
+      r.sku
+        ? `<span class="prodopen" data-sku="${escapeHtml(r.sku)}" title="Open this product - label editor, RFID flag, full history">${escapeHtml(r.product_title || "(unknown)")}</span>`
+        : escapeHtml(r.product_title || "(unknown)")
+    }${r.variant_title ? ` (${escapeHtml(r.variant_title)})` : ""}</td>
+    <td class="mono"><span class="skulink" data-sku="${escapeHtml(r.sku || "")}" title="Open this product - label editor, RFID flag, full history">${escapeHtml(r.sku || "—")}</span></td>
+    <td class="num">${expCell}</td>
+    <td class="num">${r.units_here}${tagsNote(r.units_here, r.tags_here)}</td>
+    <td class="num">${r.detected_units}${tagsNote(r.detected_units, r.detected)}</td>
+    <td>${
+      flags.length
+        ? flags
+            .map(
+              ([t, c]) =>
+                `<span class="binaudit-chip ${c}">${escapeHtml(t)}</span>`
+            )
+            .join(" ")
+        : "✓"
+    }${(() => {
+      // Silence fully covered by fulfilled orders: one click retires
+      // the shipped boxes' tags against the sold ledger.
+      const silent = r.tags_here - r.detected;
+      if (
+        silent > 0 &&
+        (r.sold_unretired || 0) >= silent &&
+        (r.silent_epcs || []).length &&
+        r.sku
+      )
+        return `<div><button class="reset binaudit-marksold" type="button"
+             data-sku="${escapeHtml(r.sku)}"
+             data-epcs="${escapeHtml((r.silent_epcs || []).join(","))}"
+             title="These boxes shipped on fulfilled orders - remove their tag record(s) and retire the sale(s) in the ledger. History-logged; Shopify untouched.">MARK ${silent} SOLD</button></div>`;
+      // Ghost cleanup (Nick, 2026-09-14, the ASIAIR bracket): the
+      // sweep heard EXACTLY what Shopify expects, but MORE silent
+      // records linger than sales explain - re-sticker leftovers.
+      // Offered only on a confirmed shelf, so real missing stock
+      // never gets tidied away.
+      if (
+        silent > 0 &&
+        silent > (r.sold_unretired || 0) &&
+        r.expected_qty != null &&
+        r.detected_units === r.expected_qty &&
+        r.detected > 0 &&
+        (r.silent_epcs || []).length &&
+        r.sku
+      )
+        return `<div><button class="reset binaudit-cleanghosts" type="button"
+             data-sku="${escapeHtml(r.sku)}"
+             data-epcs="${escapeHtml((r.silent_epcs || []).join(","))}"
+             title="The shelf reads exactly right, so these silent records are leftovers - usually stickers replaced without unlinking. Recorded sales cover the oldest ones (presumed sold); the rest retire as replaced. History-logged, each restorable; Shopify untouched.">CLEAN UP ${silent} GHOST TAG(S)…</button></div>`;
+      return "";
+    })()}</td>
+  </tr>`;
+}
+
+// Surgical row refresh (Nick, 2026-09-14): after a per-product write
+// the page STAYS - the check re-runs quietly and only the changed
+// product's row repaints when the answer returns. Scroll position,
+// open panels and the rest of the report never move.
+async function binAuditRefreshRow(sku) {
+  if (!binAudit || !sku) {
+    document.getElementById("binaudit-run").click();
+    return;
+  }
+  const { rep, cap } = binAudit;
+  const bin = rep.bin;
+  try {
+    const single = /^\d+$/.test(String(cap.id));
+    const fresh = await postJson(
+      `/api/bins/${encodeURIComponent(bin)}/check`,
+      single
+        ? { capture_id: parseInt(cap.id, 10) }
+        : { epcs: cap.epcs }
+    );
+    binAudit = { rep: fresh, cap };
+    binAuditCache.set(String(cap.id) + "|" + bin.toUpperCase(), fresh);
+    const up = sku.toUpperCase();
+    const tr = document.querySelector(
+      `#binaudit-report tr[data-rowsku="${CSS.escape(up)}"]`
+    );
+    if (!tr) {
+      renderBinAudit();
+      return;
+    }
+    const item = (fresh.items || []).find(
+      (r) => (r.sku || "").toUpperCase() === up
+    );
+    const inStory =
+      item &&
+      ((item.expected_qty || 0) > 0 ||
+        item.tags_here > 0 ||
+        item.detected > 0);
+    if (!inStory) {
+      tr.remove();
+      return;
+    }
+    const scored = binAuditScoreRow(item);
+    if (scored.untagged && !binAuditShowUntagged) {
+      tr.remove();
+      return;
+    }
+    tr.outerHTML = binAuditRowHtml(scored);
+  } catch (err) {
+    // Rather a full honest repaint than a stale row.
+    document.getElementById("binaudit-run").click();
+  }
+}
+
 function renderBinAudit() {
   const out = document.getElementById("binaudit-report");
   if (!binAudit) return;
@@ -12977,76 +13259,7 @@ function renderBinAudit() {
     // Nothing expected, nothing tagged, nothing heard: not part of this
     // bin's story at all.
     .filter((r) => (r.expected_qty || 0) > 0 || r.tags_here > 0 || r.detected > 0)
-    .map((r) => {
-      const flags = [];
-      const silent = r.tags_here - r.detected;
-      if (r.rfid_incompatible) {
-        flags.push(["⊘ won't scan on box", "chip--na"]);
-      } else if (silent > 0 && (r.sold_unretired || 0) > 0) {
-        // Sales explain some or all of the silence: offer MARK SOLD for
-        // the covered tags; anything beyond the sold count is still a
-        // real silence (and the daily sync files the mismatch task).
-        if (silent <= r.sold_unretired) {
-          flags.push([
-            `${silent} silent — ${r.sold_unretired} sold since last audit`,
-            "chip--ok",
-          ]);
-        } else {
-          flags.push([
-            `${silent} silent vs ${r.sold_unretired} sold — count off`,
-            "chip--warn",
-          ]);
-        }
-      } else if (silent > 0 && silent <= (r.unavailable || 0)) {
-        // A set-aside (unavailable) unit's tag stays on file but the
-        // box may sit off the shelf - silence covered by the bucket is
-        // the expected picture, not a warning (Nick, 2026-09-08).
-        flags.push([
-          `${silent} silent - likely the set-aside/unavailable unit${silent === 1 ? "" : "s"}`,
-          "chip--ok",
-        ]);
-      } else if (silent > 0) {
-        flags.push([`${silent} tagged box(es) silent`, "chip--warn"]);
-      }
-      // Multi-box sets: part rows say which set (and audit against the
-      // SET's shelf number); the set's own row defers to its parts.
-      if (r.boxset_of)
-        flags.push([
-          `box ${r.box_no || "?"} of ${r.boxset_of} - expected is the set's shelf count`,
-          "chip--na",
-        ]);
-      if (r.boxset)
-        flags.push([
-          "multi-box set - audits by its box SKUs above",
-          "chip--na",
-        ]);
-      // Ghosts: presumed-sold (or replaced/dead) tags that ANSWERED -
-      // the box never left. Treated as one more scan in the end; the
-      // chip says why the numbers moved (Nick, 2026-09-01).
-      if ((r.ghosts || []).length) {
-        flags.push([
-          `${r.ghosts.length} retired tag(s) answered - box still here`,
-          "chip--warn",
-        ]);
-      }
-      if (r.finds_open > 0) {
-        flags.push([
-          `${r.finds_open} tagless box(es) scanned - labels not printed`,
-          "chip--warn",
-        ]);
-      }
-      if (r.finds_printed > 0) {
-        flags.push([
-          `${r.finds_printed} label(s) printed, not yet paired`,
-          "chip--warn",
-        ]);
-      }
-      // Untagged: Shopify expects stock here but the RFID system holds
-      // nothing for it. On a part-tagged shelf that's most of the list,
-      // so it sits behind a toggle, below everything that IS tagged.
-      const untagged = r.tags_here === 0 && r.detected === 0;
-      return { r, flags, untagged };
-    })
+    .map(binAuditScoreRow)
     .sort(
       (a, b) =>
         a.untagged - b.untagged ||
@@ -13058,110 +13271,7 @@ function renderBinAudit() {
     ? scored
     : scored.filter((s) => !s.untagged);
 
-  const cells = shown
-    .map(({ r, flags, untagged }) => {
-      const tagsNote = (units, tags) =>
-        units !== tags
-          ? ` <span class="bexp--note">(${tags} tag${tags === 1 ? "" : "s"})</span>`
-          : "";
-      // Expected reads exactly like the batch-tagging verify table:
-      // Shopify's number with the difference in brackets, and the
-      // increase-only on-hand write offered when the shelf holds more
-      // than Shopify knows about.
-      let expCell = "—";
-      if (r.expected_qty != null) {
-        // Uncleared backorder debt RAISES what the shelf should hold:
-        // those boxes arrived but Shopify's on-hand ran behind. So does
-        // the Unavailable bucket (Nick, 2026-09-08, the ASI432MM):
-        // expected_qty is the SELLABLE number, but the audit counts
-        // physical units and their tag records - the set-aside unit is
-        // one of them. Without the fold, a product whose only surplus
-        // IS its unavailable stock kept offering a "Set to N" raise
-        // that Shopify already had.
-        const debt = r.backorder_debt || 0;
-        const unav = r.unavailable || 0;
-        const expTotal = r.expected_qty + debt + unav;
-        const diff = r.units_here - expTotal;
-        expCell =
-          `${expTotal}` +
-          (debt
-            ? ` <span class="bexp--note">(incl. ${debt} backorder)</span>`
-            : "") +
-          (unav
-            ? ` <span class="bexp--note">(incl. ${unav} unavailable)</span>`
-            : "") +
-          (diff
-            ? ` <span class="bexp--off">(${diff > 0 ? "+" : "−"}${Math.abs(diff)})</span>`
-            : "");
-        if (diff > 0 && r.sku) {
-          expCell += `<div><button class="reset binaudit-fix" type="button"
-            data-sku="${escapeHtml(r.sku)}" data-qty="${r.units_here}"
-            data-exp="${expTotal}"
-            title="Write the tagged count to Shopify on-hand — confirmed, logged, undoable from History">Set to ${r.units_here}</button></div>`;
-        }
-      }
-      return `<tr${untagged ? ' class="binaudit-untagged"' : ""}>
-        <td>${
-          r.image_url
-            ? `<img class="bvx__img" style="width:40px;height:40px" src="${escapeHtml(r.image_url)}" alt="">`
-            : ""
-        }</td>
-        <td>${
-          r.sku
-            ? `<span class="prodopen" data-sku="${escapeHtml(r.sku)}" title="Open this product — label editor, RFID flag, full history">${escapeHtml(r.product_title || "(unknown)")}</span>`
-            : escapeHtml(r.product_title || "(unknown)")
-        }${r.variant_title ? ` (${escapeHtml(r.variant_title)})` : ""}</td>
-        <td class="mono"><span class="skulink" data-sku="${escapeHtml(r.sku || "")}" title="Open this product — label editor, RFID flag, full history">${escapeHtml(r.sku || "—")}</span></td>
-        <td class="num">${expCell}</td>
-        <td class="num">${r.units_here}${tagsNote(r.units_here, r.tags_here)}</td>
-        <td class="num">${r.detected_units}${tagsNote(r.detected_units, r.detected)}</td>
-        <td>${
-          flags.length
-            ? flags
-                .map(
-                  ([t, c]) =>
-                    `<span class="binaudit-chip ${c}">${escapeHtml(t)}</span>`
-                )
-                .join(" ")
-            : "✓"
-        }${(() => {
-          // Silence fully covered by fulfilled orders: one click retires
-          // the shipped boxes' tags against the sold ledger.
-          const silent = r.tags_here - r.detected;
-          if (
-            silent > 0 &&
-            (r.sold_unretired || 0) >= silent &&
-            (r.silent_epcs || []).length &&
-            r.sku
-          )
-            return `<div><button class="reset binaudit-marksold" type="button"
-                 data-sku="${escapeHtml(r.sku)}"
-                 data-epcs="${escapeHtml((r.silent_epcs || []).join(","))}"
-                 title="These boxes shipped on fulfilled orders — remove their tag record(s) and retire the sale(s) in the ledger. History-logged; Shopify untouched.">MARK ${silent} SOLD</button></div>`;
-          // Ghost cleanup (Nick, 2026-09-14, the ASIAIR bracket): the
-          // sweep heard EXACTLY what Shopify expects, but MORE silent
-          // records linger than sales explain - re-sticker leftovers.
-          // Offered only on a confirmed shelf, so real missing stock
-          // never gets tidied away.
-          if (
-            silent > 0 &&
-            silent > (r.sold_unretired || 0) &&
-            r.expected_qty != null &&
-            r.detected_units === r.expected_qty &&
-            r.detected > 0 &&
-            (r.silent_epcs || []).length &&
-            r.sku
-          )
-            return `<div><button class="reset binaudit-cleanghosts" type="button"
-                 data-sku="${escapeHtml(r.sku)}"
-                 data-epcs="${escapeHtml((r.silent_epcs || []).join(","))}"
-                 title="The shelf reads exactly right, so these silent records are leftovers - usually stickers replaced without unlinking. Recorded sales cover the oldest ones (presumed sold); the rest retire as replaced. History-logged, each restorable; Shopify untouched.">CLEAN UP ${silent} GHOST TAG(S)…</button></div>`;
-          return "";
-        })()}</td>
-      </tr>`;
-    })
-    .join("");
-
+  const cells = shown.map(binAuditRowHtml).join("");
   const strays = rep.foreign
     .map(
       (f) =>
@@ -13205,7 +13315,7 @@ function renderBinAudit() {
   out.innerHTML = `
     <p class="result result--ok">Sweep #${cap.id} from ${escapeHtml(
       cap.device || "the C72"
-    )} — ${cap.epc_count} tag(s), ${escapeHtml(fmtWhen(cap.created_at))} —
+    )} - ${cap.epc_count} tag(s), ${escapeHtml(fmtWhen(cap.created_at))} -
     checked against ${escapeHtml(rep.bin)}${
       rep.rack
         ? ` <b>(whole rack: ${(rep.bins_covered || [])
@@ -13231,7 +13341,7 @@ function renderBinAudit() {
       rep.rack
         ? ""
         : rep.batch_done
-        ? `<p class="result result--ok">✓ Already recorded as batch tagged —
+        ? `<p class="result result--ok">✓ Already recorded as batch tagged -
            batch #${rep.batch_done_id}${
              rep.batch_done_at
                ? `, finished ${escapeHtml(fmtWhen(rep.batch_done_at))}`
@@ -13242,14 +13352,14 @@ function renderBinAudit() {
                    rep.abandoned_batches.length
                  } abandoned attempt(s): ${rep.abandoned_batches
                    .map((n) => "#" + n)
-                   .join(", ")} — superseded by #${rep.batch_done_id}.)`
+                   .join(", ")} - superseded by #${rep.batch_done_id}.)`
                : ""
            }</p>`
-        : `<p class="result result--warn-soft">This bin has no completed batch —
+        : `<p class="result result--warn-soft">This bin has no completed batch -
            it doesn't count as tagged. If the shelf really is fully tagged (a
            batch abandoned after every tag was paired), you can record it:
            <button class="reset" id="binaudit-marktagged" type="button"
-             title="Records the bin as batch tagged from the tags already on file — tags nothing, prints nothing, writes nothing to Shopify">Record ${escapeHtml(rep.bin)} as batch tagged…</button></p>`
+             title="Records the bin as batch tagged from the tags already on file - tags nothing, prints nothing, writes nothing to Shopify">Record ${escapeHtml(rep.bin)} as batch tagged…</button></p>`
     }
     <div class="inventory__scroll"><table class="inventory__table">
       <thead><tr><th></th><th>Product</th><th>SKU</th>
@@ -13268,7 +13378,7 @@ function renderBinAudit() {
     </table></div>
     ${
       untaggedCount
-        ? `<div class="linkbox__actions" style="margin-top:8px">
+        ? `<div class="linkbox__actions u-mt8">
              <button class="reset" id="binaudit-toggle" type="button">${
                binAuditShowUntagged ? "Hide" : "Show"
              } ${untaggedCount} product(s) with no tags here</button>
@@ -13277,13 +13387,13 @@ function renderBinAudit() {
     }
     ${
       owedLabels
-        ? `<div class="recent__head" style="margin-top:14px"><h2>Printed labels never paired (${rep.printed_labels_heard.length})</h2></div>
+        ? `<div class="recent__head u-mt14"><h2>Printed labels never paired (${rep.printed_labels_heard.length})</h2></div>
            <ul class="recent__list">${owedLabels}</ul>`
         : ""
     }
     ${
       (rep.companions_heard || []).length
-        ? `<div class="recent__head" style="margin-top:14px"><h2>Companion boxes heard (${rep.companions_heard.length})</h2></div>
+        ? `<div class="recent__head u-mt14"><h2>Companion boxes heard (${rep.companions_heard.length})</h2></div>
            <ul class="recent__list">${rep.companions_heard
              .map(
                (c) =>
@@ -13302,7 +13412,7 @@ function renderBinAudit() {
     }
     ${
       strays || unknowns || strayGhosts
-        ? `<div class="recent__head" style="margin-top:14px"><h2>Also heard on this shelf (${rep.foreign.length + rep.unknown_epcs.length + (rep.stray_ghosts || []).length})</h2></div>
+        ? `<div class="recent__head u-mt14"><h2>Also heard on this shelf (${rep.foreign.length + rep.unknown_epcs.length + (rep.stray_ghosts || []).length})</h2></div>
            <ul class="recent__list">${strays}${strayGhosts}${unknowns}</ul>`
         : `<p class="result">No stray or unknown tags in the sweep.</p>`
     }`;
@@ -13355,7 +13465,9 @@ document
             null,
         });
         alert(res.message);
-        document.getElementById("binaudit-run").click();
+        // Only this product's row re-checks and repaints - the page,
+        // scroll and the rest of the report stay put (Nick, 2026-09-14).
+        await binAuditRefreshRow(sku);
       } catch (err) {
         alert(err.message);
         fix.disabled = false;
@@ -13392,10 +13504,10 @@ document
           changed_by: operator,
         });
         alert(
-          `${res.removed_tags} tag(s) marked sold — ` +
+          `${res.removed_tags} tag(s) marked sold - ` +
             `${res.retired_against_orders} unit(s) retired against orders.`
         );
-        document.getElementById("binaudit-run").click();
+        await binAuditRefreshRow(sku);
       } catch (err) {
         alert(err.message);
         soldBtn.disabled = false;
@@ -13442,7 +13554,7 @@ document
           worker: operator,
         });
         alert(res.message);
-        document.getElementById("binaudit-run").click();
+        await binAuditRefreshRow(sku);
       } catch (err) {
         alert(err.message);
         ghostBtn.disabled = false;
@@ -13595,18 +13707,18 @@ async function loadUnavailable() {
         <span class="inventory__bin">${escapeHtml((g.bins || []).join(", ") || "—")}</span>
         <span class="recent__prod">
           <b><span class="prodopen" data-sku="${escapeHtml(g.sku || "")}" title="Open this product - label editor, flags, full history">${escapeHtml(g.product_title || g.sku || "?")}</span></b>
-          <span class="mono" style="opacity:.75"> ${escapeHtml(g.sku || "")}</span>
+          <span class="mono u-dim75"> ${escapeHtml(g.sku || "")}</span>
           <div class="olrow__sub">${g.unavailable} unavailable · ${g.effective_qty} sellable on the shelf · ${escapeHtml(when)}${
             evidence
-              ? `<div style="opacity:.75;margin-top:2px">${escapeHtml(evidence)}</div>`
+              ? `<div class="u-dim75 u-mt2">${escapeHtml(evidence)}</div>`
               : ""
           }${
             g.staff_comments
-              ? `<div style="white-space:pre-line;border-left:2px solid var(--line);padding-left:8px;margin-top:4px">${escapeHtml(g.staff_comments)}</div>`
-              : `<div style="opacity:.6;margin-top:2px">no staff comment</div>`
+              ? `<div class="unavail__comment">${escapeHtml(g.staff_comments)}</div>`
+              : `<div class="u-dim60 u-mt2">no staff comment</div>`
           }${
             g.return_ok
-              ? `<div style="margin-top:5px"><button class="reset unavail-return" type="button"
+              ? `<div class="u-mt5"><button class="reset unavail-return" type="button"
                    data-sku="${escapeHtml(g.sku || "")}" data-qty="${g.unavailable}"
                    title="Every unit - the set-aside included - is tagged AND answered the last sweep, so nothing is actually missing. Moves the unavailable unit(s) back to available in Shopify (on-hand total unchanged). Confirmed, History-logged.">RETURN ${g.unavailable} TO AVAILABLE</button></div>`
               : ""
@@ -13726,7 +13838,7 @@ async function auditsChecksLoad() {
       const li = document.createElement("li");
       li.innerHTML = `
         ${evChip("sweep")}
-        <span class="recent__prod"><b>#${c.id} · ${c.epc_count} tags</b> from ${escapeHtml(c.device || "C72")}${c.note ? " — " + escapeHtml(c.note) : ""}</span>
+        <span class="recent__prod"><b>#${c.id} · ${c.epc_count} tags</b> from ${escapeHtml(c.device || "C72")}${c.note ? " - " + escapeHtml(c.note) : ""}</span>
         <span class="recent__meta recent__when">${escapeHtml(fmtAgo(c.created_at))}</span>`;
       sweeps.append(li);
     });
@@ -13745,21 +13857,21 @@ const OL_VERDICTS = {
   confirmable: [
     "chip--ok",
     "RFID answers this",
-    "A bin walk-scan or batch count since the check was raised covers the claimed stock — auto-clear will take it, or confirm it yourself",
+    "A bin walk-scan or batch count since the check was raised covers the claimed stock - auto-clear will take it, or confirm it yourself",
   ],
   discrepancy: [
     "chip--bad",
     "Shopify 0, RFID sees stock",
-    "Shopify now says none on hand but RFID evidence found stock after the check was raised — walk this one, something disagrees",
+    "Shopify now says none on hand but RFID evidence found stock after the check was raised - walk this one, something disagrees",
   ],
   "zero-claim": [
     "chip--warn",
-    "now 0 — walk it",
+    "now 0 - walk it",
     "Shopify has dropped to 0 since the check was raised; RFID can't prove an absence, so a human walk settles it",
   ],
   requeued: [
     "chip--warn",
-    "re-queued — walk it",
+    "re-queued - walk it",
     "An operator put this back on the queue after it was cleared, so it stays for a human until NEW evidence shows up",
   ],
   "needs-walk": [
@@ -13815,7 +13927,7 @@ function renderOneleft() {
   }
   if (!olData.ok) {
     meta.textContent = "";
-    status.textContent = `The dashboard didn't answer: ${olData.error || "unknown error"}. Nothing is broken here — reload to retry.`;
+    status.textContent = `The dashboard didn't answer: ${olData.error || "unknown error"}. Nothing is broken here - reload to retry.`;
     list.innerHTML = "";
     audSetCard("ahc-checks", "!", "dashboard didn't answer", "bad");
     renderOneleftReceipts();
@@ -13891,13 +14003,13 @@ function renderOneleft() {
       ${canWrite ? `<button class="binlist__go ol-confirm" type="button" data-sku="${escapeHtml(r.sku)}"
         data-title="${escapeHtml(r.product_title || "")}"
         data-bin="${escapeHtml(r.bin || "")}"
-        title="Open the confirm window — live stock breakdown + the count box (prefilled with on-hand; confirming makes your number THE on-hand). Undoable with re-queue.">Confirm ✓</button>` : ""}`;
+        title="Open the confirm window - live stock breakdown + the count box (prefilled with on-hand; confirming makes your number THE on-hand). Undoable with re-queue.">Confirm ✓</button>` : ""}`;
     list.append(li);
   });
   if (total > rows.length) {
     const li = document.createElement("li");
     li.className = "recent__empty";
-    li.textContent = `…and ${total - rows.length} more — narrow with the filter.`;
+    li.textContent = `…and ${total - rows.length} more - narrow with the filter.`;
     list.append(li);
   }
   renderOneleftReceipts();
@@ -13918,7 +14030,7 @@ function renderOneleftReceipts() {
         ? "re-queued on the dashboard"
         : r.action === "manual"
           ? `confirmed on the dashboard (as ${r.employee || "?"})`
-          : `auto-cleared (as ${r.employee || "?"}) — evidence ${r.evidence_units} vs claimed ${r.claimed == null ? "?" : r.claimed}`;
+          : `auto-cleared (as ${r.employee || "?"}) - evidence ${r.evidence_units} vs claimed ${r.claimed == null ? "?" : r.claimed}`;
     li.innerHTML = `
       <span class="binaudit-chip ${r.ok ? "chip--ok" : "chip--bad"}">${r.ok ? "done" : "FAILED"}</span>
       <div class="olrow__main">
@@ -13987,7 +14099,7 @@ async function openOlConfirm(sku, title, bin) {
   olcOnHand = null;
   olcBin = (bin || "").trim() || null;
   document.getElementById("olc-title").textContent =
-    `Confirm stock check — ${sku}`;
+    `Confirm stock check - ${sku}`;
   document.getElementById("olc-product").textContent = title || "";
   document.getElementById("olc-stats").innerHTML =
     '<div class="rvw-stat"><div class="rvw-stat__l">Loading…</div><div class="rvw-stat__n">…</div></div>';
@@ -14010,7 +14122,7 @@ async function openOlConfirm(sku, title, bin) {
   } catch (err) {
     document.getElementById("olc-stats").innerHTML = "";
     document.getElementById("olc-live").textContent =
-      `Live stock unavailable right now (${err.message}) — you can still ` +
+      `Live stock unavailable right now (${err.message}) - you can still ` +
       `confirm without a count.`;
   }
 }
@@ -14043,7 +14155,7 @@ document.getElementById("olc-go").addEventListener("click", async () => {
           `You counted ${counted} but Shopify on-hand is ${olcOnHand}.\n\n` +
             `Write on-hand ${olcOnHand} → ${counted} to Shopify? ` +
             `Confirmed, logged, undoable from History. (Cancel keeps ` +
-            `Shopify as is — the check still confirms.)`
+            `Shopify as is - the check still confirms.)`
         )
       ) {
         await postJson("/api/onhand-updates", {
@@ -14240,7 +14352,7 @@ async function loadAuditSessions() {
     : "Show finished";
   list.innerHTML = audSessions.length
     ? ""
-    : `<li class="recent__empty">${audSessShowDone ? "No finished audits yet." : "No open audits — start one to bundle a rack walk or a 1-left blitz."}</li>`;
+    : `<li class="recent__empty">${audSessShowDone ? "No finished audits yet." : "No open audits - start one to bundle a rack walk or a 1-left blitz."}</li>`;
   audSessions.forEach((s) => {
     const pct = s.total ? Math.round((s.done / s.total) * 100) : 0;
     const li = document.createElement("li");
@@ -14299,15 +14411,15 @@ function renderAuditSessionDetail(s) {
     <div class="recent__head">
       <h2>${escapeHtml(s.name)} <span class="recent__note">${s.kind === "bins" ? "bin walk" : "1-left checks"} · ${s.status}</span></h2>
     </div>
-    <div class="audsess__bar" style="max-width:420px"><div class="audsess__fill" style="width:${pct}%"></div></div>
-    <div class="audsess__nums" style="max-width:420px"><span>${s.done} of ${s.total} done</span><span>${pct}%</span></div>
-    ${s.kind === "oneleft" ? `<p class="linkbox__text" style="max-width:70ch">Items tick themselves when their 1-left check clears (auto or manual confirm); anything left needs a walk.</p>` : `<p class="linkbox__text" style="max-width:70ch">Sweep each bin on the C72, check it with the bin audit, then mark it done here.</p>`}
+    <div class="audsess__bar u-maxw420"><div class="audsess__fill" style="width:${pct}%"></div></div>
+    <div class="audsess__nums u-maxw420"><span>${s.done} of ${s.total} done</span><span>${pct}%</span></div>
+    ${s.kind === "oneleft" ? `<p class="linkbox__text u-maxw70ch">Items tick themselves when their 1-left check clears (auto or manual confirm); anything left needs a walk.</p>` : `<p class="linkbox__text u-maxw70ch">Sweep each bin on the C72, check it with the bin audit, then mark it done here.</p>`}
     ${s.status === "open" ? `
-      <div class="linkbox__actions" style="margin:8px 0 12px">
+      <div class="linkbox__actions u-mt8 u-mb12">
         <button class="reset" id="audsess-finish" type="button">Finish audit</button>
         <button class="reset" id="audsess-abandon" type="button">Abandon</button>
       </div>` : ""}
-    <ul class="recent__list binlist" style="max-height:480px">${rows}</ul>`;
+    <ul class="recent__list binlist u-maxh480">${rows}</ul>`;
 
   const finish = document.getElementById("audsess-finish");
   if (finish)
@@ -14315,7 +14427,7 @@ function renderAuditSessionDetail(s) {
       if (
         openCount > 0 &&
         !window.confirm(
-          `${openCount} item(s) are still open — finish anyway?`
+          `${openCount} item(s) are still open - finish anyway?`
         )
       )
         return;
@@ -14491,7 +14603,7 @@ function renderHistory() {
               .join("")}</div></td></tr>`
           : "";
       return `<tr>
-      <td class="recent__meta" style="white-space:nowrap">${escapeHtml(fmtWhen(e.at))}</td>
+      <td class="recent__meta u-nowrap">${escapeHtml(fmtWhen(e.at))}</td>
       <td>${evChip(e.type)}</td>
       <td>${escapeHtml(e.worker || "—")}</td>
       <td class="mono">${
@@ -14682,10 +14794,10 @@ async function openProductHistory(term) {
       document.getElementById("phist-top-reset").hidden = serial;
       document.getElementById("phist-skuline-reset").hidden = serial;
       document.getElementById("phist-label-hint").textContent = serial
-        ? "Serialized product — the top line is its item name, printed " +
+        ? "Serialized product - the top line is its item name, printed " +
           "on every label including Scan Station auto-prints. The SKU " +
           "line stays standard:"
-        : "Edit the two label lines — saved store-wide, every future " +
+        : "Edit the two label lines - saved store-wide, every future " +
           "print uses them. ✕ resets a line to its default:";
       updateLabelPreview();
     }
@@ -14709,12 +14821,12 @@ async function openProductHistory(term) {
         : "";
       kindBox.classList.toggle("kindrow--bundle", pk.kind === "bundle");
       document.getElementById("phist-kind-what").textContent = pk.excluded
-        ? `Dropped from the RFID system${who}${when} — it isn't seeded into ` +
+        ? `Dropped from the RFID system${who}${when} - it isn't seeded into ` +
           `new batches and never gets a label.`
         : pk.kind === "bundle"
-          ? `Marked as a bundle${who}${when} — no labels print for it; its ` +
+          ? `Marked as a bundle${who}${when} - no labels print for it; its ` +
             `component products carry the tags.`
-          : `Marked as a multi-box product${who}${when} — one label per box.`;
+          : `Marked as a multi-box product${who}${when} - one label per box.`;
     }
     document.getElementById("phist-print").disabled = !p;
     // The title links to the product's Shopify admin page (Nick,
@@ -14834,14 +14946,14 @@ async function openProductHistory(term) {
               .join("")}</div></td></tr>`
           : "";
         return `<tr>
-        <td class="recent__meta" style="white-space:nowrap">${escapeHtml(fmtWhen(e.at))}</td>
+        <td class="recent__meta u-nowrap">${escapeHtml(fmtWhen(e.at))}</td>
         <td>${evChip(e.type)}</td>
         <td>${escapeHtml(e.worker || "—")}</td>
         <td class="recent__meta">${exp}${escapeHtml(detailText)}</td>
         <td>${
           e.shopify
             ? '<span class="chip-status chip-status--done" title="This event wrote to (or read from) the live Shopify store">Shopify ✓</span>'
-            : '<span class="chip-status chip-status--pending" title="This event only touched the RFID system\'s own records — nothing in Shopify changed">RFID only</span>'
+            : '<span class="chip-status chip-status--pending" title="This event only touched the RFID system\'s own records - nothing in Shopify changed">RFID only</span>'
         }</td>
       </tr>${sub}`;
       })
@@ -15018,7 +15130,7 @@ function updateLabelPreview() {
   warn.hidden = !issues.length;
   warn.textContent = issues.length
     ? "⚠ " + issues.join("\n⚠ ") +
-      "\nYou can still print — this is a warning, not a block."
+      "\nYou can still print - this is a warning, not a block."
     : "";
 }
 
@@ -15137,7 +15249,7 @@ async function renderBundleRow() {
       btn.textContent = "📦 Define by hand…";
       btn.title =
         "Sold as a bundle of other products? Define what one unit " +
-        "contains and batch collect stops counting it separately — the " +
+        "contains and batch collect stops counting it separately - the " +
         "components carry the tags.";
       importBtn.hidden = false;
     }
@@ -15177,9 +15289,9 @@ document
       .join(", ");
     const raw = prompt(
       `What does ONE unit of ${phistData.sku} contain?\n\n` +
-        `Write each piece as SKU x QTY, separated by commas — e.g.\n` +
+        `Write each piece as SKU x QTY, separated by commas - e.g.\n` +
         `W9184B x 10   or   51701-1 x 3, 51701-2 x 1\n\n` +
-        `(Leave empty and press OK to clear — the bundle becomes ` +
+        `(Leave empty and press OK to clear - the bundle becomes ` +
         `countable again.)`,
       existing
     );
@@ -15190,7 +15302,7 @@ document
       const m = /^(.+?)\s*[x×]\s*(\d+)$/i.exec(part.trim());
       if (!m) {
         alert(
-          `Couldn't read "${part.trim()}" — write each piece as SKU x QTY.`
+          `Couldn't read "${part.trim()}" - write each piece as SKU x QTY.`
         );
         return;
       }
@@ -15246,8 +15358,8 @@ document
       );
       renderNoScan(want);
       msg.textContent = want
-        ? "Flagged ⊘ — logged; sweeps stop expecting this product to answer."
-        : "Flag removed ✓ — logged; sweeps expect it again.";
+        ? "Flagged ⊘ - logged; sweeps stop expecting this product to answer."
+        : "Flag removed ✓ - logged; sweeps expect it again.";
     } catch (err) {
       msg.textContent = err.message;
     }
@@ -15471,8 +15583,7 @@ function mlOverlay(titleText) {
   const wrap = document.createElement("div");
   wrap.className = "phist-overlay";
   const box = document.createElement("section");
-  box.className = "linkbox serialbox phist-modal";
-  box.style.maxWidth = "640px";
+  box.className = "linkbox serialbox phist-modal phist-modal--w640";
   const h = document.createElement("div");
   h.className = "linkbox__title";
   h.textContent = titleText;
@@ -15491,16 +15602,13 @@ function mlProductCard(opt, actionLabel, onAction, onRemove) {
   const img = document.createElement("img");
   img.src = opt.image_url || "";
   img.alt = "";
-  img.style.cssText =
-    "width:46px;height:46px;object-fit:cover;background:var(--card-2);" +
-    "border-radius:6px;flex:0 0 auto" +
-    (opt.image_url ? "" : ";visibility:hidden");
+  img.className = opt.image_url ? "mlrow__img" : "mlrow__img mlrow__img--none";
   card.appendChild(img);
   const col = document.createElement("div");
   col.className = "mlrow__main";
   const nm = document.createElement("div");
   nm.textContent = opt.product_title || opt.sku;
-  nm.style.cssText = "font-weight:650";
+  nm.className = "mlrow__name";
   col.appendChild(nm);
   const meta = document.createElement("div");
   meta.className = "mlrow__meta";
@@ -15546,8 +15654,7 @@ async function openMislabelManager(sku) {
   box.appendChild(list);
 
   const addRow = document.createElement("div");
-  addRow.className = "linkbox__form";
-  addRow.style.margin = "10px 0";
+  addRow.className = "linkbox__form u-my10";
   const input = document.createElement("input");
   input.className = "linkbox__input";
   input.placeholder = "Barcode or SKU of another product…";
@@ -15560,8 +15667,7 @@ async function openMislabelManager(sku) {
   box.appendChild(addRow);
 
   const foot = document.createElement("div");
-  foot.className = "linkbox__actions";
-  foot.style.cssText = "justify-content:space-between;margin-top:10px";
+  foot.className = "linkbox__actions linkbox__actions--split";
   const unflagBtn = document.createElement("button");
   unflagBtn.type = "button";
   unflagBtn.className = "reset";
@@ -15694,9 +15800,8 @@ function openMislabelPicker(product, onPick) {
   });
   const addBtn = document.createElement("button");
   addBtn.type = "button";
-  addBtn.className = "reset";
+  addBtn.className = "reset u-mt6";
   addBtn.textContent = "It's a different product - add it to this list…";
-  addBtn.style.cssText = "margin-top:6px";
   addBtn.addEventListener("click", async () => {
     const code = prompt(
       "Barcode or SKU of the product actually in your hand:"
@@ -15728,9 +15833,8 @@ function openMislabelPicker(product, onPick) {
   box.appendChild(addBtn);
   const cancel = document.createElement("button");
   cancel.type = "button";
-  cancel.className = "reset";
+  cancel.className = "reset mlpick__cancel";
   cancel.textContent = "Cancel scan";
-  cancel.style.cssText = "margin:6px 0 0 8px";
   cancel.addEventListener("click", () => wrap.remove());
   box.appendChild(cancel);
 }
@@ -15747,7 +15851,7 @@ function renderVendorRow() {
   row.hidden = false;
   const btn = document.getElementById("phist-vendor-btn");
   btn.textContent = phistData.vendor
-    ? `🏷 Vendor: ${phistData.vendor} — change…`
+    ? `🏷 Vendor: ${phistData.vendor} - change…`
     : "🏷 Set vendor…";
   btn.title =
     "Writes a new vendor (brand) to the product in Shopify - every " +
@@ -15886,8 +15990,7 @@ function openAliasManager(sku) {
   const list = document.createElement("div");
   box.appendChild(list);
   const foot = document.createElement("div");
-  foot.className = "linkbox__actions";
-  foot.style.cssText = "justify-content:space-between;margin-top:10px";
+  foot.className = "linkbox__actions linkbox__actions--split";
   const scopeBtn = document.createElement("button");
   scopeBtn.type = "button";
   scopeBtn.className = "reset";
@@ -15942,7 +16045,7 @@ function openAliasManager(sku) {
       col.innerHTML =
         `<b class="mono">${escapeHtml(a.alias_barcode)}</b> → ` +
         `${escapeHtml(a.product_title || a.sku || a.barcode || "?")} ` +
-        `<span class="mono" style="opacity:.75">${escapeHtml(a.sku || "")}</span>` +
+        `<span class="mono u-dim75">${escapeHtml(a.sku || "")}</span>` +
         `<div class="mlrow__meta">linked ${a.created_at ? fmtAgo(a.created_at) : "—"}` +
         `${a.created_by ? " by " + escapeHtml(a.created_by) : ""}` +
         `${a.created_at ? " (" + escapeHtml(fmtWhen(a.created_at)) + ")" : ""}` +
@@ -16007,13 +16110,13 @@ async function renderLocateRow() {
       btn.title =
         `On the C72 locate list` +
         (mine.added_by ? ` (added by ${mine.added_by})` : "") +
-        ` — pick it on the gun's LOCATE tab to hunt its ` +
+        ` - pick it on the gun's LOCATE tab to hunt its ` +
         `${mine.tag_count} tag(s). Click to take it off the list.`;
     } else {
       btn.textContent = "📡 Send to C72 locate list";
       btn.title =
         "Need to physically find this product's tags on the shelf? This " +
-        "queues it on the gun's LOCATE tab — no EPC typing on the C72.";
+        "queues it on the gun's LOCATE tab - no EPC typing on the C72.";
     }
   } catch (err) {
     row.hidden = true;
@@ -16045,7 +16148,7 @@ document
           worker: operatorEl.value || null,
         });
         msg.textContent =
-          "On the locate list ✓ — open LOCATE on the C72 and tap LIST.";
+          "On the locate list ✓ - open LOCATE on the C72 and tap LIST.";
       }
       renderLocateRow();
     } catch (err) {
@@ -16063,15 +16166,15 @@ async function renderLocateOverlay() {
     const entries = r.entries || [];
     if (!entries.length) {
       list.innerHTML =
-        '<li class="inventory__empty">Nothing queued — use "Send to C72 ' +
+        '<li class="inventory__empty">Nothing queued - use "Send to C72 ' +
         "locate list\" on any product's panel.</li>";
       return;
     }
     list.innerHTML = entries
       .map((e) =>
         e.epc_hunt
-          ? `<li class="recent__item" style="display:flex;align-items:center;gap:10px">
-        <div style="flex:1;min-width:0">
+          ? `<li class="recent__item recent__item--row">
+        <div class="u-grow">
           <b>${escapeHtml(e.label || "Unlinked stickers heard on sweeps")}</b>
           <div class="binlabel">${e.tag_count} sticker(s) heard on sweeps with no product linked - hunt them from the C72's Locate list, pair or retire each one found</div>
           <div class="binlabel">${(e.epcs || [])
@@ -16082,8 +16185,8 @@ async function renderLocateOverlay() {
         <button class="reset" data-locq-rm="${e.id}" type="button"
                 title="Remove from the locate list">✕</button>
       </li>`
-          : `<li class="recent__item" style="display:flex;align-items:center;gap:10px">
-        <div style="flex:1;min-width:0">
+          : `<li class="recent__item recent__item--row">
+        <div class="u-grow">
           <a href="#" class="hist-sku" data-sku="${escapeHtml(e.sku)}"><b>${escapeHtml(e.sku)}</b></a>
           ${e.label ? ` <span class="binlabel">${escapeHtml(e.label)}</span>` : ""}
           <div class="binlabel">${e.tag_count} tag(s)${
@@ -16152,7 +16255,7 @@ document.getElementById("phist-label-save").addEventListener("click", async () =
     if (phistData.serial_prefix) {
       if (!top || top === STORE_HEADER) {
         msg.textContent =
-          "Serialized products need a name — shorten it instead of clearing.";
+          "Serialized products need a name - shorten it instead of clearing.";
         return;
       }
       await apiJson(
@@ -16183,7 +16286,7 @@ document.getElementById("phist-label-save").addEventListener("click", async () =
       phistData.custom_sku_text = res.sku_text || null;
     }
     updateLabelPreview();
-    msg.textContent = "Label saved ✓ — new prints use it.";
+    msg.textContent = "Label saved ✓ - new prints use it.";
   } catch (err) {
     msg.textContent = err.message;
   }
@@ -16240,7 +16343,7 @@ document.getElementById("phist-print").addEventListener("click", async () => {
       const body = await res.json().catch(() => ({}));
       msg.textContent = body.detail || "Queueing failed.";
     } else {
-      msg.textContent = `${qty} label(s) queued ✓ — collect at the printer (Print queue tab tracks them).`;
+      msg.textContent = `${qty} label(s) queued ✓ - collect at the printer (Print queue tab tracks them).`;
     }
   } catch (err) {
     msg.textContent = err.message;
@@ -16393,7 +16496,7 @@ async function undoHistoryEvent(e, btn) {
   if (e.undo.kind === "review-reopen") {
     if (
       !confirm(
-        `Reopen this review task?\n\n${e.title || e.sku || ""} — it goes ` +
+        `Reopen this review task?\n\n${e.title || e.sku || ""} - it goes ` +
           `back to the Review inbox, as if it was never closed.`
       )
     )
@@ -16413,7 +16516,7 @@ async function undoHistoryEvent(e, btn) {
   if (e.undo.kind === "mismatch-undismiss") {
     if (
       !confirm(
-        `Un-dismiss this bin mismatch?\n\n${e.sku || ""} — if the bins ` +
+        `Un-dismiss this bin mismatch?\n\n${e.sku || ""} - if the bins ` +
           `still disagree, the entry returns to the Review inbox.`
       )
     )
@@ -16443,7 +16546,7 @@ async function undoHistoryEvent(e, btn) {
       !confirm(
         `Put ${e.undo.sku} back to bin ${e.undo.old_bin}?\n\n` +
           `This write set it to ${e.undo.new_bin}. Undo is the normal ` +
-          `audited bin update — Shopify, the bin map and the product's ` +
+          `audited bin update - Shopify, the bin map and the product's ` +
           `tags all follow, with a new History entry.`
       )
     )
@@ -16708,7 +16811,7 @@ async function undoHistoryEvent(e, btn) {
     await loadHistory();
   } else {
     btn.disabled = false;
-    alert("Could not undo that link — try again.");
+    alert("Could not undo that link - try again.");
   }
 }
 
@@ -17426,7 +17529,7 @@ async function openPlannerReceive(orderId, items) {
 function fsStatus(msg, err) {
   const el = document.getElementById("fullship-status");
   el.textContent = msg || "";
-  el.style.color = err ? "var(--red, #c0392b)" : "";
+  el.classList.toggle("fs-status--err", !!err);
 }
 
 document.getElementById("fullship-open").addEventListener("click", async () => {
@@ -17499,7 +17602,7 @@ async function fullshipLoad() {
       const updated = !!body.receipt.stock_updated_at;
       document.getElementById("fullship-orders").hidden = true;
       out.innerHTML = `
-        <div class="linkbox__actions" style="margin-bottom:6px">
+        <div class="linkbox__actions u-mb6">
           <button class="reset" id="fullship-back" type="button">← All open orders</button>
         </div>
         <p class="result ${updated ? "result--ok" : ""}">SO ${escapeHtml(
@@ -17563,7 +17666,7 @@ async function fullshipLoad() {
         `${body.items.length} line(s) match products in the system ` +
         `and can print.</p>`;
     out.innerHTML = `
-      <div class="linkbox__actions" style="margin-bottom:6px">
+      <div class="linkbox__actions u-mb6">
         <button class="reset" id="fullship-back" type="button">← All open orders</button>
       </div>
       ${verdict}
@@ -17573,7 +17676,7 @@ async function fullshipLoad() {
           <th></th></tr></thead>
         <tbody>${rows}</tbody>
       </table></div>
-      <div class="linkbox__actions" style="margin-top:8px">
+      <div class="linkbox__actions u-mt8">
         <button class="print__btn" id="fullship-go" type="button"
           data-ref="${escapeHtml(ref)}">
           Print ~${labelGuess} label(s) &amp; start receiving
@@ -17859,7 +17962,7 @@ document
       host.innerHTML = r.lists
         .map(
           (l) => `
-        <div class="recent__head" style="margin-top:12px"><h2>${escapeHtml(
+        <div class="recent__head u-mt12"><h2>${escapeHtml(
           l.vendor || "vendor"
         )} strip${l.reference ? ` · ${escapeHtml(l.reference)}` : ""} · ${
           l.remaining

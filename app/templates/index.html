@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>RFID Inventory — Scan Station</title>
+  <title>RFID Inventory - Scan Station</title>
   <link rel="stylesheet" href="/static/styles.css?v={{ asset_version }}" />
   {% if app_bridge_key %}
   <!-- Loaded only inside Shopify admin; authenticates API calls there. -->
@@ -24,7 +24,7 @@
         <span class="pill pill--ok" title="Product lookups and bin writes are talking to the live Shopify store">Shopify connected</span>
         {% endif %}
         {% if not db_ready %}
-        <span class="pill pill--warn">No database — assignments won't save</span>
+        <span class="pill pill--warn">No database - assignments won't save</span>
         {% endif %}
         <!-- Printer choice lives up here, outside any tab — it applies
              to every label this device queues, whichever tab queued it. -->
@@ -37,25 +37,25 @@
             <label class="settings__item" id="auto-print-item">
               <input type="checkbox" id="auto-print" />
               <span>Auto-print label on scan
-                <span class="settings__hint">Prints one label the moment a scanned barcode or typed SKU loads a product — no button press. Held with a red note if the label text would print badly.</span>
+                <span class="settings__hint">Prints one label the moment a scanned barcode or typed SKU loads a product - no button press. Held with a red note if the label text would print badly.</span>
               </span>
             </label>
             <label class="settings__item settings__item--sub" id="auto-print-serial-item">
               <input type="checkbox" id="auto-print-serial" />
               <span>…including Astronomik serials
-                <span class="settings__hint">Astronomik labels print a saved name at the top — a serial only auto-prints once its name has been confirmed.</span>
+                <span class="settings__hint">Astronomik labels print a saved name at the top - a serial only auto-prints once its name has been confirmed.</span>
               </span>
             </label>
             <label class="settings__item" id="require-bin-item">
               <input type="checkbox" id="require-bin" />
               <span>Skip auto-print without a bin
-                <span class="settings__hint">Hold the label when the product has no bin assigned — set the bin (click its chip) and the label prints.</span>
+                <span class="settings__hint">Hold the label when the product has no bin assigned - set the bin (click its chip) and the label prints.</span>
               </span>
             </label>
             <label class="settings__item" id="warn-nobin-item">
               <input type="checkbox" id="warn-nobin" />
               <span>Red "No bin set" print warning
-                <span class="settings__hint">Shows a red warning beside the Print button when the looked-up product has no bin — its labels would print without a shelf on them.</span>
+                <span class="settings__hint">Shows a red warning beside the Print button when the looked-up product has no bin - its labels would print without a shelf on them.</span>
               </span>
             </label>
             <label class="settings__item" id="label-preview-item">
@@ -70,7 +70,7 @@
                 <span class="settings__hint">Adds a checkbox to every product in the batch list - tick several, then set all their bins in one go (writes to Shopify and moves the local records, logged per product with undo).</span>
               </span>
             </label>
-            <button class="reset" id="evcolor-open" type="button" style="margin-top:8px">🎨 Event colours…</button>
+            <button class="reset u-mt8" id="evcolor-open" type="button">🎨 Event colours…</button>
           </div>
         </details>
         <select class="operator" id="operator" title="Who's using the station">
@@ -128,7 +128,7 @@
       <section class="step step--active" id="step-barcode" data-step="barcode">
         <div class="step__index">1</div>
         <div class="step__body">
-          <label class="step__label" for="barcode">Scan barcode — or type a SKU</label>
+          <label class="step__label" for="barcode">Scan barcode - or type a SKU</label>
           <input
             id="barcode"
             class="scan"
@@ -165,7 +165,7 @@
           <p class="linkbox__text casebox__note" id="casebox-note" hidden></p>
           <div class="linkbox__actions">
             <button class="reset" id="casebox-edit" type="button">Edit this box</button>
-            <button class="reset" id="casebox-forget" type="button">Not a box — remove this</button>
+            <button class="reset" id="casebox-forget" type="button">Not a box - remove this</button>
             <button class="print__btn" id="casebox-done" type="button">Done</button>
           </div>
         </div>
@@ -179,10 +179,10 @@
           <p class="linkbox__text" id="casebox-found"></p>
           <div class="linkbox__form">
             <label class="linkbox__text" for="casebox-units">Units per box</label>
-            <input id="casebox-units" class="linkbox__input" type="number" min="2" max="500" value="8" style="max-width:90px" />
+            <input id="casebox-units" class="linkbox__input u-maxw90" type="number" min="2" max="500" value="8" />
           </div>
-          <p class="linkbox__extra-label">Scan note — shown every time this barcode is scanned, on the web and on the C72:</p>
-          <input id="casebox-notein" class="linkbox__input" type="text" maxlength="255" placeholder="e.g. Case of 8 — open before tagging" autocomplete="off" />
+          <p class="linkbox__extra-label">Scan note - shown every time this barcode is scanned, on the web and on the C72:</p>
+          <input id="casebox-notein" class="linkbox__input" type="text" maxlength="255" placeholder="e.g. Case of 8 - open before tagging" autocomplete="off" />
           <div class="linkbox__actions">
             <button class="print__btn" id="casebox-save" type="button">Save this box</button>
             <button class="reset" id="casebox-cancel" type="button">Cancel</button>
@@ -287,7 +287,7 @@
               <button class="phist-clear" id="edit-note-reset" type="button" title="Back to the saved note">✕</button>
             </div>
             <button class="reset editrow__helpbtn" id="edit-note-help" type="button"
-                    title="Shown loudly every time this product is scanned — in the Scan Station's product card, and on the C72 with its own sound and warning-coloured text. Leave empty for no note.">?</button>
+                    title="Shown loudly every time this product is scanned - in the Scan Station's product card, and on the C72 with its own sound and warning-coloured text. Leave empty for no note.">?</button>
             <button class="reset" id="edit-note-save" type="button" disabled>Save note</button>
           </div>
           <p class="linkbox__text" id="edit-msg"></p>
@@ -295,16 +295,16 @@
             <button class="reset" id="edit-astro" type="button"
                     title="Register the 4-digit serial prefix that identifies this product on Astronomik boxes">Astronomik…</button>
             <button class="reset" id="edit-case" type="button"
-                    title="This product's barcode is a case holding several units of one product — record what's inside">Box of multiple products…</button>
+                    title="This product's barcode is a case holding several units of one product - record what's inside">Box of multiple products…</button>
           </div>
           <div id="edit-casehost" hidden></div>
         </div>
         <!-- Register a new Astronomik serial prefix (sheet gaps) -->
         <div class="linkbox__extra" id="prefix-section" hidden>
-          <span class="linkbox__extra-label">New Astronomik serial prefix — future serials starting with these 4 digits will resolve to this product:</span>
+          <span class="linkbox__extra-label">New Astronomik serial prefix - future serials starting with these 4 digits will resolve to this product:</span>
           <input id="prefix-input" class="linkbox__input linkbox__short" type="text" maxlength="4" inputmode="numeric" autocomplete="off" />
           <button class="reset" id="prefix-save" type="button">Save prefix &rarr; this product</button>
-          <input id="prefix-note" class="linkbox__input" type="text" maxlength="255" autocomplete="off" spellcheck="false" placeholder="Scan note (optional) — shown loudly on every scan of this prefix, e.g. 'set of 3, ONE tag per set'…" />
+          <input id="prefix-note" class="linkbox__input" type="text" maxlength="255" autocomplete="off" spellcheck="false" placeholder="Scan note (optional) - shown loudly on every scan of this prefix, e.g. 'set of 3, ONE tag per set'…" />
           <div class="prefix-reco" id="prefix-reco" hidden>
             <span id="prefix-reco-text"></span>
             <button class="reset" id="prefix-reco-apply" type="button">Apply recommended SKU</button>
@@ -348,7 +348,7 @@
         <!-- Fixed two-column head (Nick, 2026-08-25): info left, label
              preview right. Every meta line always renders (— fallbacks),
              so a missing barcode never reflows the card. -->
-        <div class="phist-head product__head" style="margin-bottom:8px">
+        <div class="phist-head product__head u-mb8">
           <img class="phist-img" id="p-img" alt="" hidden />
           <div class="product__info">
             <div class="product__title" id="p-title">—</div>
@@ -405,7 +405,7 @@
             Print &amp; encode RFID labels
           </button>
           <span class="print__nobin" id="print-nobin" hidden
-                title="This product has no bin assigned — its labels print without a shelf. Click the bin chip above to set one.">⚠ No bin set</span>
+                title="This product has no bin assigned - its labels print without a shelf. Click the bin chip above to set one.">⚠ No bin set</span>
           <span class="print__nobin" id="print-fitwarn" hidden></span>
           <span class="print__status" id="print-status"></span>
         </div>
@@ -413,14 +413,14 @@
 
       <!-- 1-left confirm: live stock tiles + the actual shelf count -->
       <div class="phist-overlay" id="olconfirm-overlay" hidden>
-        <section class="linkbox serialbox phist-modal" style="max-width:460px">
+        <section class="linkbox serialbox phist-modal phist-modal--w460">
           <div class="linkbox__title" id="olc-title">Confirm stock check</div>
           <p class="linkbox__text" id="olc-product"></p>
           <div class="rvw-stats" id="olc-stats"></div>
           <p class="linkbox__text" id="olc-live"></p>
-          <div class="linkbox__form" style="margin:10px 0">
+          <div class="linkbox__form u-my10">
             <label class="linkbox__text" for="olc-count">How many are actually there? Confirming makes this number THE on-hand - it starts as Shopify's current on-hand, so an untouched box just confirms the known count.</label>
-            <input id="olc-count" class="linkbox__input" type="number" min="0" max="99999" style="max-width:110px" />
+            <input id="olc-count" class="linkbox__input u-maxw110" type="number" min="0" max="99999" />
           </div>
           <p class="linkbox__text" id="olc-note"></p>
           <div class="linkbox__actions">
@@ -432,12 +432,12 @@
 
       <!-- Big print run: >10 labels of one product takes a deliberate yes -->
       <div class="phist-overlay" id="bigprint-overlay" hidden>
-        <section class="linkbox serialbox phist-modal" style="max-width:420px">
+        <section class="linkbox serialbox phist-modal phist-modal--w420">
           <div class="linkbox__title">That's a lot of labels</div>
           <p class="linkbox__text" id="bigprint-text"></p>
           <label class="overwrite__ack">
             <input type="checkbox" id="bigprint-ack" />
-            <span id="bigprint-ack-text">Yes — print them all</span>
+            <span id="bigprint-ack-text">Yes - print them all</span>
           </label>
           <div class="linkbox__actions">
             <button class="print__btn" id="bigprint-go" type="button" disabled>Print labels</button>
@@ -480,9 +480,9 @@
               <span>Auto-reset after tag scan</span>
             </label>
             <button class="chip-toggle" id="bulk-toggle" type="button"
-                    title="Bulk scan: keep accepting tags — single reads and pulled C72 sweeps — counted against labels printed this visit. Needs auto-reset ON; switches itself OFF whenever a new product loads.">⚡ BULK: OFF</button>
+                    title="Bulk scan: keep accepting tags - single reads and pulled C72 sweeps - counted against labels printed this visit. Needs auto-reset ON; switches itself OFF whenever a new product loads.">⚡ BULK: OFF</button>
             <button class="sweep-pull" id="bulk-sweep" type="button" hidden
-                    title="Assign every NEW tag from the most recent C72 sweep (SWEEP tab → SEND on the gun) to this product. Tags already assigned — this product's or anyone's — are skipped and named, never stolen.">📶 Use latest C72 sweep</button>
+                    title="Assign every NEW tag from the most recent C72 sweep (SWEEP tab → SEND on the gun) to this product. Tags already assigned - this product's or anyone's - are skipped and named, never stolen.">📶 Use latest C72 sweep</button>
             <span class="bulknote" id="bulk-sweep-note" hidden
                   title="The newest C72 sweep on the server, counted like batch tagging counts a sweep: only tags not yet tied to anything. Green = it matches the labels left in this bulk; yellow = a partial or over-sweep; red = no sweep waiting, or the sweep held only already-tagged labels."></span>
           </div>
@@ -492,10 +492,10 @@
             <div class="bulkwarn__btns">
               <button class="bulkwarn__undo" id="bulk-warn-undo" type="button"
                       title="Removes ONLY the tags this last sweep/read assigned (each unlink is History-logged). Need to roll back more? Every assignment of this visit can be unlinked from Recent assignments below or the product's History panel.">UNDO THIS SWEEP</button>
-              <button class="reset" id="bulk-warn-keep" type="button">KEEP ALL — the count is right</button>
+              <button class="reset" id="bulk-warn-keep" type="button">KEEP ALL - the count is right</button>
             </div>
           </div>
-          <p class="step__hint">One tag per package — keep scanning tags for this product. Reset (Esc) to switch products.</p>
+          <p class="step__hint">One tag per package - keep scanning tags for this product. Reset (Esc) to switch products.</p>
         </div>
       </section>
 
@@ -508,7 +508,7 @@
 
     <footer class="recent" id="scan-footer">
       <div class="recent__head">
-        <h2>Recent assignments <span class="recent__note">(last 10 — full history in Inventory)</span></h2>
+        <h2>Recent assignments <span class="recent__note">(last 10 - full history in Inventory)</span></h2>
         <input id="search" class="recent__search" type="search" placeholder="Search EPC, SKU, product…" autocomplete="off" />
       </div>
       <ul class="recent__list" id="recent-list"></ul>
@@ -573,8 +573,7 @@
       </div>
       <!-- Pages of 50 (Nick, 2026-09-08): the full list painted slowly;
            the data still loads once, only the rendering pages. -->
-      <div class="linkbox__actions" id="inv-pager" hidden
-           style="margin-top:10px; align-items:center"></div>
+      <div class="linkbox__actions linkbox__actions--center u-mt10" id="inv-pager" hidden></div>
     </section>
 
     <!-- Batch tagging tab -->
@@ -588,11 +587,11 @@
       </div>
       <!-- Start / resume -->
       <div class="linkbox serialbox" id="batch-start">
-        <div class="linkbox__title">Batch tagging — one bin at a time</div>
+        <div class="linkbox__title">Batch tagging - one bin at a time</div>
         <p class="linkbox__text">
           Walk to a bin with the iPad and the barcode scanner. Scan every box,
           print one label per box on the warehouse PC, apply them, then pair
-          each label's RFID tag. Nothing here changes Shopify — count
+          each label's RFID tag. Nothing here changes Shopify - count
           mismatches just become Review tasks.
         </p>
         <div class="linkbox__form">
@@ -670,8 +669,8 @@
              "Print labels" button, never by hand (Nick, 2026-08-25) —
              they appear in the resume list below when one is open. -->
         <div id="batch-resume-wrap" hidden>
-          <p class="linkbox__extra-label" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-            <span>Unfinished batches — click to resume:</span>
+          <p class="linkbox__extra-label linkbox__extra-label--row">
+            <span>Unfinished batches - click to resume:</span>
             <select id="batch-resume-sort" title="Order the open batches, or show only receiving batches whose printed labels were never RFID-paired">
               <option value="new">Newest first</option>
               <option value="old">Oldest first</option>
@@ -731,7 +730,7 @@
             <span class="stage" data-stage="pair">4 Pair</span>
             <span class="stage" data-stage="verify">5 Verify</span>
           </div>
-          <button class="reset" id="batch-refresh" type="button" title="Re-pull this batch from the server — use it when the iPad and PC have the same batch open">Refresh</button>
+          <button class="reset" id="batch-refresh" type="button" title="Re-pull this batch from the server - use it when the iPad and PC have the same batch open">Refresh</button>
           <button class="reset" id="batch-switch" type="button" title="Leave this batch open and go back to the bin list">All batches</button>
           <button class="reset" id="batch-abandon" type="button">Abandon</button>
         </div>
@@ -748,11 +747,11 @@
               <label class="step__label" for="batch-scan">Scan every box in this bin</label>
               <input id="batch-scan" class="scan" type="text" autocomplete="off"
                      autocapitalize="off" spellcheck="false" placeholder="Waiting for barcode…" />
-              <p class="step__hint" id="bcollect-hint">Everything Shopify expects in this bin is listed below as 0 / N — each scan ticks its product up (going over is fine). Wrong scan? Fix the count with − / +. Products not on the list get added when scanned.</p>
+              <p class="step__hint" id="bcollect-hint">Everything Shopify expects in this bin is listed below as 0 / N - each scan ticks its product up (going over is fine). Wrong scan? Fix the count with − / +. Products not on the list get added when scanned.</p>
             </div>
           </section>
           <div class="linkbox__actions">
-            <button class="reset" id="batch-baseline" type="button" title="For a shelf that's partly tagged already: sweep it with the C72's SWEEP tab, hit SEND there, then click this — every tag read marks its product as already done, and you only collect the untagged remainder">📶 Use latest C72 sweep as shelf baseline</button>
+            <button class="reset" id="batch-baseline" type="button" title="For a shelf that's partly tagged already: sweep it with the C72's SWEEP tab, hit SEND there, then click this - every tag read marks its product as already done, and you only collect the untagged remainder">📶 Use latest C72 sweep as shelf baseline</button>
           </div>
           <p class="linkbox__text" id="bcollect-summary" hidden></p>
           <ul class="batch__items" id="batch-items"></ul>
@@ -784,7 +783,7 @@
         <!-- Receiving: link an unknown planner row to the right product
              (a lookup alias - Shopify untouched) -->
         <div class="phist-overlay" id="recv-link-overlay" hidden>
-          <section class="linkbox serialbox phist-modal" style="max-width:460px">
+          <section class="linkbox serialbox phist-modal phist-modal--w460">
             <div class="linkbox__title">Link to product</div>
             <div class="recvmodal__product" id="recv-link-product"></div>
             <label class="step__label" for="recv-link-target">Scan or type the correct barcode or SKU</label>
@@ -802,7 +801,7 @@
         <!-- Receiving: reprint labels for one product (count only — the
              received count is untouched) -->
         <div class="phist-overlay" id="recv-reprint-overlay" hidden>
-          <section class="linkbox serialbox phist-modal" style="max-width:460px">
+          <section class="linkbox serialbox phist-modal phist-modal--w460">
             <div class="linkbox__title">Reprint labels</div>
             <div class="recvmodal__product" id="recv-reprint-product"></div>
             <label class="step__label" for="recv-reprint-count">How many labels?</label>
@@ -822,7 +821,7 @@
         <!-- Receiving: update the received count (the planner's number
              stays on display so drift is visible) -->
         <div class="phist-overlay" id="recv-count-overlay" hidden>
-          <section class="linkbox serialbox phist-modal" style="max-width:460px">
+          <section class="linkbox serialbox phist-modal phist-modal--w460">
             <div class="linkbox__title">Update count</div>
             <div class="recvmodal__product" id="recv-count-product"></div>
             <label class="step__label" for="recv-count-num">Products received</label>
@@ -845,23 +844,23 @@
             <div class="step__index">2</div>
             <div class="step__body">
               <label class="step__label">Check flagged items</label>
-              <p class="step__hint">Only products needing a decision appear here — barcodes matching several listings, counts that differ from Shopify, unconfirmed serial names. Click one to review it. A clean bin shows nothing.</p>
+              <p class="step__hint">Only products needing a decision appear here - barcodes matching several listings, counts that differ from Shopify, unconfirmed serial names. Click one to review it. A clean bin shows nothing.</p>
             </div>
           </section>
           <!-- Re-tagging a previously-done bin: the shelf sweep sorts
                stickered boxes from new ones. The gun runs the sweep;
                this banner clears ITSELF the moment one arrives. -->
           <div class="binwarn" id="bcheck-shelfwarn" hidden>
-            <span id="bcheck-shelfwarn-text">⚠ This bin was batch tagged before — sweep the shelf on the C72 (the Check step there prompts for it) so stickered boxes are sorted from new ones. This notice clears by itself once the sweep arrives.</span>
+            <span id="bcheck-shelfwarn-text">⚠ This bin was batch tagged before - sweep the shelf on the C72 (the Check step there prompts for it) so stickered boxes are sorted from new ones. This notice clears by itself once the sweep arrives.</span>
           </div>
           <div id="bcheck-strays"></div>
           <p class="linkbox__text" id="bcheck-empty" hidden>Nothing needs checking ✓</p>
           <ul class="batch__items" id="bcheck-list"></ul>
           <div class="linkbox__actions">
-            <button class="reset" id="bcheck-refresh" type="button" title="Run the checks again against Shopify — the list no longer does this by itself every time you close a product">↻ Refresh checks</button>
-            <button class="reset" id="bcheck-recheck" type="button" hidden title="Look every unknown barcode up in Shopify again — use it after fixing barcodes there">↻ Re-check unknown barcodes</button>
-            <button class="reset" id="bcheck-all" type="button" title="Open every scanned product, not just the flagged ones — edit label names/SKUs here">Review all products…</button>
-            <button class="reset" id="batch-skip-print" type="button" title="Labels are already printed — go straight to pairing">Skip printing → pair</button>
+            <button class="reset" id="bcheck-refresh" type="button" title="Run the checks again against Shopify - the list no longer does this by itself every time you close a product">↻ Refresh checks</button>
+            <button class="reset" id="bcheck-recheck" type="button" hidden title="Look every unknown barcode up in Shopify again - use it after fixing barcodes there">↻ Re-check unknown barcodes</button>
+            <button class="reset" id="bcheck-all" type="button" title="Open every scanned product, not just the flagged ones - edit label names/SKUs here">Review all products…</button>
+            <button class="reset" id="batch-skip-print" type="button" title="Labels are already printed - go straight to pairing">Skip printing → pair</button>
             <button class="print__btn" id="batch-queue" type="button">Next step → queue labels to print</button>
           </div>
         </div>
@@ -872,7 +871,7 @@
              only decides how many stickers come out; the pair target
              stays the Collect step's count (Nick, 2026-08-25). -->
         <div class="phist-overlay" id="breprint-overlay" hidden>
-          <section class="linkbox serialbox phist-modal" style="max-width:560px">
+          <section class="linkbox serialbox phist-modal phist-modal--w560">
             <div class="linkbox__title">Reprint label(s) - <span id="breprint-title">—</span></div>
             <p class="linkbox__text">Edit the two label lines. Corrections are saved for this product <b>store-wide</b>, so every future print uses them too.</p>
             <div class="labeledit">
@@ -910,11 +909,11 @@
         </div>
 
         <div class="phist-overlay" id="bitem-overlay" hidden>
-          <section class="linkbox serialbox phist-modal" style="max-width:640px">
+          <section class="linkbox serialbox phist-modal phist-modal--w640">
             <div class="bitem-nav">
               <button class="reset bitem-arrow" id="bitem-prev" type="button">&larr;</button>
               <div class="bitem-body">
-                <div class="linkbox__product" style="margin-bottom:8px">
+                <div class="linkbox__product u-mb8">
                   <img class="linkbox__img" id="bitem-img" alt="" hidden />
                   <div>
                     <div class="linkbox__ptitle" id="bitem-title">—</div>
@@ -925,7 +924,7 @@
                 <p class="linkbox__text" id="bitem-candpos" hidden></p>
                 <div class="linkbox__actions" id="bitem-usewrap" hidden>
                   <button class="print__btn" id="bitem-use" type="button">Use this listing</button>
-                  <button class="reset" id="bitem-split" type="button" title="Some boxes are one listing and some another (open box vs regular) — divide the scanned count between them">Split between listings…</button>
+                  <button class="reset" id="bitem-split" type="button" title="Some boxes are one listing and some another (open box vs regular) - divide the scanned count between them">Split between listings…</button>
                 </div>
                 <div id="bitem-splitwrap" hidden>
                   <p class="linkbox__extra-label" id="bitem-split-title"></p>
@@ -940,7 +939,7 @@
                      resolved product (writes to Shopify, History-logged) -->
                 <div id="bitem-identwrap" hidden>
                   <div class="binwarn" id="bitem-identwarn" hidden>
-                    <span>⚠ The SKU or barcode contains a character the database can't store (it shows as <b>?</b>) — records won't match until it's replaced. Fix it below; the change writes to Shopify.</span>
+                    <span>⚠ The SKU or barcode contains a character the database can't store (it shows as <b>?</b>) - records won't match until it's replaced. Fix it below; the change writes to Shopify.</span>
                   </div>
                   <div class="linkbox__form">
                     <span class="phist-inputwrap">
@@ -958,7 +957,7 @@
                   </div>
                 </div>
                 <div id="bitem-namewrap" hidden>
-                  <p class="linkbox__extra-label">Label name (serialized product — needs confirming):</p>
+                  <p class="linkbox__extra-label">Label name (serialized product - needs confirming):</p>
                   <div class="linkbox__form">
                     <input id="bitem-name" class="linkbox__input" type="text" maxlength="76" autocomplete="off" spellcheck="false" />
                     <button class="reset" id="bitem-name-save" type="button">Save name</button>
@@ -968,16 +967,16 @@
                 <!-- Wrong shelf: saved bin differs from the bin being walked -->
                 <div class="binwarn" id="bitem-binwarn" hidden>
                   <span id="bitem-bintext"></span>
-                  <button class="reset" data-act="drop" type="button">Belongs elsewhere — drop from this batch</button>
+                  <button class="reset" data-act="drop" type="button">Belongs elsewhere - drop from this batch</button>
                   <button class="reset" data-act="move" type="button">Move product to this bin (Shopify)</button>
                   <button class="reset" data-act="ignore" type="button">Ignore for this batch</button>
                 </div>
 
                 <!-- Bundle: nothing physical to tag -->
                 <div id="bitem-bundlewrap" hidden>
-                  <p class="linkbox__extra-label">This is a bundle — its boxes are really its component products, which get tagged as themselves, so no label will print for it. If that's wrong and it's actually one product shipped in several boxes, say so. If it should never be tagged again, drop it from the RFID system.</p>
+                  <p class="linkbox__extra-label">This is a bundle - its boxes are really its component products, which get tagged as themselves, so no label will print for it. If that's wrong and it's actually one product shipped in several boxes, say so. If it should never be tagged again, drop it from the RFID system.</p>
                   <div class="linkbox__actions">
-                    <button class="reset" id="bitem-kind-multi" type="button" title="Treat it as one product in several boxes — one label per box">It's one product in several boxes</button>
+                    <button class="reset" id="bitem-kind-multi" type="button" title="Treat it as one product in several boxes - one label per box">It's one product in several boxes</button>
                     <button class="reset" id="bitem-kind-drop" type="button" title="Never seed or label this product again">Drop from the RFID system</button>
                   </div>
                 </div>
@@ -986,12 +985,12 @@
                 <div id="bitem-unresolved" hidden>
                   <p class="linkbox__extra-label">This barcode isn't on any product. If the product's Shopify barcode is WRONG, find it below and give it the scanned barcode. If Shopify is already CORRECT (an old label printed with a broken or foreign code), link the scan to the product instead - Shopify stays untouched. Already fixed it in Shopify? Hit re-check.</p>
                   <div class="linkbox__actions">
-                    <button class="print__btn" id="bitem-recheck" type="button" title="Look this barcode up in Shopify again — use it after setting the barcode there">↻ Re-check Shopify for this barcode</button>
+                    <button class="print__btn" id="bitem-recheck" type="button" title="Look this barcode up in Shopify again - use it after setting the barcode there">↻ Re-check Shopify for this barcode</button>
                     <button class="reset" id="bitem-odd" type="button">Show products in this bin with odd barcodes</button>
                     <button class="reset" id="bitem-recommend" type="button">Show recommended product</button>
                     <button class="reset" id="bitem-drop" type="button">Remove this scan from the list</button>
                   </div>
-                  <div class="linkbox__form" style="margin-top:6px">
+                  <div class="linkbox__form u-mt6">
                     <span class="phist-inputwrap">
                       <input id="bitem-linktarget" class="linkbox__input" type="text" maxlength="100" autocomplete="off" spellcheck="false" placeholder="Real SKU or barcode of the product it should point to" />
                     </span>
@@ -1021,12 +1020,12 @@
 
                 <!-- Label format: name / SKU / both -->
                 <div id="bitem-labelwrap" hidden>
-                  <p class="linkbox__extra-label">Label format — what prints on this product's stickers:</p>
+                  <p class="linkbox__extra-label">Label format - what prints on this product's stickers:</p>
                   <div class="linkbox__form">
                     <button class="reset" id="bitem-labelmode" type="button">Change Name</button>
                     <span class="phist-inputwrap">
                       <input id="bitem-labeltext" class="linkbox__input" type="text" maxlength="76" autocomplete="off" spellcheck="false" placeholder="Leave blank for the standard label" />
-                      <button class="phist-clear" id="bitem-labelclear" type="button" title="Clear — print the standard label">✕</button>
+                      <button class="phist-clear" id="bitem-labelclear" type="button" title="Clear - print the standard label">✕</button>
                     </span>
                     <button class="reset" id="bitem-labelsave" type="button">Save</button>
                   </div>
@@ -1037,7 +1036,7 @@
                     <div class="label-preview__bin" id="bitem-prev-bin"></div>
                   </div>
                 </div>
-                <div class="linkbox__form" style="margin-top:8px">
+                <div class="linkbox__form u-mt8">
                   <span class="bqty">
                     <button type="button" id="bitem-minus">−</button>
                     <span class="bqty__n" id="bitem-qty">0</span>
@@ -1046,17 +1045,17 @@
                   <span class="linkbox__text" id="bitem-expected"></span>
                 </div>
                 <div class="linkbox__actions" id="bitem-refreshwrap" hidden>
-                  <button class="reset" id="bitem-refresh" type="button" title="Re-read this product from Shopify — after changing its barcode, bin or stock there">↻ Refresh this product from Shopify</button>
+                  <button class="reset" id="bitem-refresh" type="button" title="Re-read this product from Shopify - after changing its barcode, bin or stock there">↻ Refresh this product from Shopify</button>
                 </div>
-                <div class="linkbox__form" id="bitem-printwrap" style="margin-top:8px">
-                  <input id="bitem-printqty" class="linkbox__input" type="number" min="1" max="50" value="1" style="max-width:80px" />
-                  <button class="reset" id="bitem-print" type="button" title="Print labels for this product only — for a damaged sticker or a late box">Print label(s) for this product</button>
+                <div class="linkbox__form u-mt8" id="bitem-printwrap">
+                  <input id="bitem-printqty" class="linkbox__input u-maxw80" type="number" min="1" max="50" value="1" />
+                  <button class="reset" id="bitem-print" type="button" title="Print labels for this product only - for a damaged sticker or a late box">Print label(s) for this product</button>
                 </div>
                 <p class="linkbox__text" id="bitem-msg"></p>
               </div>
               <button class="reset bitem-arrow" id="bitem-next" type="button">&rarr;</button>
             </div>
-            <div class="linkbox__actions" style="margin-top:10px">
+            <div class="linkbox__actions u-mt10">
               <button class="reset" id="bitem-close" type="button">Close</button>
             </div>
           </section>
@@ -1073,7 +1072,7 @@
                  jobs claim to be printed and reprint just the bad ones).
                  Tick boxes (shift-click selects a range), then reprint. -->
             <div id="bprint-run" hidden>
-              <div class="linkbox__actions" style="margin:6px 0">
+              <div class="linkbox__actions u-my6">
                 <button class="reset" id="bprint-reprint-sel" type="button" disabled>Reprint selected</button>
                 <button class="reset" id="bprint-sel-none" type="button">Clear selection</button>
                 <span class="linkbox__text" id="bprint-sel-hint">Tick the labels that printed wrong or never came out (shift-click selects a range).</span>
@@ -1106,7 +1105,7 @@
             <div class="linkbox__actions">
               <button class="reset" id="bpair-undo" type="button">Undo last tag</button>
               <button class="reset" id="bpair-reprint" type="button" title="Print a fresh set of labels (fix the name if needed). The count to pair stays what Collect counted">Reprint label(s)…</button>
-              <button class="reset" id="bpair-norfid" type="button" title="The tag reads fine in hand but never once it's on the box — sweeps stop expecting an answer">⊘ Won't RFID scan</button>
+              <button class="reset" id="bpair-norfid" type="button" title="The tag reads fine in hand but never once it's on the box - sweeps stop expecting an answer">⊘ Won't RFID scan</button>
             </div>
           </div>
           <p class="linkbox__text" id="bpair-summary"></p>
@@ -1124,11 +1123,11 @@
             <div class="step__body">
               <label class="step__label" for="batch-verify-input">Sweep the bin with the RFID scanner</label>
               <input id="batch-verify-input" class="scan" type="text" autocomplete="off"
-                     autocapitalize="off" spellcheck="false" placeholder="RFID reads land here — duplicates ignored…" />
+                     autocapitalize="off" spellcheck="false" placeholder="RFID reads land here - duplicates ignored…" />
               <p class="step__hint" id="bverify-count">0 unique tags collected.</p>
             </div>
           </section>
-          <div class="linkbox__actions" style="margin-bottom:12px">
+          <div class="linkbox__actions u-mb12">
             <button class="reset" id="bverify-pull" type="button" title="Load the sweep most recently sent from the C72 app">Pull latest C72 sweep</button>
             <button class="reset" id="bverify-check" type="button">Check bin</button>
             <button class="print__btn" id="batch-complete" type="button">Complete batch</button>
@@ -1141,7 +1140,7 @@
     <!-- Print queue tab -->
     <section class="inventory" id="tab-queue" hidden>
       <div class="recent__head">
-        <h2>Print queue <span class="recent__note">(shared — the warehouse PC prints, every device can watch)</span></h2>
+        <h2>Print queue <span class="recent__note">(shared - the warehouse PC prints, every device can watch)</span></h2>
         <span class="pill" id="agent-pill">Printer agent: checking…</span>
         <button class="reset" id="printer-realign" type="button"
                 title="Ripping labels can pull the liner forward, so the next prints land off the sticker. This feeds the media to the NEXT label's start (using the printer's gap sensor) before anything prints - it consumes the one already-disturbed label instead of two misprints and a blank. Nothing is printed or encoded. Needs the updated print agent running on the warehouse PC.">Re-align labels (feed one)</button>
@@ -1170,7 +1169,7 @@
     <!-- Review tab (WIP: task inbox only) -->
     <section class="inventory" id="tab-review" hidden>
       <div class="recent__head">
-        <h2>Review — task inbox</h2>
+        <h2>Review - task inbox</h2>
         <select id="review-filter" class="operator" title="Show only one kind of task">
           <option value="">All types</option>
         </select>
@@ -1191,11 +1190,11 @@
       <!-- C72 locate list: the shared to-hunt queue, removable here or
            on the gun's Locate tab -->
       <div class="phist-overlay" id="locq-overlay" hidden>
-        <section class="linkbox serialbox phist-modal" style="max-width:560px">
+        <section class="linkbox serialbox phist-modal phist-modal--w560">
           <div class="linkbox__title">C72 locate list</div>
-          <p class="linkbox__text">Products queued for a physical tag hunt — the gun's LOCATE tab shows this same list, so nobody types an EPC by hand. Where the tags <em>think</em> they live is shown per product.</p>
+          <p class="linkbox__text">Products queued for a physical tag hunt - the gun's LOCATE tab shows this same list, so nobody types an EPC by hand. Where the tags <em>think</em> they live is shown per product.</p>
           <ul class="recent__list" id="locq-list"></ul>
-          <div class="linkbox__actions" style="margin-top:10px">
+          <div class="linkbox__actions u-mt10">
             <span class="linkbox__text" id="locq-msg"></span>
             <button class="reset" id="locq-close" type="button">Close</button>
           </div>
@@ -1204,7 +1203,7 @@
 
       <!-- Resolve window: per-category actions + note, built by JS -->
       <div class="phist-overlay" id="resolve-overlay" hidden>
-        <section class="linkbox serialbox phist-modal" style="max-width:520px">
+        <section class="linkbox serialbox phist-modal phist-modal--w520">
           <div id="resolve-body"></div>
         </section>
       </div>
@@ -1249,30 +1248,29 @@
             <span class="audcard__sub" id="ahc-unavail-sub">loading…</span>
           </button>
         </div>
-        <div class="recent__head" style="margin-top:18px">
+        <div class="recent__head u-mt18">
           <h2>Audit sessions <span class="recent__note" id="audsess-meta"></span></h2>
         </div>
-        <p class="linkbox__text" style="max-width:78ch">
-          A session bundles a scope — a rack of bins to walk-scan, or a
-          slice of the 1-left queue — and tracks it across days and
+        <p class="linkbox__text u-maxw78ch">
+          A session bundles a scope - a rack of bins to walk-scan, or a
+          slice of the 1-left queue - and tracks it across days and
           people until everything is accounted for. 1-left items tick
           themselves when their check clears; bins are ticked by whoever
           walks them.
         </p>
-        <div class="linkbox__actions" style="margin-bottom:10px">
+        <div class="linkbox__actions u-mb10">
           <button class="reset" id="audsess-newbtn" type="button">+ New audit</button>
           <button class="reset" id="audsess-toggle" type="button">Show finished</button>
         </div>
         <!-- No naming step (Nick, 2026-09-08): an audit IS its scope -
              the rack or bins (or vendor) name it automatically. -->
-        <div id="audsess-new" class="linkbox__actions" hidden
-             style="margin-bottom:10px; flex-wrap:wrap; gap:8px">
+        <div id="audsess-new" class="linkbox__actions linkbox__actions--tight u-mb10" hidden>
           <select id="audsess-kind" class="reset">
             <option value="bins">Walk-scan bins</option>
             <option value="oneleft">1-left checks</option>
           </select>
-          <input id="audsess-scope" class="recent__search" type="text"
-                 placeholder="Bins or rack prefix, e.g. I1" style="max-width:220px" />
+          <input id="audsess-scope" class="recent__search u-maxw220" type="text"
+                 placeholder="Bins or rack prefix, e.g. I1" />
           <button class="reset" id="audsess-create" type="button">Start</button>
           <button class="reset" id="audsess-cancel" type="button">Cancel</button>
         </div>
@@ -1280,14 +1278,14 @@
       </div>
 
       <div class="apane" id="apane-session" hidden>
-        <div class="linkbox__actions" style="margin-bottom:10px">
+        <div class="linkbox__actions u-mb10">
           <button class="reset apane-back" type="button">← Audits</button>
         </div>
         <div id="audsess-detail"></div>
       </div>
 
       <div class="apane" id="apane-checks" hidden>
-      <div class="linkbox__actions" style="margin-bottom:10px">
+      <div class="linkbox__actions u-mb10">
         <button class="reset apane-back" type="button">← Audits</button>
       </div>
       <!-- 1-left stock checks: the verification queue behind the Ops
@@ -1299,36 +1297,36 @@
         <input id="ol-filter" class="recent__search" type="search"
                placeholder="Filter by SKU, vendor or bin…" autocomplete="off" />
       </div>
-      <p class="linkbox__text" style="max-width:78ch">
+      <p class="linkbox__text u-maxw78ch">
         The warehouse dashboard queues every product Shopify drops to 1
         on-hand for a physical stock check. When shelf-counting work
-        proves the stock exists — a bin walk-scan that heard the
+        proves the stock exists - a bin walk-scan that heard the
         product's tag, or batch tagging that counted it, <em>after</em>
-        the check was raised — the check clears itself from the
+        the check was raised - the check clears itself from the
         dashboard (logged in History with the evidence, undoable with
         re-queue). A tag merely being paired doesn't count: that proves
         a box, not a checked shelf. If nothing is found the check stays,
         in case the box is somewhere weird. Nothing here ever changes a
         stock number, a bin or a barcode anywhere.
       </p>
-      <div class="linkbox__actions" style="margin-bottom:10px">
+      <div class="linkbox__actions u-mb10">
         <button class="reset" id="ol-auto" type="button"
                 title="When on, stock-discovering actions (pairs, sweeps, batch completions) clear fully-answered checks by themselves">Auto-clear: …</button>
         <button class="reset" id="ol-scan" type="button"
-                title="Run one auto pass right now — only checks the evidence fully answers are cleared">Clear answered checks now</button>
+                title="Run one auto pass right now - only checks the evidence fully answers are cleared">Clear answered checks now</button>
         <button class="reset" id="ol-answered" type="button">Show RFID-answered only</button>
         <button class="reset" id="ol-reload" type="button">↻ Reload</button>
       </div>
       <div id="ol-status" class="linkbox__text"></div>
-      <ul class="recent__list binlist" id="ol-list" style="max-height:440px"></ul>
-      <div class="recent__head" style="margin-top:14px">
+      <ul class="recent__list binlist u-maxh440" id="ol-list"></ul>
+      <div class="recent__head u-mt14">
         <h2>Recent 1-left actions</h2>
       </div>
       <ul class="recent__list binlist" id="ol-receipts"></ul>
       </div>
 
       <div class="apane" id="apane-binaudit" hidden>
-      <div class="linkbox__actions" style="margin-bottom:10px">
+      <div class="linkbox__actions u-mb10">
         <button class="reset apane-back" type="button">← Audits</button>
       </div>
       <!-- Bin audit: sweep a shelf with the C72's SWEEP tab, SEND, then
@@ -1336,19 +1334,19 @@
       <div class="recent__head">
         <h2>Audit a bin with a C72 sweep</h2>
       </div>
-      <p class="linkbox__text" style="max-width:78ch">
+      <p class="linkbox__text u-maxw78ch">
         Sweep the shelf on the C72 (SWEEP tab → SEND), then pull it here
         against a bin: every product the bin should hold, what answered, and
         any strays or unknown tags. The check itself changes nothing. Two
         buttons here do write, and both ask first: <b>Set to N</b> raises
         Shopify's on-hand for that one product (logged, with an Undo in
         History), and <b>Record as batch tagged</b> files the bin as done in
-        this system only — it never touches Shopify.
+        this system only - it never touches Shopify.
       </p>
-      <div class="linkbox__actions" style="margin-bottom:10px">
+      <div class="linkbox__actions u-mb10">
         <button class="reset" id="binaudit-prev" type="button"
                 title="Previous bin in walking order (previous rack when a rack is typed)">◀</button>
-        <input id="binaudit-bin" class="recent__search" style="max-width:150px"
+        <input id="binaudit-bin" class="recent__search u-maxw150"
                type="text" placeholder="Bin or rack: D2-2, D2" autocomplete="off" />
         <button class="reset" id="binaudit-next" type="button"
                 title="Next bin in walking order (next rack when a rack is typed)">▶</button>
@@ -1362,20 +1360,20 @@
       </div>
 
       <div class="apane" id="apane-drift" hidden>
-      <div class="linkbox__actions" style="margin-bottom:10px">
+      <div class="linkbox__actions u-mb10">
         <button class="reset apane-back" type="button">← Audits</button>
       </div>
       <div class="recent__head">
         <h2>Shopify vs RFID, by bin <span class="recent__note" id="audit-meta"></span></h2>
         <input id="audit-filter" class="recent__search" type="search" placeholder="Filter by bin or SKU…" autocomplete="off" />
       </div>
-      <p class="linkbox__text" style="max-width:78ch">
+      <p class="linkbox__text u-maxw78ch">
         Every bin scored by the sum of |Shopify on-hand − RFID units| across its
-        products — the biggest total mismatch first, so received-but-missing
+        products - the biggest total mismatch first, so received-but-missing
         stock floats to the top. Click a bin to see which products carry the
         difference. A sealed-case tag counts its full unit value.
       </p>
-      <div class="linkbox__actions" style="margin-bottom:10px">
+      <div class="linkbox__actions u-mb10">
         <button class="reset" id="audit-untagged" type="button">Show untagged bins</button>
         <button class="reset" id="audit-refresh" type="button" title="Re-read every product's bin and on-hand from Shopify (takes about a minute), then reload this list">↻ Refresh on-hand from Shopify</button>
         <button class="reset" id="audit-reload" type="button" title="Reload this list from what the server already has">↻ Reload list</button>
@@ -1384,25 +1382,25 @@
       </div>
 
       <div class="apane" id="apane-more" hidden>
-      <div class="linkbox__actions" style="margin-bottom:10px">
+      <div class="linkbox__actions u-mb10">
         <button class="reset apane-back" type="button">← Audits</button>
       </div>
       <div class="recent__head"><h2>Recommended product checks</h2></div>
       <ul class="recent__list" id="audit-list"></ul>
-      <div class="recent__head" style="margin-top:24px"><h2>Recent C72 sweeps</h2></div>
+      <div class="recent__head u-mt24"><h2>Recent C72 sweeps</h2></div>
       <ul class="recent__list" id="sweep-list"></ul>
       </div>
 
       <!-- Unavailable stock (Nick, 2026-09-08): every set-aside in one
            place - who, when, and the Staff Comments why. -->
       <div class="apane" id="apane-unavail" hidden>
-        <div class="linkbox__actions" style="margin-bottom:10px">
+        <div class="linkbox__actions u-mb10">
           <button class="reset apane-back" type="button">← Audits</button>
         </div>
         <div class="recent__head">
           <h2>Unavailable stock <span class="recent__note" id="unavail-meta"></span></h2>
         </div>
-        <p class="linkbox__text" style="max-width:78ch">
+        <p class="linkbox__text u-maxw78ch">
           Products with units in Shopify's Unavailable bucket (damaged /
           quality control / safety stock / reserved). Audits expect these
           on the shelf but never count them as sellable; bring one back
@@ -1453,11 +1451,11 @@
          ANY tab (it used to sit inside Scan station and only became
          visible once that tab was opened - Nick, 2026-09-01). -->
     <div class="phist-overlay" id="printer-overlay" hidden>
-      <section class="linkbox serialbox phist-modal" style="max-width:520px">
+      <section class="linkbox serialbox phist-modal phist-modal--w520">
         <div class="linkbox__title printerpick__head">
           <span>Choose a printer</span>
           <button class="reset printerpick__add" id="printer-detect" type="button"
-                  title="Add a printer — start a print agent next to it and press this to detect it">🖨<span class="printerpick__plus">+</span></button>
+                  title="Add a printer - start a print agent next to it and press this to detect it">🖨<span class="printerpick__plus">+</span></button>
         </div>
         <p class="linkbox__text">Labels queue to the selected printer. A printer adds itself here the moment its print agent checks in.</p>
         <div class="printerpick__cards" id="printer-cards"></div>
@@ -1472,10 +1470,10 @@
     <!-- Full-shipment settle: count the unused labels, hold the strip,
          hand the paired counts to TC-Planner (Nick, 2026-09-01). -->
     <div class="phist-overlay" id="fs-overlay" hidden>
-      <section class="linkbox serialbox phist-modal" style="max-width:560px">
+      <section class="linkbox serialbox phist-modal phist-modal--w560">
         <div class="linkbox__title">Count the unused labels</div>
         <div id="fs-body"></div>
-        <div class="linkbox__actions" id="fs-actions" style="margin-top:10px">
+        <div class="linkbox__actions u-mt10" id="fs-actions">
           <button class="print__btn" id="fs-sweep" type="button"
                   title="Sweep the leftover strip with the C72 (SWEEP tab, SEND), then press this - the strip's tag EPCs become the held pool, so a held label pairs cleanly when its product finally arrives.">📶 Pull latest C72 sweep as the strip</button>
           <button class="reset" id="fs-nosweep" type="button"
@@ -1487,7 +1485,7 @@
 
     <div class="phist-overlay" id="phist-overlay" hidden>
       <section class="linkbox serialbox phist-modal" id="phist-panel">
-        <div class="linkbox__product phist-head" style="margin-bottom:8px">
+        <div class="linkbox__product phist-head u-mb8">
           <img class="phist-img" id="phist-img" alt="" hidden />
           <div>
             <div class="linkbox__ptitle" id="phist-title">—</div>
@@ -1500,8 +1498,8 @@
         </div>
 
         <!-- Print: right under the product, not below the edge cases -->
-        <div class="linkbox__form" style="margin:10px 0">
-          <input id="phist-qty" class="linkbox__input" type="number" min="1" max="50" value="1" style="max-width:90px" />
+        <div class="linkbox__form u-my10">
+          <input id="phist-qty" class="linkbox__input u-maxw90" type="number" min="1" max="50" value="1" />
           <button class="print__btn" id="phist-print" type="button">Print label(s)</button>
           <span class="linkbox__text" id="phist-msg"></span>
         </div>
@@ -1509,7 +1507,7 @@
         <!-- Label lines: everyday territory, so they live OUTSIDE the
              options fold (Nick, 2026-08-18) -->
         <div id="phist-serial" hidden>
-          <p class="linkbox__extra-label" id="phist-label-hint">Edit the two label lines — saved store-wide, every future print uses them. A long SKU line wraps to two lines on the sticker; type | where you want the break:</p>
+          <p class="linkbox__extra-label" id="phist-label-hint">Edit the two label lines - saved store-wide, every future print uses them. A long SKU line wraps to two lines on the sticker; type | where you want the break:</p>
           <div class="labeledit">
             <div class="labeledit__fields">
               <label class="step__label" for="phist-top">Top line</label>
@@ -1526,7 +1524,7 @@
               <div class="linkbox__actions labeledit__save">
                 <button class="reset" id="phist-label-save" type="button">Save label</button>
                 <button class="reset" id="phist-edit" type="button"
-                        title="Register an Astronomik serial prefix or update the SKU in Shopify — opens the same edit window as the Scan Station">Edit product…</button>
+                        title="Register an Astronomik serial prefix or update the SKU in Shopify - opens the same edit window as the Scan Station">Edit product…</button>
               </div>
             </div>
             <div class="labeledit__preview">
@@ -1547,7 +1545,7 @@
           <summary>⚙ Product options</summary>
 
           <!-- Multi-box / bundle standing, and the way back -->
-          <div class="kindrow kindrow--bundle" id="phist-kind" hidden style="margin:10px 0">
+          <div class="kindrow kindrow--bundle u-my10" id="phist-kind" hidden>
             <span class="kindrow__what" id="phist-kind-what"></span>
             <button class="reset" id="phist-kind-restore" type="button" title="Hand this product back to automatic detection">Put it back / detect automatically</button>
           </div>
@@ -1557,7 +1555,7 @@
               <legend class="optgroup__legend">Bundle options</legend>
               <span id="phist-bundle-what" hidden></span>
               <button class="reset" id="phist-bundle-import" type="button" hidden
-                      title="Reads the bundle's component list straight from Shopify (the Bundles app relationship) — no typing">⇣ Import from Shopify</button>
+                      title="Reads the bundle's component list straight from Shopify (the Bundles app relationship) - no typing">⇣ Import from Shopify</button>
               <button class="reset" id="phist-bundle-btn" type="button"></button>
             </fieldset>
             <!-- Flags, outlined like Bundle options (Nick, 2026-08-26):
@@ -1609,7 +1607,7 @@
              2026-08-26): each row offers a manual unpair for the
              tag-fell-off/bad-tag case; presumed-sold tombstones list
              too, dated. Shopify is never touched here. -->
-        <div id="phist-tagswrap" hidden style="margin:8px 0">
+        <div id="phist-tagswrap" class="u-my8" hidden>
           <a href="#" class="phist-exp" id="phist-tags-toggle"></a>
           <div id="phist-tags" class="phist-taglist" hidden></div>
         </div>
@@ -1620,7 +1618,7 @@
             <tbody id="phist-body"></tbody>
           </table>
         </div>
-        <div class="linkbox__actions" style="margin-top:10px">
+        <div class="linkbox__actions u-mt10">
           <button class="reset" id="phist-close" type="button">Close</button>
         </div>
       </section>
@@ -1633,11 +1631,11 @@
     <!-- History tab -->
     <section class="inventory" id="tab-history" hidden>
       <div class="recent__head">
-        <h2>History <span class="recent__note">(append-only — every event, old and new values)</span></h2>
+        <h2>History <span class="recent__note">(append-only - every event, old and new values)</span></h2>
         <input id="hist-search" class="recent__search" type="search" placeholder="Filter by SKU, product, worker, EPC…" autocomplete="off" />
       </div>
-      <div class="linkbox__form" style="margin-bottom:12px">
-        <input id="phist-term" class="linkbox__input" type="text" placeholder="Product history — enter a SKU or barcode (or click a SKU below)" autocomplete="off" />
+      <div class="linkbox__form u-mb12">
+        <input id="phist-term" class="linkbox__input" type="text" placeholder="Product history - enter a SKU or barcode (or click a SKU below)" autocomplete="off" />
         <button class="reset" id="phist-open" type="button">Open product</button>
       </div>
       <div class="inventory__scroll">

@@ -3059,3 +3059,135 @@ tr.binaudit-untagged td { opacity: 0.72; }
   color: var(--ok-ink);
   border-color: color-mix(in srgb, var(--ok-ink) 30%, transparent);
 }
+
+/* ------------------------------------------------------------------ */
+/* Inline-style cleanup pass (Nick, 2026-09-14): every style="..." and
+   static cssText in app.js/index.html moved here so the theme can
+   reach them (STYLEGUIDE rule 3). Two kinds of class below:
+   - u-* utilities: purely spacing/sizing snippets that repeated all
+     over the templates. Values mirror the exact pixels they replace.
+   - semantic classes: anything that was more than a margin. These sit
+     at the END of the sheet on purpose - equal-specificity ties must
+     go to the modifier, not the base rule. Keep them last. */
+
+/* spacing utilities (exact values the inline styles used) */
+.u-mt2  { margin-top: 2px; }
+.u-mt4  { margin-top: 4px; }
+.u-mt5  { margin-top: 5px; }
+.u-mt6  { margin-top: 6px; }
+.u-mt8  { margin-top: 8px; }
+.u-mt10 { margin-top: 10px; }
+.u-mt12 { margin-top: 12px; }
+.u-mt14 { margin-top: 14px; }
+.u-mt18 { margin-top: 18px; }
+.u-mt24 { margin-top: 24px; }
+.u-mb6  { margin-bottom: 6px; }
+.u-mb8  { margin-bottom: 8px; }
+.u-mb10 { margin-bottom: 10px; }
+.u-mb12 { margin-bottom: 12px; }
+.u-my6  { margin: 6px 0; }
+.u-my8  { margin: 8px 0; }
+.u-my10 { margin: 10px 0; }
+.u-mlauto { margin-left: auto; }
+
+/* sizing utilities - inputs and lists that were width-capped inline */
+.u-maxw70  { max-width: 70px; }
+.u-maxw80  { max-width: 80px; }
+.u-maxw90  { max-width: 90px; }
+.u-maxw110 { max-width: 110px; }
+.u-maxw150 { max-width: 150px; }
+.u-maxw220 { max-width: 220px; }
+.u-maxw420 { max-width: 420px; }
+.u-maxw70ch { max-width: 70ch; }
+.u-maxw78ch { max-width: 78ch; }
+.u-maxh440 { max-height: 440px; }
+.u-maxh480 { max-height: 480px; }
+
+/* misc utilities */
+.u-nowrap { white-space: nowrap; }
+.u-fs13 { font-size: 13px; }
+.u-span-all { grid-column: 1 / -1; }   /* full row of a grid parent */
+.u-grow { flex: 1; min-width: 0; }     /* the stretching middle of a flex row */
+.u-pointer { cursor: pointer; }
+.u-dim75 { opacity: 0.75; }            /* secondary text riding its parent's colour */
+.u-dim60 { opacity: 0.6; }
+/* Lists whose li's break out of the .recent__list/.binlist flex-row
+   default (review tasks, audit bins render their own block layout).
+   The compound selector outranks the `.recent__list li` base rule. */
+.recent__list li.u-block,
+.binlist li.u-block { display: block; }
+
+/* Overlay width variants - the shared modal shell capped per window
+   (was style="max-width:NNNpx" on each <section>). */
+.phist-modal--w420 { max-width: 420px; }
+.phist-modal--w460 { max-width: 460px; }
+.phist-modal--w520 { max-width: 520px; }
+.phist-modal--w560 { max-width: 560px; }
+.phist-modal--w640 { max-width: 640px; }
+
+/* linkbox action-row variants */
+.linkbox__actions--end { justify-content: flex-end; }
+.linkbox__actions--split { justify-content: space-between; margin-top: 10px; }
+.linkbox__actions--tight { gap: 8px; }      /* the audit-create row */
+.linkbox__actions--center { align-items: center; }  /* inventory pager */
+.linkbox__extra-label--row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+/* The resume list's unpaired-labels badge - was the bare-hex stray
+   (#d72c0d) STYLEGUIDE flagged; now on the bad token. */
+.binlabel--bad { color: var(--bad-ink); font-weight: 650; }
+
+/* Batch-list rows that open an editor when clicked share the flex-row
+   base but a tighter 10px gap (was inline on each li). */
+.recent__list li.recent__item--row { gap: 10px; }
+
+/* Multi-box set builder (box-set overlay) - the compact input trio and
+   the draft-listing rows, previously built with cssText. */
+.bcell__lump { font-size: 11px; opacity: 0.8; }   /* the "⧉ Multi-box set…" row button */
+.boxset__drafthead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 4px;
+  font-size: 12px;
+}
+.boxset__row { display: flex; gap: 6px; align-items: center; margin: 4px 0; }
+.boxset__row--full { margin: 10px 0; }
+.boxset__lbl { font-size: 13px; white-space: nowrap; }
+.boxset__in { font-size: 13px; padding: 6px 9px; }  /* compact linkbox__input */
+.boxset__in--sku { flex: 0 0 160px; }
+.boxset__in--bc { flex: 1; }
+.boxset__in--newsku { flex: 0 0 150px; }
+.boxset__in--bin { flex: 0 0 90px; }
+.boxset__fullin { flex: 1; font-size: 14px; padding: 7px 10px; }
+
+/* Mis-label overlay product cards (mlrow with a thumbnail) */
+.mlrow__img {
+  width: 46px;
+  height: 46px;
+  object-fit: cover;
+  background: var(--card-2);
+  border-radius: 6px;
+  flex: 0 0 auto;
+}
+.mlrow__img--none { visibility: hidden; }  /* keeps the column aligned when no image */
+.mlrow__name { font-weight: 650; }
+.mlpick__cancel { margin: 6px 0 0 8px; }   /* scan-time picker's cancel button */
+
+/* Review-window bundle setup: the add-note row sits flush under the
+   intro line (was margin:0 0 8px inline). */
+.rv-notes__add--flush { margin: 0 0 8px; }
+
+/* Audit tab one-offs */
+.inventory__scroll--inset { margin: 6px 0 10px 30px; }  /* nested product table under a bin row */
+.bvx__img--sm { width: 40px; height: 40px; }            /* bin-audit thumbnails */
+.unavail__comment {          /* staff comment block on Unavailable rows */
+  white-space: pre-line;
+  border-left: 2px solid var(--line);
+  padding-left: 8px;
+  margin-top: 4px;
+}
+
+/* Receive-entire-shipment status line's error state - was an inline
+   var(--red, #c0392b); --red never existed, so this also moves the
+   colour onto the real bad token. */
+.fs-status--err { color: var(--bad-ink); }

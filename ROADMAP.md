@@ -1,7 +1,101 @@
 # RFID Inventory System — Roadmap
 
 Source of truth for project status. Updated by Claude each working session.
-Last updated: 2026-09-14.
+Last updated: 2026-09-14 (third round).
+
+## 🔄 Per-product row refresh: writes stop repainting the page — ✅ DEPLOYED 2026-09-14
+
+Nick: raising on-hand from the bin audit (and the verify table)
+re-checked and re-rendered the whole bin. Now every per-product write
+- audit Set-to-N, MARK SOLD, ghost cleanup; verify raise/lower,
+count save, bin fix, both retire buttons - re-runs the check quietly
+and swaps ONLY that product's row when the answer returns: scroll,
+open panels and the rest of the report never move (an open verify
+detail panel even stays open through the swap). Whole-view actions
+(RUN, Raise-all, a new sweep landing, mark-tagged) still repaint in
+full, honestly. Audit: binAuditScoreRow/RowHtml + data-rowsku +
+binAuditRefreshRow. Verify: runVerifyCheck(onlyItemId) grafts the
+fresh row pair over the live one.
+
+## 🎯 Unpaired hunt: auto-target + hunt-by-bin — ✅ DEPLOYED 2026-09-14 (C72 4.02)
+
+The "pings a few times then goes quiet" diagnosis, built. Locate mode
+runs Session 0 on purpose (a lone target answers every round), but in
+an aisle that means EVERY tag answers every round and the unpaired
+sticker loses the airtime lottery.
+- Auto-target: one target leading the meter with fresh signal for
+  1.2s locks the single-EPC select filter onto it (the TARGET
+  mechanism swapped under the running inventory) - solid pings; four
+  quiet seconds release it. Pair/write-off release too; a manual
+  TARGET outranks the automatics. Settings -> Locate toggle
+  (up_autonarrow, default on).
+- Hunt-by-bin: LABEL BINS lists every bin owing unresolved printed
+  receiving labels - bins from the LIVE bin map (job bin fallback;
+  server overlay on /api/receiving/unpaired-labels). Picking a bin
+  shows the owed products (count + SO reference) and seeds their
+  label EPCs as hunt targets.
+
+## 🧽 Inline-style cleanup + em-dash sweep — ✅ DEPLOYED 2026-09-14
+
+The standing STYLEGUIDE debt, paid: 49/54 app.js inline styles (5
+left, all dynamic values), 57/57 index.html, 17/17 cssText blocks,
+and 7 static .style assignments converted to token-driven classes
+(+132 styles.css lines, utilities + modal widths + component
+classes); two stray hexes tokenized (unpaired badge, fs-status err -
+both now theme properly). Em dashes: 315 swept from user-facing copy
+(hyphen or reword), lone "—" cell placeholders and all code comments
+deliberately kept. Verified in light AND dark; suites 70/70.
+
+## 📦 Packed-order sweep retires sold — ✅ DEPLOYED 2026-09-14
+
+Nick sweeps the boxes he packs for orders; the web Recent Sweeps rows
+grew "retire sold": every heard OWNED tag retires presumed-sold,
+capped per product at its unretired FULFILLED sales - the guard, so a
+stray read of something he wasn't working on stays live (named in the
+answer: "re-run after those orders fulfill"). Preview-then-confirm
+shows the per-product plan first. Unowned and already-retired EPCs
+counted, never touched. Tombstones + History rows identical to
+/api/assignments/retire; unretire per tag hands its ledger unit back.
+/api/epcs/retire-sold (raw EPCs or capture_id). test_retiresold.py.
+
+## 🛡 Over-pair guard + guided ghost cleanup + typo-twin rule — ✅ DEPLOYED 2026-09-14
+
+Bracket-mess prevention, all three layers Nick approved:
+- Scan-Station pairs (single + sweep endpoints) answer with a WARNING
+  when the product's tag records exceed on-hand + sold-unretired +
+  backorder + unavailable. Pair stands; web shows it amber and holds
+  the product on screen, C72 (station + audit pair) shows it with the
+  OTHER beep.
+- Bin audit rows offer "CLEAN UP N GHOST TAG(S)" when the sweep heard
+  EXACTLY what Shopify expects but more silents linger than sales
+  explain: preview splits oldest-first into presumed-sold
+  (ledger-consuming) + replaced, confirm applies
+  (/api/assignments/cleanup-silent). Only on a confirmed shelf -
+  real missing stock is never tidied away.
+- Duplicate detection grew the adjacent-transposition rule (the
+  ASIAIR/AISAIR class). Still NOT general edit distance - that
+  drowned Review 2026-08-18; substitution neighbours (SV-105/106)
+  stay unflagged.
+
+## 🎯 Unpaired Tags hunt un-target fix — ✅ DEPLOYED 2026-09-14 (C72 4.01)
+
+The UNPAIRED TAGS button cleared the target list, and toggleLocate's
+empty-list guard answered the trigger with "scan a barcode" - dead
+end. Now: entering the mode seeds targets from the server's unpaired
+list (live classification still adds new ones), picking the unlinked
+entry from LIST enters the SAME mode (so 100% opens the
+pair-by-barcode window, as designed), and the hunt may start empty -
+listening is what builds its targets.
+
+## 🧪 run_all flake armor — ✅ DONE 2026-09-14
+
+The bare no-output in-batch FAILs (test_batch6, test_backorder):
+each suite deletes a fixed-name sqlite file in shared %TEMP%, and a
+transient Windows file lock killed the suite before its first print -
+with the traceback on stderr, which run_all never showed. Now every
+suite runs in its OWN fresh temp dir (TEMP/TMP overridden - the
+delete never fires), stderr prints on failure, and a failed suite
+retries once (reported FLAKY, still worth reading).
 
 ## 🧹 Sweep write-off of unpaired stickers — ✅ DEPLOYED 2026-09-14 (C72 4.00)
 
