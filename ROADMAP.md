@@ -49,6 +49,25 @@ Nick's six-point rework, all landed:
   newest pairing is under an hour old; the daily run still files
   anything persistent.
 
+## 🔄 Manual product refresh + confirm-not-block guardrails — ✅ DEPLOYED 2026-09-14
+
+- ↻ Refresh on the Scan Station product card AND inside the Edit
+  Product window: re-reads the exact variant on screen by gid
+  (twins can't swap identities) and takes LIVE Shopify as the source
+  of truth - the card, catalog row, tag records (physical bin kept)
+  and open-batch rows all follow. History event "Product Refreshed".
+  /api/products/refresh + shopify.lookup_variant_by_gid.
+- Guardrails ask, never block (Nick's rule): a refresh whose fresh
+  codes collide with another local product, and the SKU/barcode
+  overwrite saves hitting a code another product wears, all answer a
+  confirm (409 with the story) - confirmed writes go through and
+  file a Review task recording the clash (duplicate-product
+  category, own wording so the dupe-checker never touches it).
+- Scan Station card: the doubled divider is gone (.print's own
+  border-top removed; the card's hr is the one divider).
+  test_prodrefresh.py (14 checks); test_dupes covers the forced
+  overwrite path.
+
 ## 🧿 Duplicate detection: catalog gate — ✅ DEPLOYED 2026-09-14
 
 The transposition rule flagged pairs of REAL listings. Nick's razor,

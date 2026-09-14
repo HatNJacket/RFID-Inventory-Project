@@ -1260,6 +1260,56 @@ def lookup_barcode(term: str) -> dict | None:
     }
 
 
+_VARIANT_BY_GID_QUERY = """
+query VariantById($id: ID!) {
+  productVariant(id: $id) {
+    id
+    sku
+    barcode
+    title
+    bin: metafield(namespace: "stock", key: "bin") { value }
+    product {
+      id
+      title
+      featuredImage { url }
+      easyScanBin: metafield(namespace: "my_fields", key: "bin_location") {
+        value
+      }
+    }
+  }
+}
+"""
+
+
+def lookup_variant_by_gid(variant_gid: str) -> dict | None:
+    """The manual product refresh's source of truth (Nick,
+    2026-09-14): re-read exactly the variant on screen by its gid, so
+    twins sharing a code can never swap identities mid-refresh. Same
+    flat shape as lookup_barcode, plus the image."""
+    data = query_shopify(_VARIANT_BY_GID_QUERY, {"id": variant_gid})
+    variant = data.get("productVariant")
+    if not variant:
+        return None
+    product = variant["product"]
+    variant_bin = variant["bin"]["value"] if variant["bin"] else None
+    easy_scan_bin = (
+        product["easyScanBin"]["value"] if product["easyScanBin"] else None
+    )
+    return {
+        "shopify_variant_id": variant["id"],
+        "shopify_product_id": product["id"],
+        "product_title": product["title"],
+        "variant_title": variant["title"],
+        "sku": variant["sku"],
+        "barcode": variant["barcode"],
+        "bin_location": variant_bin or easy_scan_bin or "No bin assigned",
+        "image_url": (
+            product["featuredImage"]["url"]
+            if product.get("featuredImage") else None
+        ),
+    }
+
+
 _ORDERS_QUERY = """
 query($search: String!, $cursor: String) {
   orders(first: 50, query: $search, after: $cursor,

@@ -421,6 +421,7 @@ const EVENT_META = {
   "packed-retired": ["Packed Orders Retired", "#2f9e6e"],
   "packed-unretired": ["Packed Retire Undone", "#5561c9"],
   "boxify-import": ["Boxify Import", "#1f5f8b"],
+  "product-refreshed": ["Product Refreshed", "#1f5f8b"],
   oneleft: ["1-left Check", "#b07d00"],
   "audit-session": ["Audit Session", "#0e7a8a"],
   "bin-audited": ["Audit Done", "#0b6e99"],
@@ -1708,10 +1709,97 @@ document.getElementById("edit-note-help").addEventListener("click", (ev) => {
   alert(ev.currentTarget.title);
 });
 
+// Manual product refresh (Nick, 2026-09-14): live Shopify is the
+// source of truth - one press re-reads the exact variant on screen
+// and the card, catalog row and tag records all follow. A code clash
+// with another product asks to confirm and files a Review task, it
+// never blocks.
+async function refreshProductFromShopify(btn, fromEdit) {
+  if (!pendingProduct || !pendingProduct.shopify_variant_id) {
+    alert("Scan a product first.");
+    return;
+  }
+  await spinRefresh(btn, async () => {
+    const body = {
+      variant_gid: pendingProduct.shopify_variant_id,
+      changed_by: operatorEl.value || null,
+    };
+    let res = null;
+    try {
+      res = await postJson("/api/products/refresh", body);
+    } catch (err) {
+      if (
+        /Confirm to refresh anyway/.test(err.message) &&
+        confirm(err.message)
+      ) {
+        try {
+          res = await postJson("/api/products/refresh", {
+            ...body,
+            confirmed: true,
+          });
+        } catch (e2) {
+          setResult(e2.message, "err", "rfid");
+          return;
+        }
+      } else {
+        setResult(err.message, "err", "rfid");
+        return;
+      }
+    }
+    pendingProduct = { ...pendingProduct, ...res.product };
+    showProduct(pendingProduct);
+    if (fromEdit) {
+      // The edit window's saved values follow the fresh identity.
+      editDefaults = {
+        sku: (pendingProduct.sku || "").trim(),
+        barcode: (pendingProduct.barcode || "").trim(),
+        note: editDefaults.note,
+      };
+      document.getElementById("edit-sku").value = editDefaults.sku;
+      document.getElementById("edit-barcode").value = editDefaults.barcode;
+      editRowSync();
+      renderAliasPreview(pendingProduct);
+      editMsg(res.message);
+    } else {
+      setResult(
+        res.message,
+        res.clashes && res.clashes.length ? "warn-soft" : "ok",
+        "rfid"
+      );
+    }
+  });
+}
+document
+  .getElementById("product-refresh")
+  .addEventListener("click", (e) =>
+    refreshProductFromShopify(e.currentTarget, false)
+  );
+document
+  .getElementById("edit-refresh")
+  .addEventListener("click", (e) =>
+    refreshProductFromShopify(e.currentTarget, true)
+  );
+
 // SKU + barcode go through the SAME audited Shopify-write endpoints as
 // the unknown-barcode flows (History-logged there); the checkbox ritual
 // is replaced by a confirm() since the greyed-at-saved-value buttons
-// already stop accidental no-op writes.
+// already stop accidental no-op writes. A code another product wears
+// asks to confirm (and files a Review task server-side) - it never
+// stops the save outright (Nick, 2026-09-14).
+async function postOverwriteWithClashConfirm(url, body) {
+  try {
+    return await postJson(url, body);
+  } catch (err) {
+    if (
+      /Confirm to write it anyway/.test(err.message) &&
+      confirm(err.message)
+    ) {
+      return await postJson(url, { ...body, force: true });
+    }
+    throw err;
+  }
+}
+
 document.getElementById("edit-sku-save").addEventListener("click", async () => {
   const operator = requireOperator();
   if (!operator || !pendingProduct) return;
@@ -1725,7 +1813,7 @@ document.getElementById("edit-sku-save").addEventListener("click", async () => {
   const btn = document.getElementById("edit-sku-save");
   btn.disabled = true;
   try {
-    const res = await postJson("/api/sku-overwrites", {
+    const res = await postOverwriteWithClashConfirm("/api/sku-overwrites", {
       new_sku: newSku,
       target: editDefaults.sku || editDefaults.barcode,
       changed_by: operator,
@@ -1762,17 +1850,20 @@ document
     const btn = document.getElementById("edit-barcode-save");
     btn.disabled = true;
     try {
-      const res = await postJson("/api/barcode-overwrites", {
-        new_barcode: newBarcode,
-        target: editDefaults.sku || editDefaults.barcode,
-        changed_by: operator,
-        confirmed: true,
-        // Pin to the listing on screen - twins share codes, and an
-        // unpinned write once landed on the wrong variant (Nick,
-        // 2026-09-09, open-box).
-        variant_gid:
-          (pendingProduct && pendingProduct.shopify_variant_id) || null,
-      });
+      const res = await postOverwriteWithClashConfirm(
+        "/api/barcode-overwrites",
+        {
+          new_barcode: newBarcode,
+          target: editDefaults.sku || editDefaults.barcode,
+          changed_by: operator,
+          confirmed: true,
+          // Pin to the listing on screen - twins share codes, and an
+          // unpinned write once landed on the wrong variant (Nick,
+          // 2026-09-09, open-box).
+          variant_gid:
+            (pendingProduct && pendingProduct.shopify_variant_id) || null,
+        }
+      );
       editDefaults.barcode = newBarcode;
       pendingProduct.barcode = newBarcode;
       el.pBarcode.textContent = newBarcode; // the card behind follows

@@ -270,8 +270,21 @@ with patch("app.shopify.get_fulfilled_orders",
         r = cl.post("/api/barcode-overwrites", json={
             "target":"W9180A","new_barcode":"ZZZ-9",
             "confirmed":True,"changed_by":"Nick"})
-        check("another product's code still refused",
-              r.status_code==409, r.status_code)
+        check("another product's code still asks first (409)",
+              r.status_code==409
+              and "Confirm to write it anyway" in r.text, r.text[:150])
+        # force = the confirm (Nick, 2026-09-14): the write goes
+        # through and Review records the clash.
+        r = cl.post("/api/barcode-overwrites", json={
+            "target":"W9180A","new_barcode":"ZZZ-9",
+            "confirmed":True,"force":True,"changed_by":"Nick"})
+        check("confirmed clash writes anyway", r.status_code==201,
+              r.text[:200])
+    with Session(get_engine()) as s:
+        clash = s.scalars(select(ReviewTask).where(
+            ReviewTask.detail.like("Operator-confirmed%"))).all()
+        check("the clash landed as a Review task", len(clash)==1
+              and "ZZZ-9" in clash[0].detail, [t.detail[:80] for t in clash])
 
     # Bin-updated History rows carry the undo payload.
     with Session(get_engine()) as s:

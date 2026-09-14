@@ -1126,12 +1126,12 @@ body {
   background: var(--card-2);
 }
 
-/* print & encode block inside the product card */
+/* print & encode block inside the product card. No border-top: the
+   card's <hr> above already draws the divider, and the pair read as
+   two stacked lines (Nick, 2026-09-14). */
 .print {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   margin-top: 14px;
-  border-top: 1px solid var(--line);
-  padding-top: 14px;
 }
 .print__label {
   font-size: 12px;

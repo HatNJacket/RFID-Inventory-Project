@@ -3897,6 +3897,179 @@ def set_serial_label(
 
 
 # ------------------------------------------------------ barcode overwrite ---
+def _file_code_clash_task(
+    session: Session, kind: str, code: str,
+    winner: dict, loser: dict, by: str | None,
+) -> None:
+    """Operator-confirmed code clash (Nick, 2026-09-14: guardrails
+    ask, never block): the write went through, and Review keeps the
+    fact that two products now share a code. Filed in the
+    duplicate-product category but in its own wording - the
+    dupe-checker's parser ignores it, so it is never auto-closed."""
+    session.add(ReviewTask(
+        category=orders_sync.DUP_CATEGORY,
+        sku=winner.get("sku"),
+        product_title=winner.get("product_title"),
+        detail=(
+            f"Operator-confirmed {kind} clash: '{code}' now belongs to "
+            f"{winner.get('sku') or winner.get('product_title') or '?'} "
+            f"AND "
+            f"{loser.get('sku') or loser.get('product_title') or 'another product'}"
+            f". Two products share one {kind} until one of them is "
+            f"changed in Shopify."
+        )[:500],
+        created_by=by,
+    ))
+
+
+class ProductRefreshIn(BaseModel):
+    variant_gid: str = Field(min_length=8, max_length=64)
+    confirmed: bool = False
+    changed_by: str | None = Field(default=None, max_length=100)
+
+
+@app.post("/api/products/refresh", dependencies=[Depends(require_user)])
+def product_refresh(
+    payload: ProductRefreshIn, session: Session = Depends(get_session)
+):
+    """Manual product refresh (Nick, 2026-09-14): re-read the variant
+    on screen straight from Shopify and take THAT as the source of
+    truth - the bin map row(s) and the live tag records follow
+    immediately (title, SKU, barcode, catalog bin; a tag's physical
+    bin stays its own). When the fresh identity collides with a
+    DIFFERENT local product's code, the refresh asks to confirm
+    rather than stopping; a confirmed refresh files a Review task
+    recording the clash."""
+    try:
+        fresh = shopify.lookup_variant_by_gid(payload.variant_gid)
+    except Exception as error:  # noqa: BLE001 - network/auth errors too
+        raise HTTPException(
+            502, f"Shopify lookup failed: {str(error)[:200]}")
+    if fresh is None:
+        raise HTTPException(
+            404, "That variant is gone from Shopify - the listing was "
+                 "deleted or merged. Re-scan to find its successor.")
+    gid = fresh["shopify_variant_id"]
+    sku_u = (fresh.get("sku") or "").strip().upper()
+    bc_u = (fresh.get("barcode") or "").strip().upper()
+    # Other LOCAL products (catalog rows or tag records) wearing the
+    # fresh codes - the confirm-not-block guardrail's subjects.
+    clashes: dict[str, dict] = {}
+    crit = []
+    if sku_u:
+        crit.append(func.upper(BinMapEntry.sku) == sku_u)
+    if bc_u:
+        crit.append(func.upper(BinMapEntry.barcode) == bc_u)
+    if crit:
+        for e in session.scalars(select(BinMapEntry).where(or_(*crit))):
+            if (e.shopify_variant_id or "") != gid:
+                clashes.setdefault(
+                    (e.sku or e.product_title or "?").upper(),
+                    {"sku": e.sku, "product_title": e.product_title},
+                )
+    crit = []
+    if sku_u:
+        crit.append(func.upper(RfidAssignment.sku) == sku_u)
+    if bc_u:
+        crit.append(func.upper(RfidAssignment.barcode) == bc_u)
+    if crit:
+        for t in session.scalars(
+            select(RfidAssignment).where(or_(*crit))
+        ):
+            if (t.shopify_variant_id or "") != gid:
+                clashes.setdefault(
+                    (t.sku or t.product_title or "?").upper(),
+                    {"sku": t.sku, "product_title": t.product_title},
+                )
+    if clashes and not payload.confirmed:
+        names = ", ".join(
+            c["sku"] or c["product_title"] or "?"
+            for c in list(clashes.values())[:4]
+        )
+        raise HTTPException(
+            409,
+            f"Shopify's current codes for this product are also worn "
+            f"by {names} here. Confirm to refresh anyway; a Review "
+            f"task will record the clash.",
+        )
+
+    # Apply - Shopify wins. Catalog rows for this variant first.
+    prior: dict = {}
+    changed: set[str] = set()
+    for e in session.scalars(
+        select(BinMapEntry).where(BinMapEntry.shopify_variant_id == gid)
+    ):
+        prior.setdefault("sku", e.sku)
+        prior.setdefault("barcode", e.barcode)
+        for field, new in (
+            ("sku", fresh.get("sku")),
+            ("barcode", fresh.get("barcode")),
+            ("product_title", fresh.get("product_title")),
+            ("variant_title", fresh.get("variant_title")),
+            ("image_url", fresh.get("image_url")),
+        ):
+            if (getattr(e, field) or "") != (new or ""):
+                changed.add(field)
+                setattr(e, field, new)
+        fresh_bin = fresh.get("bin_location")
+        fresh_bin = None if fresh_bin == "No bin assigned" else fresh_bin
+        if (e.bin or "") != (fresh_bin or ""):
+            changed.add("bin")
+            e.bin = fresh_bin
+    # Live tag records follow the identity; their PHYSICAL bin stays.
+    for t in session.scalars(
+        select(RfidAssignment).where(
+            RfidAssignment.shopify_variant_id == gid
+        )
+    ):
+        prior.setdefault("sku", t.sku)
+        prior.setdefault("barcode", t.barcode)
+        for field, new in (
+            ("sku", fresh.get("sku")),
+            ("barcode", fresh.get("barcode")),
+            ("product_title", fresh.get("product_title")),
+            ("variant_title", fresh.get("variant_title")),
+        ):
+            if (getattr(t, field) or "") != (new or ""):
+                changed.add(field)
+                setattr(t, field, new)
+    # Rows of OPEN batches show the identity too.
+    _refresh_item_idents(
+        session, fresh,
+        sku=fresh.get("sku"), barcode=fresh.get("barcode"),
+    )
+    summary = ", ".join(sorted(changed)) if changed else "no changes"
+    session.add(BarcodeChange(
+        sku=fresh.get("sku"),
+        product_title=fresh.get("product_title"),
+        shopify_variant_id=gid,
+        changed_field="product-refreshed",
+        old_barcode=summary[:64],
+        new_barcode="pulled from Shopify"[:64],
+        changed_by=(payload.changed_by or "").strip()[:100] or None,
+    ))
+    for c in clashes.values():
+        _file_code_clash_task(
+            session, "code",
+            fresh.get("barcode") or fresh.get("sku") or "?",
+            fresh, c, payload.changed_by,
+        )
+    session.commit()
+    return {
+        "product": fresh,
+        "changed": sorted(changed),
+        "clashes": [
+            c["sku"] or c["product_title"] for c in clashes.values()
+        ],
+        "message": (
+            "Refreshed from Shopify ✓"
+            + (f" - updated: {summary}." if changed
+               else " - everything already matched.")
+            + (f" ⚠ Code clash recorded for Review." if clashes else "")
+        ),
+    }
+
+
 class OverwriteIn(BaseModel):
     """Adopt a scanned (manufacturer) barcode as the product's REAL barcode,
     replacing the one in Shopify."""
@@ -3905,6 +4078,10 @@ class OverwriteIn(BaseModel):
     target: str = Field(max_length=100)  # current barcode or SKU
     changed_by: str | None = Field(default=None, max_length=100)
     confirmed: bool = False  # the UI checkbox; server refuses without it
+    # A code already worn by ANOTHER product asks instead of blocking
+    # (Nick, 2026-09-14): force=True writes anyway and files a Review
+    # task recording the clash.
+    force: bool = False
     # Pin the write to an exact variant (Nick, 2026-09-09): twin
     # listings share barcodes, and resolving by code ranks the PRIMARY
     # twin first - which once rewrote the NEW product's barcode when
@@ -4059,9 +4236,12 @@ def overwrite_barcode(
 
     db_ok = database_configured()
     existing = _resolve(payload.new_barcode, config.BARCODE_LOOKUP, db_ok, True)
+    barcode_clash = None
     if existing:
-        # A code that already belongs to a DIFFERENT product is refused.
-        # The SAME product is fine: setting barcode = its own SKU is the
+        # A code that already belongs to a DIFFERENT product asks
+        # instead of blocking (Nick, 2026-09-14): confirmed writes go
+        # through and file a Review task recording the clash. The SAME
+        # product is always fine: setting barcode = its own SKU is the
         # house convention for brands that ship no barcode (Svbony) —
         # both codes resolve to one product, nothing collides (Nick,
         # 2026-08-18).
@@ -4073,12 +4253,17 @@ def overwrite_barcode(
             == (product.get("sku") or "").strip().upper()
             != ""
         )
-        if not same:
+        if not same and not payload.force:
             raise HTTPException(
                 409,
-                "That scanned code already belongs to a product — it can't "
-                "replace another product's barcode.",
+                f"'{payload.new_barcode}' already belongs to "
+                f"{existing.get('sku') or existing.get('product_title') or 'another product'}"
+                f" - writing it gives TWO products one barcode. "
+                f"Confirm to write it anyway; a Review task will "
+                f"record the clash.",
             )
+        if not same:
+            barcode_clash = existing
 
     try:
         shopify.update_variant_barcode(
@@ -4098,6 +4283,11 @@ def overwrite_barcode(
         changed_by=payload.changed_by,
     )
     session.add(change)
+    if barcode_clash is not None:
+        _file_code_clash_task(
+            session, "barcode", payload.new_barcode, product,
+            barcode_clash, payload.changed_by,
+        )
     # The bin map answers lookups FIRST; leaving the old barcode in it
     # would keep serving stale data until the nightly rebuild (Nick hit
     # this in the field, 2026-08-24). Update the live rows now.
@@ -5398,6 +5588,10 @@ class SkuOverwriteIn(BaseModel):
     target: str = Field(max_length=100)  # current barcode or SKU
     changed_by: str | None = Field(default=None, max_length=100)
     confirmed: bool = False
+    # Same confirm-not-block rule as the barcode overwrite (Nick,
+    # 2026-09-14): a SKU another product already wears writes with
+    # force=True and files a Review task.
+    force: bool = False
 
     @field_validator("new_sku", "target")
     @classmethod
@@ -5423,14 +5617,6 @@ def overwrite_sku(
     if config.check_shopify_env():
         raise HTTPException(500, "Shopify credentials are not configured.")
 
-    db_ok = database_configured()
-    if _resolve(payload.new_sku, config.BARCODE_LOOKUP, db_ok, True):
-        raise HTTPException(
-            409,
-            "That SKU already belongs to a product — it can't replace "
-            "another product's SKU.",
-        )
-
     try:
         product = _lookup_api(payload.target)
     except RuntimeError as error:
@@ -5439,6 +5625,27 @@ def overwrite_sku(
         raise HTTPException(
             404, "No product found in Shopify for that barcode or SKU."
         )
+
+    db_ok = database_configured()
+    existing = _resolve(payload.new_sku, config.BARCODE_LOOKUP, db_ok, True)
+    sku_clash = None
+    if existing and (
+        existing.get("shopify_variant_id")
+        != product.get("shopify_variant_id")
+    ):
+        # A SKU another product already wears asks instead of blocking
+        # (Nick, 2026-09-14): confirmed writes go through and file a
+        # Review task recording the clash.
+        if not payload.force:
+            raise HTTPException(
+                409,
+                f"'{payload.new_sku}' already belongs to "
+                f"{existing.get('sku') or existing.get('product_title') or 'another product'}"
+                f" - writing it gives TWO products one SKU. Confirm "
+                f"to write it anyway; a Review task will record the "
+                f"clash.",
+            )
+        sku_clash = existing
 
     try:
         shopify.update_variant_sku(
@@ -5459,6 +5666,11 @@ def overwrite_sku(
         new_barcode=payload.new_sku,
         changed_by=payload.changed_by,
     ))
+    if sku_clash is not None:
+        _file_code_clash_task(
+            session, "SKU", payload.new_sku, product, sku_clash,
+            payload.changed_by,
+        )
     # Serial prefixes that pointed at the old SKU follow the product.
     if old_sku:
         for row in session.scalars(

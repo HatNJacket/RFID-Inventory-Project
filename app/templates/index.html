@@ -256,6 +256,12 @@
              note rows with reset-to-saved ✕ and save buttons that grey
              out at the saved value, then the occasional cells. -->
         <div id="editbox" hidden>
+          <!-- Manual refresh (Nick, 2026-09-14): the live Shopify
+               record is the source of truth - one press re-reads it
+               and the saved values below follow. -->
+          <div class="linkbox__actions u-mb10">
+            <button class="reset rfbtn" id="edit-refresh" type="button" title="Re-read this exact variant from Shopify and take THAT as the source of truth - the fields below, the card, catalog row and tag records all follow."><span class="rf-glyph">↻</span> Refresh from Shopify</button>
+          </div>
           <!-- No left labels — the save buttons name each row (Nick). -->
           <div class="editrow editrow--stack">
             <div class="phist-inputwrap">
@@ -368,6 +374,7 @@
             <div class="product__optrow product__optrow--head">
               <button class="reset" id="product-edit" type="button" title="Register an Astronomik serial prefix or update the SKU in Shopify">Edit product</button>
               <button class="reset" id="product-label" type="button" title="Change what prints on this product's labels (top line and SKU line) - saved store-wide">Edit label</button>
+              <button class="reset rfbtn" id="product-refresh" type="button" title="Re-read this exact variant from Shopify and take THAT as the source of truth - the card, catalog row and tag records all follow. Code clashes ask to confirm and go to Review, never block."><span class="rf-glyph">↻</span> Refresh</button>
               <details class="tags tags--right" id="tags-panel" hidden>
                 <summary class="tags__summary">Show tags</summary>
               </details>
