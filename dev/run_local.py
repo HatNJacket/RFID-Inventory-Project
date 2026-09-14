@@ -201,6 +201,12 @@ with Session(get_engine()) as s:
     # relays) resolve locally from the live bin map, like prod does.
     nm = m("NORMAL-1", "Baader UHC Filter 2in", "T1-1", 5, barcode="111")
     nm.shopify_product_id = "gid://shopify/Product/123456789"
+    # The demo product's bin-map vid must MATCH the fake API's t:MM -
+    # the barcode-write variant pin (2026-09-09) refuses a mismatch, so
+    # the Edit-product barcode flows were un-demoable (2026-09-14).
+    mm_row = m("MISMATCH-1", "Mismatch Demo (tags K4-1, Shopify J2-2)",
+               "J2-2", 1, barcode="999")
+    mm_row.shopify_variant_id = "t:MM"
     s.add_all([
         nm,
         m("OPTO-LPRO", "Optolong L-Pro 2in (won't-scan test)", "T1-1", 2,
@@ -215,8 +221,7 @@ with Session(get_engine()) as s:
         m("PROD-U", "Product U (untagged bin)", "BIN-U", 2),
         # Tags say K4-1, Shopify says J2-2: the Inventory tab's
         # "⇢ Shopify" offer (and the K4-1 chip's no-wrap fix).
-        m("MISMATCH-1", "Mismatch Demo (tags K4-1, Shopify J2-2)",
-          "J2-2", 1, barcode="999"),
+        mm_row,
     ])
     # Shipment-sort label-match demos (Nick's Buckeye cases): scan
     # "EAF-FTF30" (separator shift) or "ZWO-Slider-Gen2" (variant name).
@@ -494,6 +499,9 @@ _sh.lookup_barcode_all = lambda code: (
     [dict(_MM)] if code in ("999", "MISMATCH-1") else [])
 _sh.set_variant_bin = (
     lambda vid, b: print(f"[fake shopify] variant bin {vid} -> {b}"))
+_sh.update_variant_barcode = (
+    lambda pid, vid, b: print(
+        f"[fake shopify] barcode {vid} -> {b!r}" ))
 _sh.product_bin_info = lambda pid: {"variant_count": 1, "easy_bin": None}
 _sh.set_product_bin = (
     lambda pid, b: print(f"[fake shopify] easyscan bin {pid} -> {b}"))

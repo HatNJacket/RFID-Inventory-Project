@@ -1625,7 +1625,11 @@ let editDefaults = { sku: "", barcode: "", note: "" };
 function editRowSync() {
   const rows = [
     ["edit-sku", "edit-sku-save", editDefaults.sku, false],
-    ["edit-barcode", "edit-barcode-save", editDefaults.barcode, false],
+    // An empty barcode is a VALID save since 2026-09-14 (it REMOVES
+    // the barcode from the listing - Nick's S11230 needed the main
+    // code moved off the full product and there was no way to clear
+    // it). An empty SKU never is.
+    ["edit-barcode", "edit-barcode-save", editDefaults.barcode, true],
     // An empty note is a VALID save (it clears the note) — only equality
     // with the saved value greys the button.
     ["edit-note", "edit-note-save", editDefaults.note, true],
@@ -1633,7 +1637,7 @@ function editRowSync() {
   rows.forEach(([inputId, saveId, def, emptyOk]) => {
     const value = document.getElementById(inputId).value.trim();
     document.getElementById(saveId).disabled =
-      value === def || (!emptyOk && !value);
+      value === (def || "") || (!emptyOk && !value);
   });
   // The Link buttons follow the same rule: a value equal to the saved
   // field needs no link (it already finds this product).
@@ -1841,12 +1845,13 @@ document
     const operator = requireOperator();
     if (!operator || !pendingProduct) return;
     const newBarcode = document.getElementById("edit-barcode").value.trim();
-    if (
-      !confirm(
-        `Replace this product's barcode in Shopify?\n\n${editDefaults.barcode || "(none)"} → ${newBarcode}\n\nPermanent (History keeps the record).`
-      )
-    )
-      return;
+    // Empty = REMOVE the barcode from the listing (Nick, 2026-09-14,
+    // the S11230: the main code had to come OFF the full product and
+    // nothing allowed it). Its own confirm names the consequence.
+    const confirmText = newBarcode
+      ? `Replace this product's barcode in Shopify?\n\n${editDefaults.barcode || "(none)"} → ${newBarcode}\n\nPermanent (History keeps the record).`
+      : `REMOVE this product's barcode in Shopify?\n\n${editDefaults.barcode || "(none)"} → (no barcode)\n\nScanning the old code will stop finding this product. Permanent (History keeps the record).`;
+    if (!confirm(confirmText)) return;
     const btn = document.getElementById("edit-barcode-save");
     btn.disabled = true;
     try {
@@ -1870,7 +1875,9 @@ document
       if (res.product)
         renderAliasPreview({ ...pendingProduct, ...res.product });
       editMsg(
-        `Barcode updated to ${newBarcode} ✓ (History-logged)` +
+        (newBarcode
+          ? `Barcode updated to ${newBarcode} ✓ (History-logged)`
+          : "Barcode removed ✓ (History-logged)") +
           (res.legacy_linked
             ? " - the old broken value stays linked, old labels still scan"
             : "")
@@ -5803,7 +5810,7 @@ function openBoxSetBuilder(seedItem) {
   const list = document.createElement("div");
   batchItems.forEach((it) => {
     const row = document.createElement("div");
-    row.className = "mlrow";
+    row.className = "mlrow mlrow--wrap";
     const cb = document.createElement("input");
     cb.type = "checkbox";
     cb.checked = it.id === seedItem.id;
@@ -5818,12 +5825,29 @@ function openBoxSetBuilder(seedItem) {
     skuIn.placeholder = "SKU on the box";
     skuIn.value = it.sku || it.scanned_code || "";
     skuIn.disabled = !cb.checked;
+    // The box's barcode, VISIBLE and editable (Nick's S11230,
+    // 2026-09-14: the builder silently registered the resolved
+    // listing's catalog barcode, which matched nothing printed on the
+    // carton). The code the scanner actually read wins the pre-fill -
+    // it IS the physical box; a typed SKU is not a barcode.
+    const bcIn = document.createElement("input");
+    bcIn.className = "linkbox__input boxset__in boxset__in--rowbc";
+    bcIn.placeholder = "barcode on the box";
+    const scannedRaw = (it.scanned_code || "").trim();
+    const physical =
+      scannedRaw &&
+      scannedRaw.toUpperCase() !== (it.sku || "").trim().toUpperCase()
+        ? scannedRaw
+        : "";
+    bcIn.value = physical || it.barcode || "";
+    bcIn.disabled = !cb.checked;
     cb.addEventListener("change", () => {
       skuIn.disabled = !cb.checked;
+      bcIn.disabled = !cb.checked;
     });
-    row.append(cb, name, skuIn);
+    row.append(cb, name, skuIn, bcIn);
     list.appendChild(row);
-    rows.push({ it, cb, skuIn, nameEl: name, hint: null });
+    rows.push({ it, cb, skuIn, bcIn, nameEl: name, hint: null });
   });
   box.appendChild(list);
 
@@ -5961,8 +5985,7 @@ function openBoxSetBuilder(seedItem) {
       .filter((r) => r.cb.checked)
       .map((r) => ({
         sku: r.skuIn.value.trim(),
-        barcode:
-          (r.it.barcode || r.it.scanned_code || "").trim() || null,
+        barcode: r.bcIn.value.trim() || null,
       }));
     if (parts.some((p) => !p.sku)) {
       alert("Every ticked box needs the SKU the carton says.");

@@ -367,6 +367,40 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
           r.json().get("sku") == "S11230-2"
           and (r.json().get("boxset") or {}).get("set_sku") == "S11230",
           r.text[:300])
+
+    # The override lives in _product_lookup itself (2026-09-14, the
+    # S11230 rerun: the main barcode is printed on EVERY box) - so a
+    # collect scan and an audit find resolve the box too, not just the
+    # by-barcode endpoint.
+    r = cl.post("/api/batches", json={"bin": "A7-1", "created_by": "t"})
+    bid2 = r.json()["id"]
+    r = cl.post(f"/api/batches/{bid2}/scan", json={"code": "7411230"})
+    check("a collect scan of the colliding code counts the BOX",
+          r.status_code == 201
+          and r.json()["item"]["sku"] == "S11230-2", r.text[:300])
+    r = cl.post("/api/audit/finds", json={"code": "7411230", "by": "t"})
+    check("an audit find of the colliding code answers",
+          r.status_code == 201, r.text[:250])
+    from app.models import AuditFind
+    with S(get_engine()) as s:
+        af = s.scalars(select(AuditFind).order_by(
+            AuditFind.id.desc())).first()
+        check("...and files under the part SKU",
+              af is not None and af.sku == "S11230-2",
+              af.sku if af else None)
+    cl.post(f"/api/batches/{bid2}/abandon")
+    # Redefining the set by typing its SHARED catalog barcode still
+    # finds the FULL product (raw lookup) instead of tripping the
+    # can't-nest refusal on the part the code now belongs to.
+    r = cl.post("/api/box-sets", json={
+        "set_code": "7411230",
+        "parts": [
+            {"sku": "S11230-1", "barcode": "7411230001"},
+            {"sku": "S11230-2", "barcode": "7411230"},
+        ]})
+    check("redefining by the shared catalog barcode still works",
+          r.status_code == 201 and r.json()["set_sku"] == "S11230",
+          r.text[:250])
     cl.delete("/api/box-sets/S11230?by=Nick")
 
     # ---- Nick's exact S11810 mistake: ticked rows + drafts sharing

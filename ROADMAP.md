@@ -1,7 +1,38 @@
 # RFID Inventory System — Roadmap
 
 Source of truth for project status. Updated by Claude each working session.
-Last updated: 2026-09-14 (sixth round).
+Last updated: 2026-09-14 (seventh round).
+
+## 🔧 S11230 rescue: physical codes win + barcode removal — ✅ DEPLOYED 2026-09-14
+
+Nick's S11230 came back dead ("no barcode on this product works"):
+the main barcode is printed on BOTH boxes, and the set had registered
+box 1 under the LISTING's then-current barcode (050234112307) instead
+of the code physically on the carton (050234123013) - which he then
+wrote onto the S11230 listing itself, so scanning it resolved the
+un-scannable full-set row. Fixed four ways:
+- **Prod data repaired** (History-logged set redefine): S11230-1 =
+  box 1 = 050234123013, S11230-2 = box 2 = 050234230117. Both
+  physical codes resolve to their boxes; typing S11230 still finds
+  the full product. His open A7-1 batch works as-is.
+- **The part-barcode override moved INTO _product_lookup**: a code
+  registered to a box resolves to that box on EVERY surface (collect
+  scans, audit finds, task re-checks) - it was previously bolted onto
+  the by-barcode endpoint only. create_box_set keeps a raw catalog
+  lookup so redefining a set by its shared barcode still works.
+- **The builder shows each ticked row's barcode** (editable), and the
+  pre-fill prefers the code the scanner ACTUALLY read over the
+  resolved listing's catalog barcode - the silent wrong-code
+  registration can't recur. A typed SKU never pre-fills as a barcode.
+- **Barcodes can now be REMOVED**: an emptied barcode field in Edit
+  Product saves (its own confirm names the consequence), writes "" to
+  Shopify, clears the bin map + open batches + tag records, and shows
+  in History as "old -> (removed)". The save button no longer greys
+  on empty - the exact wall Nick hit.
+test_boxsets +4, test_charfix +5. Suites 72/72. (The run_local
+MISMATCH-1 demo row now carries the fake API's variant id, so the
+Edit-product barcode flows are demoable - the 2026-09-09 twin pin
+refused the old mismatched seed.)
 
 ## ⧉ Box-set builder: full-set rows + premade drafts — ✅ DEPLOYED 2026-09-14 (C72 4.03)
 
@@ -3023,6 +3054,21 @@ bigger ones (receiving in particular needs interviews).
    with an explicit marker role from the UI, show it as a marker
    everywhere (never a unit), and keep it out of every count by type
    rather than by SKU flag.
+7. **TEAR OUT multi-box SETS and redo them semi-manually** (Nick,
+   2026-09-14 evening, after the S11230 rescue - his words: "doing
+   this automatically has only caused pain and annoyance"). DO NOT
+   BUILD YET - noted for tomorrow's session. The shape he wants:
+   - A box can be marked "Part of a set", prompting for the master
+     SKU (defaulted to the SKU it already has), its box number, and
+     the set's total box count ("Box X of Y").
+   - The web terminal handles multi-box sets AFTER the fact, during
+     verification - not mid-collect.
+   - While managing a set there, the duplicate-barcode and
+     duplicate-SKU guardrails are LIFTED, because one box often
+     carries the parent product's actual barcode.
+   The 2026-09-14 rescue work (part override in _product_lookup,
+   builder barcode column, barcode removal) still stands until the
+   redo lands.
 
 ## 📥 Steve's TODO list (captured 2026-07-28, not yet designed)
 

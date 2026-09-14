@@ -3214,6 +3214,10 @@ tr.binaudit-untagged td { opacity: 0.72; }
 .boxset__lbl { font-size: 13px; white-space: nowrap; }
 .boxset__in { font-size: 13px; padding: 6px 9px; }  /* compact linkbox__input */
 .boxset__in--sku { flex: 0 0 160px; }
+.boxset__in--rowbc { flex: 0 0 140px; }  /* ticked row's box barcode */
+/* Builder rows wrap so the SKU + barcode inputs drop below the name
+   on narrow panes instead of crushing it. */
+.mlrow--wrap { flex-wrap: wrap; }
 .boxset__in--bc { flex: 1; }
 .boxset__in--newsku { flex: 0 0 150px; }
 .boxset__in--bin { flex: 0 0 90px; }

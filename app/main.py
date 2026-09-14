@@ -476,28 +476,11 @@ def product_by_barcode(barcode: str):
     2026-09-08: EXOS2CWB5's barcode on EXOS2CW boxes) rides the SAME
     channel - its warning is composed INTO the scan note, so every
     surface that shows notes warns without new client code."""
+    # The box-set part override (a physical box barcode ALWAYS means
+    # the box, even when it collides with the FULL listing's catalog
+    # barcode) lives INSIDE _product_lookup since 2026-09-14, so every
+    # scanning surface - audit finds included - resolves the same way.
     product = _product_lookup(barcode)
-    # A physical box barcode ALWAYS means the box - even when it
-    # collides with the FULL product's own catalog barcode (Nick's
-    # S11810, 2026-09-08: box 2's barcode IS the listing's barcode, so
-    # the catalog resolved the whole product and double-counted). The
-    # part registry outranks whatever the catalog said for that code.
-    if product and database_configured():
-        try:
-            with Session(get_engine()) as _s:
-                hit = _s.scalar(select(BoxSetPart).where(
-                    func.upper(BoxSetPart.part_barcode)
-                    == barcode.strip().upper()
-                ))
-            if hit is not None and (
-                (product.get("sku") or "").strip().upper()
-                != hit.part_sku.strip().upper()
-            ):
-                part_prod = _boxset_part_product(barcode)
-                if part_prod is not None:
-                    product = part_prod
-        except Exception:  # noqa: BLE001 - the override is best-effort
-            pass
     sku = (product.get("sku") or "").strip() if product else ""
     if sku and database_configured():
         try:
@@ -619,6 +602,33 @@ def _mislabel_options(
 
 
 def _product_lookup(barcode: str):
+    """Barcode-or-SKU -> product, with the box-set part override applied:
+    a code registered as a PART barcode always means that box, even when
+    the catalog holds the same code on the FULL listing (Nick's S11810,
+    and again the S11230 on 2026-09-14 - the main barcode is printed on
+    every box, so audit finds and batch scans must resolve the box, not
+    just the by-barcode endpoint)."""
+    product = _product_lookup_raw(barcode)
+    if product and database_configured():
+        try:
+            with Session(get_engine()) as _s:
+                hit = _s.scalar(select(BoxSetPart).where(
+                    func.upper(BoxSetPart.part_barcode)
+                    == barcode.strip().upper()
+                ))
+            if hit is not None and (
+                (product.get("sku") or "").strip().upper()
+                != hit.part_sku.strip().upper()
+            ):
+                part_prod = _boxset_part_product(barcode)
+                if part_prod is not None:
+                    product = part_prod
+        except Exception:  # noqa: BLE001 - the override is best-effort
+            pass
+    return product
+
+
+def _product_lookup_raw(barcode: str):
     """Barcode-or-SKU -> product (bad/missing barcodes happen, so the same
     field accepts a typed SKU). Source order is config.BARCODE_LOOKUP:
     auto = live bin map, then the Shopify API; or force 'db' (bin map
@@ -2076,7 +2086,11 @@ def create_box_set(
     its part on the spot. History-logged; the response carries how many
     tags exist under the FULL SKU so the UI can offer the re-label
     pass."""
-    full = _product_lookup(payload.set_code.strip())
+    # Raw lookup on purpose: the FULL product is a catalog identity.
+    # With the part override, redefining a set by typing its shared
+    # catalog barcode would resolve the registered PART and trip the
+    # can't-nest refusal (the S11810/S11230 collision).
+    full = _product_lookup_raw(payload.set_code.strip())
     set_sku = (full.get("sku") or "").strip()
     if not set_sku:
         raise HTTPException(
@@ -4143,12 +4157,20 @@ class OverwriteIn(BaseModel):
     # refuses to write anywhere else.
     variant_gid: str | None = Field(default=None, max_length=64)
 
-    @field_validator("new_barcode", "target")
+    @field_validator("target")
     @classmethod
     def not_blank(cls, v: str) -> str:
         if not v or not v.strip():
             raise ValueError("must not be blank")
         return v.strip()
+
+    # An EMPTY new_barcode is a deliberate REMOVAL (Nick, 2026-09-14,
+    # the S11230: the main code had to come OFF the full listing and
+    # nothing allowed a clear) - trimmed, never refused.
+    @field_validator("new_barcode")
+    @classmethod
+    def trim_barcode(cls, v: str) -> str:
+        return (v or "").strip()
 
 
 def _mojibake_value(v: str | None) -> bool:
@@ -18833,7 +18855,8 @@ def product_history(term: str, session: Session = Depends(get_session)):
             "at": iso(c.changed_at),
             "type": change_types.get(c.changed_field, c.changed_field),
             "worker": c.changed_by,
-            "detail": f"{c.old_barcode or '(none)'} → {c.new_barcode}",
+            "detail": (f"{c.old_barcode or '(none)'} → "
+                       f"{c.new_barcode or '(removed)'}"),
             # Barcode/SKU/bin flows write to the store; the RFID-scan flag,
             # locate list, tag-sold and scan notes are local markers only.
             "shopify": c.changed_field
@@ -19315,7 +19338,8 @@ def history(
             "worker": c.changed_by,
             "sku": c.sku,
             "title": c.product_title,
-            "detail": f"{c.old_barcode or '(none)'} → {c.new_barcode}",
+            "detail": (f"{c.old_barcode or '(none)'} → "
+                       f"{c.new_barcode or '(removed)'}"),
         }
         # On-hand corrections carry their undo: one click sets the number
         # back to what it was before the update (confirmed first).

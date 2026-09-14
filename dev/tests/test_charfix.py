@@ -181,6 +181,32 @@ with patch("app.shopify.lookup_barcode", side_effect=fake_lookup), \
           r.status_code == 200 and r.json()["sku"] == "ZWO Nikon-T2-II",
           r.text[:150])
 
+    # 8) Barcode REMOVAL (Nick, 2026-09-14, the S11230: the main code
+    # had to come OFF the full listing and nothing allowed a clear).
+    # Empty new_barcode = remove: Shopify written, History says
+    # "(removed)", the old code stops resolving, the product survives.
+    r = cl.post("/api/barcode-overwrites", json={
+        "target": "OK-2", "new_barcode": "",
+        "changed_by": "Nick", "confirmed": True})
+    check("empty new_barcode removes the barcode", r.status_code == 201
+          and r.json()["product"]["barcode"] == "", r.text[:200])
+    check("the removal reached Shopify",
+          next((p["barcode"] for p in CAT if p["sku"] == "OK-2"), None)
+          == "", CAT)
+    r = cl.get("/api/products/by-barcode/222")
+    check("the removed code stops resolving", r.status_code == 404,
+          r.status_code)
+    r = cl.get("/api/products/by-barcode/OK-2")
+    check("the product itself still resolves by SKU",
+          r.status_code == 200 and (r.json().get("barcode") or "") == "",
+          r.text[:200])
+    r = cl.get("/api/product-history?term=OK-2")
+    ev = next((e for e in r.json()["events"]
+               if e["type"] == "barcode-replaced"
+               and "(removed)" in (e.get("detail") or "")), None)
+    check("History shows the removal as 222 -> (removed)",
+          ev is not None and "222" in ev["detail"], ev)
+
 print()
 print("FAILED: "+", ".join(fails) if fails else "ALL CHECKS PASSED")
 sys.exit(1 if fails else 0)
