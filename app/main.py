@@ -11478,7 +11478,9 @@ def _normalize_so_reference(ref: str) -> str:
                     ov,
                 )
             except Exception:  # noqa: BLE001 - fail-soft, keep as sent
-                _so_ref_cache[n] = (None, None)
+                # NOT cached: a one-time planner blip must not disable
+                # this id's translation until the next app restart.
+                return m.group(0)
         mapped, ov = _so_ref_cache[n]
         if mapped and vendor and ov == vendor:
             logger.info("receiving reference: planner id SO %s "
