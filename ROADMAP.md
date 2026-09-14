@@ -49,6 +49,17 @@ Nick's six-point rework, all landed:
   newest pairing is under an hour old; the daily run still files
   anything persistent.
 
+## 🧿 Duplicate detection: catalog gate — ✅ DEPLOYED 2026-09-14
+
+The transposition rule flagged pairs of REAL listings. Nick's razor,
+applied to EVERY duplicate rule (barcode, normalized-SKU,
+transposition): a pair only files when at least one side is NOT in
+the live catalog (bin map = the Shopify mirror) - the ASIAIR shape,
+where the catalog knows one spelling and orphan tags wear the other.
+Re-linking a side closes the open task by itself on the next run.
+NOTE the trade: two real listings sharing a barcode no longer file
+either (Nick's call).
+
 ## 📐 Boxify dimensions — ✅ DEPLOYED 2026-09-14 (CSV-snapshot flow)
 
 Boxify keeps its dimensions in its own external database (metafield

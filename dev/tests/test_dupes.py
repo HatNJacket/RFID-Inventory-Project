@@ -152,6 +152,37 @@ with patch("app.shopify.get_fulfilled_orders",
     cl.post(f"/api/review-tasks/{t3[0]['id']}/resolve",
             json={"resolved_by":"Nick","dismissed":True})
 
+    # ---- both sides in the LIVE catalog: two real listings, never a
+    # duplicate (Nick, 2026-09-14 - real-product pairs flooded
+    # Review). A pair flags only while at least one side is NOT
+    # linked to a Shopify product, and re-linking closes the task. --
+    with Session(get_engine()) as s:
+        tag(s, "T5", "SVB SV905CC", "Svbony cam A", "811")
+        tag(s, "T6", "SVB SV950CC", "Svbony cam B", "812")
+        for sku in ("SVB SV905CC", "SVB SV950CC"):
+            s.add(BinMapEntry(sku=sku, barcode=sku[-5:],
+                              product_title=sku, bin="B2-2", qty=1,
+                              shopify_variant_id="t:" + sku))
+        s.commit()
+    r = cl.post("/api/orders-sync/run").json()
+    check("a transposed pair of two real catalog listings never flags",
+          r.get("dupes_opened") == 0, r)
+    with Session(get_engine()) as s:
+        e = s.scalars(select(BinMapEntry).where(
+            BinMapEntry.sku == "SVB SV950CC")).first()
+        s.delete(e); s.commit()
+    r = cl.post("/api/orders-sync/run").json()
+    check("the same pair flags once a side leaves the catalog",
+          r.get("dupes_opened") == 1, r)
+    with Session(get_engine()) as s:
+        s.add(BinMapEntry(sku="SVB SV950CC", barcode="950CC",
+                          product_title="SVB SV950CC", bin="B2-2",
+                          qty=1, shopify_variant_id="t:back"))
+        s.commit()
+    r = cl.post("/api/orders-sync/run").json()
+    check("re-linking the side closes the task by itself",
+          r.get("dupes_closed") == 1, r)
+
     # OPEN tasks from the fuzzy era close themselves on the next run —
     # in BOTH stored formats: the original "⇄" and the "?" SQL Server's
     # VARCHAR mangled it into (the prod 8k-ghost-task bug).

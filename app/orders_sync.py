@@ -38,6 +38,7 @@ from app.models import (
     BarcodeChange,
     Batch,
     BatchItem,
+    BinMapEntry,
     OnhandLog,
     OrderReceipt,
     RefreshLog,
@@ -815,6 +816,28 @@ def refresh_duplicate_tasks(session: Session) -> dict:
                         "the same letters with two neighbours swapped "
                         "- a likely typo twin",
                     )
+
+    # Both sides living in the live catalog = two REAL Shopify
+    # listings, not a duplicate (Nick, 2026-09-14: pairs of existing
+    # products flooded Review). A pair only qualifies when at least
+    # one side is NOT linked to a Shopify product - the ASIAIR shape,
+    # where the catalog knows one spelling and orphan tags wear the
+    # other. Filtered pairs' open tasks close themselves below.
+    if pair_reasons:
+        all_skus = {s for pair in pair_reasons for s in pair}
+        in_catalog = {
+            (e.sku or "").strip().upper()
+            for e in session.scalars(
+                select(BinMapEntry).where(
+                    func.upper(BinMapEntry.sku).in_(sorted(all_skus))
+                )
+            )
+        }
+        pair_reasons = {
+            (a, b): reason
+            for (a, b), reason in pair_reasons.items()
+            if a not in in_catalog or b not in in_catalog
+        }
 
     existing = session.scalars(
         select(ReviewTask).where(ReviewTask.category == DUP_CATEGORY)
