@@ -1,7 +1,22 @@
 # RFID Inventory System — Roadmap
 
 Source of truth for project status. Updated by Claude each working session.
-Last updated: 2026-09-14 (third round).
+Last updated: 2026-09-14 (fourth round).
+
+## 📦 Audit packed orders is its own audit + sweep-list pages — ✅ DEPLOYED 2026-09-14
+
+Nick: retiring a packed-orders sweep isn't bound to a bin, so it
+left the bin-audit sweep rows and became its own audit. The + New
+audit dropdown (Walk-scan bins / 1-left checks) grew "Audit packed
+orders": the scope input box leaves with that selection, Start opens
+its pane, and the user picks from the recent sweeps as usual - each
+row's RETIRE SOLD… runs the preview/confirm flow, with the result
+plan rendered in the pane. One-shot, not a tracked session (the
+sweep IS the scope).
+The recent-sweeps list (both the bin-audit picker and the packed
+pane) got the standard windowed pager: ← [X-2..X+2] →, 10 per page,
+arrows greyed at the ends, current page inert
+(/api/epc-captures grew offset + total).
 
 ## 🔄 Per-product row refresh: writes stop repainting the page — ✅ DEPLOYED 2026-09-14
 

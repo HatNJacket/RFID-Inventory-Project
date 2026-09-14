@@ -16738,11 +16738,23 @@ def create_capture(payload: CaptureIn, session: Session = Depends(get_session)):
 
 
 @app.get("/api/epc-captures", dependencies=[Depends(require_user)])
-def list_captures(limit: int = 20, session: Session = Depends(get_session)):
+def list_captures(
+    limit: int = 20, offset: int = 0,
+    session: Session = Depends(get_session),
+):
+    """Newest first. offset + total drive the sweep list's page
+    buttons (Nick, 2026-09-14)."""
+    total = session.scalar(select(func.count(EpcCapture.id))) or 0
     rows = session.scalars(
-        select(EpcCapture).order_by(EpcCapture.id.desc()).limit(min(limit, 100))
+        select(EpcCapture).order_by(EpcCapture.id.desc())
+        .offset(max(0, offset)).limit(min(limit, 100))
     ).all()
-    return {"count": len(rows), "captures": [r.as_dict() for r in rows]}
+    return {
+        "count": len(rows),
+        "total": total,
+        "offset": max(0, offset),
+        "captures": [r.as_dict() for r in rows],
+    }
 
 
 @app.get("/api/epc-captures/latest", dependencies=[Depends(require_user)])

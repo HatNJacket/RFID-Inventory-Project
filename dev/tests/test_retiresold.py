@@ -134,6 +134,15 @@ with patch("app.main.oneleft") as ol:
           r.text[:300])
     r = cl.post("/api/epcs/retire-sold", json={"capture_id": 424242})
     check("unknown capture refused", r.status_code == 404, r.text[:200])
+
+    # ---- capture list pager fields (Nick, 2026-09-14) -----------------
+    r = cl.get("/api/epc-captures?limit=1&offset=0").json()
+    check("capture list carries total + offset for the pager",
+          r.get("total", 0) >= 1 and r.get("offset") == 0
+          and len(r.get("captures", [])) == 1, r)
+    r = cl.get(f"/api/epc-captures?limit=1&offset={r['total']}").json()
+    check("offset past the end returns an empty page",
+          r.get("captures") == [] and r.get("total", 0) >= 1, r)
     r = cl.post("/api/epcs/retire-sold", json={"epcs": []})
     check("empty sweep refused", r.status_code == 400, r.text[:200])
 

@@ -1268,6 +1268,7 @@
           <select id="audsess-kind" class="reset">
             <option value="bins">Walk-scan bins</option>
             <option value="oneleft">1-left checks</option>
+            <option value="packed">Audit packed orders</option>
           </select>
           <input id="audsess-scope" class="recent__search u-maxw220" type="text"
                  placeholder="Bins or rack prefix, e.g. I1" />
@@ -1282,6 +1283,28 @@
           <button class="reset apane-back" type="button">← Audits</button>
         </div>
         <div id="audsess-detail"></div>
+      </div>
+
+      <div class="apane" id="apane-packed" hidden>
+      <div class="linkbox__actions u-mb10">
+        <button class="reset apane-back" type="button">← Audits</button>
+      </div>
+      <!-- Packed-orders audit (Nick, 2026-09-14): not bound to a bin -
+           the whole sweep of boxes packed for orders retires as sold,
+           guarded by fulfilled orders. -->
+      <div class="recent__head">
+        <h2>Audit packed orders</h2>
+      </div>
+      <p class="linkbox__text u-maxw78ch">
+        Sweep the boxes you packed for orders (C72 SWEEP tab → SEND),
+        then pick that sweep below. Every heard tag retires as sold -
+        but only as far as FULFILLED orders cover each product, so a
+        stray read of something you weren't working on stays live. You
+        confirm a per-product plan before anything is written, and
+        History keeps a whole-batch undo.
+      </p>
+      <div id="packed-sweeps"></div>
+      <div id="packed-report"></div>
       </div>
 
       <div class="apane" id="apane-checks" hidden>

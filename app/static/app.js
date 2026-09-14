@@ -12765,22 +12765,61 @@ document.getElementById("binaudit-run").addEventListener("click", async () => {
   }
 });
 
-// --- Recent-sweep picker (Nick, 2026-09-01; card rework 2026-09-14):
-// a good sweep shouldn't be lost because a newer one landed. Each row
-// is a card - USE selects it for bin-after-bin checking, the tick
-// boxes still combine several into one union check, and WRITE OFF
-// dismisses the sweep's unpaired stickers from the locate list (the
-// blank-roll / junk-label pile next to the desk).
-document.getElementById("binaudit-pick").addEventListener("click", async () => {
-  const box = document.getElementById("binaudit-sweeps");
-  if (!box.hidden) {
-    box.hidden = true;
-    return;
+// --- Recent-sweep picker (Nick, 2026-09-01; card rework 2026-09-14;
+// pages 2026-09-14): a good sweep shouldn't be lost because a newer
+// one landed. Each row is a card - USE selects it for bin-after-bin
+// checking, the tick boxes still combine several into one union
+// check, and WRITE OFF dismisses the sweep's unpaired stickers from
+// the locate list. Ten sweeps per page with the usual page buttons;
+// "retire sold" moved to its own Audit packed orders pane.
+const SWEEP_PAGE = 10;
+
+// The standard windowed pager: ← [X-2] [X-1] [X] [X+1] [X+2] →, ends
+// greyed, current page inert.
+function sweepPagerHtml(page, total) {
+  const pages = Math.max(1, Math.ceil((total || 0) / SWEEP_PAGE));
+  if (pages <= 1) return "";
+  const nums = [];
+  for (
+    let n = Math.max(1, page - 2);
+    n <= Math.min(pages, page + 2);
+    n++
+  ) {
+    nums.push(n);
   }
+  return `<div class="ba-pager">
+    <button class="reset ba-pager__btn" type="button"
+      data-page="${page - 1}"${page <= 1 ? " disabled" : ""}
+      title="Newer sweeps">←</button>
+    ${nums
+      .map(
+        (n) => `<button class="reset ba-pager__btn${
+          n === page ? " ba-pager__btn--cur" : ""
+        }" type="button" data-page="${n}"${
+          n === page ? " disabled" : ""
+        }>${n}</button>`
+      )
+      .join("")}
+    <button class="reset ba-pager__btn" type="button"
+      data-page="${page + 1}"${page >= pages ? " disabled" : ""}
+      title="Older sweeps">→</button>
+  </div>`;
+}
+
+async function loadBinauditSweeps(page) {
+  const box = document.getElementById("binaudit-sweeps");
   box.innerHTML = `<p class="result">Loading recent sweeps…</p>`;
-  box.hidden = false;
   try {
-    const body = await apiJson("/api/epc-captures?limit=10");
+    const body = await apiJson(
+      `/api/epc-captures?limit=${SWEEP_PAGE}&offset=${
+        (page - 1) * SWEEP_PAGE
+      }`
+    );
+    if (!body.captures.length && page > 1) {
+      // The listing shrank under us - fall back to the front.
+      loadBinauditSweeps(1);
+      return;
+    }
     if (!body.captures.length) {
       box.innerHTML = `<p class="result">No sweeps received yet.</p>`;
       return;
@@ -12804,8 +12843,6 @@ document.getElementById("binaudit-pick").addEventListener("click", async () => {
               title="Select this sweep - every bin check (and the ◀ ▶ arrows) uses it until replaced">${
                 String(c.id) === selId ? "SELECTED ✓" : "USE"
               }</button>
-            <button class="reset ba-sweeprow__retiresold" type="button"
-              title="Swept the boxes you packed for orders? Retires every heard tag as sold - but only as far as FULFILLED orders cover each product, so a stray read of something you weren't working on stays live. Preview first; History-logged; Shopify untouched.">retire sold</button>
             <button class="reset ba-sweeprow__writeoff" type="button"
               title="Dismiss this sweep's unpaired stickers from the locate list - for the blank roll and broken or test labels. Tags that belong to products are untouched. Undoable from History.">write off unpaired</button>
           </div>`
@@ -12813,10 +12850,21 @@ document.getElementById("binaudit-pick").addEventListener("click", async () => {
         .join("") +
       `<div class="linkbox__actions ba-sweepactions">
          <button class="reset" id="binaudit-runpicked" type="button">Check with ticked sweep(s)</button>
-       </div>`;
+       </div>` +
+      sweepPagerHtml(page, body.total);
   } catch (err) {
     box.innerHTML = `<p class="result result--err">${escapeHtml(err.message)}</p>`;
   }
+}
+
+document.getElementById("binaudit-pick").addEventListener("click", async () => {
+  const box = document.getElementById("binaudit-sweeps");
+  if (!box.hidden) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  loadBinauditSweeps(1);
 });
 
 document
@@ -12838,71 +12886,9 @@ document
       }
       return;
     }
-    // Packed-order sweep -> retire sold (Nick, 2026-09-14): preview
-    // the per-product plan, confirm, apply. The fulfilled-orders guard
-    // means a stray read never loses a live tag.
-    const rsBtn = e.target.closest(".ba-sweeprow__retiresold");
-    if (rsBtn) {
-      const id = parseInt(rsBtn.closest(".ba-sweeprow").dataset.cid, 10);
-      const operator = operatorEl.value;
-      if (!operator) {
-        alert("Pick who's scanning (top right) first.");
-        return;
-      }
-      rsBtn.disabled = true;
-      try {
-        const plan = await postJson("/api/epcs/retire-sold", {
-          capture_id: id,
-          worker: operator,
-          preview: true,
-        });
-        if (!plan.retire_total) {
-          alert(
-            `Nothing to retire from sweep #${id}: ` +
-              `${plan.heard} tag(s) heard, but none belong to a ` +
-              `product with an unretired fulfilled sale.` +
-              (plan.skip_total
-                ? ` ${plan.skip_total} owned tag(s) have no ` +
-                  `covering sale yet - re-run after those orders ` +
-                  `fulfill.`
-                : "")
-          );
-          return;
-        }
-        const lines = (plan.plan || [])
-          .filter((p) => p.retire || p.skipped)
-          .slice(0, 12)
-          .map(
-            (p) =>
-              `· ${p.sku || p.product_title}: ${p.retire} of ${
-                p.heard
-              } heard retire sold` +
-              (p.skipped ? ` (${p.skipped} not covered - stay live)` : "")
-          );
-        if ((plan.plan || []).length > 12) {
-          lines.push(`· …and ${plan.plan.length - 12} more product(s)`);
-        }
-        const ok = confirm(
-          `Retire sweep #${id}'s heard tags as SOLD?\n\n` +
-            lines.join("\n") +
-            `\n\nGuard: only tags covered by unretired FULFILLED ` +
-            `sales retire; the rest stay live.` +
-            (plan.unowned > 0
-              ? ` ${plan.unowned} unpaired tag(s) are ignored.`
-              : "") +
-            `\nHistory-logged, each tag restorable. Shopify untouched.`
-        );
-        if (!ok) return;
-        const res = await postJson("/api/epcs/retire-sold", {
-          capture_id: id,
-          worker: operator,
-        });
-        alert(res.message);
-      } catch (err) {
-        alert(err.message);
-      } finally {
-        rsBtn.disabled = false;
-      }
+    const pgBtn = e.target.closest(".ba-pager__btn");
+    if (pgBtn && !pgBtn.disabled) {
+      loadBinauditSweeps(parseInt(pgBtn.dataset.page, 10) || 1);
       return;
     }
     const woBtn = e.target.closest(".ba-sweeprow__writeoff");
@@ -12965,6 +12951,132 @@ document
       });
     } catch (err) {
       out.innerHTML = `<p class="result result--err">${escapeHtml(err.message)}</p>`;
+    }
+  });
+
+// === Audit packed orders (Nick, 2026-09-14) ================================
+// A packed-orders sweep isn't bound to any bin, so retiring it as sold
+// is its OWN audit: pick the sweep, confirm the per-product plan, and
+// the guard (only unretired FULFILLED sales cover retirements) keeps
+// stray reads alive. Reached from + New audit -> Audit packed orders.
+async function loadPackedSweeps(page) {
+  const box = document.getElementById("packed-sweeps");
+  box.innerHTML = `<p class="result">Loading recent sweeps…</p>`;
+  try {
+    const body = await apiJson(
+      `/api/epc-captures?limit=${SWEEP_PAGE}&offset=${
+        (page - 1) * SWEEP_PAGE
+      }`
+    );
+    if (!body.captures.length && page > 1) {
+      loadPackedSweeps(1);
+      return;
+    }
+    if (!body.captures.length) {
+      box.innerHTML = `<p class="result">No sweeps received yet - sweep the packed boxes on the C72 (SWEEP tab), SEND, then reopen this audit.</p>`;
+      return;
+    }
+    box.innerHTML =
+      body.captures
+        .map(
+          (c) => `<div class="ba-sweeprow" data-cid="${c.id}">
+            <span class="ba-sweeprow__main">#${c.id} · ${escapeHtml(
+              c.device || "C72"
+            )}${c.note ? " · " + escapeHtml(c.note) : ""}
+              <span class="ba-sweeprow__meta">${
+                c.epc_count
+              } tag(s) · ${escapeHtml(fmtWhen(c.created_at))}</span>
+            </span>
+            <button class="reset ba-sweeprow__use packed-retire" type="button"
+              title="Preview which heard tags fulfilled orders cover, confirm, and retire them as sold. Uncovered, unpaired and already-retired tags are named and left alone. History-logged with a whole-batch undo; Shopify untouched.">RETIRE SOLD…</button>
+          </div>`
+        )
+        .join("") + sweepPagerHtml(page, body.total);
+  } catch (err) {
+    box.innerHTML = `<p class="result result--err">${escapeHtml(err.message)}</p>`;
+  }
+}
+
+document
+  .getElementById("packed-sweeps")
+  .addEventListener("click", async (e) => {
+    const pgBtn = e.target.closest(".ba-pager__btn");
+    if (pgBtn && !pgBtn.disabled) {
+      loadPackedSweeps(parseInt(pgBtn.dataset.page, 10) || 1);
+      return;
+    }
+    const rsBtn = e.target.closest(".packed-retire");
+    if (!rsBtn) return;
+    const id = parseInt(rsBtn.closest(".ba-sweeprow").dataset.cid, 10);
+    const operator = operatorEl.value;
+    const report = document.getElementById("packed-report");
+    if (!operator) {
+      alert("Pick who's scanning (top right) first.");
+      return;
+    }
+    rsBtn.disabled = true;
+    try {
+      const plan = await postJson("/api/epcs/retire-sold", {
+        capture_id: id,
+        worker: operator,
+        preview: true,
+      });
+      if (!plan.retire_total) {
+        report.innerHTML = `<p class="result result--warn-soft">Nothing to retire from sweep #${id}: ${
+          plan.heard
+        } tag(s) heard, but none belong to a product with an unretired fulfilled sale.${
+          plan.skip_total
+            ? ` ${plan.skip_total} owned tag(s) have no covering sale yet - re-run after those orders fulfill.`
+            : ""
+        }</p>`;
+        return;
+      }
+      const lines = (plan.plan || [])
+        .filter((p) => p.retire || p.skipped)
+        .slice(0, 12)
+        .map(
+          (p) =>
+            `· ${p.sku || p.product_title}: ${p.retire} of ${
+              p.heard
+            } heard retire sold` +
+            (p.skipped ? ` (${p.skipped} not covered - stay live)` : "")
+        );
+      if ((plan.plan || []).length > 12) {
+        lines.push(`· …and ${plan.plan.length - 12} more product(s)`);
+      }
+      const ok = confirm(
+        `Retire sweep #${id}'s heard tags as SOLD?\n\n` +
+          lines.join("\n") +
+          `\n\nGuard: only tags covered by unretired FULFILLED ` +
+          `sales retire; the rest stay live.` +
+          (plan.unowned > 0
+            ? ` ${plan.unowned} unpaired tag(s) are ignored.`
+            : "") +
+          `\nHistory-logged, each tag restorable. Shopify untouched.`
+      );
+      if (!ok) return;
+      const res = await postJson("/api/epcs/retire-sold", {
+        capture_id: id,
+        worker: operator,
+      });
+      report.innerHTML =
+        `<p class="result result--ok">${escapeHtml(res.message)}</p>` +
+        (res.plan || [])
+          .filter((p) => p.retire || p.skipped)
+          .map(
+            (p) => `<p class="result">· ${escapeHtml(
+              p.sku || p.product_title || "?"
+            )}: ${p.retire} retired sold${
+              p.skipped
+                ? `, ${p.skipped} stayed live (no covering sale yet)`
+                : ""
+            }</p>`
+          )
+          .join("");
+    } catch (err) {
+      report.innerHTML = `<p class="result result--err">${escapeHtml(err.message)}</p>`;
+    } finally {
+      rsBtn.disabled = false;
     }
   });
 
@@ -14503,15 +14615,21 @@ document.getElementById("audsess-toggle").addEventListener("click", () => {
 
 const audsessKindEl = document.getElementById("audsess-kind");
 const audsessScopeEl = document.getElementById("audsess-scope");
-audsessKindEl.addEventListener("change", () => {
-  audsessScopeEl.placeholder = audsessKindEl.value === "bins"
+// Packed-orders audits have no scope to type (Nick, 2026-09-14: the
+// sweep IS the scope) - the input box leaves with that selection.
+function syncAudsessKind() {
+  const kind = audsessKindEl.value;
+  audsessScopeEl.hidden = kind === "packed";
+  audsessScopeEl.placeholder = kind === "bins"
     ? "Bins or rack prefix, e.g. I1"
     : "Vendor (blank = the whole queue)";
-});
+}
+audsessKindEl.addEventListener("change", syncAudsessKind);
 document.getElementById("audsess-newbtn").addEventListener("click", () => {
   const form = document.getElementById("audsess-new");
   form.hidden = !form.hidden;
-  if (!form.hidden) audsessScopeEl.focus();
+  syncAudsessKind();
+  if (!form.hidden && !audsessScopeEl.hidden) audsessScopeEl.focus();
 });
 document.getElementById("audsess-cancel").addEventListener("click", () => {
   document.getElementById("audsess-new").hidden = true;
@@ -14519,6 +14637,14 @@ document.getElementById("audsess-cancel").addEventListener("click", () => {
 document.getElementById("audsess-create").addEventListener("click", async (ev) => {
   const kind = audsessKindEl.value;
   const scope = audsessScopeEl.value.trim();
+  // Packed orders is a one-shot audit, not a tracked session: Start
+  // opens its pane with the recent sweeps ready to pick.
+  if (kind === "packed") {
+    document.getElementById("audsess-new").hidden = true;
+    audShowPane("packed");
+    loadPackedSweeps(1);
+    return;
+  }
   // No naming step (Nick, 2026-09-08): the audit IS its scope, so the
   // name derives from what the user specified - rack, bins or vendor.
   const payload = { kind, worker: operatorEl.value || null };

@@ -3013,12 +3013,38 @@ tr.binaudit-untagged td { opacity: 0.72; }
 .ba-sweeprow__main { flex: 1; min-width: 0; }
 .ba-sweeprow__use { white-space: nowrap; }
 .ba-sweeprow--sel .ba-sweeprow__use { color: var(--ok-ink); }
-.ba-sweeprow__writeoff,
-.ba-sweeprow__retiresold {
+.ba-sweeprow__writeoff {
   white-space: nowrap;
   color: var(--ink-dim);
 }
 .ba-sweepactions { margin-top: 6px; }
+/* Sweep-list pager (Nick, 2026-09-14): the standard windowed page
+   buttons - arrows grey out at the ends, the current page is inert. */
+.ba-pager {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+}
+.ba-pager__btn {
+  min-width: 32px;
+  padding: 4px 8px;
+  text-align: center;
+  background: var(--card-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.ba-pager__btn:disabled {
+  color: var(--ink-dim);
+  opacity: 0.55;
+  cursor: default;
+}
+.ba-pager__btn--cur {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+  opacity: 1;
+}
 .sortsel { width: 18px; height: 18px; }
 
 /* Rows inside the site-native overlay windows (linked barcodes,
