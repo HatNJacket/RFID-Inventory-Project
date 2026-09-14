@@ -420,6 +420,7 @@ const EVENT_META = {
   "unpaired-unignored": ["Write-off Undone", "#5561c9"],
   "packed-retired": ["Packed Orders Retired", "#2f9e6e"],
   "packed-unretired": ["Packed Retire Undone", "#5561c9"],
+  "boxify-import": ["Boxify Import", "#1f5f8b"],
   oneleft: ["1-left Check", "#b07d00"],
   "audit-session": ["Audit Session", "#0e7a8a"],
   "bin-audited": ["Audit Done", "#0b6e99"],
@@ -13947,6 +13948,7 @@ async function loadAudits() {
     loadAuditBins(),
     loadAuditSessions(),
     loadUnavailable(),
+    loadBoxify(),
   ];
   Promise.allSettled(slowLoads.concat([auditsChecksLoad()])).then(() =>
     setFreshTag("audhub-fresh", true)
@@ -14068,6 +14070,107 @@ async function loadUnavailable() {
     list.innerHTML = `<li class="recent__empty">${escapeHtml(err.message)}</li>`;
   }
 }
+
+// Missing Boxify dimensions (Nick, 2026-09-14): Boxify keeps these in
+// its own database - no API, nothing in metafields - so the card and
+// pane work from its CSV export, imported below, and list every
+// variant still shipping as the 8-cubic-inch default.
+async function loadBoxify() {
+  try {
+    const d = await apiJson("/api/boxify/status?limit=1");
+    if (!d.imported) {
+      audSetCard("ahc-boxify", "–",
+        "no Boxify export imported yet", null);
+      return;
+    }
+    audSetCard(
+      "ahc-boxify",
+      String(d.missing_products),
+      d.missing_products
+        ? `${d.missing_variants} variant(s) ship as the default box`
+        : "every variant has dimensions ✓",
+      d.missing_products ? "warn" : "ok"
+    );
+  } catch (err) {
+    audSetCard("ahc-boxify", "!", "could not load", "bad");
+  }
+}
+
+let bxfTimer = null;
+async function loadBoxifyPane() {
+  const list = document.getElementById("bxf-list");
+  const meta = document.getElementById("bxf-meta");
+  const q = document.getElementById("bxf-filter").value.trim();
+  try {
+    const d = await apiJson(
+      `/api/boxify/status?limit=300&query=${encodeURIComponent(q)}`
+    );
+    if (!d.imported) {
+      meta.textContent = "";
+      list.innerHTML =
+        '<li class="recent__empty">No Boxify export imported yet - use the button above.</li>';
+      return;
+    }
+    meta.textContent =
+      `${d.missing_products} product(s) · ${d.missing_variants} of ` +
+      `${d.total_variants} variant(s) missing · imported ` +
+      `${fmtAgo(d.imported_at)}`;
+    list.innerHTML = d.items.length
+      ? ""
+      : `<li class="recent__empty">${
+          q
+            ? "No missing-dimension variants match that filter."
+            : "Every variant has dimensions ✓"
+        }</li>`;
+    d.items.forEach((x) => {
+      const li = document.createElement("li");
+      li.innerHTML =
+        `<span class="recent__prod"><b>${escapeHtml(
+          x.product_title || "(unknown)"
+        )}</b>${
+          x.variant_title && x.variant_title !== "Default Title"
+            ? " (" + escapeHtml(x.variant_title) + ")"
+            : ""
+        }</span>` +
+        `<span class="mono">${escapeHtml(x.sku || "no SKU")}</span>`;
+      list.append(li);
+    });
+  } catch (err) {
+    list.innerHTML = `<li class="recent__empty">${escapeHtml(err.message)}</li>`;
+  }
+}
+
+document.getElementById("bxf-filter").addEventListener("input", () => {
+  clearTimeout(bxfTimer);
+  bxfTimer = setTimeout(loadBoxifyPane, 250);
+});
+document
+  .querySelector('#tab-audits .audcard[data-pane="boxify"]')
+  .addEventListener("click", loadBoxifyPane);
+document.getElementById("bxf-import").addEventListener("click", () =>
+  document.getElementById("bxf-file").click()
+);
+document
+  .getElementById("bxf-file")
+  .addEventListener("change", async (e) => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!f) return;
+    const status = document.getElementById("bxf-status");
+    status.textContent = `Importing ${f.name}…`;
+    try {
+      const text = await f.text();
+      const res = await postJson("/api/boxify/import", {
+        csv_text: text,
+        imported_by: operatorEl.value || null,
+      });
+      status.textContent = res.message;
+      loadBoxifyPane();
+      loadBoxify();
+    } catch (err) {
+      status.textContent = "Import failed: " + err.message;
+    }
+  });
 
 async function auditsChecksLoad() {
   const list = document.getElementById("audit-list");

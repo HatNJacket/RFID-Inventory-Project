@@ -49,15 +49,25 @@ Nick's six-point rework, all landed:
   newest pairing is under an hour old; the daily run still files
   anything persistent.
 
-## 📐 Boxify dimensions — ❌ NO ACCESS (2026-09-14, investigated)
+## 📐 Boxify dimensions — ✅ DEPLOYED 2026-09-14 (CSV-snapshot flow)
 
-Boxify keeps its dimensions in its own external database. A metafield
-sweep across the store found NOTHING dimension-shaped (only telescope
-specs); variants carry only native weight. So: no programmatic
-export, no missing-dimensions count, no RFID-site dimension editor,
-and no Audit-tab card - the export Nick heard about is the CSV
-export inside Boxify's own admin UI (manual). If Nick exports that
-CSV, a card + upload flow is buildable on top of it.
+Boxify keeps its dimensions in its own external database (metafield
+sweep found nothing dimension-shaped; no API, no write access - so
+no in-terminal dimension editor, ever). Nick exported the product
+list CSV from Boxify's admin, and the terminal now works from that
+snapshot:
+- rfid_boxify_dims mirrors the export (auto-created table; import
+  replaces it wholesale; zero/blank/junk dims all count missing).
+- Audit tab grew a "Shopify product cleanup" row holding the MOVED
+  Unavailable Stock card + the new Missing Boxify Dimensions card
+  (count = products with a dimensionless variant). Its pane lists
+  the missing variants (search by SKU/title), says dimensions are
+  fixed in Boxify's admin, and imports a fresh export via file
+  picker (/api/boxify/import, /api/boxify/status; History event
+  "Boxify Import"). test_boxify.py.
+- Nick's 2026-09-14 export: 4886 variants across 3328 products;
+  1342 variants (27%) missing dimensions, across 1115 products
+  (34%). Imported to prod at deploy.
 
 ## 📦 Audit packed orders is its own audit + sweep-list pages — ✅ DEPLOYED 2026-09-14
 

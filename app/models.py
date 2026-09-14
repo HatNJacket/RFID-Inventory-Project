@@ -12,7 +12,8 @@ authoritative and you can re-sync them later if a product is renamed.
 from datetime import datetime
 
 from sqlalchemy import (  # noqa: F401
-    Boolean, DateTime, Integer, String, Text, UniqueConstraint, func,
+    Boolean, DateTime, Float, Integer, String, Text, UniqueConstraint,
+    func,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -1802,6 +1803,33 @@ class EpcCapture(Base):
         if with_epcs:
             d["epcs"] = self.epcs.split("\n") if self.epcs else []
         return d
+
+
+class BoxifyDim(Base):
+    """Snapshot of Boxify's CSV export (Nick, 2026-09-14): shipping
+    dimensions live ONLY in Boxify's own database - no API, no
+    metafields - so this table is how the terminal lists which
+    products still ship as the 8-cubic-inch default. Read-only
+    mirror: dimensions are FIXED in Boxify's own admin, then a fresh
+    export replaces this table wholesale on import."""
+
+    __tablename__ = "rfid_boxify_dims"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sku: Mapped[str | None] = mapped_column(String(100), index=True)
+    product_title: Mapped[str | None] = mapped_column(String(255))
+    variant_title: Mapped[str | None] = mapped_column(String(255))
+    product_id: Mapped[str | None] = mapped_column(String(64))
+    variant_id: Mapped[str | None] = mapped_column(String(64))
+    length_cm: Mapped[float | None] = mapped_column(Float)
+    width_cm: Mapped[float | None] = mapped_column(Float)
+    height_cm: Mapped[float | None] = mapped_column(Float)
+    has_dims: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, index=True
+    )
+    imported_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
 
 class ReviewTask(Base):

@@ -1240,12 +1240,25 @@
             <span class="audcard__num" id="ahc-more-num">–</span>
             <span class="audcard__sub" id="ahc-more-sub">from finished batches</span>
           </button>
+        </div>
+        <!-- Shopify product cleanup (Nick, 2026-09-14): the cards that
+             tidy the CATALOG rather than the shelves - set-asides and
+             Boxify's missing shipping dimensions. -->
+        <div class="recent__head u-mt14">
+          <h2>Shopify product cleanup</h2>
+        </div>
+        <div class="audhub-cards">
           <!-- Unavailable stock (Nick, 2026-09-08): every set-aside in
                one place - who, when, and the Staff Comments why. -->
           <button class="audcard" type="button" data-pane="unavail">
             <span class="audcard__label">Unavailable stock</span>
             <span class="audcard__num" id="ahc-unavail-num">–</span>
             <span class="audcard__sub" id="ahc-unavail-sub">loading…</span>
+          </button>
+          <button class="audcard" type="button" data-pane="boxify">
+            <span class="audcard__label">Missing Boxify dimensions</span>
+            <span class="audcard__num" id="ahc-boxify-num">–</span>
+            <span class="audcard__sub" id="ahc-boxify-sub">loading…</span>
           </button>
         </div>
         <div class="recent__head u-mt18">
@@ -1283,6 +1296,35 @@
           <button class="reset apane-back" type="button">← Audits</button>
         </div>
         <div id="audsess-detail"></div>
+      </div>
+
+      <div class="apane" id="apane-boxify" hidden>
+      <div class="linkbox__actions u-mb10">
+        <button class="reset apane-back" type="button">← Audits</button>
+      </div>
+      <!-- Boxify dimensions (Nick, 2026-09-14): Boxify holds these in
+           its OWN database - no API - so this pane works from its CSV
+           export and lists every variant still shipping as the
+           8-cubic-inch default. -->
+      <div class="recent__head">
+        <h2>Missing Boxify dimensions <span class="recent__note" id="bxf-meta"></span></h2>
+        <input id="bxf-filter" class="recent__search" type="search"
+               placeholder="Filter by SKU or product…" autocomplete="off" />
+      </div>
+      <p class="linkbox__text u-maxw78ch">
+        Boxify picks shipping boxes from these dimensions; a variant
+        without them ships as the 8 cubic inch default. Dimensions are
+        fixed in Boxify's own admin (this app has no write access
+        there) - fix them, re-export the product list CSV from Boxify,
+        and import it here to refresh this list.
+      </p>
+      <div class="linkbox__actions u-mb10">
+        <input type="file" id="bxf-file" accept=".csv" hidden />
+        <button class="reset" id="bxf-import" type="button"
+                title="Pick a fresh Boxify product-list CSV export - it replaces this snapshot wholesale">Import a fresh Boxify export…</button>
+      </div>
+      <div id="bxf-status" class="linkbox__text"></div>
+      <ul class="recent__list binlist u-maxh480" id="bxf-list"></ul>
       </div>
 
       <div class="apane" id="apane-packed" hidden>

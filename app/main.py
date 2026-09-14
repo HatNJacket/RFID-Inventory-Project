@@ -6,6 +6,8 @@ Request flow (mirrors what runs on Azure):
 No terminal input anywhere. The scanner types into browser fields exactly
 as it would type into Notepad, and JavaScript forwards each scan here.
 """
+import csv as _csv
+import io
 import json
 import logging
 import os
@@ -50,6 +52,7 @@ from app.models import (
     Batch,
     BatchItem,
     BinMapEntry,
+    BoxifyDim,
     BoxSetPart,
     BundleContent,
     C72Command,
@@ -7658,6 +7661,141 @@ def audit_bins(session: Session = Depends(get_session)):
         "skipped_non_taggable": skipped_non_taggable,
         "onhand_age_minutes": None if age is None else int(age / 60),
         "refreshing": _bin_map_state["running"],
+    }
+
+
+# ---------------------------------------------------- Boxify snapshot ------
+# Shipping dimensions live ONLY in Boxify's own database (no API, no
+# metafields - probed 2026-09-14), so the terminal works from a
+# snapshot of Boxify's CSV export. Fixing dimensions happens in
+# Boxify's admin; a fresh export replaces the snapshot wholesale.
+
+class BoxifyImportIn(BaseModel):
+    csv_text: str = Field(min_length=1, max_length=8_000_000)
+    imported_by: str | None = Field(default=None, max_length=100)
+
+
+@app.post("/api/boxify/import", dependencies=[Depends(require_user)])
+def boxify_import(
+    payload: BoxifyImportIn, session: Session = Depends(get_session)
+):
+    """Replace the Boxify snapshot with a fresh export. A dimension
+    counts as SET only when length, width and height are all positive
+    numbers - anything else ships as Boxify's 8-cubic-inch default."""
+    reader = _csv.DictReader(
+        io.StringIO(payload.csv_text.lstrip("﻿"))
+    )
+    fields = set(reader.fieldnames or [])
+    required = {"VariantSKU", "Length(cm)", "Width(cm)", "Height(cm)"}
+    if not required.issubset(fields):
+        raise HTTPException(
+            422,
+            "That doesn't look like a Boxify product export - expected "
+            "columns like VariantSKU and Length(cm).",
+        )
+
+    def dim(v):
+        try:
+            f = float((v or "").strip())
+        except ValueError:
+            return None
+        return f if f > 0 else None
+
+    rows: list[BoxifyDim] = []
+    for r in reader:
+        ln = dim(r.get("Length(cm)"))
+        wd = dim(r.get("Width(cm)"))
+        ht = dim(r.get("Height(cm)"))
+        rows.append(BoxifyDim(
+            sku=(r.get("VariantSKU") or "").strip()[:100] or None,
+            product_title=(
+                r.get("ProductTitle") or "").strip()[:255] or None,
+            variant_title=(
+                r.get("VariantTitle") or "").strip()[:255] or None,
+            product_id=(
+                r.get("ProductId") or "").strip("[] ")[:64] or None,
+            variant_id=(
+                r.get("VariantId") or "").strip("[] ")[:64] or None,
+            length_cm=ln, width_cm=wd, height_cm=ht,
+            has_dims=(ln is not None and wd is not None
+                      and ht is not None),
+        ))
+    if not rows:
+        raise HTTPException(422, "The export holds no variant rows.")
+    session.execute(delete(BoxifyDim))
+    session.add_all(rows)
+    missing = sum(1 for x in rows if not x.has_dims)
+    session.add(BarcodeChange(
+        sku=None,
+        product_title=(
+            f"Boxify export imported: {len(rows)} variant(s), "
+            f"{missing} missing dimensions"
+        )[:255],
+        changed_field="boxify-import",
+        old_barcode=f"{len(rows)} variant(s)"[:64],
+        new_barcode=f"{missing} missing dims"[:64],
+        changed_by=(payload.imported_by or "").strip()[:100] or None,
+    ))
+    session.commit()
+    return {
+        "variants": len(rows),
+        "missing": missing,
+        "message": (
+            f"Imported {len(rows)} variant(s) - {missing} still "
+            f"missing dimensions."
+        ),
+    }
+
+
+@app.get("/api/boxify/status", dependencies=[Depends(require_user)])
+def boxify_status(
+    query: str = "", limit: int = 200,
+    session: Session = Depends(get_session),
+):
+    """The Missing Boxify Dimensions card + pane feed: counts, the
+    import stamp, and the dimensionless variants (filtered, capped)."""
+    total = session.scalar(
+        select(func.count(BoxifyDim.id))
+    ) or 0
+    if not total:
+        return {"imported": False, "total_variants": 0,
+                "missing_variants": 0, "missing_products": 0,
+                "imported_at": None, "items": []}
+    missing_q = select(BoxifyDim).where(BoxifyDim.has_dims.is_(False))
+    missing_total = session.scalar(
+        select(func.count(BoxifyDim.id)).where(
+            BoxifyDim.has_dims.is_(False)
+        )
+    ) or 0
+    missing_products = session.scalar(
+        select(func.count(func.distinct(BoxifyDim.product_id))).where(
+            BoxifyDim.has_dims.is_(False)
+        )
+    ) or 0
+    stamp = session.scalar(select(func.max(BoxifyDim.imported_at)))
+    q = (query or "").strip()
+    if q:
+        like = f"%{q}%"
+        missing_q = missing_q.where(or_(
+            BoxifyDim.sku.ilike(like),
+            BoxifyDim.product_title.ilike(like),
+            BoxifyDim.variant_title.ilike(like),
+        ))
+    items = session.scalars(
+        missing_q.order_by(BoxifyDim.product_title, BoxifyDim.id)
+        .limit(min(max(limit, 1), 500))
+    ).all()
+    return {
+        "imported": True,
+        "imported_at": stamp.isoformat() if stamp else None,
+        "total_variants": total,
+        "missing_variants": missing_total,
+        "missing_products": missing_products,
+        "items": [{
+            "sku": x.sku,
+            "product_title": x.product_title,
+            "variant_title": x.variant_title,
+        } for x in items],
     }
 
 

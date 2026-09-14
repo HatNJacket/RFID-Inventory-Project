@@ -12,4 +12,8 @@ print_agent_loop.cmd
 print_agent_hidden.vbs
 deploy.zip
 
+# Boxify CSV exports are data snapshots, not code - imported through
+# the Audit tab, never committed.
+*_for_Boxify.csv
+
 c72-app/build/
