@@ -1875,6 +1875,14 @@ public class MainActivity extends Activity {
         locUndoBtn.setVisibility(View.GONE);
         act2.addView(locUndoBtn, new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        // LABEL BINS (Nick, 2026-09-14): pick the bin whose unresolved
+        // printed labels you're standing at - its owed products list
+        // and their label EPCs join the hunt.
+        locBinsBtn = smallBtn("LABEL BINS");
+        locBinsBtn.setOnClickListener(x -> showUnpairedBinPicker());
+        locBinsBtn.setVisibility(View.GONE);
+        act2.addView(locBinsBtn, new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         // WRITE OFF (Nick, 2026-09-14): the blank roll / junk labels by
         // the desk answer every sweep - one press writes off everything
         // this hunt heard so the locate list stops drowning.
@@ -2823,6 +2831,8 @@ public class MainActivity extends Activity {
         locTags.clear();
         locFound.clear();
         locNarrow = null;
+        upAutoNarrow = null;
+        upLeadEpc = null;
         locEma = 0;
         upKnown.clear();
         synchronized (upPending) {
@@ -2905,6 +2915,13 @@ public class MainActivity extends Activity {
     private void exitUnpairedHunt(boolean announce) {
         if (!unpairedHunt) return;
         unpairedHunt = false;
+        // An automatic lock dies with the mode; a manual TARGET would
+        // have exited unpaired mode through retarget() already.
+        if (upAutoNarrow != null) {
+            upAutoNarrow = null;
+            upLeadEpc = null;
+            locNarrow = null;
+        }
         stopLocate(false);
         if (upArmedProduct != null && upPrevPower >= 1) {
             setPowerLevel(upPrevPower);
@@ -2927,6 +2944,10 @@ public class MainActivity extends Activity {
                 : btnBg(C_CARD, C_LINE, C_PRESS, 8));
         if (locWriteOffBtn != null) {
             locWriteOffBtn.setVisibility(
+                    unpairedHunt ? View.VISIBLE : View.GONE);
+        }
+        if (locBinsBtn != null) {
+            locBinsBtn.setVisibility(
                     unpairedHunt ? View.VISIBLE : View.GONE);
         }
     }
@@ -2964,6 +2985,7 @@ public class MainActivity extends Activity {
                         ui.post(() -> {
                             for (String e : epcs) locTags.remove(e);
                             locFound.clear();
+                            upReleaseAutoNarrow(null);
                             locNarrow = null;
                             beep(SOUND_OK);
                             status.setText(msg);
@@ -2984,6 +3006,139 @@ public class MainActivity extends Activity {
                 }).start())
                 .setNegativeButton("CANCEL", null)
                 .show();
+    }
+
+    // ---- hunt-by-bin (Nick, 2026-09-14) -----------------------------------
+    // The unresolved printed labels know their product's CURRENT home
+    // bin. Pick a bin, see exactly which products there still owe
+    // labels, and those labels' EPCs join the hunt targets - walk to
+    // the shelf and let the meter take over.
+    private void showUnpairedBinPicker() {
+        status.setText("Loading label bins…");
+        new Thread(() -> {
+            try {
+                JSONObject resp = api("GET",
+                        "/api/receiving/unpaired-labels", null);
+                final JSONArray rows = resp.optJSONArray("products");
+                final java.util.TreeMap<String,
+                        java.util.ArrayList<JSONObject>> byBin =
+                        new java.util.TreeMap<>();
+                for (int i = 0; rows != null && i < rows.length(); i++) {
+                    JSONObject r = rows.optJSONObject(i);
+                    if (r == null) continue;
+                    String bin = r.isNull("bin_location")
+                            ? "(no bin on file)"
+                            : r.optString("bin_location",
+                                    "(no bin on file)");
+                    java.util.ArrayList<JSONObject> l = byBin.get(bin);
+                    if (l == null) {
+                        l = new java.util.ArrayList<>();
+                        byBin.put(bin, l);
+                    }
+                    l.add(r);
+                }
+                ui.post(() -> {
+                    if (byBin.isEmpty()) {
+                        beep(SOUND_OK);
+                        status.setText("✓ No unresolved printed labels "
+                                + "anywhere - nothing to hunt by bin.");
+                        return;
+                    }
+                    LinearLayout list = new LinearLayout(this);
+                    list.setOrientation(LinearLayout.VERTICAL);
+                    list.setPadding(dp(14), dp(8), dp(14), dp(8));
+                    final AlertDialog[] dref = new AlertDialog[1];
+                    for (java.util.Map.Entry<String,
+                            java.util.ArrayList<JSONObject>> en
+                            : byBin.entrySet()) {
+                        final String bin = en.getKey();
+                        final java.util.ArrayList<JSONObject> items =
+                                en.getValue();
+                        int labels = 0;
+                        for (JSONObject r : items) {
+                            labels += r.optInt("count");
+                        }
+                        list.addView(targetCard(bin,
+                                labels + " label(s) · " + items.size()
+                                        + " product(s) owe pairing",
+                                null, () -> {
+                                    if (dref[0] != null) {
+                                        dref[0].dismiss();
+                                    }
+                                    showUnpairedBinProducts(bin, items);
+                                }));
+                    }
+                    ScrollView scroll = new ScrollView(this);
+                    scroll.addView(list);
+                    dref[0] = dlg()
+                            .setTitle("LABEL BINS - WHERE UNPAIRED "
+                                    + "LABELS LIVE")
+                            .setView(scroll)
+                            .setNegativeButton("CLOSE", null)
+                            .show();
+                });
+            } catch (Exception e) {
+                ui.post(() -> {
+                    beep(SOUND_ERR);
+                    status.setText("Label-bin lookup failed: "
+                            + e.getMessage());
+                });
+            }
+        }).start();
+    }
+
+    /** One bin's owed products; their label EPCs join the hunt. */
+    private void showUnpairedBinProducts(String bin,
+            java.util.ArrayList<JSONObject> items) {
+        int added = 0;
+        for (JSONObject r : items) {
+            JSONArray eps = r.optJSONArray("epcs");
+            for (int j = 0; eps != null && j < eps.length(); j++) {
+                String e = eps.optString(j)
+                        .toUpperCase(java.util.Locale.ROOT);
+                if (!e.isEmpty() && unpairedHunt
+                        && !locTags.containsKey(e)) {
+                    locTags.put(e, -999.0);
+                    added++;
+                }
+            }
+        }
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        list.setPadding(dp(12), dp(8), dp(12), dp(8));
+        for (JSONObject r : items) {
+            list.addView(auditCard(
+                    r.optString("product_title", r.optString("sku", "?")),
+                    "SKU " + r.optString("sku", "?")
+                            + (r.isNull("reference") ? ""
+                               : " · " + r.optString("reference")),
+                    r.optInt("count") + "×", C_WARN, null),
+                    auditRowLp());
+        }
+        TextView hint = new TextView(this);
+        hint.setTextColor(C_MUTED);
+        hint.setTextSize(11);
+        hint.setPadding(0, dp(6), 0, 0);
+        hint.setText("Received here, labelled, never RFID-paired."
+                + (added > 0
+                    ? " Their " + added + " label EPC(s) joined the "
+                      + "hunt - walk to " + bin + " and trigger; 100% "
+                      + "opens the pair window."
+                    : " Their labels are already hunt targets - walk "
+                      + "to " + bin + " and trigger."));
+        list.addView(hint);
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(list);
+        dlg()
+                .setTitle("BIN " + bin + " - LABELS TO PAIR")
+                .setView(scroll)
+                .setNegativeButton("CLOSE", null)
+                .show();
+        if (unpairedHunt) {
+            locSku.setText(locTags.size() + " unpaired target(s) · "
+                    + upChecked + " tag(s) checked");
+            updateLocateUi();
+        }
     }
 
     /** Drain the pending reads into ONE classify call - 40 tags or
@@ -3119,6 +3274,12 @@ public class MainActivity extends Activity {
                     locTags.remove(epc);
                     locFound.remove(epc);
                     upKnown.add(epc);
+                    // The paired sticker was very likely the tag the
+                    // radio auto-locked onto - let go so the hunt
+                    // hears the rest again.
+                    if (epc.equals(upAutoNarrow)) {
+                        upReleaseAutoNarrow(null);
+                    }
                     upLastPairEpc = epc;
                     upLastPairItem = item;
                     if (locUndoBtn != null) {
@@ -3640,6 +3801,91 @@ public class MainActivity extends Activity {
         narrowFilterSet = false;
     }
 
+    // ---- auto-target for the Unpaired Tags hunt (Nick, 2026-09-14) --------
+    // In a full aisle every live tag re-answers every S0 round, so an
+    // unpaired sticker gets a few lucky reads and then loses the airtime
+    // lottery - "pings a few times, then goes quiet". Once one target
+    // LEADS the meter with fresh signal for a moment, the single-EPC
+    // select filter locks onto it (the TARGET mechanism), the whole
+    // aisle goes silent to the radio, and the pings turn solid. A few
+    // quiet seconds release the lock and the open listen resumes.
+    // Settings -> Locate -> "Auto-target in Unpaired Tags" (default on).
+    private String upAutoNarrow = null;   // EPC the hunt locked ITSELF onto
+    private String upLeadEpc = null;
+    private long upLeadSince = 0;
+    private long upNarrowHeard = 0;
+
+    private void upAutoNarrowTick(long now) {
+        if (!locating || !unpairedHunt) return;
+        if (!prefs.getBoolean("up_autonarrow", true)) {
+            if (upAutoNarrow != null) upReleaseAutoNarrow(null);
+            return;
+        }
+        // A MANUAL target (TARGET... dialog) is the operator's call -
+        // the automatics keep their hands off it entirely.
+        if (locNarrow != null && upAutoNarrow == null) return;
+        if (upAutoNarrow != null) {
+            if (now - locLastHeard < tunFreshMs) upNarrowHeard = now;
+            if (now - upNarrowHeard > 4000) {
+                upReleaseAutoNarrow("lost the signal - listening wide "
+                        + "again");
+            }
+            return;
+        }
+        String lead = locLoudEpc;
+        if (lead == null || !locTags.containsKey(lead)
+                || locFound.contains(lead)
+                || now - locLastHeard > tunFreshMs) {
+            upLeadEpc = null;
+            return;
+        }
+        if (!lead.equals(upLeadEpc)) {
+            upLeadEpc = lead;
+            upLeadSince = now;
+            return;
+        }
+        if (now - upLeadSince < 1200) return;
+        upAutoNarrow = lead;
+        upNarrowHeard = now;
+        locNarrow = lead;
+        upReapplyFilter();
+        beep(SOUND_OTHER);
+        status.setText("Auto-target …" + lead.substring(
+                Math.max(0, lead.length() - 6))
+                + " - the radio pounds just this sticker. It lets go "
+                + "after a few quiet seconds.");
+    }
+
+    /** Drop the automatic lock (never a manual TARGET). */
+    private void upReleaseAutoNarrow(String note) {
+        if (upAutoNarrow == null) {
+            upLeadEpc = null;
+            return;
+        }
+        upAutoNarrow = null;
+        upLeadEpc = null;
+        locNarrow = null;
+        if (locating) upReapplyFilter();
+        if (note != null) {
+            status.setText("Auto-target released - " + note + ".");
+        }
+    }
+
+    /** Swap the select filter under a RUNNING inventory: brief stop,
+     *  filter, resume - the meter never notices. */
+    private void upReapplyFilter() {
+        try {
+            reader.stopInventory();
+        } catch (Throwable ignored) {
+        }
+        applyNarrowFilter();
+        try {
+            reader.startInventoryTag();
+        } catch (Throwable t) {
+            dbgLine("filter swap restart failed: " + t);
+        }
+    }
+
     // ---- Unpaired Tags hunt (Nick, 2026-09-09) ----------------------------
     // Listen for stickers linked to NOTHING: every unknown EPC heard is
     // classified against the server in BATCHES (40 tags or 1.2s, whichever
@@ -3660,7 +3906,8 @@ public class MainActivity extends Activity {
     private int upPrevPower = 0;
     private String upLastPairEpc = null;
     private int upLastPairItem = 0;
-    private Button locUnpairedBtn, locUndoBtn, locWriteOffBtn;
+    private Button locUnpairedBtn, locUndoBtn, locWriteOffBtn,
+            locBinsBtn;
 
     /** Called from the SDK callback thread for every read while locating. */
     private void onLocateRead(String epc, double rssi) {
@@ -3739,6 +3986,7 @@ public class MainActivity extends Activity {
         }
         locHeardCount = heard;
         if (unpairedHunt) upClassifyTick(now);
+        if (unpairedHunt) upAutoNarrowTick(now);
         if (locMode == 1) radarTick(now);
         autoPowerTick(now, fresh, pct);
         // Pegged AT the top while hunting: offer to mark the loudest
@@ -4118,6 +4366,9 @@ public class MainActivity extends Activity {
     /** Apply a new hunt target. A running hunt stops (clean restart on
      *  the trigger beats a mid-flight radio retune the reader ignores). */
     private void retarget(String epc, String note) {
+        // A hand-picked target outranks (and clears) any automatic lock.
+        upAutoNarrow = null;
+        upLeadEpc = null;
         locNarrow = epc;
         if (locating) {
             stopLocate(false);
@@ -16881,6 +17132,15 @@ public class MainActivity extends Activity {
                 "Opening Locate starts with AUTO stepping the power "
                 + "between the floor and 30. Off: manual until you tap "
                 + "AUTO.", swAutoDef));
+        final Switch swUpNarrow =
+                mkToggle(prefs.getBoolean("up_autonarrow", true));
+        box.addView(toggleRow("Auto-target in Unpaired Tags",
+                "In a full aisle every tag answers every round and an "
+                + "unpaired sticker loses the airtime lottery after a "
+                + "few pings. When one target leads the meter for a "
+                + "moment, the radio locks onto just that sticker "
+                + "(solid pings), and lets go after a few quiet "
+                + "seconds.", swUpNarrow));
         final Button floorBtn = smallBtn("Auto power floor: "
                 + prefs.getInt("auto_floor", 5));
         floorBtn.setOnClickListener(x ->
@@ -16921,6 +17181,8 @@ public class MainActivity extends Activity {
                             .putBoolean("pair_auto_next",
                                     swPairNext.isChecked())
                             .putBoolean("auto_default", swAutoDef.isChecked())
+                            .putBoolean("up_autonarrow",
+                                    swUpNarrow.isChecked())
                             .putBoolean("tab_station", swStation.isChecked())
                             .putBoolean("tab_sweep", swSweep.isChecked())
                             .putBoolean("tab_find", swFind.isChecked())

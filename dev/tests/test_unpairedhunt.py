@@ -83,6 +83,23 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
           p["batch_id"] == rbid and "SO 950" in (p["reference"] or ""), p)
     check("EPC candidates match the count", len(p["epcs"]) == 2, p)
 
+    # ---- the label's bin is the product's CURRENT home ----------------
+    # (Nick, 2026-09-14: the C72 hunt-by-bin picker walks these; a
+    # product moved after printing must list under its new shelf.)
+    with S(get_engine()) as s:
+        bm = s.scalars(select(BinMapEntry).where(
+            BinMapEntry.sku == "ZWO-A")).first()
+        bm.bin = "C9-9"
+        s.commit()
+    r = cl.get("/api/receiving/unpaired-labels").json()
+    check("live bin map overrides the print job's frozen bin",
+          r["products"][0]["bin_location"] == "C9-9", r["products"][0])
+    with S(get_engine()) as s:
+        bm = s.scalars(select(BinMapEntry).where(
+            BinMapEntry.sku == "ZWO-A")).first()
+        bm.bin = "B1-1"
+        s.commit()
+
     # ---- the classifier the hunt leans on ------------------------------
     r = cl.post("/api/epcs/unlinked", json={
         "epcs": [KNOWN, RETIRED, MYSTERY, p["epcs"][0]]}).json()

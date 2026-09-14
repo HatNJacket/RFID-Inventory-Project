@@ -13174,6 +13174,27 @@ def receiving_unpaired_labels(session: Session = Depends(get_session)):
                     b.created_at.isoformat() if b.created_at else None
                 ),
             })
+    # The bin the label SHOULD be in is the product's CURRENT home
+    # (Nick, 2026-09-14: the C72's hunt-by-bin picker walks these),
+    # not whatever the print job froze weeks ago - overlay the live
+    # bin map, keep the job's bin as the fallback.
+    wanted = {
+        (p["sku"] or "").strip().upper() for p in products if p["sku"]
+    }
+    if wanted:
+        home = {}
+        for e in session.scalars(
+            select(BinMapEntry).where(
+                func.upper(BinMapEntry.sku).in_(sorted(wanted))
+            )
+        ):
+            key = (e.sku or "").strip().upper()
+            if key not in home and (e.bin or "").strip():
+                home[key] = e.bin.strip()
+        for p in products:
+            key = (p["sku"] or "").strip().upper()
+            if key in home:
+                p["bin_location"] = home[key]
     return {
         "count": len(products),
         "total_labels": sum(p["count"] for p in products),
