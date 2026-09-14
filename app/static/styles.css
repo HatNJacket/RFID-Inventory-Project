@@ -2712,13 +2712,22 @@ tr.binaudit-untagged td { opacity: 0.72; }
   background: var(--card-2);
   border-top: 2px solid var(--line);
 }
+/* An OPEN task frame must be unmissable (Nick, 2026-09-14: grey rails
+   on a grey card read as nothing - only the tier-1 tint showed). The
+   whole frame - header top, side rails, closing bottom - goes accent,
+   and the header itself tints, so what a click expanded into is one
+   glance. Same pre-reserved borders: still not a pixel of shift. */
+.qt0.qopen > td {
+  background: color-mix(in srgb, var(--card-2) 86%, var(--accent));
+  border-top-color: var(--accent);
+}
 .qt0.qopen > td:first-child, .qin0 > td:first-child {
-  border-left-color: var(--line);
+  border-left-color: var(--accent);
 }
 .qt0.qopen > td:last-child, .qin0 > td:last-child {
-  border-right-color: var(--line);
+  border-right-color: var(--accent);
 }
-.qend0 > td { border-bottom: 2px solid var(--line); }
+.qend0 > td { border-bottom: 2px solid var(--accent); }
 .qt1 > td {
   font-weight: 550;
   border-top: 1px dashed var(--line);
@@ -2957,6 +2966,58 @@ tr.binaudit-untagged td { opacity: 0.72; }
   cursor: pointer;
   font-size: 0.92rem;
 }
+
+/* Bin audit rework (Nick, 2026-09-14): the selected sweep is a card,
+   sweep rows are cards, and the ◀ ▶ arrows walk the audit with the
+   selection. Same tokens as everything else. */
+.ba-pin {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--card-2);
+  border: 1px solid var(--accent);
+  border-left: 4px solid var(--accent);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  font-size: 13px;
+}
+.ba-pin__main { font-weight: 600; }
+.ba-pin__meta,
+.ba-sweeprow__meta {
+  display: block;
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--ink-dim);
+}
+.ba-pin__hint {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--ink-dim);
+}
+.ba-sweeprow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--card-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 10px;
+  margin: 6px 0;
+  font-size: 13px;
+}
+.ba-sweeprow--sel {
+  border-color: var(--accent);
+  border-left: 4px solid var(--accent);
+}
+.ba-sweeprow__main { flex: 1; min-width: 0; }
+.ba-sweeprow__use { white-space: nowrap; }
+.ba-sweeprow--sel .ba-sweeprow__use { color: var(--ok-ink); }
+.ba-sweeprow__writeoff {
+  white-space: nowrap;
+  color: var(--ink-dim);
+}
+.ba-sweepactions { margin-top: 6px; }
 .sortsel { width: 18px; height: 18px; }
 
 /* Rows inside the site-native overlay windows (linked barcodes,

@@ -1,7 +1,85 @@
 # RFID Inventory System — Roadmap
 
 Source of truth for project status. Updated by Claude each working session.
-Last updated: 2026-09-09.
+Last updated: 2026-09-14.
+
+## 🧹 Sweep write-off of unpaired stickers — ✅ DEPLOYED 2026-09-14 (C72 4.00)
+
+The unpaired hunt worked too well: the blank roll and the broken /
+mislabeled / test labels sitting by the desk answered every sweep and
+drowned the locate list (hundreds, one-at-a-time was hopeless).
+POST /api/epcs/ignore-heard takes a raw EPC list OR a sent capture id
+and dismisses every OWNERLESS EPC in it (LabelDismissal rows, so
+_still_unlinked excludes them forever - they never re-stash). Owned /
+retired / companion tags are untouched: sweeping near live shelves is
+safe. Printed receiving labels in the pile are written off too but
+counted and named in the answer (the operator should hear when the
+junk contained owed labels). Surfaces: C72 4.00 Unpaired Tags mode
+grew a WRITE OFF button (confirm dialog, sends everything the hunt
+heard); the web Recent Sweeps rows each carry "write off unpaired"
+(capture id path). One History event per write-off ("Unpaired
+Write-off"), whole-batch undo via marker (dismissed_by carries it);
+undone stickers rejoin the list on the next sweep that hears them.
+test_ignoreheard.py (22 checks).
+
+## 🗂 Bin audit rework: sweep cards, arrow walk, page cache — ✅ DEPLOYED 2026-09-14
+
+Nick: the Recent Sweeps checkbox list looked bad, the selection was
+invisible, and every arrow press re-did the whole lookup. Now:
+- Recent Sweeps are card rows (device, note, count, age) with USE to
+  select one; the selected sweep is a prominent accent-framed card
+  (SELECTED ✓ on its row) - union checks via the tick boxes survive.
+- With a sweep selected, ◀ ▶ don't just step the bin name - they run
+  the check against the new bin immediately: the arrows ARE the walk.
+- Every (sweep, bin) report is cached on the page: stepping back
+  re-renders instantly, zero server calls. An explicit RUN press
+  busts the current bin's cache (a fix/mark-sold just changed the
+  answer), so post-mutation refreshes stay live.
+- bin_check accepts `capture_id`: a pinned single sweep is named by
+  id and the server reads its EPCs itself - no re-upload of thousands
+  of tags per bin step (unions still send their merged list).
+
+## 🖼 Print queue: OPEN task frames actually visible — ✅ DEPLOYED 2026-09-14
+
+The tier-0 (task) frame drew its rails in --line grey on a grey card:
+invisible, so only the tier-1 tint ever read as "expanded". An open
+task now tints its header and draws the whole frame - top, side
+rails, closing bottom - in --accent. Same pre-reserved transparent
+borders, so opening still never shifts a pixel (STYLEGUIDE rule 3).
+
+## 🔢 SO 1275 + the planner that was never actually deployed — ✅ FIXED 2026-09-14
+
+Nick saw "SO 1275" (~320 too high) on a no-labels receiving task, and
+the planner's "autofill" deep link stopped working. ONE root cause:
+the tc-planner webapp restarted at 20:24 on 2026-09-09 but the fixed
+image was pushed 21:07 - it ran a stale container all week (no relay
+fix, no #receive deep-link handler, no index no-cache). Fixed:
+- Rebuilt the image (digest 79c7ec, tags 2026-09-14a + latest) and
+  pointed the webapp at the DATED tag - a tag change forces the pull,
+  and dated tags kill the ":latest didn't re-pull" trap for good.
+  Deep link verified end-to-end in Chrome (PO #964 opened pre-filled;
+  one browser reload was needed to shed the heuristically-cached old
+  index - the served no-cache header now prevents recurrence).
+- Batch #241 label repaired on prod: SO 1275 -> SO 952 (Antlia,
+  planner-verified; no receipts/history rows carried it).
+- Intake belt gate fixed: order 1275 was vendor-matched but CLOSED -
+  the planner closes an order the moment its receive saves, so the
+  no-labels task always names an already-closed order. The gate is
+  now open-ish OR created within 90 days (a genuine same-vendor id
+  collision is months old - ids run ~300 ahead of references).
+  test_sonumbers.py grew to 11 checks.
+
+## 🏷 ASIAIR bracket audit mystery — ✅ RESOLVED 2026-09-14 (records cleaned)
+
+The 10-tags-for-3-boxes audit: Aug 3 batch 79 tagged 6 boxes; on the
+Aug 18 printer-fight day the real boxes were re-stickered at the Scan
+Station under the OLD "ASIAIR" spelling (the ASIAIR/AISAIR duplicate,
+merged 9/8, hid the existing records); the six Aug-3 records stayed.
+Cleaned via prod's own /api/assignments/retire: 4 oldest Aug-3 tags
+presumed-sold (consumed the 4 unretired ledger units #49360/#49500/
+#50035/#49663), 2 Aug-3 + …E513 retired "replaced". End state: 3 live
+tags = the 3 real boxes = on-hand 3; ledger fully consumed;
+History-logged with per-tag undo.
 
 ## 📦 Sorter: one-pile alternative + RE-PILE — ✅ DEPLOYED 2026-09-09 (C72 3.99)
 

@@ -416,6 +416,8 @@ const EVENT_META = {
   "locate-list": ["Locate List", "#5561c9"],
   "locate-paired": ["Locate Assigned Tag", "#2f9e6e"],
   "receiving-dismissed": ["Sold Before Label", "#5c5f62"],
+  "unpaired-ignored": ["Unpaired Write-off", "#7a7d80"],
+  "unpaired-unignored": ["Write-off Undone", "#5561c9"],
   oneleft: ["1-left Check", "#b07d00"],
   "audit-session": ["Audit Session", "#0e7a8a"],
   "bin-audited": ["Audit Done", "#0b6e99"],
@@ -12591,10 +12593,13 @@ async function jumpToBinAudit(bin) {
   }
 }
 
-// Pinned sweep (Nick, 2026-09-08): pick a sweep once and audit bin
-// after bin with it - RUN reuses the pinned sweep until "use newest"
-// replaces it. Whatever sweep a check actually used becomes the pin.
+// Selected sweep (Nick, 2026-09-08; reworked 2026-09-14): pick a sweep
+// once and audit bin after bin with it. The selection is a visible
+// card, the ◀ ▶ arrows re-check each new bin with it automatically,
+// and every (sweep, bin) result is kept on the page - stepping back to
+// an already-checked bin re-renders instantly, no server round trip.
 let binAuditPinnedCap = null;
+const binAuditCache = new Map(); // "capId|BIN" -> report
 
 function renderPinnedSweep() {
   let bar = document.getElementById("binaudit-pinnedbar");
@@ -12603,19 +12608,22 @@ function renderPinnedSweep() {
     if (!anchor) return;
     bar = document.createElement("div");
     bar.id = "binaudit-pinnedbar";
-    bar.className = "result";
     anchor.parentElement.insertBefore(bar, anchor);
   }
+  bar.className = "ba-pin";
   if (!binAuditPinnedCap) {
     bar.hidden = true;
     return;
   }
+  const c = binAuditPinnedCap;
   bar.hidden = false;
   bar.innerHTML =
-    `📌 Using sweep #${escapeHtml(String(binAuditPinnedCap.id))} · ` +
-    `${binAuditPinnedCap.epc_count} tag(s) · ` +
-    `${escapeHtml(fmtAgo(binAuditPinnedCap.created_at))} for every ` +
-    `bin check - ` +
+    `<span class="ba-pin__icon">📌</span>` +
+    `<span class="ba-pin__main">Sweep #${escapeHtml(String(c.id))}` +
+    `<span class="ba-pin__meta">${escapeHtml(c.device || "C72")} · ` +
+    `${c.epc_count} tag(s) · ` +
+    `${escapeHtml(fmtAgo(c.created_at))}</span></span>` +
+    `<span class="ba-pin__hint">◀ ▶ check each bin with this sweep</span>` +
     `<button class="reset" id="binaudit-unpin" type="button">use newest sweep instead</button>`;
   bar
     .querySelector("#binaudit-unpin")
@@ -12635,12 +12643,32 @@ async function runBinAudit(cap) {
     binEl.focus();
     return;
   }
+  // Page-local memory (Nick, 2026-09-14): a (sweep, bin) pair already
+  // checked this session re-renders from the stored report instead of
+  // asking the server again on every arrow press.
+  const key = String(cap.id) + "|" + bin.toUpperCase();
+  const hit = binAuditCache.get(key);
+  if (hit) {
+    binAudit = { rep: hit, cap };
+    binAuditShowUntagged = false;
+    binAuditPinnedCap = cap;
+    renderPinnedSweep();
+    renderBinAudit();
+    return;
+  }
   out.innerHTML = `<p class="result">Checking…</p>`;
   try {
+    // A single server-side sweep is named by id - the server reads its
+    // EPCs itself, so bin-after-bin stepping never re-uploads
+    // thousands of tags. Unions (ids joined with +) still send theirs.
+    const single = /^\d+$/.test(String(cap.id));
     const rep = await postJson(
       `/api/bins/${encodeURIComponent(bin)}/check`,
-      { epcs: cap.epcs }
+      single
+        ? { capture_id: parseInt(cap.id, 10) }
+        : { epcs: cap.epcs }
     );
+    binAuditCache.set(key, rep);
     binAudit = { rep, cap };
     binAuditShowUntagged = false;
     binAuditPinnedCap = cap;
@@ -12651,8 +12679,19 @@ async function runBinAudit(cap) {
   }
 }
 
+// An explicit RUN always re-asks the server (a fix or mark-sold may
+// have just changed the answer); only the ◀ ▶ arrows reuse the page's
+// stored reports.
+function binAuditCacheBust(bin) {
+  const suffix = "|" + (bin || "").trim().toUpperCase();
+  for (const k of [...binAuditCache.keys()]) {
+    if (k.endsWith(suffix)) binAuditCache.delete(k);
+  }
+}
+
 document.getElementById("binaudit-run").addEventListener("click", async () => {
   const out = document.getElementById("binaudit-report");
+  binAuditCacheBust(document.getElementById("binaudit-bin").value);
   if (binAuditPinnedCap) {
     await runBinAudit(binAuditPinnedCap);
     return;
@@ -12666,9 +12705,12 @@ document.getElementById("binaudit-run").addEventListener("click", async () => {
   }
 });
 
-// --- Recent-sweep picker (Nick, 2026-09-01): a good sweep shouldn't be
-// lost because a newer one landed - list the last few, tick one or
-// several (combined into one union check).
+// --- Recent-sweep picker (Nick, 2026-09-01; card rework 2026-09-14):
+// a good sweep shouldn't be lost because a newer one landed. Each row
+// is a card - USE selects it for bin-after-bin checking, the tick
+// boxes still combine several into one union check, and WRITE OFF
+// dismisses the sweep's unpaired stickers from the locate list (the
+// blank-roll / junk-label pile next to the desk).
 document.getElementById("binaudit-pick").addEventListener("click", async () => {
   const box = document.getElementById("binaudit-sweeps");
   if (!box.hidden) {
@@ -12683,17 +12725,31 @@ document.getElementById("binaudit-pick").addEventListener("click", async () => {
       box.innerHTML = `<p class="result">No sweeps received yet.</p>`;
       return;
     }
+    const selId = binAuditPinnedCap ? String(binAuditPinnedCap.id) : null;
     box.innerHTML =
       body.captures
         .map(
-          (c) => `<label class="binaudit-sweeprow">
-            <input type="checkbox" value="${c.id}">
-            #${c.id} · ${escapeHtml(c.device || "C72")} ·
-            ${c.epc_count} tag(s) · ${escapeHtml(fmtWhen(c.created_at))}
-          </label>`
+          (c) => `<div class="ba-sweeprow${
+            String(c.id) === selId ? " ba-sweeprow--sel" : ""
+          }" data-cid="${c.id}">
+            <input type="checkbox" value="${c.id}" title="Tick several to combine them into one union check">
+            <span class="ba-sweeprow__main">#${c.id} · ${escapeHtml(
+              c.device || "C72"
+            )}${c.note ? " · " + escapeHtml(c.note) : ""}
+              <span class="ba-sweeprow__meta">${
+                c.epc_count
+              } tag(s) · ${escapeHtml(fmtWhen(c.created_at))}</span>
+            </span>
+            <button class="reset ba-sweeprow__use" type="button"
+              title="Select this sweep - every bin check (and the ◀ ▶ arrows) uses it until replaced">${
+                String(c.id) === selId ? "SELECTED ✓" : "USE"
+              }</button>
+            <button class="reset ba-sweeprow__writeoff" type="button"
+              title="Dismiss this sweep's unpaired stickers from the locate list - for the blank roll and broken or test labels. Tags that belong to products are untouched. Undoable from History.">write off unpaired</button>
+          </div>`
         )
         .join("") +
-      `<div class="linkbox__actions" style="margin-top:6px">
+      `<div class="linkbox__actions ba-sweepactions">
          <button class="reset" id="binaudit-runpicked" type="button">Check with ticked sweep(s)</button>
        </div>`;
   } catch (err) {
@@ -12704,8 +12760,49 @@ document.getElementById("binaudit-pick").addEventListener("click", async () => {
 document
   .getElementById("binaudit-sweeps")
   .addEventListener("click", async (e) => {
-    if (!e.target.closest("#binaudit-runpicked")) return;
     const box = document.getElementById("binaudit-sweeps");
+    const useBtn = e.target.closest(".ba-sweeprow__use");
+    if (useBtn) {
+      const id = parseInt(useBtn.closest(".ba-sweeprow").dataset.cid, 10);
+      useBtn.disabled = true;
+      try {
+        const cap = await apiJson(`/api/epc-captures/${id}`);
+        box.hidden = true;
+        await runBinAudit(cap);
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        useBtn.disabled = false;
+      }
+      return;
+    }
+    const woBtn = e.target.closest(".ba-sweeprow__writeoff");
+    if (woBtn) {
+      const id = parseInt(woBtn.closest(".ba-sweeprow").dataset.cid, 10);
+      if (
+        !confirm(
+          `Write off sweep #${id}'s unpaired stickers?\n\nEvery tag it ` +
+            `heard that belongs to NOTHING leaves the unpaired locate ` +
+            `list and stays ignored on future sweeps. Tags that belong ` +
+            `to products are untouched. Undo lives in History.`
+        )
+      )
+        return;
+      woBtn.disabled = true;
+      try {
+        const res = await postJson("/api/epcs/ignore-heard", {
+          capture_id: id,
+          dismissed_by: operatorEl.value || null,
+        });
+        alert(res.message);
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        woBtn.disabled = false;
+      }
+      return;
+    }
+    if (!e.target.closest("#binaudit-runpicked")) return;
     const ids = [...box.querySelectorAll("input:checked")].map((i) =>
       parseInt(i.value, 10)
     );
@@ -12772,6 +12869,12 @@ async function binAuditStep(dir) {
     }
     idx = (idx + dir + list.length) % list.length;
     binEl.value = list[idx];
+    // With a sweep selected the arrows ARE the audit walk (Nick,
+    // 2026-09-14): stepping checks the new bin immediately - from the
+    // page's stored report when this pair was already checked.
+    if (binAuditPinnedCap) {
+      await runBinAudit(binAuditPinnedCap);
+    }
   } catch (err) {
     /* the arrows are a convenience - typing still works */
   }
@@ -16083,6 +16186,30 @@ async function undoHistoryEvent(e, btn) {
       await postJson("/api/locate/pair-unlinked/undo", {
         epc: e.undo.epc,
         item_id: e.undo.item_id || null,
+        worker: operatorEl.value || null,
+      });
+      await loadHistory();
+    } catch (err) {
+      btn.disabled = false;
+      alert(err.message);
+    }
+    return;
+  }
+  // Unpaired write-off (Nick, 2026-09-14): give the whole sweep's
+  // dismissals back - the stickers rejoin the unpaired list on the
+  // next sweep that hears them.
+  if (e.undo.kind === "unpaired-ignore") {
+    if (
+      !confirm(
+        "Undo this write-off?\n\nEvery sticker it dismissed rejoins " +
+          "the unpaired locate list on the next sweep that hears it."
+      )
+    )
+      return;
+    btn.disabled = true;
+    try {
+      await postJson("/api/epcs/ignore-heard/undo", {
+        marker: e.undo.marker,
         worker: operatorEl.value || null,
       });
       await loadHistory();

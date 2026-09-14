@@ -6420,6 +6420,10 @@ def bin_odd_barcodes(
 
 class BinCheckIn(BaseModel):
     epcs: list[str] = Field(default_factory=list, max_length=5000)
+    # A sweep already on the server can be named instead of re-uploading
+    # its whole EPC list (Nick, 2026-09-14: bin-after-bin audits with
+    # one pinned sweep resent thousands of EPCs per arrow press).
+    capture_id: int | None = None
     # Extra SKUs to report on beyond the bin map — the C72 sends its
     # batch's SKUs, because a batch legitimately holds products the map
     # doesn't put in this bin (open-box twins, strays kept here, map
@@ -6440,6 +6444,14 @@ def bin_check(
     audited as ONE zone (Nick, 2026-09-01 - the C72's read field can't
     localize below a rack anyway; bins are just levels of one shelf)."""
     swept = {(e or "").strip().upper() for e in payload.epcs if e}
+    if payload.capture_id:
+        cap = session.get(EpcCapture, payload.capture_id)
+        if cap is None:
+            raise HTTPException(404, "No such sweep on the server.")
+        swept |= {
+            e.strip().upper()
+            for e in (cap.epcs or "").split("\n") if e.strip()
+        }
     loc = bin_name.strip()
     bin_keys = [loc.lower()]
     rack = False
@@ -11438,9 +11450,30 @@ def _normalize_so_reference(ref: str) -> str:
                 status = (o.get("status") or "").strip().lower()
                 openish = status not in ("closed", "received",
                                          "cancelled", "canceled")
+                # A closed order can still be the one being received
+                # RIGHT NOW: the planner closes it the moment its
+                # receive saves, and the no-labels task lands after
+                # (Nick, 2026-09-14: SO 1275 arrived already closed,
+                # so an open-only gate refused the translation). The
+                # gate's real job is spotting ANCIENT id collisions -
+                # ids run ~300 ahead of reference numbers, so a
+                # same-vendor collision is months old, never fresh.
+                recent = False
+                try:
+                    ca = str(o.get("created_at") or "")
+                    if ca:
+                        dt = datetime.fromisoformat(
+                            ca.replace("Z", "+00:00"))
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=timezone.utc)
+                        recent = (datetime.now(timezone.utc) - dt
+                                  <= timedelta(days=90))
+                except Exception:  # noqa: BLE001 - unparsable stamp
+                    recent = False
                 _so_ref_cache[n] = (
                     str(rn)
-                    if rn and str(rn) != str(n) and ov and openish
+                    if rn and str(rn) != str(n) and ov
+                    and (openish or recent)
                     else None,
                     ov,
                 )
@@ -13147,6 +13180,140 @@ def locate_pair_unlinked_undo(
     session.commit()
     return {"ok": True, "message": f"…{epc[-6:]} unlinked - the sticker "
             "is unpaired again and back on the hunt."}
+
+
+class EpcIgnoreIn(BaseModel):
+    """Write off a sweep's worth of unpaired stickers (Nick,
+    2026-09-14): the blank roll / broken / test labels sitting by the
+    desk answer every sweep and drown the unpaired locate list."""
+
+    epcs: list[str] | None = Field(default=None, max_length=4000)
+    # Alternatively: a sweep already sent to the server.
+    capture_id: int | None = None
+    dismissed_by: str | None = Field(default=None, max_length=100)
+
+
+@app.post("/api/epcs/ignore-heard", dependencies=[Depends(require_user)])
+def epcs_ignore_heard(
+    payload: EpcIgnoreIn, session: Session = Depends(get_session)
+):
+    """Every OWNERLESS EPC in the given sweep (raw list from the C72,
+    or a sent capture picked on the web) gets a permanent dismissal, so
+    it leaves the unpaired locate list AND never re-stashes on future
+    sweeps. Tags that belong to products, retirements or companions are
+    untouched - sweeping near a live shelf is safe. One History event
+    per write-off, undoable as a unit."""
+    epcs: list[str] = list(payload.epcs or [])
+    cap = None
+    if payload.capture_id:
+        cap = session.get(EpcCapture, payload.capture_id)
+        if cap is None:
+            raise HTTPException(404, "No such sweep on the server.")
+        epcs += cap.epcs.split("\n") if cap.epcs else []
+    heard = {(e or "").strip().upper() for e in epcs if e and e.strip()}
+    if not heard:
+        raise HTTPException(
+            400, "No EPCs - send a list or pick a sent sweep.")
+    fresh = _still_unlinked(session, sorted(heard))
+    if not fresh:
+        return {
+            "ignored": 0, "heard": len(heard), "printed_labels": 0,
+            "marker": None,
+            "message": "Nothing to write off - every tag heard is "
+                       "already owned, retired or dismissed.",
+        }
+    marker = (
+        "ignore-sweep " + datetime.utcnow().strftime("%Y%m%d%H%M%S")
+        + " " + (payload.dismissed_by or "?").strip()
+    )[:100]
+    for epc in sorted(fresh):
+        session.add(LabelDismissal(epc=epc, dismissed_by=marker))
+    # How many were REAL printed labels - reported, never blocked: the
+    # pile being swept is junk by definition, but the operator should
+    # hear when it contained labels receiving still counts as owed.
+    printed = {
+        (e or "").upper()
+        for e in session.scalars(
+            select(PrintJob.epc).where(
+                func.upper(PrintJob.epc).in_(sorted(fresh))
+            )
+        )
+    }
+    # Drop them from the hunt entry now (the list self-prunes anyway,
+    # but the C72 asking two seconds later should already see them gone).
+    entry = session.scalar(
+        select(LocateQueueEntry).where(
+            func.upper(LocateQueueEntry.sku) == UNLINKED_HUNT_SKU
+        )
+    )
+    if entry is not None:
+        live = [e for e in entry.epc_list() if e.upper() not in fresh]
+        if live:
+            entry.epcs = "\n".join(live)
+        else:
+            session.delete(entry)
+    session.add(BarcodeChange(
+        sku=None,
+        product_title=f"{len(fresh)} unpaired sticker(s) written off",
+        changed_field="unpaired-ignored",
+        old_barcode=(f"sweep #{cap.id}" if cap else "C72 sweep")[:64],
+        new_barcode=marker[:64],
+        changed_by=(payload.dismissed_by or "").strip()[:100] or None,
+    ))
+    session.commit()
+    return {
+        "ignored": len(fresh), "heard": len(heard),
+        "printed_labels": len(printed), "marker": marker,
+        "message": (
+            f"{len(fresh)} unpaired sticker(s) written off - they leave "
+            f"the locate list and stay ignored on future sweeps."
+            + (f" ⚠ {len(printed)} of them were printed receiving "
+               f"labels." if printed else "")
+        ),
+    }
+
+
+class EpcIgnoreUndoIn(BaseModel):
+    marker: str = Field(min_length=1, max_length=100)
+    worker: str | None = Field(default=None, max_length=100)
+
+
+@app.post(
+    "/api/epcs/ignore-heard/undo", dependencies=[Depends(require_user)]
+)
+def epcs_ignore_heard_undo(
+    payload: EpcIgnoreUndoIn, session: Session = Depends(get_session)
+):
+    """Reverse one write-off as a unit: its dismissals are deleted, so
+    the stickers rejoin the unpaired list on the next sweep that hears
+    them."""
+    rows = session.scalars(
+        select(LabelDismissal).where(
+            LabelDismissal.dismissed_by == payload.marker.strip()
+        )
+    ).all()
+    if not rows:
+        raise HTTPException(
+            404, "Nothing under that write-off any more - already undone?"
+        )
+    for r in rows:
+        session.delete(r)
+    session.add(BarcodeChange(
+        sku=None,
+        product_title=f"{len(rows)} written-off sticker(s) restored",
+        changed_field="unpaired-unignored",
+        old_barcode=payload.marker.strip()[:64],
+        new_barcode="write-off undone"[:64],
+        changed_by=(payload.worker or "").strip()[:100] or None,
+    ))
+    session.commit()
+    return {
+        "restored": len(rows),
+        "message": (
+            f"{len(rows)} sticker(s) un-ignored - they rejoin the "
+            f"unpaired list on the next sweep that hears them."
+        ),
+    }
 
 
 class SettleShipmentIn(BaseModel):
@@ -18182,6 +18349,25 @@ def history(
                         "batch_id": it_row.batch_id,
                         "item_id": it_row.id,
                     }
+        # A sweep write-off of unpaired stickers (Nick, 2026-09-14):
+        # undo while its dismissals still stand - the marker stored in
+        # new_barcode names exactly the batch to give back.
+        elif c.changed_field == "unpaired-ignored":
+            event["detail"] = (
+                f"{c.product_title or 'unpaired stickers written off'}"
+                f" · {c.old_barcode or 'sweep'}"
+            )
+            if c.new_barcode and session.scalar(
+                select(LabelDismissal).where(
+                    LabelDismissal.dismissed_by == c.new_barcode
+                )
+            ) is not None:
+                event["undo"] = {
+                    "kind": "unpaired-ignore",
+                    "marker": c.new_barcode,
+                }
+        elif c.changed_field == "unpaired-unignored":
+            event["detail"] = c.product_title or "write-off undone"
         # A completed audit logs its location + one-line summary; the
         # generic "(none) → x" rendering would just add noise.
         elif c.changed_field == "bin-audited":

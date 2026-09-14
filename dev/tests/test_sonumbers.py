@@ -3,9 +3,14 @@ payload carried its INTERNAL order id where the SO number belonged, so
 History and open batches read "SO 1266" for SO 943. Incoming receiving
 references now translate internal ids to the real reference number -
 but ONLY when the planner order under that id names the same vendor
-AND is still open-ish, because ids and reference numbers overlap
-(a correct "SO 943" collides with a closed askar order's id 943).
+AND is open-ish OR recently created, because ids and reference numbers
+overlap (a correct "SO 943" collides with a closed askar order's id
+943). Recency joined the gate 2026-09-14: the planner closes an order
+the moment its receive saves, so the no-labels task's payload names an
+already-closed order (SO 1275 for SO 952) - a genuine collision is
+months old, never fresh.
 """
+import datetime as _dt
 import os, sys, tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__)))))
@@ -34,6 +39,15 @@ ORDERS = {
            "status": "closed"},
     1271: {"reference_number": 948, "vendor": "Buckeye Stargazer",
            "status": "open"},
+    # Closed the moment its receive saved, but created two weeks ago -
+    # the SO 1275 shape (Nick, 2026-09-14).
+    1275: {"reference_number": 952, "vendor": "Antlia", "status": "closed",
+           "created_at": (_dt.datetime.now(_dt.timezone.utc)
+                          - _dt.timedelta(days=14)).isoformat()},
+    # Same-vendor id collision with an explicit ANCIENT stamp: stays.
+    950:  {"reference_number": 610, "vendor": "Antlia", "status": "closed",
+           "created_at": (_dt.datetime.now(_dt.timezone.utc)
+                          - _dt.timedelta(days=400)).isoformat()},
 }
 def fake_get(path, params=None, operator=None):
     oid = int(path.rsplit("/", 1)[1])
@@ -56,9 +70,16 @@ with patch("app.planner._get", side_effect=fake_get), \
     check("a REAL SO number colliding with a closed order's id stays",
           m._normalize_so_reference("SO 943 · Svbony")
           == "SO 943 · Svbony", "")
-    check("same-vendor collision blocked by the closed-status gate",
+    check("same-vendor collision blocked (closed, no created stamp)",
           m._normalize_so_reference("SO 948 · Buckeye Stargazer")
           == "SO 948 · Buckeye Stargazer", "")
+    check("closed-but-RECENT internal id translates (SO 1275 case)",
+          m._normalize_so_reference("SO 1275 · Antlia")
+          == "SO 952 · Antlia",
+          m._normalize_so_reference("SO 1275 · Antlia"))
+    check("closed-and-ANCIENT same-vendor collision stays",
+          m._normalize_so_reference("SO 950 · Antlia")
+          == "SO 950 · Antlia", "")
     check("open same-vendor internal id still translates",
           m._normalize_so_reference("SO 1271 · Buckeye Stargazer")
           == "SO 948 · Buckeye Stargazer", "")

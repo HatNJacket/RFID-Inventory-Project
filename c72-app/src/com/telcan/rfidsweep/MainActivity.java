@@ -1875,6 +1875,14 @@ public class MainActivity extends Activity {
         locUndoBtn.setVisibility(View.GONE);
         act2.addView(locUndoBtn, new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        // WRITE OFF (Nick, 2026-09-14): the blank roll / junk labels by
+        // the desk answer every sweep - one press writes off everything
+        // this hunt heard so the locate list stops drowning.
+        locWriteOffBtn = smallBtn("WRITE OFF");
+        locWriteOffBtn.setOnClickListener(x -> writeOffHeardUnpaired());
+        locWriteOffBtn.setVisibility(View.GONE);
+        act2.addView(locWriteOffBtn, new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         v.addView(act2);
         paintSoundBtn();
 
@@ -2882,6 +2890,65 @@ public class MainActivity extends Activity {
         locUnpairedBtn.setBackground(unpairedHunt
                 ? rr(C_OK_BG, C_OK, 8)
                 : btnBg(C_CARD, C_LINE, C_PRESS, 8));
+        if (locWriteOffBtn != null) {
+            locWriteOffBtn.setVisibility(
+                    unpairedHunt ? View.VISIBLE : View.GONE);
+        }
+    }
+
+    /** WRITE OFF (Nick, 2026-09-14): dismiss every unpaired sticker
+     *  this hunt has heard - the blank roll, broken and test labels
+     *  that answer every sweep. The server only writes off tags that
+     *  still belong to NOTHING, so live shelves nearby are safe.
+     *  Undo lives in History on the web terminal. */
+    private void writeOffHeardUnpaired() {
+        if (!unpairedHunt || locTags.isEmpty()) {
+            status.setText("Nothing heard yet - pull the trigger and "
+                    + "sweep the pile first.");
+            return;
+        }
+        final java.util.ArrayList<String> epcs =
+                new java.util.ArrayList<>(locTags.keySet());
+        dlg()
+                .setTitle("WRITE OFF " + epcs.size() + " STICKER(S)?")
+                .setMessage("Every unpaired sticker heard in this hunt "
+                        + "leaves the locate list and stays ignored on "
+                        + "future sweeps. Meant for the blank roll and "
+                        + "broken or test labels. Undo lives in History "
+                        + "on the web terminal.")
+                .setPositiveButton("WRITE OFF", (d, w) -> new Thread(() -> {
+                    try {
+                        JSONObject body = new JSONObject()
+                                .put("epcs", new JSONArray(epcs))
+                                .put("dismissed_by",
+                                        prefs.getString("device", "C72"));
+                        JSONObject resp = api("POST",
+                                "/api/epcs/ignore-heard", body);
+                        final String msg = resp.optString("message",
+                                "Written off.");
+                        ui.post(() -> {
+                            for (String e : epcs) locTags.remove(e);
+                            locFound.clear();
+                            locNarrow = null;
+                            beep(SOUND_OK);
+                            status.setText(msg);
+                            if (unpairedHunt) {
+                                locSku.setText(locTags.size()
+                                        + " unpaired target(s) · "
+                                        + upChecked + " tag(s) checked");
+                            }
+                            updateLocateUi();
+                        });
+                    } catch (Exception e) {
+                        ui.post(() -> {
+                            beep(SOUND_ERR);
+                            status.setText("Write-off failed: "
+                                    + e.getMessage());
+                        });
+                    }
+                }).start())
+                .setNegativeButton("CANCEL", null)
+                .show();
     }
 
     /** Drain the pending reads into ONE classify call - 40 tags or
@@ -3553,7 +3620,7 @@ public class MainActivity extends Activity {
     private int upPrevPower = 0;
     private String upLastPairEpc = null;
     private int upLastPairItem = 0;
-    private Button locUnpairedBtn, locUndoBtn;
+    private Button locUnpairedBtn, locUndoBtn, locWriteOffBtn;
 
     /** Called from the SDK callback thread for every read while locating. */
     private void onLocateRead(String epc, double rssi) {
