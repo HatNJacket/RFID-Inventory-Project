@@ -39,6 +39,7 @@ from app.models import (
     Batch,
     BatchItem,
     BinMapEntry,
+    BoxSetPart,
     OnhandLog,
     OrderReceipt,
     RefreshLog,
@@ -837,6 +838,45 @@ def refresh_duplicate_tasks(session: Session) -> dict:
             (a, b): reason
             for (a, b), reason in pair_reasons.items()
             if a not in in_catalog or b not in in_catalog
+        }
+
+    # Multi-box families are never duplicates of each other (Nick,
+    # 2026-09-15): a box legitimately shares codes with its parent
+    # product - registered sets AND "Part of a set" marks on open
+    # batches (the window before the set is defined) both count.
+    if pair_reasons:
+        fams: dict[str, set[str]] = {}
+        for row in session.scalars(select(BoxSetPart)):
+            s = (row.set_sku or "").strip().upper()
+            if s:
+                fams.setdefault(s, {s}).add(
+                    (row.part_sku or "").strip().upper()
+                )
+        open_ids = [
+            b.id for b in session.scalars(
+                select(Batch).where(
+                    Batch.status.notin_(("done", "abandoned"))
+                )
+            )
+        ]
+        if open_ids:
+            for it in session.scalars(
+                select(BatchItem).where(
+                    BatchItem.batch_id.in_(open_ids),
+                    BatchItem.set_mark_master.isnot(None),
+                )
+            ):
+                m = (it.set_mark_master or "").strip().upper()
+                if not m:
+                    continue
+                fam = fams.setdefault(m, {m})
+                if it.sku:
+                    fam.add(it.sku.strip().upper())
+        groups = list(fams.values())
+        pair_reasons = {
+            (a, b): reason
+            for (a, b), reason in pair_reasons.items()
+            if not any(a in g and b in g for g in groups)
         }
 
     existing = session.scalars(

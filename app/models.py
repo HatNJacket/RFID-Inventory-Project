@@ -1180,6 +1180,14 @@ class BatchItem(Base):
     first_scanned_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
+    # "Part of a set" mark (Nick, 2026-09-15, the multi-box redo): a
+    # lightweight note taken AT COLLECT (C72 or web) - the master SKU
+    # plus "Box X of Y" - and dealt with on the WEB during
+    # verification, where the marks seed the set builder. A mark never
+    # resolves anything by itself. Prod needs dev/alter_add_setmarks.py.
+    set_mark_master: Mapped[str | None] = mapped_column(String(100))
+    set_mark_box: Mapped[int | None] = mapped_column(Integer)
+    set_mark_total: Mapped[int | None] = mapped_column(Integer)
 
     def as_dict(self) -> dict:
         return {
@@ -1208,6 +1216,9 @@ class BatchItem(Base):
             "skipped": self.skipped,
             "skip_reason": self.skip_reason,
             "listing_locked": self.listing_locked,
+            "set_mark_master": self.set_mark_master,
+            "set_mark_box": self.set_mark_box,
+            "set_mark_total": self.set_mark_total,
             # The operator's walking order - also the PRINT order (labels
             # queue by it), which the C72's pair auto-advance walks
             # (Nick, 2026-08-26).

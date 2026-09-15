@@ -5748,24 +5748,29 @@ function collectItemCard(item, inSet) {
       // name instead of under it.
       li.classList.add("bcell--stacked");
     }
-    // Multi-box SET (Nick, 2026-09-08, S11230): lump this box with
-    // others into ONE sellable product - offered on resolved AND
-    // unresolved rows, so a draft-listing box never needs linking
-    // first.
+    // "Part of a set" mark (Nick, 2026-09-15, the multi-box redo): a
+    // lightweight note at collect - master SKU + Box X of Y - offered
+    // on resolved AND unresolved rows. The SET itself is defined on
+    // the web during VERIFICATION, seeded by these marks.
     const lump = document.createElement("button");
     lump.type = "button";
     lump.className = "reset bcell__lump";
-    lump.textContent = "⧉ Multi-box set…";
+    lump.textContent = item.set_mark_total
+      ? `⧉ box ${item.set_mark_box} of ${item.set_mark_total} · ${item.set_mark_master}`
+      : "⧉ Part of a set…";
     lump.title =
-      "This box is one of several boxes (each with its own barcode/SKU) " +
-      "sold only as ONE product - lump them into a set. Each box then " +
-      "counts under its own SKU and the unit count is the smallest of " +
-      "them.";
+      "This box is one of several boxes sold only as ONE product. " +
+      "Mark which box it is (Box X of Y) and the master SKU; the set " +
+      "itself is defined during verification, where the marks are " +
+      "waiting.";
     lump.addEventListener("click", (ev) => {
       ev.stopPropagation();
-      openBoxSetBuilder(item);
+      openSetMarkDialog(item);
     });
-    li.append(lump);
+    // Inside the info column, under the name - as a bare flex child it
+    // landed in the right gutter, OVER the tracker and qty stepper
+    // (Nick, 2026-09-15).
+    (li.querySelector(".bcell__info") || li).append(lump);
     // Multi-select (Nick, 2026-09-01, ⚙ toggle): tick several products,
     // set all their bins in one pass - each write goes through the same
     // audited /api/bin-updates, logged per product with its undo.
@@ -5786,13 +5791,173 @@ function collectItemCard(item, inSet) {
     return li;
 }
 
+// --- "Part of a set" mark (Nick, 2026-09-15, the multi-box redo) ------------
+// Taken at collect on either client: master SKU (defaulted to the
+// row's own) + Box X of Y with steppers. The set itself - ingredient
+// parts, draft listings - is defined on the web during VERIFICATION,
+// where the marks seed the builder.
+function openSetMarkDialog(item) {
+  if (!batch) return;
+  const { wrap, box } = mlOverlay("Part of a set");
+  const intro = document.createElement("p");
+  intro.className = "linkbox__text";
+  intro.textContent =
+    "One product, several boxes. Note which box this is and the " +
+    "master SKU the boxes make up - the set itself gets defined " +
+    "during verification, where every marked box is waiting.";
+  box.appendChild(intro);
+
+  const masterRow = document.createElement("div");
+  masterRow.className = "boxset__row";
+  const masterLbl = document.createElement("span");
+  masterLbl.className = "boxset__lbl";
+  masterLbl.textContent = "Master SKU:";
+  const masterIn = document.createElement("input");
+  masterIn.className = "linkbox__input boxset__fullin";
+  masterIn.placeholder = "e.g. S11230";
+  masterIn.value = item.set_mark_master || item.sku || "";
+  masterRow.append(masterLbl, masterIn);
+  box.appendChild(masterRow);
+
+  let boxNo = item.set_mark_box || 1;
+  let boxTotal = item.set_mark_total || 2;
+  function stepper(get, set) {
+    const holder = document.createElement("span");
+    holder.className = "setmark__step";
+    const minus = document.createElement("button");
+    minus.type = "button";
+    minus.className = "reset";
+    minus.textContent = "−";
+    const num = document.createElement("b");
+    const plus = document.createElement("button");
+    plus.type = "button";
+    plus.className = "reset";
+    plus.textContent = "+";
+    minus.addEventListener("click", () => {
+      set(get() - 1);
+      paint();
+    });
+    plus.addEventListener("click", () => {
+      set(get() + 1);
+      paint();
+    });
+    holder.append(minus, num, plus);
+    return { holder, num };
+  }
+  const numRow = document.createElement("div");
+  numRow.className = "boxset__row setmark__row";
+  const lblA = document.createElement("span");
+  lblA.className = "boxset__lbl";
+  lblA.textContent = "Box";
+  const sBox = stepper(
+    () => boxNo,
+    (v) => {
+      boxNo = Math.min(Math.max(1, v), boxTotal);
+    }
+  );
+  const lblB = document.createElement("span");
+  lblB.className = "boxset__lbl";
+  lblB.textContent = "of";
+  const sTot = stepper(
+    () => boxTotal,
+    (v) => {
+      boxTotal = Math.min(Math.max(2, v), 8);
+      boxNo = Math.min(boxNo, boxTotal);
+    }
+  );
+  function paint() {
+    sBox.num.textContent = String(boxNo);
+    sTot.num.textContent = String(boxTotal);
+  }
+  paint();
+  numRow.append(lblA, sBox.holder, lblB, sTot.holder);
+  box.appendChild(numRow);
+
+  const foot = document.createElement("div");
+  foot.className = "linkbox__actions linkbox__actions--end";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.className = "reset";
+  cancel.textContent = "Cancel";
+  cancel.addEventListener("click", () => wrap.remove());
+  const save = document.createElement("button");
+  save.type = "button";
+  save.className = "reset";
+  save.textContent = "Save mark";
+  save.addEventListener("click", async () => {
+    const master = masterIn.value.trim();
+    if (!master) {
+      masterIn.focus();
+      return;
+    }
+    save.disabled = true;
+    try {
+      const r = await postJson(
+        `/api/batches/${batch.id}/items/${item.id}/set-mark`,
+        {
+          master_sku: master,
+          box_no: boxNo,
+          box_total: boxTotal,
+          changed_by: operatorEl.value || null,
+        }
+      );
+      wrap.remove();
+      setBatchResult(r.message, "ok");
+      await pullBatch(false);
+      renderBatchItems();
+    } catch (err) {
+      setBatchResult(err.message, "err");
+      save.disabled = false;
+    }
+  });
+  foot.append(cancel);
+  if (item.set_mark_total) {
+    const clear = document.createElement("button");
+    clear.type = "button";
+    clear.className = "reset";
+    clear.textContent = "Remove mark";
+    clear.addEventListener("click", async () => {
+      clear.disabled = true;
+      try {
+        const r = await postJson(
+          `/api/batches/${batch.id}/items/${item.id}/set-mark`,
+          { clear: true, changed_by: operatorEl.value || null }
+        );
+        wrap.remove();
+        setBatchResult(r.message, "ok");
+        await pullBatch(false);
+        renderBatchItems();
+      } catch (err) {
+        setBatchResult(err.message, "err");
+        clear.disabled = false;
+      }
+    });
+    foot.append(clear);
+  }
+  foot.append(save);
+  box.appendChild(foot);
+}
+
 // --- Multi-box set builder (Nick, 2026-09-08, the S11230) -------------------
 // Boxes with their OWN barcodes/SKUs (often drafts) sold only whole.
-// Tick the boxes from the current batch, type each part's SKU as the
-// carton says it, name the FULL (active) product, create - matching
-// batch rows re-resolve as parts on the spot.
-function openBoxSetBuilder(seedItem) {
+// Since 2026-09-15 this lives on the VERIFY step, seeded by the
+// collect-stage "Part of a set" marks (pass `master`): marked rows
+// come pre-ticked in Box X order, the full product pre-filled.
+// Matching batch rows re-resolve as parts on the spot, and tags this
+// batch already paired follow their box identities.
+function openBoxSetBuilder(seedItem, master) {
   if (!batch) return;
+  const masterU = (master || "").trim().toUpperCase();
+  const markedFor = (it) =>
+    !!masterU &&
+    (it.set_mark_master || "").trim().toUpperCase() === masterU;
+  // Marked boxes first, in their Box X order - list order IS the box
+  // numbering at create time.
+  const ordered = [...batchItems].sort((a, b) => {
+    const rank = (it) =>
+      markedFor(it) ? it.set_mark_box || 99 : 999;
+    return rank(a) - rank(b);
+  });
   const { wrap, box } = mlOverlay("Lump boxes into one multi-box product");
   const intro = document.createElement("p");
   intro.className = "linkbox__text";
@@ -5808,18 +5973,21 @@ function openBoxSetBuilder(seedItem) {
 
   const rows = [];
   const list = document.createElement("div");
-  batchItems.forEach((it) => {
+  ordered.forEach((it) => {
     const row = document.createElement("div");
     row.className = "mlrow mlrow--wrap";
     const cb = document.createElement("input");
     cb.type = "checkbox";
-    cb.checked = it.id === seedItem.id;
+    cb.checked = masterU
+      ? markedFor(it)
+      : !!seedItem && it.id === seedItem.id;
     const name = document.createElement("div");
     name.className = "mlrow__main";
     name.innerHTML =
       `<b>${escapeHtml(it.product_title || it.scanned_code || "?")}</b>` +
       `<span class="mlrow__meta"> · scanned ${escapeHtml(it.scanned_code || it.barcode || "—")}` +
-      `${it.resolved ? "" : " · unresolved"}</span>`;
+      `${it.resolved ? "" : " · unresolved"}` +
+      `${it.set_mark_total ? ` · marked box ${it.set_mark_box} of ${it.set_mark_total}` : ""}</span>`;
     const skuIn = document.createElement("input");
     skuIn.className = "linkbox__input boxset__in boxset__in--sku";
     skuIn.placeholder = "SKU on the box";
@@ -5914,10 +6082,13 @@ function openBoxSetBuilder(seedItem) {
   const fullIn = document.createElement("input");
   fullIn.className = "linkbox__input boxset__fullin";
   fullIn.placeholder = "Barcode or SKU, e.g. S11230";
-  // A resolved seed row is the best guess at the full product - the
+  // Seeded from verify-step marks: the marks' master IS the full
+  // product. Otherwise a resolved seed row is the best guess - the
   // usual entry is a box carrying the full listing's barcode (Nick's
   // S11230-1, 2026-09-14), which scans AS the full set.
-  if (seedItem.resolved) {
+  if (master) {
+    fullIn.value = master;
+  } else if (seedItem && seedItem.resolved) {
     fullIn.value = seedItem.sku || seedItem.barcode || "";
   }
   fullRow.append(fullLbl, fullIn);
@@ -6026,7 +6197,11 @@ function openBoxSetBuilder(seedItem) {
       wrap.remove();
       setBatchResult(r.message, "ok");
       await pullBatch(false);
-      renderBatchItems();
+      // Defined from the VERIFY step (the normal home since
+      // 2026-09-15): repaint the verify report so the boxes score
+      // under their part SKUs; collect keeps its own render.
+      if (batchStage === "verify") await runVerifyCheck();
+      else renderBatchItems();
       // Legacy stock still tagged under the FULL SKU: offer the
       // re-label pass (peel old, apply per-box labels, pair again).
       if (r.full_tags > 0) {
@@ -9931,8 +10106,49 @@ async function runVerifyCheck(onlyItemId = null) {
   }
 
   const lowCount = (rows.match(/data-low="1"/g) || []).length;
+  // "Part of a set" marks land HERE (Nick, 2026-09-15, the multi-box
+  // redo): every marked box is flagged and the set builder opens
+  // seeded from the marks. Duplicate-code guardrails stand down
+  // inside a marked family for the whole verification window.
+  const markGroups = {};
+  batchItems.forEach((it) => {
+    if (!it.set_mark_master) return;
+    const key = it.set_mark_master.trim().toUpperCase();
+    (markGroups[key] =
+      markGroups[key] || {
+        master: it.set_mark_master.trim(),
+        boxes: [],
+      }).boxes.push(it);
+  });
+  const setsPanel = Object.values(markGroups)
+    .map((g) => {
+      const total = Math.max(
+        ...g.boxes.map((b) => b.set_mark_total || 0)
+      );
+      const boxes = g.boxes
+        .slice()
+        .sort((a, b) => (a.set_mark_box || 0) - (b.set_mark_box || 0))
+        .map(
+          (b) =>
+            `box ${b.set_mark_box} of ${b.set_mark_total}: ${escapeHtml(
+              b.product_title || b.scanned_code || "?"
+            )}`
+        )
+        .join(" · ");
+      const missing =
+        total > g.boxes.length
+          ? ` Only ${g.boxes.length} of ${total} boxes are marked in this batch - the builder can add draft listings for the rest.`
+          : "";
+      return `<div class="result result--warn-soft bvset">⧉ <b>${escapeHtml(
+        g.master
+      )}</b> has ${g.boxes.length} box(es) marked as parts of a set: ${boxes}.${missing}
+        <button class="reset bvset-define" type="button" data-master="${escapeHtml(
+          g.master
+        )}" title="Open the set builder seeded from these marks - each box becomes an ingredient of the master product; boxes with no listing get real draft listings">Define the set…</button></div>`;
+    })
+    .join("");
   bEl.verifyReport.innerHTML = `
-    ${verdict}${yellowNote}${retiredNote}${naNote}${tbNote}${unresolvedNote}
+    ${setsPanel}${verdict}${yellowNote}${retiredNote}${naNote}${tbNote}${unresolvedNote}
     <div class="inventory__scroll"><table class="inventory__table">
       <thead><tr><th>Product</th><th>SKU</th><th class="num" title="Boxes physically collected this batch (new + already tagged)">Counted</th><th class="num" title="Shopify on-hand for this shelf; brackets show counted-vs-expected">Expected</th><th class="num">Detected</th><th></th></tr></thead>
       <tbody>${rows}</tbody>
@@ -9953,6 +10169,11 @@ async function runVerifyCheck(onlyItemId = null) {
            <ul class="recent__list" id="bverify-otherlist" hidden>${otherRows}</ul>`
         : ""
     }`;
+  bEl.verifyReport.querySelectorAll(".bvset-define").forEach((btn) =>
+    btn.addEventListener("click", () =>
+      openBoxSetBuilder(null, btn.dataset.master)
+    )
+  );
   const othersBtn = document.getElementById("bverify-others");
   if (othersBtn)
     othersBtn.addEventListener("click", () => {
@@ -10095,6 +10316,16 @@ bEl.complete.addEventListener("click", async () => {
     msg =
       `This bin has never been verified - no RFID sweep has been checked ` +
       `against it.\n\n${msg}`;
+  }
+  // "Part of a set" marks that never became a set (Nick, 2026-09-15):
+  // completing leaves the boxes counting as whatever they scanned as.
+  const undefinedMarks = batchItems.filter((i) => i.set_mark_master);
+  if (undefinedMarks.length) {
+    msg =
+      `⧉ ${undefinedMarks.length} box(es) are still marked as parts of ` +
+      `a set that was never defined (${[...new Set(undefinedMarks.map((i) => i.set_mark_master))].join(", ")}) - ` +
+      `define the set from the verify step first, or they stay counted ` +
+      `as-is.\n\n${msg}`;
   }
   if (!confirm(msg)) return;
   bEl.complete.disabled = true;

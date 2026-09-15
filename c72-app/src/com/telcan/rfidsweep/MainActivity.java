@@ -401,6 +401,11 @@ public class MainActivity extends Activity {
         int boxNo;          // remote row: which box of the set
         String remoteBin;   // remote row: the bin it belongs in
         int knownUnits;     // remote row: the count already known for it
+        // "Part of a set" mark (4.04, Nick's multi-box redo): noted on
+        // the gun at collect, resolved on the WEB during verification.
+        String markMaster;
+        int markBox;
+        int markTotal;
 
         static BItem from(JSONObject o) {
             BItem b = new BItem();
@@ -440,6 +445,10 @@ public class MainActivity extends Activity {
             b.printed = o.optInt("printed_count", 0);
             b.firstScanned = o.isNull("first_scanned_at") ? null
                     : o.optString("first_scanned_at");
+            b.markMaster = o.isNull("set_mark_master") ? null
+                    : o.optString("set_mark_master");
+            b.markBox = o.optInt("set_mark_box", 0);
+            b.markTotal = o.optInt("set_mark_total", 0);
             return b;
         }
 
@@ -5431,12 +5440,14 @@ public class MainActivity extends Activity {
         editLinkBtn.setOnClickListener(v -> showLinkDialog());
         mid.addView(editLinkBtn);
 
-        // Multi-box SET (3.92, Nick - the S11230): lump this box with
-        // others into ONE sellable product. Offered on resolved AND
-        // unresolved rows so a draft-listing box never needs linking
-        // first.
-        editBoxSetBtn = smallBtn("MULTI-BOX SET");
-        editBoxSetBtn.setOnClickListener(v -> boxSetPickBoxes());
+        // "Part of a set" mark (4.04, Nick's multi-box redo,
+        // 2026-09-15): the gun only NOTES that this box belongs to a
+        // set - master SKU + Box X of Y. The set itself (ingredient
+        // parts, draft listings) is defined on the WEB during
+        // verification, seeded by the marks. Offered on resolved AND
+        // unresolved rows.
+        editBoxSetBtn = smallBtn("PART OF A SET…");
+        editBoxSetBtn.setOnClickListener(v -> showSetMarkDialog());
         mid.addView(editBoxSetBtn);
 
         // "I can't do this one." One-off skip OR one of the durable
@@ -5707,6 +5718,10 @@ public class MainActivity extends Activity {
         editSkipBtn.setVisibility(it.resolved ? View.VISIBLE : View.GONE);
         editSkipBtn.setText(it.skipped
                 ? "PUT IT BACK IN THE BATCH" : "CAN'T SCAN");
+        editBoxSetBtn.setText(it.markTotal > 0
+                ? "⧉ BOX " + it.markBox + " OF " + it.markTotal
+                        + " - CHANGE…"
+                : "PART OF A SET…");
         editNoScanBtn.setVisibility(
                 it.resolved && it.sku != null ? View.VISIBLE : View.GONE);
         editNoScanBtn.setText(it.noScan
@@ -13279,345 +13294,142 @@ public class MainActivity extends Activity {
         }
     }
 
-    // ------------------------------------------ multi-box set builder ---
-    // (3.92, Nick - the S11230): boxes with their OWN barcodes/SKUs
-    // (often draft listings) sold only as one full product. Pick the
-    // boxes from this batch, confirm each SKU as the carton says it,
-    // name the full product - matching rows re-resolve as parts.
-    private final java.util.LinkedHashSet<Integer> boxSetSel =
-            new java.util.LinkedHashSet<>();
-    // How many NEW draft listings to create for boxes with no listing
-    // anywhere (Nick, 2026-09-08) - the - / + row on the picker.
-    private int boxSetNewCount = 0;
-
-    private void boxSetPickBoxes() {
+    // --------------------------------------- "Part of a set" mark ---
+    // (4.04, Nick's multi-box redo, 2026-09-15): the gun only NOTES
+    // that a box belongs to a multi-box set - master SKU (defaulted
+    // to the row's own) plus Box X of Y on -/+ steppers. The set
+    // itself - ingredient parts riding the master product, draft
+    // listings for boxes with no listing - is defined on the WEB
+    // during verification, seeded by these marks.
+    private void showSetMarkDialog() {
         if (editEntry == null) return;
-        boxSetSel.clear();
-        boxSetSel.add(editEntry.item.id);
-        boxSetNewCount = 0;
+        final BItem it = editEntry.item;
+        final int itemId = it.id;
         closeItemEditor();
-        showBoxSetPicker();
-    }
-
-    private void showBoxSetPicker() {
-        ScrollView scroll = new ScrollView(this);
-        LinearLayout list = new LinearLayout(this);
-        list.setOrientation(LinearLayout.VERTICAL);
-        list.setPadding(dp(14), dp(8), dp(14), dp(8));
-        scroll.addView(list);
-        TextView intro = new TextView(this);
-        intro.setTextSize(12);
-        intro.setTextColor(C_MUTED);
-        intro.setText("One product, several boxes, each box with its "
-                + "own barcode/SKU. Tap every box of the set (2+), "
-                + "then NEXT. A mix-and-match selection is a BUNDLE - "
-                + "use the web product window for those.");
-        intro.setPadding(0, 0, 0, dp(8));
-        list.addView(intro);
-        final AlertDialog[] dref = new AlertDialog[1];
-        for (final BItem b : bItems) {
-            boolean on = boxSetSel.contains(b.id);
-            list.addView(targetCard(
-                    b.name(),
-                    (b.resolved ? "SKU " + (b.sku == null ? "—" : b.sku)
-                            : "unresolved")
-                        + " · scanned " + (b.scannedCode == null
-                            ? "—" : b.scannedCode),
-                    on ? "hi" : null,
-                    () -> {
-                        if (on) boxSetSel.remove(b.id);
-                        else boxSetSel.add(b.id);
-                        if (dref[0] != null) dref[0].dismiss();
-                        showBoxSetPicker();
-                    }, on ? "IN THE SET" : null));
+        final EditText masterIn = themedEdit();
+        masterIn.setHint("Master SKU (e.g. S11230)");
+        masterIn.setTextSize(16);
+        masterIn.setText(it.markMaster != null && !it.markMaster.isEmpty()
+                ? it.markMaster : (it.sku == null ? "" : it.sku));
+        final int[] xy = {it.markBox > 0 ? it.markBox : 1,
+                it.markTotal > 0 ? it.markTotal : 2};
+        final TextView xv = new TextView(this);
+        final TextView yv = new TextView(this);
+        for (TextView v : new TextView[]{xv, yv}) {
+            v.setTextSize(20);
+            v.setTypeface(null, Typeface.BOLD);
+            v.setTextColor(C_TEXT);
+            v.setGravity(Gravity.CENTER);
         }
-        // NEW draft listings (Nick, 2026-09-08): boxes with no listing
-        // anywhere. Minus on the left, plus on the right; each new box
-        // gets its own window after NEXT and a real Shopify DRAFT.
-        LinearLayout newRow = new LinearLayout(this);
-        newRow.setGravity(Gravity.CENTER_VERTICAL);
-        Button minus = smallBtn("−");
-        minus.setOnClickListener(x -> {
-            if (boxSetNewCount > 0) boxSetNewCount--;
-            if (dref[0] != null) dref[0].dismiss();
-            showBoxSetPicker();
-        });
-        TextView cnt = new TextView(this);
-        cnt.setText("  " + boxSetNewCount + " new draft listing"
-                + (boxSetNewCount == 1 ? "" : "s") + "  ");
-        cnt.setTextSize(13);
-        cnt.setTypeface(null, Typeface.BOLD);
-        cnt.setTextColor(C_TEXT);
-        Button plus = smallBtn("+");
-        plus.setOnClickListener(x -> {
-            if (boxSetNewCount < 8) boxSetNewCount++;
-            if (dref[0] != null) dref[0].dismiss();
-            showBoxSetPicker();
-        });
-        newRow.addView(minus, new LinearLayout.LayoutParams(
-                dp(52), LinearLayout.LayoutParams.WRAP_CONTENT));
-        newRow.addView(cnt, weight());
-        cnt.setGravity(Gravity.CENTER);
-        newRow.addView(plus, new LinearLayout.LayoutParams(
-                dp(52), LinearLayout.LayoutParams.WRAP_CONTENT));
-        LinearLayout.LayoutParams nrl = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT);
-        nrl.topMargin = dp(8);
-        list.addView(newRow, nrl);
-
-        dref[0] = dlg()
-                .setTitle("MULTI-BOX SET - pick the boxes")
-                .setView(scroll)
-                .setPositiveButton("NEXT ("
-                        + (boxSetSel.size() + boxSetNewCount) + ")",
-                        (d, w) -> {
-                    java.util.List<BItem> sel = new ArrayList<>();
-                    for (BItem b : bItems) {
-                        if (boxSetSel.contains(b.id)) sel.add(b);
-                    }
-                    if (sel.size() + boxSetNewCount < 2) {
-                        beep(SOUND_ERR);
-                        status.setText("A set needs at least two "
-                                + "boxes (picked or new).");
-                        return;
-                    }
-                    boxSetSkuPass(sel, 0,
-                            new ArrayList<JSONObject>());
-                })
-                .setNegativeButton("CANCEL", null)
-                .show();
-    }
-
-    /** Confirm each box's SKU exactly as the carton prints it. */
-    private void boxSetSkuPass(final java.util.List<BItem> sel,
-            final int idx, final java.util.List<JSONObject> parts) {
-        if (idx >= sel.size()) {
-            boxSetDraftPass(boxSetNewCount, parts);
-            return;
-        }
-        final BItem it = sel.get(idx);
-        final EditText in = themedEdit();
-        in.setText(it.sku != null && !it.sku.isEmpty()
-                ? it.sku : (it.scannedCode == null ? "" : it.scannedCode));
-        in.setTextSize(16);
+        final Runnable paint = () -> {
+            xv.setText(String.valueOf(xy[0]));
+            yv.setText(String.valueOf(xy[1]));
+        };
+        paint.run();
         LinearLayout wrap = new LinearLayout(this);
         wrap.setOrientation(LinearLayout.VERTICAL);
         wrap.setPadding(dp(20), dp(8), dp(20), dp(4));
         TextView t = new TextView(this);
         t.setTextSize(12);
         t.setTextColor(C_MUTED);
-        t.setText(it.name() + "\nscanned: "
-                + (it.scannedCode == null ? "—" : it.scannedCode));
+        t.setText(it.name() + "\nMark which box this is. The set "
+                + "itself gets defined on the web terminal during "
+                + "verification.");
+        t.setPadding(0, 0, 0, dp(6));
         wrap.addView(t);
-        wrap.addView(in);
-        dlg().setTitle("SKU on box " + (idx + 1) + " of " + sel.size())
+        wrap.addView(masterIn);
+        wrap.addView(stepperRow("BOX", xv, () -> {
+            xy[0] = Math.max(1, xy[0] - 1);
+            paint.run();
+        }, () -> {
+            xy[0] = Math.min(xy[1], xy[0] + 1);
+            paint.run();
+        }));
+        wrap.addView(stepperRow("OF", yv, () -> {
+            xy[1] = Math.max(2, xy[1] - 1);
+            if (xy[0] > xy[1]) xy[0] = xy[1];
+            paint.run();
+        }, () -> {
+            xy[1] = Math.min(8, xy[1] + 1);
+            paint.run();
+        }));
+        AlertDialog.Builder b = dlg()
+                .setTitle("PART OF A SET - box X of Y")
                 .setView(wrap)
-                .setPositiveButton("NEXT", (d, w) -> {
-                    String sku = in.getText().toString().trim();
-                    if (sku.isEmpty()) {
+                .setPositiveButton("SAVE", (d, w) -> {
+                    String master = masterIn.getText().toString().trim();
+                    if (master.isEmpty()) {
                         beep(SOUND_ERR);
-                        status.setText("Every box needs the SKU its "
-                                + "carton says.");
+                        status.setText("The mark needs the master SKU.");
                         return;
                     }
-                    String bc = it.barcode != null && !it.barcode.isEmpty()
-                            ? it.barcode : it.scannedCode;
-                    try {
-                        JSONObject o = new JSONObject().put("sku", sku);
-                        if (bc != null && !bc.isEmpty()) {
-                            o.put("barcode", bc);
-                        }
-                        parts.add(o);
-                    } catch (Exception ignored) {
-                    }
-                    boxSetSkuPass(sel, idx + 1, parts);
+                    postSetMark(itemId, master, xy[0], xy[1], false);
                 })
-                .setNegativeButton("CANCEL", null)
-                .show();
-    }
-
-    /** One window per NEW box (Nick, 2026-09-08): barcode, SKU or
-     *  both (blank SKU auto-numbers SET-X), and its bin - default the
-     *  bin being batch tagged. A real Shopify DRAFT listing is created
-     *  server-side, named DRAFT LISTING - INGREDIENT <product> <sku>. */
-    private void boxSetDraftPass(final int remaining,
-            final java.util.List<JSONObject> parts) {
-        if (remaining <= 0) {
-            boxSetFullProduct(parts);
-            return;
+                .setNegativeButton("CANCEL", null);
+        if (it.markTotal > 0) {
+            b.setNeutralButton("REMOVE MARK",
+                    (d, w) -> postSetMark(itemId, null, 0, 0, true));
         }
-        final int n = boxSetNewCount - remaining + 1;
-        final EditText bcIn = themedEdit();
-        bcIn.setHint("Barcode on the box (optional)");
-        bcIn.setTextSize(15);
-        final EditText skuIn = themedEdit();
-        skuIn.setHint("SKU (blank = auto, e.g. S11810-" + (n + 1) + ")");
-        skuIn.setTextSize(15);
-        final EditText binIn = themedEdit();
-        binIn.setHint("Bin");
-        binIn.setText(batchBin == null ? "" : batchBin);
-        binIn.setTextSize(15);
-        LinearLayout wrap = new LinearLayout(this);
-        wrap.setOrientation(LinearLayout.VERTICAL);
-        wrap.setPadding(dp(20), dp(8), dp(20), dp(4));
-        wrap.addView(bcIn);
-        wrap.addView(skuIn);
-        wrap.addView(binIn);
-        dlg().setTitle("New box " + n + " of " + boxSetNewCount
-                        + " (draft listing)")
-                .setView(wrap)
-                .setPositiveButton("NEXT", (d, w) -> {
-                    String bc = bcIn.getText().toString().trim();
-                    String sku = skuIn.getText().toString().trim();
-                    if (bc.isEmpty() && sku.isEmpty()) {
-                        beep(SOUND_ERR);
-                        status.setText("A new box needs a barcode or "
-                                + "a SKU.");
-                        return;
-                    }
-                    try {
-                        JSONObject o = new JSONObject()
-                                .put("create_draft", true);
-                        if (!sku.isEmpty()) o.put("sku", sku);
-                        if (!bc.isEmpty()) o.put("barcode", bc);
-                        String bin = binIn.getText().toString().trim()
-                                .toUpperCase(java.util.Locale.ROOT);
-                        if (!bin.isEmpty()) o.put("bin", bin);
-                        parts.add(o);
-                    } catch (Exception ignored) {
-                    }
-                    boxSetDraftPass(remaining - 1, parts);
-                })
-                .setNegativeButton("CANCEL", null)
-                .show();
+        b.show();
     }
 
-    private void boxSetFullProduct(
-            final java.util.List<JSONObject> parts) {
-        final EditText in = themedEdit();
-        in.setHint("Full product barcode or SKU (e.g. S11230)");
-        in.setTextSize(16);
-        LinearLayout wrap = new LinearLayout(this);
-        wrap.setOrientation(LinearLayout.VERTICAL);
-        wrap.setPadding(dp(20), dp(8), dp(20), dp(4));
-        wrap.addView(in);
-        dlg().setTitle("The FULL (sellable) product?")
-                .setView(wrap)
-                .setPositiveButton("CREATE SET", (d, w) -> {
-                    String code = in.getText().toString().trim();
-                    if (code.isEmpty()) return;
-                    postBoxSet(code, parts);
-                })
-                .setNegativeButton("CANCEL", null)
-                .show();
+    /** One "LABEL  [-]  N  [+]" line for the mark dialog. */
+    private LinearLayout stepperRow(String label, TextView num,
+            Runnable minus, Runnable plus) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        TextView l = new TextView(this);
+        l.setText(label);
+        l.setTextSize(14);
+        l.setTextColor(C_TEXT);
+        Button m = smallBtn("\u2212");
+        m.setOnClickListener(v -> minus.run());
+        Button p = smallBtn("+");
+        p.setOnClickListener(v -> plus.run());
+        row.addView(l, new LinearLayout.LayoutParams(
+                dp(48), LinearLayout.LayoutParams.WRAP_CONTENT));
+        row.addView(m, new LinearLayout.LayoutParams(
+                dp(64), LinearLayout.LayoutParams.WRAP_CONTENT));
+        row.addView(num, weight());
+        row.addView(p, new LinearLayout.LayoutParams(
+                dp(64), LinearLayout.LayoutParams.WRAP_CONTENT));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.topMargin = dp(6);
+        row.setLayoutParams(lp);
+        return row;
     }
 
-    private void postBoxSet(final String setCode,
-            final java.util.List<JSONObject> parts) {
-        postBoxSet(setCode, parts, false);
-    }
-
-    private void postBoxSet(final String setCode,
-            final java.util.List<JSONObject> parts,
-            final boolean useExisting) {
-        status.setText("Creating the set…");
+    private void postSetMark(final int itemId, final String master,
+            final int boxNo, final int boxTotal, final boolean clear) {
+        status.setText(clear ? "Removing the mark\u2026" : "Marking\u2026");
         new Thread(() -> {
             try {
-                org.json.JSONArray pj = new org.json.JSONArray();
-                for (JSONObject p : parts) {
-                    pj.put(p);
+                JSONObject body = new JSONObject().put("changed_by",
+                        prefs.getString("device", "C72"));
+                if (clear) {
+                    body.put("clear", true);
+                } else {
+                    body.put("master_sku", master)
+                            .put("box_no", boxNo)
+                            .put("box_total", boxTotal);
                 }
-                JSONObject body = new JSONObject()
-                        .put("set_code", setCode)
-                        .put("parts", pj)
-                        .put("batch_id", batchId)
-                        .put("use_existing", useExisting)
-                        .put("changed_by",
-                                prefs.getString("device", "C72"));
-                JSONObject resp = api("POST", "/api/box-sets", body);
-                final String msg = resp.optString("message", "Set ✓");
-                final int fullTags = resp.optInt("full_tags");
-                final String setSku = resp.optString("set_sku", setCode);
-                final int nParts = parts.size();
+                JSONObject resp = api("POST", "/api/batches/" + batchId
+                        + "/items/" + itemId + "/set-mark", body);
+                final String msg = resp.optString("message", "Marked \u2713");
                 ui.post(() -> {
                     beep(SOUND_OK);
                     status.setText(msg);
                     reloadBatchAndReview();
-                    if (fullTags > 0) {
-                        offerBoxSetRelabel(setSku, fullTags, nParts);
-                    }
                 });
             } catch (Exception e) {
-                final String msg = e.getMessage() == null
-                        ? "" : e.getMessage();
-                // A new-box SKU that already has a Shopify listing:
-                // the server asks (409) - offer to use the premade
-                // listing instead of creating a duplicate draft
-                // (Nick, 2026-09-14, his hand-made S11230 drafts).
-                if (msg.contains("Confirm to use the premade")) {
-                    ui.post(() -> {
-                        beep(SOUND_OTHER);
-                        dlg().setTitle("Listing already in Shopify")
-                                .setMessage(msg)
-                                .setPositiveButton("USE PREMADE",
-                                        (d, w) -> postBoxSet(setCode,
-                                                parts, true))
-                                .setNegativeButton("CANCEL", null)
-                                .show();
-                    });
-                    return;
-                }
                 ui.post(() -> {
                     beep(SOUND_ERR);
-                    status.setText("Set failed: " + msg);
+                    status.setText("Mark failed: " + e.getMessage());
                 });
             }
         }).start();
-    }
-
-    /** Legacy stock still tagged under the FULL SKU (the old
-     *  double-counting): offer per-box labels + old-tag unlink. */
-    private void offerBoxSetRelabel(final String setSku,
-            final int fullTags, final int nParts) {
-        final int units = Math.max(1, Math.round(
-                fullTags / (float) nParts));
-        dlg().setTitle("Re-label the old stock?")
-                .setMessage(fullTags + " tag(s) still sit under "
-                        + setSku + " itself - the old double-count. "
-                        + "Queue " + units + " unit(s) x " + nParts
-                        + " box labels and unlink those old tags?\n\n"
-                        + "Peel the old stickers, apply the new "
-                        + "per-box labels, pair as usual.")
-                .setPositiveButton("PRINT + UNLINK",
-                        (d, w) -> new Thread(() -> {
-                    try {
-                        JSONObject resp = api("POST", "/api/box-sets/"
-                                + encPath(setSku) + "/relabel",
-                                new JSONObject()
-                                        .put("units", units)
-                                        .put("unlink_old", true)
-                                        .put("confirmed", true)
-                                        .put("changed_by", prefs
-                                                .getString("device",
-                                                        "C72")));
-                        final String m = resp.optString("message",
-                                "Labels queued ✓");
-                        ui.post(() -> {
-                            beep(SOUND_OK);
-                            status.setText(m);
-                            reloadBatchAndReview();
-                        });
-                    } catch (Exception e) {
-                        ui.post(() -> {
-                            beep(SOUND_ERR);
-                            status.setText("Re-label failed: "
-                                    + e.getMessage());
-                        });
-                    }
-                }).start())
-                .setNegativeButton("LATER", null)
-                .show();
     }
 
     private void setItemSkip(boolean skipped, String reason) {

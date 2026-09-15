@@ -1918,6 +1918,50 @@ def _boxset_parts_of(session: Session, set_sku: str) -> list[BoxSetPart]:
     ).all()
 
 
+def _same_set_family(
+    session: Session, sku_a: str | None, sku_b: str | None
+) -> bool:
+    """True when the two SKUs belong to ONE multi-box family: one is
+    the set and the other one of its boxes, or both are boxes of the
+    same set - via the registry, OR via "Part of a set" marks on rows
+    of still-open batches (the verification window, before the set is
+    defined). One box often carries the PARENT product's actual
+    barcode (Nick, 2026-09-15, the S11230), so the duplicate barcode/
+    SKU guardrails stand down inside a family: no ask, no Review task.
+    Clashes with anything OUTSIDE the family keep the guards."""
+    a = (sku_a or "").strip().upper()
+    b = (sku_b or "").strip().upper()
+    if not a or not b or a == b:
+        return False
+    fams: dict[str, set[str]] = {}
+    for row in session.scalars(select(BoxSetPart)):
+        s = (row.set_sku or "").strip().upper()
+        p = (row.part_sku or "").strip().upper()
+        if s:
+            fams.setdefault(s, {s}).add(p)
+    open_ids = [
+        batch.id for batch in session.scalars(
+            select(Batch).where(
+                Batch.status.notin_(("done", "abandoned"))
+            )
+        )
+    ]
+    if open_ids:
+        for it in session.scalars(
+            select(BatchItem).where(
+                BatchItem.batch_id.in_(open_ids),
+                BatchItem.set_mark_master.isnot(None),
+            )
+        ):
+            m = (it.set_mark_master or "").strip().upper()
+            if not m:
+                continue
+            fam = fams.setdefault(m, {m})
+            if it.sku:
+                fam.add(it.sku.strip().upper())
+    return any(a in fam and b in fam for fam in fams.values())
+
+
 def _boxset_unit_count(session: Session, set_sku: str) -> int | None:
     """min over the set's parts of their tag unit counts, or None when
     the SKU is not a set. A part with zero tags floors the whole set."""
@@ -2331,6 +2375,7 @@ def create_box_set(
     # barcode/SKU (resolved or not) becomes the part, riding the full
     # product's identity for labels and pairing.
     items_updated = 0
+    tags_restamped = 0
     if payload.batch_id:
         match: dict[str, BoxSetPart] = {}
         for r in rows:
@@ -2338,9 +2383,22 @@ def create_box_set(
             if r.part_barcode:
                 match[r.part_barcode.upper()] = r
         total = len(rows)
+        # Old row identity -> the ONE part it became (None = ambiguous:
+        # several boxes came from the same old identity, e.g. two boxes
+        # that both scanned as the full product - their tags stay for
+        # the re-label pass instead of guessing).
+        old_map: dict[str, BoxSetPart | None] = {}
         for it in session.scalars(
             select(BatchItem).where(BatchItem.batch_id == payload.batch_id)
         ):
+            # "Part of a set" marks for this master are consumed by the
+            # definition, matched into the set or not (Nick, 2026-09-15:
+            # the marks exist to seed exactly this moment).
+            if (it.set_mark_master or "").strip().upper() == \
+                    set_sku.upper():
+                it.set_mark_master = None
+                it.set_mark_box = None
+                it.set_mark_total = None
             key_candidates = [
                 (it.sku or "").strip().upper(),
                 (it.barcode or "").strip().upper(),
@@ -2352,6 +2410,7 @@ def create_box_set(
             )
             if part is None:
                 continue
+            old_sku = (it.sku or "").strip()
             it.resolved = True
             it.sku = part.part_sku
             it.barcode = part.part_barcode or part.part_sku
@@ -2366,6 +2425,38 @@ def create_box_set(
             if full.get("image_url"):
                 it.image_url = full["image_url"]
             items_updated += 1
+            if old_sku and old_sku.upper() != part.part_sku.upper():
+                k = old_sku.upper()
+                old_map[k] = (
+                    part if k not in old_map or old_map[k] is part
+                    else None
+                )
+        # Sets are now defined at VERIFY (Nick, 2026-09-15) - AFTER
+        # pairing - so tags this batch already tied under a row's old
+        # identity follow it to its box identity, when the mapping is
+        # unambiguous.
+        for old_u, part in old_map.items():
+            if part is None:
+                continue
+            for t in session.scalars(
+                select(RfidAssignment).where(
+                    RfidAssignment.batch_id == payload.batch_id,
+                    func.upper(RfidAssignment.sku) == old_u,
+                )
+            ):
+                t.sku = part.part_sku
+                t.barcode = part.part_barcode or part.part_sku
+                t.product_title = (
+                    f"{part.set_title or set_sku} - "
+                    f"Box {part.box_no} of {total}"
+                )[:255]
+                if part.set_variant_id:
+                    t.shopify_variant_id = part.set_variant_id
+                if part.set_product_id:
+                    t.shopify_product_id = part.set_product_id
+                tags_restamped += 1
+        if tags_restamped:
+            session.flush()
 
     full_tags = len(session.scalars(
         select(RfidAssignment).where(
@@ -2378,6 +2469,7 @@ def create_box_set(
         "set_title": full.get("product_title"),
         "parts": [r.as_dict() for r in rows],
         "batch_items_updated": items_updated,
+        "tags_restamped": tags_restamped,
         "aliases_cleared": aliases_cleared,
         "drafts_created": [d["sku"] for d in drafts_made],
         "premade_used": [h["sku"] for h in premade_used],
@@ -2395,6 +2487,11 @@ def create_box_set(
                 f" {len(premade_used)} premade listing(s) used as "
                 f"boxes: {', '.join(h['sku'] for h in premade_used)}."
                 if premade_used else ""
+            )
+            + (
+                f" {tags_restamped} tag(s) paired this batch follow "
+                "their box identities."
+                if tags_restamped else ""
             )
             + (
                 f" {aliases_cleared} old barcode link(s) on the part "
@@ -4328,7 +4425,14 @@ def overwrite_barcode(
             == (product.get("sku") or "").strip().upper()
             != ""
         )
-        if not same and not payload.force:
+        # Inside one multi-box family (set + its boxes, registered or
+        # marked in an open batch) the duplicate guard stands down
+        # entirely (Nick, 2026-09-15): a box legitimately carries the
+        # parent's barcode. No ask, no Review task.
+        family = not same and _same_set_family(
+            session, product.get("sku"), existing.get("sku")
+        )
+        if not same and not family and not payload.force:
             raise HTTPException(
                 409,
                 f"'{payload.new_barcode}' already belongs to "
@@ -4337,7 +4441,7 @@ def overwrite_barcode(
                 f"Confirm to write it anyway; a Review task will "
                 f"record the clash.",
             )
-        if not same:
+        if not same and not family:
             barcode_clash = existing
 
     try:
@@ -5710,8 +5814,13 @@ def overwrite_sku(
     ):
         # A SKU another product already wears asks instead of blocking
         # (Nick, 2026-09-14): confirmed writes go through and file a
-        # Review task recording the clash.
-        if not payload.force:
+        # Review task recording the clash. Inside one multi-box family
+        # (set + boxes, registered or marked) the guard stands down
+        # entirely (Nick, 2026-09-15).
+        family = _same_set_family(
+            session, product.get("sku"), existing.get("sku")
+        )
+        if not family and not payload.force:
             raise HTTPException(
                 409,
                 f"'{payload.new_sku}' already belongs to "
@@ -5720,7 +5829,8 @@ def overwrite_sku(
                 f"to write it anyway; a Review task will record the "
                 f"clash.",
             )
-        sku_clash = existing
+        if not family:
+            sku_clash = existing
 
     try:
         shopify.update_variant_sku(
@@ -11295,6 +11405,75 @@ def set_item_skipped(
             f"Counts are untouched; it'll come back as a review task."
             if payload.skipped
             else f"{name} is back in the batch."
+        ),
+    }
+
+
+class SetMarkIn(BaseModel):
+    """The "Part of a set" mark (Nick, 2026-09-15, the multi-box redo):
+    taken at collect on either client, resolved on the web during
+    verification. clear=True removes the mark."""
+
+    master_sku: str | None = Field(default=None, max_length=100)
+    box_no: int | None = Field(default=None, ge=1, le=8)
+    box_total: int | None = Field(default=None, ge=2, le=8)
+    clear: bool = False
+    changed_by: str | None = Field(default=None, max_length=100)
+
+
+@app.post(
+    "/api/batches/{batch_id}/items/{item_id}/set-mark",
+    dependencies=[Depends(require_user)],
+)
+def set_item_set_mark(
+    batch_id: int,
+    item_id: int,
+    payload: SetMarkIn,
+    session: Session = Depends(get_session),
+):
+    """Mark (or unmark) a collect row as one box of a multi-box set:
+    master SKU + "Box X of Y". A local note on the batch row - nothing
+    resolves, nothing writes to Shopify. The web verify step lists the
+    marks and seeds the set builder from them; guardrails on duplicate
+    codes stand down inside the marked family (see
+    _same_set_family)."""
+    batch = _get_batch(session, batch_id)
+    if batch.status in ("done", "abandoned"):
+        raise HTTPException(409, f"This batch is {batch.status}.")
+    item = session.get(BatchItem, item_id)
+    if item is None or item.batch_id != batch_id:
+        raise HTTPException(404, "No such item in this batch.")
+    if payload.clear:
+        item.set_mark_master = None
+        item.set_mark_box = None
+        item.set_mark_total = None
+        session.commit()
+        session.refresh(item)
+        return {"item": item.as_dict(), "message": "Set mark removed."}
+    master = (payload.master_sku or "").strip()
+    if not master:
+        raise HTTPException(
+            422, "Name the master SKU the boxes make up."
+        )
+    if not payload.box_no or not payload.box_total:
+        raise HTTPException(422, "Say which box this is: Box X of Y.")
+    if payload.box_no > payload.box_total:
+        raise HTTPException(
+            422,
+            f"Box {payload.box_no} of {payload.box_total} - X can't "
+            "exceed Y.",
+        )
+    item.set_mark_master = master[:100]
+    item.set_mark_box = payload.box_no
+    item.set_mark_total = payload.box_total
+    session.commit()
+    session.refresh(item)
+    return {
+        "item": item.as_dict(),
+        "message": (
+            f"Marked as box {payload.box_no} of {payload.box_total} of "
+            f"{master}. Define the set on the web terminal during "
+            "verification."
         ),
     }
 

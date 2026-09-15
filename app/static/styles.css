@@ -3201,7 +3201,17 @@ tr.binaudit-untagged td { opacity: 0.72; }
 
 /* Multi-box set builder (box-set overlay) - the compact input trio and
    the draft-listing rows, previously built with cssText. */
-.bcell__lump { font-size: 11px; opacity: 0.8; }   /* the "⧉ Multi-box set…" row button */
+/* The "⧉ Part of a set…" row button: lives INSIDE .bcell__info, on its
+   own line under the meta - as a bare flex child it overlapped the
+   absolutely-positioned tracker/qty gutter (Nick, 2026-09-15). The
+   extra right margin keeps long labels clear of the qty stepper. */
+.bcell__lump {
+  display: block;
+  margin-top: 6px;
+  margin-right: 48px;
+  font-size: 11px;
+  opacity: 0.8;
+}
 .boxset__drafthead {
   display: flex;
   align-items: center;
@@ -3218,6 +3228,13 @@ tr.binaudit-untagged td { opacity: 0.72; }
 /* Builder rows wrap so the SKU + barcode inputs drop below the name
    on narrow panes instead of crushing it. */
 .mlrow--wrap { flex-wrap: wrap; }
+/* "Part of a set" mark dialog: Box [−] X [+] of [−] Y [+] steppers. */
+.setmark__row { gap: 10px; }
+.setmark__step { display: inline-flex; align-items: center; gap: 8px; }
+.setmark__step b { min-width: 18px; text-align: center; font-size: 16px; }
+.setmark__step button { padding: 6px 12px; }
+/* Verify-step panel: marked boxes waiting for their set. */
+.bvset .bvset-define { margin-left: 8px; }
 .boxset__in--bc { flex: 1; }
 .boxset__in--newsku { flex: 0 0 150px; }
 .boxset__in--bin { flex: 0 0 90px; }

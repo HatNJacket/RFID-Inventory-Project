@@ -1,7 +1,44 @@
 # RFID Inventory System — Roadmap
 
 Source of truth for project status. Updated by Claude each working session.
-Last updated: 2026-09-14 (seventh round).
+Last updated: 2026-09-15.
+
+## ⧉ Multi-box redo: marks at collect, sets at verify — ✅ DEPLOYED 2026-09-15 (C72 4.04)
+
+Nick's teardown (TODO #7, now done): set ASSEMBLY left the collect
+stage entirely - "doing this automatically has only caused pain".
+- **"Part of a set" mark**: the C72's MULTI-BOX SET menu (picker /
+  sku pass / draft pass / full product - all 340 lines removed) is
+  replaced by one prompt: master SKU (defaulted to the row's own SKU
+  when it has one) + Box X of Y on -/+ steppers; REMOVE MARK to
+  clear. The web collect rows get the same dialog (the old builder
+  entry is gone from collect). Marks are new nullable columns on
+  rfid_batch_items (dev/alter_add_setmarks.py RAN ON PROD); POST
+  /api/batches/{id}/items/{iid}/set-mark. A mark never resolves
+  anything by itself.
+- **Sets are defined on the WEB during VERIFICATION**: the verify
+  report flags every marked box in an amber panel per master
+  ("N box(es) marked as parts of a set", incomplete counts called
+  out) with "Define the set…" opening the builder seeded from the
+  marks - marked rows pre-ticked in Box X order (list order = box
+  numbering), master pre-filled. Ingredient-part behavior, draft
+  creation and the premade-listing ask all survive unchanged;
+  defining consumes the marks. Completing a batch with undefined
+  marks warns first (one plain confirm - flagged to Nick).
+- **Tags follow late sets**: pairing now happens BEFORE the set
+  exists, so create_box_set re-stamps THIS batch's paired tags from
+  a row's old identity to its box identity when the mapping is
+  unambiguous; ambiguous old identities stay for the re-label pass.
+- **Duplicate guardrails stand down inside a family** (set + boxes,
+  REGISTERED or MARKED in an open batch): barcode/SKU overwrite
+  clashes within the family neither ask nor file Review tasks
+  (_same_set_family), and the duplicate-task checker skips family
+  pairs - a box often carries the parent's real barcode. Clashes
+  outside the family keep every guard. (Scoped by family rather than
+  by a verify-step timer: strictly safer, never fights set work.)
+test_setmarks.py (17 checks). Suites 73/73. Also: the row button
+moved INSIDE .bcell__info - as a flex child it overlapped the
+tracker/qty stepper (Nick's report, fixed same day).
 
 ## 🔧 S11230 rescue: physical codes win + barcode removal — ✅ DEPLOYED 2026-09-14
 
@@ -3054,21 +3091,9 @@ bigger ones (receiving in particular needs interviews).
    with an explicit marker role from the UI, show it as a marker
    everywhere (never a unit), and keep it out of every count by type
    rather than by SKU flag.
-7. **TEAR OUT multi-box SETS and redo them semi-manually** (Nick,
-   2026-09-14 evening, after the S11230 rescue - his words: "doing
-   this automatically has only caused pain and annoyance"). DO NOT
-   BUILD YET - noted for tomorrow's session. The shape he wants:
-   - A box can be marked "Part of a set", prompting for the master
-     SKU (defaulted to the SKU it already has), its box number, and
-     the set's total box count ("Box X of Y").
-   - The web terminal handles multi-box sets AFTER the fact, during
-     verification - not mid-collect.
-   - While managing a set there, the duplicate-barcode and
-     duplicate-SKU guardrails are LIFTED, because one box often
-     carries the parent product's actual barcode.
-   The 2026-09-14 rescue work (part override in _product_lookup,
-   builder barcode column, barcode removal) still stands until the
-   redo lands.
+7. ~~**TEAR OUT multi-box SETS and redo them semi-manually**~~
+   ✅ Done 2026-09-15 (C72 4.04) - see "Multi-box redo: marks at
+   collect, sets at verify" above.
 
 ## 📥 Steve's TODO list (captured 2026-07-28, not yet designed)
 
