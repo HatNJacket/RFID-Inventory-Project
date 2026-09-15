@@ -4559,6 +4559,33 @@ def _pool_baseline(session: Session, sku: str, bin_name: str):
     return base
 
 
+def _prior_tagged_skus(
+    session: Session,
+    skus: list[str],
+    exclude_batch_id: int | None = None,
+) -> set[str]:
+    """Which of these SKUs have already been through a COMPLETED batch
+    tagging (other than the excluded batch)? The very first completed
+    tagging is when the RFID count becomes trustworthy: lowering
+    Shopify beyond recorded sales is only allowed after it (Nick,
+    2026-09-15 - a first-tagging undercount usually means boxes not
+    tagged yet, not missing stock)."""
+    wanted = {_up(s) for s in skus if s}
+    if not wanted:
+        return set()
+    q = (
+        select(BatchItem.sku)
+        .join(Batch, Batch.id == BatchItem.batch_id)
+        .where(
+            Batch.status == "done",
+            func.upper(BatchItem.sku).in_(sorted(wanted)),
+        )
+    )
+    if exclude_batch_id:
+        q = q.where(Batch.id != exclude_batch_id)
+    return {_up(s) for s in session.scalars(q) if s}
+
+
 @app.post(
     "/api/onhand-updates/lower",
     status_code=201,
@@ -4587,13 +4614,23 @@ def lower_on_hand(
     allowed = orders_sync.sold_unretired_since_map(
         session, [payload.sku], {key: baseline}
     ).get(key, 0)
-    if drop > allowed:
+    # Sales-backed drops were always allowed. Beyond that (Nick,
+    # 2026-09-15): a product that has COMPLETED a batch tagging before
+    # may be lowered past its recorded sales - the RFID count is the
+    # trusted number by then, and the unbacked units are shrinkage.
+    # On a FIRST tagging the old refusal stands.
+    unbacked = max(0, drop - allowed)
+    if unbacked and not _prior_tagged_skus(
+        session, [payload.sku], payload.batch_id
+    ):
         wf = _short_date(baseline.isoformat()) if baseline else "ever"
         raise HTTPException(
             422,
             f"Recorded sales since {wf} only account for {allowed} "
-            f"missing unit(s); lowering {payload.sku} by {drop} is not "
-            f"backed by orders. Recount, or fix it in Shopify admin.",
+            f"missing unit(s), and {payload.sku} has never completed a "
+            f"batch tagging - on a first tagging an undercount usually "
+            f"means boxes not tagged yet, not missing stock. Finish "
+            f"tagging it first, or fix the count in Shopify admin.",
         )
     # Every EPC must be a live, unheard tag of THIS SKU in THIS bin.
     tags: list[RfidAssignment] = []
@@ -4634,8 +4671,11 @@ def lower_on_hand(
             409,
             f"This lowers Shopify on-hand for {payload.sku} from {live} "
             f"to {payload.new_qty}, retires {len(tags)} silent tag(s) "
-            f"as presumed-sold, and consumes {drop} recorded sale(s). "
-            f"Undoable from History. Confirm to proceed.",
+            f"as presumed-sold, and consumes {min(drop, allowed)} "
+            f"recorded sale(s)."
+            + (f" ⚠ {unbacked} unit(s) have NO backing sale - written "
+               f"off as shrinkage." if unbacked else "")
+            + " Undoable from History. Confirm to proceed.",
         )
     # Local rows first (uncommitted), the external write last: a Shopify
     # failure aborts everything.
@@ -4705,6 +4745,8 @@ def lower_on_hand(
             f"Shopify on-hand for {payload.sku}: {before} to "
             f"{payload.new_qty}, {len(moved_rows)} tag(s) retired "
             f"presumed-sold ✓ (undo from History)"
+            + (f" · {unbacked} unit(s) had no backing sale (shrinkage)"
+               if unbacked else "")
         ),
     }
 
@@ -6477,6 +6519,34 @@ def bin_check(
                     "with no tagged unit cleared from the expectation."
                 )[:255]
         session.commit()
+    # Lowering offer per row (Nick, 2026-09-15): sales-backed drops
+    # always may; past the sales only a product with a COMPLETED batch
+    # tagging (never the very first). Offered only against an actual
+    # sweep, and never for RFID-incompatible or untagged products (the
+    # sweep proves nothing about those). The endpoint re-checks all
+    # of it.
+    prior = _prior_tagged_skus(
+        session, [r.get("sku") for r in report if r.get("sku")]
+    ) if swept and shopify_write_enabled("verify_onhand_lower") else set()
+    for r in report:
+        drop = (
+            r["expected_qty"] - r.get("detected_units", 0)
+            if r.get("expected_qty") is not None else 0
+        )
+        r["can_lower"] = bool(
+            swept
+            and r.get("sku")
+            and not r.get("rfid_incompatible")
+            and r.get("tags_here", 0) > 0
+            and drop > 0
+            and (drop <= r.get("sold_unretired", 0)
+                 or _up(r.get("sku")) in prior)
+            and shopify_write_enabled("verify_onhand_lower")
+        )
+        r["lower_unbacked"] = (
+            max(0, drop - r.get("sold_unretired", 0))
+            if r["can_lower"] else 0
+        )
     return {
         "bin": loc,
         "rack": rack,
@@ -15665,6 +15735,11 @@ def batch_verify(
         }
         for i in items
     ]
+    # Products already through a COMPLETED tagging (any batch but this
+    # one) may lower past their recorded sales - Nick, 2026-09-15.
+    prior_tagged = _prior_tagged_skus(
+        session, [r["sku"] for r in report if r["sku"]], batch.id
+    )
     for r in report:
         r["shelf"] = shelf_by_item.get(r["item_id"])
         key = (
@@ -15779,16 +15854,30 @@ def batch_verify(
                 )
             else:
                 r["reason"] = ""
-        # Whether the count may be LOWERED from this row: only when the
-        # whole drop is backed by windowed unretired sales AND the
-        # feature is on. The endpoint re-checks everything; this flag
-        # just tells the client which button to draw.
+        # Whether the count may be LOWERED from this row: sales-backed
+        # drops always may; past the sales, only a product that has
+        # COMPLETED a tagging before (never the very first batch tag -
+        # Nick, 2026-09-15). The endpoint re-checks everything; these
+        # flags just tell the client which button and message to draw.
         found = r.get("units_total") or 0
+        drop = (
+            r["expected_qty"] - found
+            if r["expected_qty"] is not None else 0
+        )
+        backed = bool(
+            sh is not None and drop <= sh.get("sales_since", 0)
+        )
         r["can_lower"] = bool(
-            r["expected_qty"] is not None
+            drop > 0
             and sh is not None
-            and 0 < (r["expected_qty"] - found) <= sh.get("sales_since", 0)
+            and (backed or _up(r["sku"]) in prior_tagged)
             and shopify_write_enabled("verify_onhand_lower")
+        )
+        # How many of the missing units NO recorded sale explains -
+        # zero when sales fully back the drop.
+        r["lower_unbacked"] = (
+            max(0, drop - sh.get("sales_since", 0))
+            if r["can_lower"] and sh is not None else 0
         )
     ok = (
         not unknown

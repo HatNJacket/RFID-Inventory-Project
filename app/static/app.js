@@ -9321,12 +9321,17 @@ bEl.verifyReport.addEventListener("click", async (e) => {
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
+  const unb = parseInt(btn.dataset.unbacked, 10) || 0;
   if (
     !confirm(
       `Set Shopify ON-HAND for ${sku} DOWN to ${qty}?\n\n` +
-        `Recorded sales account for the missing unit(s). This lowers ` +
-        `the count, retires ${epcs.length} silent tag(s) as ` +
-        `presumed-sold, and consumes the matching sales.\n\n` +
+        (unb
+          ? `⚠ ${unb} of the missing unit(s) have NO recorded sale - ` +
+            `they are written off as shrinkage (allowed: this product ` +
+            `completed a batch tagging before). `
+          : `Recorded sales account for the missing unit(s). `) +
+        `This lowers the count, retires ${epcs.length} silent tag(s) ` +
+        `as presumed-sold, and consumes what sales cover.\n\n` +
         `One Undo in History reverses all of it.`
     )
   )
@@ -9452,11 +9457,16 @@ async function runVerifyCheck(onlyItemId = null) {
             title="Set product count to ${found} (writes Shopify on-hand; confirmed, logged, undoable from History)">⇪</button>`;
         } else if (diff < 0 && r.sku && r.can_lower) {
           const epcs = (r.shelf && r.shelf.unheard_epcs) || [];
+          const unb = r.lower_unbacked || 0;
           expCell += ` <button class="reset onhand-lower onhand-fix--icon" type="button"
             data-sku="${escapeHtml(r.sku)}" data-qty="${found}"
-            data-item="${r.item_id}"
+            data-item="${r.item_id}" data-unbacked="${unb}"
             data-epcs="${escapeHtml(epcs.slice(0, Math.max(0, -diff)).join(","))}"
-            title="Set product count to ${found} (recorded sales account for the ${-diff} missing; lowers Shopify on-hand, retires the silent tags presumed-sold, consumes the sales; one undo reverses all of it)">⇩</button>`;
+            title="Set product count to ${found} (${
+              unb
+                ? `${unb} of the ${-diff} missing unit(s) have no recorded sale - written off as shrinkage; allowed because this product completed a tagging before`
+                : `recorded sales account for the ${-diff} missing`
+            }; lowers Shopify on-hand, retires the silent tags presumed-sold; one undo reverses all of it)">⇩</button>`;
         }
       }
       const flaggedRow = (red || yel || !paired) && !na;
@@ -13663,6 +13673,25 @@ function binAuditRowHtml({ r, flags, untagged }) {
         data-sku="${escapeHtml(r.sku)}" data-qty="${r.units_here}"
         data-exp="${expTotal}"
         title="Write the tagged count to Shopify on-hand - confirmed, logged, undoable from History">Set to ${r.units_here}</button></div>`;
+    } else if (
+      r.can_lower &&
+      binAudit &&
+      binAudit.rep &&
+      !binAudit.rep.rack
+    ) {
+      // Lowering (Nick, 2026-09-15): the audited count is the truth
+      // once the product has completed a tagging before. Kept off rack
+      // zones - lower from the product's own bin. The set-aside units
+      // ride along in the target so they aren't written off.
+      const lowTo = r.detected_units + unav;
+      const drop = Math.max(0, r.expected_qty - r.detected_units);
+      const epcs = (r.silent_epcs || []).slice(0, drop);
+      expCell += `<div><button class="reset binaudit-lower" type="button"
+        data-sku="${escapeHtml(r.sku)}" data-qty="${lowTo}"
+        data-drop="${drop}" data-unbacked="${r.lower_unbacked || 0}"
+        data-detected="${r.detected}"
+        data-epcs="${escapeHtml(epcs.join(","))}"
+        title="Lower Shopify on-hand to the audited count - retires the silent tag(s) presumed-sold, consumes matching recorded sales, writes the rest off as shrinkage. Confirmed, logged, one Undo in History.">Lower to ${lowTo}</button></div>`;
     }
   }
   return `<tr data-rowsku="${escapeHtml((r.sku || "").toUpperCase())}"${
@@ -14096,6 +14125,60 @@ document
       } catch (err) {
         alert(err.message);
         fix.disabled = false;
+      }
+      return;
+    }
+    // Lowering from an audit (Nick, 2026-09-15): the shelf answered
+    // with fewer units than Shopify carries. Retires the silent tags
+    // presumed-sold, consumes what recorded sales cover, writes the
+    // rest off as shrinkage - allowed past the sales only for products
+    // that completed a batch tagging before (the endpoint enforces it).
+    const low = e.target.closest(".binaudit-lower");
+    if (low) {
+      const sku = low.dataset.sku;
+      const qty = parseInt(low.dataset.qty, 10);
+      const drop = parseInt(low.dataset.drop, 10) || 0;
+      const unbacked = parseInt(low.dataset.unbacked, 10) || 0;
+      const epcs = (low.dataset.epcs || "").split(",").filter(Boolean);
+      const heardNone = (parseInt(low.dataset.detected, 10) || 0) === 0;
+      if (
+        !confirm(
+          `Set Shopify ON-HAND for ${sku} DOWN to ${qty}?\n\n` +
+            `This retires ${epcs.length} silent tag(s) as ` +
+            `presumed-sold` +
+            (unbacked
+              ? ` - ⚠ ${unbacked} of the ${drop} missing unit(s) have ` +
+                `NO recorded sale and are written off as shrinkage`
+              : ` - recorded sales account for the missing unit(s)`) +
+            `.\n\n` +
+            (heardNone
+              ? `⚠ NOTHING of this product answered the sweep - be ` +
+                `sure this shelf was really swept before lowering.\n\n`
+              : ``) +
+            `One Undo in History reverses all of it.`
+        )
+      )
+        return;
+      low.disabled = true;
+      try {
+        const res = await postJson("/api/onhand-updates/lower", {
+          sku,
+          bin_name: (binAudit && binAudit.rep.bin) || "",
+          new_qty: qty,
+          epcs,
+          changed_by: operatorEl.value || null,
+          confirmed: true,
+          sweep_at:
+            (binAudit &&
+              binAudit.cap &&
+              (binAudit.cap.oldest_at || binAudit.cap.created_at)) ||
+            null,
+        });
+        alert(res.message);
+        await binAuditRefreshRow(sku);
+      } catch (err) {
+        alert(err.message);
+        low.disabled = false;
       }
       return;
     }

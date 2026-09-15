@@ -3,6 +3,33 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-15 (tenth round).
 
+## ⇩ On-hand lowering past sales — ✅ DEPLOYED 2026-09-15
+
+Nick: "let the user decrease shopify product on audits or future
+batch tags as long as it's not the very first batch tag completed."
+- The /api/onhand-updates/lower gate is now two-tier: sales-backed
+  drops work exactly as before; drops BEYOND recorded sales are
+  allowed only for products with a COMPLETED batch tagging on file
+  (any done batch but the current one - _prior_tagged_skus). On a
+  first tagging the old refusal stands, reworded to say why (an
+  undercount usually means untagged boxes, not missing stock).
+- Unbacked units are SHRINKAGE: silent tags still retire
+  presumed-sold, the ledger consumes only what sales cover (both
+  consume paths were already fail-soft), and the 409 confirm, the
+  success message and both UIs name the shrinkage count. The
+  existing one-click undo reverses everything (tags restore, only
+  actually-consumed ledger units hand back).
+- Audits: bin/product audit rows gained "Lower to N" (N = sweep-heard
+  units + the unavailable set-asides, so those never get written
+  off). Offered only against a real sweep, for tagged
+  non-RFID-incompatible products, NOT on rack-zone reports (the
+  endpoint's tag-bin check needs the exact bin), with an extra
+  confirm warning when NOTHING of the product answered. Verify's ⇩
+  button now also appears past sales for prior-tagged products, its
+  confirm naming the unbacked count.
+Suites 75/75 (new test_lowerguard.py; test_ledger_flow's first-
+tagging refusal still holds by design).
+
 ## 🔍 Product audits — ✅ DEPLOYED 2026-09-15
 
 Nick: audit ONE product, not just a bin. The Audits hub card is now
