@@ -12724,6 +12724,137 @@ def queue_missing_labels(
     }
 
 
+class UnprintedSoldIn(BaseModel):
+    changed_by: str | None = Field(default=None, max_length=100)
+
+
+@app.post(
+    "/api/review-tasks/{task_id}/unprinted-sold",
+    dependencies=[Depends(require_user)],
+)
+def unprinted_sold(
+    task_id: int,
+    payload: UnprintedSoldIn,
+    session: Session = Depends(get_session),
+):
+    """The OTHER resolution for the Update-stock safety net (Nick,
+    2026-09-15): the unlabelled boxes are GONE - sold or set aside
+    before anyone could label them. Nothing prints. Each owed unit is
+    written off: the batch row's count drops to what was actually
+    labelled (so the batch can settle honestly and stops owing
+    labels), and up to that many of the SKU's unretired recorded
+    sales are consumed so the expected-tag arithmetic never waits for
+    tags that were never applied. Set-asides need no ledger touch -
+    the Unavailable bucket already folds into expectations. History
+    gets one receipt per SKU."""
+    task = session.get(ReviewTask, task_id)
+    if task is None:
+        raise HTTPException(404, "No such review task.")
+    if task.category != "labels-not-printed":
+        raise HTTPException(
+            422, "Sold-write-off is for the unprinted-stock safety net."
+        )
+    if task.status != "open":
+        raise HTTPException(409, f"Task is already {task.status}.")
+    batch = session.get(Batch, task.batch_id) if task.batch_id else None
+    if batch is None:
+        raise HTTPException(
+            409,
+            "The receiving batch behind this task is gone - nothing "
+            "left to write off.",
+        )
+    by = (payload.changed_by or "").strip()[:100] or None
+    printed: dict[str, int] = {}
+    for job in session.scalars(
+        select(PrintJob).where(
+            PrintJob.batch_id == batch.id,
+            PrintJob.status.in_(("pending", "printing", "done")),
+            _NOT_COMPANION,
+        )
+    ):
+        key = (job.sku or "").strip().upper()
+        if key:
+            printed[key] = printed.get(key, 0) + 1
+    written_off: list[dict] = []
+    consumed_total = 0
+    for item in _batch_items(session, batch.id):
+        if (
+            not item.sku or not item.resolved
+            or item.skipped or item.kind == "bundle"
+        ):
+            continue
+        key = item.sku.strip().upper()
+        kept = max(printed.get(key, 0), item.paired_count or 0)
+        gone = (item.qty_scanned + item.case_count) - kept
+        if gone <= 0:
+            continue
+        item.qty_scanned = max(0, item.qty_scanned - gone)
+        consumed = orders_sync.retire_units(session, item.sku, gone)
+        consumed_total += consumed
+        written_off.append({
+            "sku": item.sku, "units": gone, "sales_consumed": consumed,
+        })
+        session.add(BarcodeChange(
+            sku=item.sku,
+            product_title=item.product_title,
+            shopify_variant_id=item.shopify_variant_id,
+            changed_field="unprinted-sold",
+            old_barcode=f"receiving batch {batch.id}"[:64],
+            new_barcode=(
+                f"{gone} unlabelled unit(s) sold"
+                + (f", {consumed} sale(s) consumed" if consumed else "")
+            )[:64],
+            changed_by=by,
+        ))
+    session.flush()
+    closed = False
+    if batch.status not in ("done", "abandoned"):
+        closed = _maybe_close_receiving(session, batch)
+    task.status = "resolved"
+    task.resolved_by = by
+    task.resolved_at = datetime.now(timezone.utc)
+    task.resolution_note = (
+        (
+            "Unlabelled stock resolved as sold/set aside before "
+            "labeling: "
+            + ", ".join(f"{w['units']}x {w['sku']}" for w in written_off)
+            + (f". {consumed_total} recorded sale(s) consumed."
+               if consumed_total else ".")
+        )
+        if written_off
+        else "Nothing was owed any more - resolved with no write-off."
+    )[:255]
+    session.commit()
+    return {
+        "written_off": written_off,
+        "sales_consumed": consumed_total,
+        "batch_id": batch.id,
+        "batch_closed": closed,
+        "message": (
+            (
+                "Written off as sold before labeling: "
+                + ", ".join(
+                    f"{w['units']}x {w['sku']}" for w in written_off
+                )
+                + (
+                    f". {consumed_total} recorded sale(s) consumed - "
+                    "the tag arithmetic stops waiting for them."
+                    if consumed_total else
+                    ". No matching recorded sales yet: set-asides "
+                    "need nothing more; if these were SOLD, the next "
+                    "orders sync records the sales and an "
+                    "inventory-check offers the retire if anything "
+                    "still disagrees."
+                )
+                + (" The receiving batch settled itself."
+                   if closed else "")
+            )
+            if written_off
+            else "Nothing was owed any more - task resolved."
+        ),
+    }
+
+
 # --------------------------------------------- receive entire shipment ----
 # Nick's 2026-09-01 flow: pull a whole TC-Planner stock order into ONE
 # receiving batch, print every remaining label up front, pair what
@@ -19113,6 +19244,7 @@ def product_history(term: str, session: Session = Depends(get_session)):
         "on-hand-lower": "on-hand-lowered",
         "on-hand-lower-undo": "on-hand-lower-undone",
         "tagged-before": "already-tagged-set",
+        "unprinted-sold": "unprinted-sold",
         "tag-unlinked": "tag-unlinked",
         "tag-released": "tag-released",
         "tag-reapplied": "tag-reapplied",
@@ -19569,6 +19701,7 @@ def history(
         "on-hand-lower": "on-hand-lowered",
         "on-hand-lower-undo": "on-hand-lower-undone",
         "tagged-before": "already-tagged-set",
+        "unprinted-sold": "unprinted-sold",
         "tag-unlinked": "tag-unlinked",
         "tag-released": "tag-released",
         "tag-reapplied": "tag-reapplied",

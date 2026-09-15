@@ -23,8 +23,9 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 from app.main import app
 from app.database import get_engine
-from app.models import (BinMapEntry, PrintJob, ReviewNote, ReviewTask,
-                        RfidAssignment)
+from app.models import (BarcodeChange, BatchItem, BinMapEntry, PrintJob,
+                        ReviewNote, ReviewTask, RfidAssignment,
+                        SoldRecord)
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 fails=[]
@@ -163,6 +164,62 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
           r)
     check("the summary carries freshness", r["age_seconds"] is not None
           and r["age_seconds"] < 60, r.get("age_seconds"))
+
+    # --- 6) "the unlabelled units were sold" (Nick, 2026-09-15) -------
+    # Products leave (sold or set aside) before anyone labels them: the
+    # OTHER resolution writes the owed labels off instead of printing -
+    # counts drop to what was labelled, matching recorded sales are
+    # consumed, History gets a receipt per SKU.
+    with Session(get_engine()) as s:
+        open_t = s.scalars(select(ReviewTask).where(
+            ReviewTask.category == "labels-not-printed",
+            ReviewTask.status == "open")).first()
+        sold_task_id = open_t.id
+        s.add(SoldRecord(order_id="gid://o/sold1", order_name="#900",
+                         sku="AG-KIT", quantity=1))
+        s.commit()
+    r = cl.post(f"/api/review-tasks/{sold_task_id}/unprinted-sold",
+                json={"changed_by": "Nick"})
+    d = r.json()
+    check("sold write-off answers with the write-off list",
+          r.status_code == 200
+          and sorted((w["sku"], w["units"]) for w in d["written_off"])
+          == [("AG-KIT", 1), ("NOBIN-2", 2)], r.text[:300])
+    check("matching recorded sales consumed (AG-KIT only had one)",
+          d["sales_consumed"] == 1
+          and "1 recorded sale(s) consumed" in d["message"],
+          str(d)[:300])
+    with Session(get_engine()) as s:
+        items = {(i.sku or ""): i for i in s.scalars(
+            select(BatchItem).where(BatchItem.batch_id == bid))}
+        check("counts drop to what was actually labelled",
+              items["AG-KIT"].qty_scanned == 5
+              and items["NOBIN-2"].qty_scanned == 0,
+              [(k, v.qty_scanned) for k, v in items.items()])
+        sr = s.scalars(select(SoldRecord).where(
+            SoldRecord.sku == "AG-KIT")).first()
+        check("the ledger row is retired", sr.retired == 1, sr.retired)
+        t = s.get(ReviewTask, sold_task_id)
+        check("task resolved with the write-off story",
+              t.status == "resolved"
+              and "sold/set aside" in (t.resolution_note or "")
+              and "2x NOBIN-2" in t.resolution_note,
+              (t.status, t.resolution_note))
+        evs = s.scalars(select(BarcodeChange).where(
+            BarcodeChange.changed_field == "unprinted-sold")).all()
+        check("History receipt per written-off SKU",
+              sorted(e.sku for e in evs) == ["AG-KIT", "NOBIN-2"]
+              and all("unlabelled unit(s) sold" in e.new_barcode
+                      for e in evs),
+              [(e.sku, e.new_barcode) for e in evs])
+    r = cl.post(f"/api/review-tasks/{sold_task_id}/unprinted-sold",
+                json={"changed_by": "Nick"})
+    check("a resolved task refuses a second write-off",
+          r.status_code == 409, r.text[:120])
+    r = cl.get("/api/product-history?term=AG-KIT")
+    check("the receipt reads in product history",
+          any(e["type"] == "unprinted-sold"
+              for e in r.json()["events"]), r.text[:300])
 
 print()
 print("FAILED: "+", ".join(fails) if fails else "ALL CHECKS PASSED")

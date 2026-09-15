@@ -1,7 +1,26 @@
 # RFID Inventory System — Roadmap
 
 Source of truth for project status. Updated by Claude each working session.
-Last updated: 2026-09-15 (second round).
+Last updated: 2026-09-15 (third round).
+
+## 🏷 "Sold before labeling" resolution on Labels Not Printed — ✅ DEPLOYED 2026-09-15
+
+Nick: products sometimes sell or get set aside before anyone can
+label them. The Update-stock safety-net task (planner pushed stock
+without printing) now offers a SECOND resolution beside "Queue the
+missing labels": **"The unlabelled units were sold or set aside"**
+(POST /api/review-tasks/{id}/unprinted-sold). Nothing prints; per
+owed SKU the batch row's count drops to what was actually labelled
+(so the batch settles honestly and stops owing), up to that many of
+the SKU's unretired recorded sales are consumed via
+orders_sync.retire_units (the expected-tag arithmetic stops waiting
+for tags never applied), and History gets an "Unlabelled Sold"
+receipt per SKU. Set-asides need no ledger touch (the Unavailable
+bucket already folds into expectations); when no sales are recorded
+yet the message says so honestly. Unresolved/skipped/bundle rows are
+never written off; a resolved task refuses a second pass. No undo -
+the receipts and resolution note carry the whole story.
+test_safety.py +8. Suites 74/74.
 
 ## 🎯 Unpaired labels round 2 + bundles + partial-order sales — ✅ DEPLOYED 2026-09-15 (C72 4.05)
 

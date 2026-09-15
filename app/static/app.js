@@ -404,6 +404,7 @@ const EVENT_META = {
   // never a person's click, so they wear their own tag.
   "review-autoclosed": ["Auto-Resolved", "#57748c"],
   "labels-not-printed": ["Labels Not Printed", "#c05717"],
+  "unprinted-sold": ["Unlabelled Sold", "#a8570f"],
   "label-unpaired": ["Label Not Paired", "#d72c0d"],
   "stock-not-updated": ["Stock Not Updated", "#8250df"],
   "inventory-check": ["Inventory Check", "#8a6116"],
@@ -11532,6 +11533,10 @@ function openResolveWindow(t) {
       <button class="reset rvw-wide rvw-choice rvw-choice--amber" id="rvw-queuelabels" type="button">
         Queue the missing labels
         <span class="rvw-choice__sub">Prints one label per unlabelled box on the receiving batch, each with its home bin - identical to the planner's Print labels. No-bin products are held out and named.</span>
+      </button>
+      <button class="reset rvw-wide rvw-choice" id="rvw-unprintedsold" type="button">
+        The unlabelled units were sold or set aside
+        <span class="rvw-choice__sub">They left before anyone could label them. Nothing prints: the batch stops owing the labels, and recorded sales for those SKUs are consumed so the tag arithmetic never waits for tags that were never applied.</span>
       </button>`;
   } else if (t.category === "label-unpaired") {
     // The receiving watchdog, back by request (Nick, 2026-09-09):
@@ -11830,6 +11835,45 @@ function openResolveWindow(t) {
         renderReview();
       } catch (err) {
         queueLabelsBtn.disabled = false;
+        alert(err.message);
+      }
+    });
+
+  // The OTHER resolution (Nick, 2026-09-15): the unlabelled units
+  // were sold or set aside before anyone could label them - nothing
+  // prints, the batch stops owing labels, matching recorded sales
+  // are consumed.
+  const unprintedSoldBtn = document.getElementById("rvw-unprintedsold");
+  if (unprintedSoldBtn)
+    unprintedSoldBtn.addEventListener("click", async () => {
+      const operator = operatorEl.value;
+      if (!operator) {
+        alert("Pick who's scanning (top right) first.");
+        return;
+      }
+      if (
+        !confirm(
+          `Resolve WITHOUT printing - the unlabelled units were sold ` +
+            `or set aside before labeling?\n\nThe receiving batch ` +
+            `stops owing those labels and recorded sales for the ` +
+            `SKUs are consumed, so nothing keeps expecting tags that ` +
+            `were never applied. Permanent (History keeps a receipt ` +
+            `per product).`
+        )
+      )
+        return;
+      unprintedSoldBtn.disabled = true;
+      try {
+        const res = await postJson(
+          `/api/review-tasks/${t.id}/unprinted-sold`,
+          { changed_by: operator }
+        );
+        alert(res.message);
+        reviewTasks = reviewTasks.filter((x) => x.id !== t.id);
+        closeResolveWindow();
+        renderReview();
+      } catch (err) {
+        unprintedSoldBtn.disabled = false;
         alert(err.message);
       }
     });
