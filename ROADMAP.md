@@ -1,7 +1,24 @@
 # RFID Inventory System — Roadmap
 
 Source of truth for project status. Updated by Claude each working session.
-Last updated: 2026-09-15 (third round).
+Last updated: 2026-09-15 (fourth round).
+
+## 🔀 S11810 crossed part barcodes — repaired + guarded — ✅ DEPLOYED 2026-09-15
+
+Nick scanned 050234810111 (physically box 2) and got box 1. No alias
+anywhere - the box-set REGISTRY (created Sept 9, before the builder
+showed barcodes) held the two codes SWAPPED relative to the parts'
+own draft listings, and since the part-registry override moved into
+_product_lookup (Sept 14) the registry outranked the correct catalog
+answer on every surface. Prod repaired via a History-logged redefine
+(S11810-1 = 050234181013 box 1, S11810-2 = 050234810111 box 2; his
+open A7-1 batch re-resolved) - both codes verified resolving to their
+own boxes. A sweep of every registered part found NO other
+disagreement (S11230 and S11830 clean). New guard in create_box_set:
+two boxes whose OWN listings carry different barcodes, submitted with
+each other's codes (a perfect two-way swap), are refused with the
+crossing named - a shared code across boxes and one-sided reuse stay
+allowed (real set shapes). test_boxsets +4. Suites 74/74.
 
 ## 🏷 "Sold before labeling" resolution on Labels Not Printed — ✅ DEPLOYED 2026-09-15
 

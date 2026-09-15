@@ -2294,6 +2294,41 @@ def create_box_set(
                 (i, b) for i, b in drafts_wanted if i not in used_idx
             ]
 
+    # Crossed-wires guard (Nick, 2026-09-15, the S11810: box 1 sat
+    # registered with box 2's code for a week, silently redirecting
+    # every scan of box 2). When two boxes have their OWN catalog
+    # listings with DIFFERENT barcodes and the submission hands each
+    # box the OTHER one's code - a perfect swap - refuse and name it.
+    # Only the exact two-way swap is refused: a shared code across
+    # boxes (the parent-barcode-on-every-box shape) stays allowed.
+    own_bc: dict[str, str] = {}
+    for e in session.scalars(
+        select(BinMapEntry).where(
+            func.upper(BinMapEntry.sku).in_(sorted(seen))
+        )
+    ):
+        k = (e.sku or "").strip().upper()
+        b = (e.barcode or "").strip().upper()
+        if k and b and k not in own_bc:
+            own_bc[k] = b
+    for i, (sku_a, bc_a) in enumerate(cleaned):
+        for sku_b, bc_b in cleaned[i + 1:]:
+            a, b = sku_a.upper(), sku_b.upper()
+            if (
+                a in own_bc and b in own_bc
+                and own_bc[a] != own_bc[b]
+                and (bc_a or "").upper() == own_bc[b]
+                and (bc_b or "").upper() == own_bc[a]
+            ):
+                raise HTTPException(
+                    422,
+                    f"Crossed wires: {sku_a} was given {bc_a} but "
+                    f"that is {sku_b}'s own listing barcode, and "
+                    f"{sku_b} was given {sku_a}'s ({bc_b}). Check "
+                    "which code is printed on which box - the "
+                    "listings say the other way around.",
+                )
+
     # Real DRAFT listings for the new boxes (Nick, 2026-09-08): a
     # gated Shopify write, done BEFORE any local rows so a failure
     # leaves nothing half-linked. Named exactly per his format.

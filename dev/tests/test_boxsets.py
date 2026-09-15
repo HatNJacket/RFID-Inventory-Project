@@ -515,6 +515,52 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
           r.status_code == 422 and "its OWN SKU" in r.json()["detail"],
           r.text[:200])
 
+    # ---- crossed-wires guard (Nick, 2026-09-15, the S11810) ----------
+    # Two boxes with their own listings, submitted with each other's
+    # codes - a perfect swap - are refused; matching them to their own
+    # listings (or sharing one code) stays fine.
+    with S(get_engine()) as s:
+        s.add(BinMapEntry(sku="X-BOX1", barcode="BC-ONE",
+                          product_title="Draft box one", bin="A7-1",
+                          qty=0, shopify_variant_id="gid:x1"))
+        s.add(BinMapEntry(sku="X-BOX2", barcode="BC-TWO",
+                          product_title="Draft box two", bin="A7-1",
+                          qty=0, shopify_variant_id="gid:x2"))
+        s.commit()
+    r = cl.post("/api/box-sets", json={
+        "set_code": "S11230", "parts": [
+            {"sku": "X-BOX1", "barcode": "BC-TWO"},
+            {"sku": "X-BOX2", "barcode": "BC-ONE"}]})
+    check("a perfect barcode swap between two boxes is refused",
+          r.status_code == 422 and "Crossed wires" in r.json()["detail"],
+          r.text[:250])
+    r = cl.post("/api/box-sets", json={
+        "set_code": "S11230", "parts": [
+            {"sku": "X-BOX1", "barcode": "BC-ONE"},
+            {"sku": "X-BOX2", "barcode": "BC-TWO"}]})
+    check("matching each box to its own listing is fine",
+          r.status_code == 201, r.text[:200])
+    cl.delete("/api/box-sets/S11230?by=Nick")
+    r = cl.post("/api/box-sets", json={
+        "set_code": "S11230", "parts": [
+            {"sku": "X-BOX1", "barcode": "SHARED-MAIN"},
+            {"sku": "X-BOX2", "barcode": "SHARED-MAIN"}]})
+    check("a shared code across boxes is NOT a crossing",
+          r.status_code == 422 and "ONE box" in r.json()["detail"],
+          r.text[:200])
+    r = cl.post("/api/box-sets", json={
+        "set_code": "S11230", "parts": [
+            {"sku": "X-BOX1", "barcode": "BC-TWO"},
+            {"sku": "X-BOX2", "barcode": "FRESH-9"}]})
+    check("one-sided reuse without the swap is allowed (operator's "
+          "call)", r.status_code == 201, r.text[:200])
+    cl.delete("/api/box-sets/S11230?by=Nick")
+    # restore the set the History section below expects
+    cl.post("/api/box-sets", json={
+        "set_code": "S11230", "parts": [
+            {"sku": "S11230-1", "barcode": "7411230001"},
+            {"sku": "S11230-2", "barcode": "7411230002"}]})
+
     # ---- History carries an UNDO on the create while the set stands --
     r = cl.get("/api/history?limit=50")
     ev = next((e for e in r.json()["events"]
