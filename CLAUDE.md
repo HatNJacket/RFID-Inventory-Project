@@ -13,9 +13,12 @@ change log; commit messages here are written to be read later.
 ## Hard rules (each of these has burned us)
 
 - **NEVER auto-write inventory counts** to Shopify. On-hand writes are
-  operator-confirmed, increase-only, logged with undo, and gated by
-  `SHOPIFY_WRITE_MODE` (comma list; prod = `scan_station_only,verify_onhand`).
-  On-hand *sync* is blocked until the whole store is batch tagged.
+  operator-confirmed, logged with undo, and gated by `SHOPIFY_WRITE_MODE`
+  (comma list; prod enables them feature by feature). Raises are offered
+  freely; LOWERING only as far as recorded sales cover it, or - beyond
+  sales - for products with a completed batch tagging on file (never a
+  first tagging; Nick, 2026-09-15). On-hand *sync* is blocked until the
+  whole store is batch tagged.
 - **Deploy ONLY via `py dev/mkdeploy.py`** (Python zipfile, forward-slash
   arcnames) then
   `az webapp deploy -n telcan-rfid -g shopify-automation-rg --type zip --src-path dev/deploy.zip`.
