@@ -1,7 +1,57 @@
 # RFID Inventory System — Roadmap
 
 Source of truth for project status. Updated by Claude each working session.
-Last updated: 2026-09-15 (eighth round).
+Last updated: 2026-09-15 (ninth round).
+
+## ⚡ Performance + consolidation pass — ✅ DEPLOYED 2026-09-15
+
+Nick: "see what you can combine... improve the speed at which things
+are loaded... increase the caches, we're barely using 20% of our
+database storage." No behavior changes intended (one drift bug fixed).
+- **Transport**: GZipMiddleware (cold page load ~915 KB -> ~230 KB);
+  ASSET_VERSION is now a CONTENT HASH of app.js+styles.css (the old
+  per-process time.time() differed between the two gunicorn workers,
+  so alternating loads busted each other's browser cache and re-pulled
+  the 700 KB app.js forever); versioned /static URLs get
+  Cache-Control: immutable (the APK keeps defaults; the page keeps
+  no-cache so deploys land).
+- **DB**: index on rfid_bin_map.barcode (the FIRST query of every
+  scan); engine pool_recycle=1500 + pool 10/20; column widenings (we
+  use ~20% of the tier): History old/new_barcode 64 -> 255 (they double
+  as event detail slots and summaries were getting chopped), review
+  detail/notes + print error 500 -> 1000, openbox not_epcs -> 2000,
+  app settings value -> 2000, other_bins -> 500, image_url -> 1000.
+  One-off migration dev/alter_perf_and_widen.py RUN ON PROD
+  (idempotent, metadata-only).
+- **Query fixes**: locate-queue N+1 (2 queries per entry -> 2 grouped
+  queries); /api/history undo checks (up to 5 point lookups PER ROW ->
+  5 batched IN queries per page); review-tasks image lookup filters in
+  SQL; audit/unavailable no longer loads the whole tag table;
+  epc-captures/latest-summary (4 s poll) stops shipping thousands of
+  EPCs as one giant IN; inventory summary reads the bin map ONCE
+  (was three full walks per request).
+- **Caches enlarged**: inventory live-qty cache re-keyed PER SKU
+  (was one all-or-nothing entry keyed on the whole SKU tuple), TTL
+  120 -> 180 s; scan-card expected-qty Shopify call cached 45 s per SKU
+  (was a live HTTP round trip on EVERY scan; display-only - on-hand
+  writes still read live); bin-map snapshot TTL 6 h -> 3 h; planner
+  caches get pruning caps.
+- **Consolidation** (~350 net lines out of main.py, behavior
+  identical): _log_change() replaces all 68 hand-built BarcodeChange
+  History rows (truncation now in ONE place, at the new 255 cap);
+  _up() for the 153 (x or "").strip().upper() sites; _naive_utc();
+  _get_batch_item()/_get_review_task() fetch-or-404s (24 sites);
+  _require_shopify_env() (7); ONE module-level _CHANGE_TYPE_LABELS
+  map - the two history endpoints carried drifting private copies, and
+  product history rendered backorder-debt events as raw field names
+  (FIXED). Dead code removed (_live_barcode_map, refresh-running
+  markers, app.js queueStatusSummary). app.js: setPreviewHeader() +
+  renderFitWarn() replace 5+3 copied preview blocks; tab switches
+  skip refetching read-only tabs already under 15 s fresh (their
+  refresh buttons still force).
+- Suites 72/72; browser-verified on run_local (all tabs, zero JS
+  errors); prod smoke-tested (gzip + immutable headers live, authed
+  history/locate/review endpoints answering).
 
 ## 🧹 Blank-roll sweep cleanup — ✅ RUN ON PROD 2026-09-15
 

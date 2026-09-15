@@ -72,7 +72,7 @@ def _set(session: Session, key: str, value: str) -> None:
     if row is None:
         row = AppSetting(key=key)
         session.add(row)
-    row.value = value[:500]
+    row.value = value[:2000]
 
 
 def _mark_running(session: Session) -> None:
@@ -959,7 +959,7 @@ def run(session: Session, source: str = "manual") -> dict:
         status["error"] = str(error)[:300]
         logger.exception("orders sync failed")
     finally:
-        _set(session, STATUS_KEY, json.dumps(status)[:500])
+        _set(session, STATUS_KEY, json.dumps(status)[:2000])
         _clear_running(session, int((time.time() - t0) * 1000), source)
         session.commit()
     return status

@@ -37,10 +37,16 @@ def get_engine():
                 "Service environment variables (Azure) before using the "
                 "database."
             )
-        _engine = create_engine(
-            _normalize_url(config.DATABASE_URL),
-            pool_pre_ping=True,
-        )
+        url = _normalize_url(config.DATABASE_URL)
+        kwargs = {"pool_pre_ping": True}
+        if not url.startswith("sqlite"):
+            # Azure SQL: recycle connections before the platform's idle
+            # timeout kills them (pre_ping catches the corpse, but only
+            # after a failed round trip), and give the pool enough headroom
+            # for FastAPI's sync-endpoint threadpool so bursts queue on
+            # the DB, not on checkout.
+            kwargs.update(pool_recycle=1500, pool_size=10, max_overflow=20)
+        _engine = create_engine(url, **kwargs)
         _SessionLocal = sessionmaker(
             bind=_engine, autoflush=False, autocommit=False
         )

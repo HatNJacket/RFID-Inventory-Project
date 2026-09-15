@@ -174,7 +174,7 @@ class OpenboxReturn(Base):
     # The old tag's EPC when the operator knew it at filing time.
     known_epc: Mapped[str | None] = mapped_column(String(128))
     # EPCs the operator answered NO for - never re-prompted on this row.
-    not_epcs: Mapped[str | None] = mapped_column(String(500))
+    not_epcs: Mapped[str | None] = mapped_column(String(2000))
     # The linked Review task (closed together with this row).
     task_id: Mapped[int | None] = mapped_column(Integer)
     # How it closed: adopted / peel / peeled / dismissed.
@@ -830,8 +830,11 @@ class BarcodeChange(Base):
         String(20), nullable=False, default="barcode",
         server_default="barcode",
     )
-    old_barcode: Mapped[str | None] = mapped_column(String(64))
-    new_barcode: Mapped[str] = mapped_column(String(64), index=True)
+    # These two double as generic History payload slots (event detail
+    # strings, not just barcodes) - 255 so summaries stop getting chopped
+    # (widened from 64 on 2026-09-15, dev/alter_perf_and_widen.py).
+    old_barcode: Mapped[str | None] = mapped_column(String(255))
+    new_barcode: Mapped[str] = mapped_column(String(255), index=True)
 
     changed_by: Mapped[str | None] = mapped_column(String(100))
     changed_at: Mapped[datetime] = mapped_column(
@@ -886,7 +889,7 @@ class PrintJob(Base):
     bin_location: Mapped[str | None] = mapped_column(String(100))
     # Printed under the bin ("BIN: G2-1. Other: B17") for products whose
     # boxes are split across shelves.
-    other_bins: Mapped[str | None] = mapped_column(String(255))
+    other_bins: Mapped[str | None] = mapped_column(String(500))
     shopify_variant_id: Mapped[str] = mapped_column(String(64), nullable=False)
     # 300 not 64: TELCAN-sourced ids are "handle:<shopify-handle>" and
     # handles run up to 255 chars.
@@ -913,7 +916,7 @@ class PrintJob(Base):
     kind: Mapped[str | None] = mapped_column(String(20))
 
     requested_by: Mapped[str | None] = mapped_column(String(100))
-    error: Mapped[str | None] = mapped_column(String(500))
+    error: Mapped[str | None] = mapped_column(String(1000))
 
     # Set when the job came from a bin batch (Batch Tagging tab); the Print
     # Queue groups and reports per batch.
@@ -1190,10 +1193,10 @@ class BatchItem(Base):
     # The product's SAVED bin at scan time (labels use the batch's bin).
     bin_location: Mapped[str | None] = mapped_column(String(100))
     # Other shelves this same product also lives on, comma-joined.
-    other_bins: Mapped[str | None] = mapped_column(String(255))
+    other_bins: Mapped[str | None] = mapped_column(String(500))
     serial_prefix: Mapped[str | None] = mapped_column(String(8))
     label_name: Mapped[str | None] = mapped_column(String(255))
-    image_url: Mapped[str | None] = mapped_column(String(500))
+    image_url: Mapped[str | None] = mapped_column(String(1000))
 
     qty_scanned: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
@@ -1318,7 +1321,9 @@ class BinMapEntry(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     sku: Mapped[str | None] = mapped_column(String(100), index=True)
-    barcode: Mapped[str | None] = mapped_column(String(64))
+    # Indexed: the barcode equality test is the FIRST query of every
+    # scan-station lookup (prod index via dev/alter_perf_and_widen.py).
+    barcode: Mapped[str | None] = mapped_column(String(64), index=True)
     product_title: Mapped[str | None] = mapped_column(String(255))
     variant_title: Mapped[str | None] = mapped_column(String(255))
     shopify_variant_id: Mapped[str | None] = mapped_column(String(64))
@@ -1326,7 +1331,7 @@ class BinMapEntry(Base):
     bin: Mapped[str] = mapped_column(String(100), index=True, nullable=False)
     # One row per bin: a product split across shelves ("G2-1 & B17") gets a
     # row for each, and each row names the others here.
-    other_bins: Mapped[str | None] = mapped_column(String(255))
+    other_bins: Mapped[str | None] = mapped_column(String(500))
     # SHELF-expected units: Shopify on_hand MINUS the Unavailable bucket
     # (reserved/damaged/safety/QC) since 2026-09-01 (Nick, W9160A) - the
     # unavailable count rides along so audits can EXPLAIN an over-count.
@@ -1335,7 +1340,7 @@ class BinMapEntry(Base):
     unavailable: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )
-    image_url: Mapped[str | None] = mapped_column(String(500))
+    image_url: Mapped[str | None] = mapped_column(String(1000))
     # Shopify's product vendor — the brand, for filtering/sorting.
     vendor: Mapped[str | None] = mapped_column(String(150), index=True)
     updated_at: Mapped[datetime] = mapped_column(
@@ -1573,7 +1578,7 @@ class ReviewNote(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     task_key: Mapped[str] = mapped_column(String(120), index=True,
                                           nullable=False)
-    note: Mapped[str] = mapped_column(String(500), nullable=False)
+    note: Mapped[str] = mapped_column(String(1000), nullable=False)
     created_by: Mapped[str | None] = mapped_column(String(100))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -1696,7 +1701,7 @@ class AppSetting(Base):
     __tablename__ = "rfid_app_settings"
 
     key: Mapped[str] = mapped_column(String(60), primary_key=True)
-    value: Mapped[str] = mapped_column(String(500), nullable=False)
+    value: Mapped[str] = mapped_column(String(2000), nullable=False)
     updated_by: Mapped[str | None] = mapped_column(String(100))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(),
@@ -1924,7 +1929,7 @@ class ReviewTask(Base):
     category: Mapped[str] = mapped_column(String(40), nullable=False)
     sku: Mapped[str | None] = mapped_column(String(100), index=True)
     product_title: Mapped[str | None] = mapped_column(String(255))
-    detail: Mapped[str] = mapped_column(String(500), nullable=False)
+    detail: Mapped[str] = mapped_column(String(1000), nullable=False)
     status: Mapped[str] = mapped_column(
         String(20), index=True, nullable=False, default="open"
     )

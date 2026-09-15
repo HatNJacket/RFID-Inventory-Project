@@ -694,6 +694,13 @@ const tabLoaders = {
   audits: () => loadAudits(),
   history: () => loadHistory(),
 };
+// Bouncing between tabs mid-scan-session used to refire every tab's full
+// load per click. The read-only tabs skip the refetch while their data is
+// under 15 s old - their own refresh buttons still force a live pull.
+// Batch and Queue always reload (they manage live polling state).
+const tabLoadedAt = {};
+const TAB_FRESH_MS = 15000;
+const FRESHNESS_GATED_TABS = ["inventory", "review", "audits", "history"];
 document.querySelectorAll(".tabs__tab").forEach((btn) => {
   btn.addEventListener("click", () => {
     document.querySelectorAll(".tabs__tab").forEach((b) =>
@@ -704,7 +711,15 @@ document.querySelectorAll(".tabs__tab").forEach((btn) => {
       els.forEach((s) => (s.hidden = key !== name))
     );
     stopBatchPrintPoll();
-    if (tabLoaders[name]) tabLoaders[name]();
+    if (tabLoaders[name]) {
+      const fresh =
+        FRESHNESS_GATED_TABS.includes(name) &&
+        Date.now() - (tabLoadedAt[name] || 0) < TAB_FRESH_MS;
+      if (!fresh) {
+        tabLoadedAt[name] = Date.now();
+        tabLoaders[name]();
+      }
+    }
     if (name === "scan") el.barcode.focus();
   });
 });
@@ -2650,14 +2665,7 @@ function renderCardLabelPreview(p, data) {
     skuLine = data.label_sku_text;
   }
   const head = document.getElementById("p-prev-header");
-  head.textContent = top;
-  head.className =
-    "label-preview__header " +
-    (top === STORE_HEADER || top.length <= 26
-      ? "label-preview__header--lg"
-      : top.length <= 56
-        ? "label-preview__header--md"
-        : "label-preview__header--sm");
+  setPreviewHeader(head, top, top === STORE_HEADER);
   renderSkuPreviewLine("p-prev-sku", skuLine);
   document.getElementById("p-prev-bc").textContent =
     p.barcode || p.sku || "";
@@ -7306,14 +7314,7 @@ function updateBitemLabelMode() {
   const asSku = typed && (bitemLabelMode === "sku" || bitemLabelMode === "both");
   const header = asHeader ? typed : "Telescopes Canada";
   const el = document.getElementById("bitem-prev-header");
-  el.textContent = header;
-  el.className =
-    "label-preview__header " +
-    (!asHeader || header.length <= 26
-      ? "label-preview__header--lg"
-      : header.length <= 56
-        ? "label-preview__header--md"
-        : "label-preview__header--sm");
+  setPreviewHeader(el, header, !asHeader);
   renderSkuPreviewLine("bitem-prev-sku", asSku ? typed : it.sku || "");
   document.getElementById("bitem-prev-bc").textContent =
     it.barcode || it.sku || "";
@@ -8696,6 +8697,31 @@ function skuSplit(text) {
   return left && right ? [left, right] : null;
 }
 
+// Shared fit-warning line under the editable label previews (reprint,
+// queue edit, product panel): same issues list, same non-blocking note.
+function renderFitWarn(warnEl, top, skuLine, barcode) {
+  const issues = labelFitIssues(top, skuLine, barcode);
+  warnEl.hidden = !issues.length;
+  warnEl.textContent = issues.length
+    ? "⚠ " + issues.join("\n⚠ ") +
+      "\nYou can still print - this is a warning, not a block."
+    : "";
+}
+
+// One place for the preview header's size tiers (lg <= 26 chars, md <= 56,
+// sm beyond) - the printer steps through the same thresholds. forceLg:
+// the store header always renders large.
+function setPreviewHeader(el, text, forceLg) {
+  el.textContent = text;
+  el.className =
+    "label-preview__header " +
+    (forceLg || text.length <= 26
+      ? "label-preview__header--lg"
+      : text.length <= 56
+        ? "label-preview__header--md"
+        : "label-preview__header--sm");
+}
+
 function renderSkuPreviewLine(elId, text) {
   const line = document.getElementById(elId);
   const t = (text || "").slice(0, 56);
@@ -8773,14 +8799,7 @@ function updateReprintFitWarn() {
   const skuLine = document.getElementById("breprint-sku").value.trim();
   // Live sticker preview, same tiers the printer steps through.
   const el = document.getElementById("breprint-prev-header");
-  el.textContent = top;
-  el.className =
-    "label-preview__header " +
-    (top === STORE_HEADER || top.length <= 26
-      ? "label-preview__header--lg"
-      : top.length <= 56
-        ? "label-preview__header--md"
-        : "label-preview__header--sm");
+  setPreviewHeader(el, top, top === STORE_HEADER);
   renderSkuPreviewLine("breprint-prev-sku", skuLine);
   if (breprintItem) {
     document.getElementById("breprint-prev-bc").textContent =
@@ -8788,16 +8807,12 @@ function updateReprintFitWarn() {
     document.getElementById("breprint-prev-bin").textContent =
       "BIN: " + (batch ? batch.bin_name : "—");
   }
-  const warnEl = document.getElementById("breprint-fitwarn");
-  const issues = labelFitIssues(
+  renderFitWarn(
+    document.getElementById("breprint-fitwarn"),
     top,
     skuLine,
     breprintItem ? breprintItem.barcode || breprintItem.sku || "" : ""
   );
-  warnEl.hidden = !issues.length;
-  warnEl.textContent = issues.length
-    ? "⚠ " + issues.join("\n⚠ ") + "\nYou can still print - this is a warning, not a block."
-    : "";
 }
 
 document.getElementById("bpair-reprint").addEventListener("click", async () => {
@@ -10119,29 +10134,17 @@ function updateQeditPreview() {
     document.getElementById("qedit-top").value.trim() || STORE_HEADER;
   const skuLine = document.getElementById("qedit-sku").value.trim();
   const el = document.getElementById("qedit-prev-header");
-  el.textContent = top;
-  el.className =
-    "label-preview__header " +
-    (top === STORE_HEADER || top.length <= 26
-      ? "label-preview__header--lg"
-      : top.length <= 56
-        ? "label-preview__header--md"
-        : "label-preview__header--sm");
+  setPreviewHeader(el, top, top === STORE_HEADER);
   renderSkuPreviewLine("qedit-prev-sku", skuLine);
   document.getElementById("qedit-prev-bc").textContent =
     qeditJob.barcode || qeditJob.sku || "";
   const bin = document.getElementById("qedit-bin").value.trim();
   document.getElementById("qedit-prev-bin").textContent =
     bin ? "BIN: " + bin : "";
-  const warnEl = document.getElementById("qedit-fitwarn");
-  const issues = labelFitIssues(
+  renderFitWarn(
+    document.getElementById("qedit-fitwarn"),
     top, skuLine, qeditJob.barcode || qeditJob.sku || ""
   );
-  warnEl.hidden = !issues.length;
-  warnEl.textContent = issues.length
-    ? "⚠ " + issues.join("\n⚠ ") +
-      "\nYou can still print - this is a warning, not a block."
-    : "";
 }
 
 function paintQeditFields(j) {
@@ -10215,19 +10218,6 @@ document.getElementById("qedit-save").addEventListener("click", async () => {
     btn.disabled = false;
   }
 });
-
-function queueStatusSummary(jobs) {
-  const c = {};
-  jobs.forEach((j) => (c[j.status] = (c[j.status] || 0) + 1));
-  const parts = [];
-  if (c.done) parts.push(`${c.done} printed`);
-  if ((c.pending || 0) + (c.printing || 0))
-    parts.push(`${(c.pending || 0) + (c.printing || 0)} queued`);
-  if (c.error) parts.push(`${c.error} FAILED`);
-  if ((c.voided || 0) + (c.canceled || 0))
-    parts.push(`${(c.voided || 0) + (c.canceled || 0)} voided`);
-  return parts.join(" · ");
-}
 
 // Status counts as aligned chips - printed / queued / FAILED / voided
 // always in the Status column, so outliers pop while skimming.
@@ -15659,28 +15649,16 @@ function updateLabelPreview() {
     document.getElementById("phist-skuline").value.trim() ||
     phistDefaults.sku;
   const el = document.getElementById("phist-prev-header");
-  el.textContent = top;
-  el.className =
-    "label-preview__header " +
-    (top === STORE_HEADER || top.length <= 26
-      ? "label-preview__header--lg"
-      : top.length <= 56
-        ? "label-preview__header--md"
-        : "label-preview__header--sm");
+  setPreviewHeader(el, top, top === STORE_HEADER);
   renderSkuPreviewLine("phist-prev-sku", skuLine);
   document.getElementById("phist-prev-bc").textContent =
     p.barcode || p.sku || phistData.barcode || "";
   document.getElementById("phist-prev-bin").textContent =
     "BIN: " + (p.bin_location || "—");
-  const issues = labelFitIssues(
+  renderFitWarn(
+    document.getElementById("phist-fitwarn"),
     top, skuLine, p.barcode || p.sku || phistData.barcode || ""
   );
-  const warn = document.getElementById("phist-fitwarn");
-  warn.hidden = !issues.length;
-  warn.textContent = issues.length
-    ? "⚠ " + issues.join("\n⚠ ") +
-      "\nYou can still print - this is a warning, not a block."
-    : "";
 }
 
 document

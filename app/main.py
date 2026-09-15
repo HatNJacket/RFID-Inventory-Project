@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -96,9 +97,76 @@ logger = logging.getLogger("rfid")
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
-# Cache-buster for static assets: changes on every app start (i.e. every
-# deploy), so browsers stop serving stale JS/CSS after updates.
-ASSET_VERSION = str(int(time.time()))
+# Cache-buster for static assets: a hash of the files themselves, so it
+# changes exactly when the content changes. It must NOT be per-process
+# (the old time.time() version differed between the two gunicorn workers,
+# so alternating page loads busted each other's browser cache and the
+# 700 KB app.js was re-downloaded forever).
+def _asset_version() -> str:
+    import hashlib
+
+    h = hashlib.md5()
+    static = BASE_DIR / "static"
+    for name in ("app.js", "styles.css"):
+        try:
+            h.update((static / name).read_bytes())
+        except OSError:
+            h.update(name.encode())
+    return h.hexdigest()[:12]
+
+
+ASSET_VERSION = _asset_version()
+
+
+def _naive_utc(dt: datetime | None) -> datetime | None:
+    """Azure SQL hands timestamps back tz-aware; sqlite (tests) naive.
+    Normalize to naive UTC so age math works against datetime.utcnow()."""
+    if dt is not None and dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+def _up(s: str | None) -> str:
+    """SKU/EPC comparison key: None-safe, trimmed, uppercased. The house
+    rule is that every SKU compare is case-insensitive."""
+    return s.strip().upper() if s else ""
+
+
+def _require_shopify_env() -> None:
+    if config.check_shopify_env():
+        raise HTTPException(
+            500, "Shopify credentials are not configured.")
+
+
+def _log_change(
+    session: Session,
+    *,
+    field: str,
+    sku: str | None = None,
+    old: str | None = None,
+    new: str | None = None,
+    title: str | None = None,
+    variant_id: str | None = None,
+    by: str | None = None,
+    at: datetime | None = None,
+) -> BarcodeChange:
+    """Append one History row (BarcodeChange). The payload slots are
+    truncated to their column caps HERE, so call sites stop hand-slicing
+    (old/new were widened 64 -> 255 on 2026-09-15: they double as event
+    detail strings, and summaries were getting chopped)."""
+    row = BarcodeChange(
+        sku=sku,
+        product_title=None if title is None else str(title)[:255],
+        shopify_variant_id=variant_id,
+        changed_field=field,
+        old_barcode=None if old is None else str(old)[:255],
+        new_barcode=None if new is None else str(new)[:255],
+        changed_by=None if by is None else str(by)[:100],
+    )
+    if at is not None:
+        row.changed_at = at
+    session.add(row)
+    return row
 
 
 @asynccontextmanager
@@ -118,6 +186,9 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="RFID Inventory", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+# Compress everything sizeable: the cold page load (app.js + styles.css +
+# index.html) drops from ~915 KB to ~230 KB over the warehouse Wi-Fi.
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 
 @app.middleware("http")
@@ -133,6 +204,14 @@ async def frame_ancestors_for_shopify(request: Request, call_next):
         # asset URLs, so a cached page pins stale JS/CSS across deploys
         # (the "feature didn't reach the warehouse browser" bug, twice).
         response.headers["Cache-Control"] = "no-cache"
+    elif (request.url.path.startswith("/static/")
+            and request.query_params.get("v")):
+        # Version-stamped asset URLs are immutable: a new deploy changes
+        # ?v=, so the browser may keep this exact URL forever. Unstamped
+        # /static files (the C72 APK) keep the default heuristics.
+        response.headers["Cache-Control"] = (
+            "public, max-age=31536000, immutable"
+        )
     return response
 
 
@@ -312,7 +391,7 @@ def _lookup_bin_map_all(term: str) -> list[dict]:
         # candidate per SKU before ranking.
         seen: dict[str, BinMapEntry] = {}
         for r in rows:
-            seen.setdefault((r.sku or "").strip().upper(), r)
+            seen.setdefault(_up(r.sku), r)
         return sorted(
             (_binmap_product(r) for r in seen.values()), key=_candidate_rank
         )
@@ -448,20 +527,6 @@ def delete_case(barcode: str, session: Session = Depends(get_session)):
     session.delete(row)
     session.commit()
     return {"deleted": barcode.strip()}
-
-
-def _live_barcode_map(session: Session) -> dict[str, str]:
-    """sku -> barcode per the live-sourced bin map, first row wins. The
-    Check step passes this in so a 50-item batch reads the table once, not
-    once per item — the per-item reads were what timed the C72 out."""
-    live: dict[str, str] = {}
-    for sku, bc in session.execute(
-        select(BinMapEntry.sku, BinMapEntry.barcode)
-        .where(BinMapEntry.sku.isnot(None))
-    ):
-        if sku and sku not in live:
-            live[sku] = (bc or "").strip()
-    return live
 
 
 @app.get(
@@ -772,7 +837,7 @@ def _candidate_rank(p: dict) -> tuple:
     title = f"{p.get('product_title') or ''} {p.get('variant_title') or ''}"
     # The "-O" SKU suffix is the open-box convention (Nick, 2026-09-09)
     # - same secondary standing as open-box wording in the title.
-    sku = (p.get("sku") or "").strip().upper()
+    sku = _up(p.get("sku"))
     return (
         1 if _SECONDARY_TITLE.search(title) or sku.endswith("-O") else 0,
     )
@@ -827,7 +892,7 @@ def products_by_barcode_all(
                     row = _s.scalar(
                         select(BinMapEntry).where(
                             func.upper(BinMapEntry.sku)
-                            == (al.sku or "").strip().upper()
+                            == _up(al.sku)
                         )
                     ) if al.sku else None
                     candidates.append({
@@ -854,7 +919,7 @@ def products_by_barcode_all(
     seen: set = set()
     unique = []
     for p in candidates:
-        key = (p.get("sku") or "").strip().upper() \
+        key = _up(p.get("sku")) \
             or p.get("shopify_variant_id")
         if key in seen:
             continue
@@ -934,7 +999,7 @@ def _overpair_warning(session: Session, sku: str | None) -> str | None:
     the full expected pool - bin-map on-hand + unretired sales +
     backorder debt + Shopify's Unavailable bucket - so normal tagging
     up to stock never trips it. Advisory only: the pair stands."""
-    key = (sku or "").strip().upper()
+    key = _up(sku)
     if not key:
         return None
     rows = session.scalars(
@@ -987,7 +1052,7 @@ def create_assignment(
     comp = session.scalar(
         select(CompanionTag).where(
             func.upper(CompanionTag.epc)
-            == (payload.rfid_id or "").strip().upper()
+            == _up(payload.rfid_id)
         )
     )
     if comp is not None:
@@ -1087,7 +1152,7 @@ def sweep_assign(
             )
         )
     }
-    own_sku = (payload.sku or "").strip().upper()
+    own_sku = _up(payload.sku)
     # Companion labels answer sweeps like any sticker; they're excluded
     # by name, never silently tied.
     _comp_rows, comp_epcs = _companions_heard(session, cleaned)
@@ -1109,7 +1174,7 @@ def sweep_assign(
                 "product_title": row.product_title,
                 # Its own earlier tag answering ≠ someone else's box.
                 "own": bool(own_sku
-                            and (row.sku or "").strip().upper() == own_sku),
+                            and _up(row.sku) == own_sku),
             })
             continue
         a = RfidAssignment(
@@ -1174,8 +1239,8 @@ def sweep_undo(payload: SweepUndoIn, session: Session = Depends(get_session)):
     usual History receipt; sharing one timestamp folds them into a single
     expandable event, mirroring the sweep that made them."""
     now = datetime.now(timezone.utc)
-    wanted = {(e or "").strip().upper() for e in payload.epcs if e}
-    guard = (payload.sku or "").strip().upper()
+    wanted = {_up(e) for e in payload.epcs if e}
+    guard = _up(payload.sku)
     rows = session.scalars(
         select(RfidAssignment).where(
             func.upper(RfidAssignment.rfid_id).in_(sorted(wanted))
@@ -1184,19 +1249,20 @@ def sweep_undo(payload: SweepUndoIn, session: Session = Depends(get_session)):
     removed: list[str] = []
     skipped: list[str] = []
     for row in rows:
-        if guard and (row.sku or "").strip().upper() != guard:
+        if guard and _up(row.sku) != guard:
             skipped.append(row.rfid_id)
             continue
-        session.add(BarcodeChange(
+        _log_change(
+            session,
             sku=row.sku,
-            product_title=row.product_title,
-            shopify_variant_id=row.shopify_variant_id,
-            changed_field="tag-unlinked",
-            old_barcode=(row.rfid_id or "")[:64] or None,
-            new_barcode=(row.bin_location or "")[:64] or None,
-            changed_by=(payload.by or "").strip()[:100] or None,
-            changed_at=now,
-        ))
+            title=row.product_title,
+            variant_id=row.shopify_variant_id,
+            field="tag-unlinked",
+            old=row.rfid_id or "" or None,
+            new=row.bin_location or "" or None,
+            by=(payload.by or "").strip() or None,
+            at=now,
+        )
         removed.append(row.rfid_id)
         session.delete(row)
     session.commit()
@@ -1220,8 +1286,8 @@ def tags_release(payload: TagChainIn, session: Session = Depends(get_session)):
     included). Each press is logged; release and re-apply may loop
     forever - both are manual, so there's no way to spin unattended."""
     now = datetime.now(timezone.utc)
-    wanted = {(e or "").strip().upper() for e in payload.epcs if e}
-    guard = (payload.sku or "").strip().upper()
+    wanted = {_up(e) for e in payload.epcs if e}
+    guard = _up(payload.sku)
     by = (payload.by or "").strip()[:100] or None
     rows = session.scalars(
         select(RfidAssignment).where(
@@ -1231,7 +1297,7 @@ def tags_release(payload: TagChainIn, session: Session = Depends(get_session)):
     released: list[str] = []
     skipped: list[str] = []
     for row in rows:
-        if guard and (row.sku or "").strip().upper() != guard:
+        if guard and _up(row.sku) != guard:
             skipped.append(row.rfid_id)
             continue
         # A stale snapshot for the same EPC (released, then re-paired by
@@ -1239,7 +1305,7 @@ def tags_release(payload: TagChainIn, session: Session = Depends(get_session)):
         stale = session.scalar(
             select(ReleasedTag).where(
                 func.upper(ReleasedTag.rfid_id)
-                == (row.rfid_id or "").strip().upper()
+                == _up(row.rfid_id)
             )
         )
         if stale is not None:
@@ -1265,16 +1331,17 @@ def tags_release(payload: TagChainIn, session: Session = Depends(get_session)):
         # One row per EPC, all sharing one timestamp - History folds them
         # into a single expandable event, mirroring the sweep that paired
         # them.
-        session.add(BarcodeChange(
+        _log_change(
+            session,
             sku=row.sku,
-            product_title=row.product_title,
-            shopify_variant_id=row.shopify_variant_id,
-            changed_field="tag-released",
-            old_barcode=(row.rfid_id or "")[:64] or None,
-            new_barcode=(row.bin_location or "")[:64] or None,
-            changed_by=by,
-            changed_at=now,
-        ))
+            title=row.product_title,
+            variant_id=row.shopify_variant_id,
+            field="tag-released",
+            old=row.rfid_id or "" or None,
+            new=row.bin_location or "" or None,
+            by=by,
+            at=now,
+        )
         released.append(row.rfid_id)
         session.delete(row)
     if not released:
@@ -1306,8 +1373,8 @@ def tags_reapply(payload: TagChainIn, session: Session = Depends(get_session)):
     read as if the release never happened. Logged per EPC (shared
     timestamp) as tag-reapplied, which History offers to undo again."""
     now = datetime.now(timezone.utc)
-    wanted = {(e or "").strip().upper() for e in payload.epcs if e}
-    guard = (payload.sku or "").strip().upper()
+    wanted = {_up(e) for e in payload.epcs if e}
+    guard = _up(payload.sku)
     by = (payload.by or "").strip()[:100] or None
     rows = session.scalars(
         select(ReleasedTag).where(
@@ -1315,7 +1382,7 @@ def tags_reapply(payload: TagChainIn, session: Session = Depends(get_session)):
         )
     ).all()
     live = {
-        (r.rfid_id or "").strip().upper()
+        _up(r.rfid_id)
         for r in session.scalars(
             select(RfidAssignment).where(
                 func.upper(RfidAssignment.rfid_id).in_(sorted(wanted))
@@ -1325,8 +1392,8 @@ def tags_reapply(payload: TagChainIn, session: Session = Depends(get_session)):
     reapplied: list[str] = []
     skipped: list[str] = []
     for row in rows:
-        key = (row.rfid_id or "").strip().upper()
-        if guard and (row.sku or "").strip().upper() != guard:
+        key = _up(row.rfid_id)
+        if guard and _up(row.sku) != guard:
             skipped.append(row.rfid_id)
             continue
         # The physical tag was claimed by something else while released -
@@ -1349,16 +1416,17 @@ def tags_reapply(payload: TagChainIn, session: Session = Depends(get_session)):
             assigned_at=row.assigned_at or now,
             assigned_by=row.assigned_by,
         ))
-        session.add(BarcodeChange(
+        _log_change(
+            session,
             sku=row.sku,
-            product_title=row.product_title,
-            shopify_variant_id=row.shopify_variant_id,
-            changed_field="tag-reapplied",
-            old_barcode=(row.rfid_id or "")[:64] or None,
-            new_barcode=(row.bin_location or "")[:64] or None,
-            changed_by=by,
-            changed_at=now,
-        ))
+            title=row.product_title,
+            variant_id=row.shopify_variant_id,
+            field="tag-reapplied",
+            old=row.rfid_id or "" or None,
+            new=row.bin_location or "" or None,
+            by=by,
+            at=now,
+        )
         reapplied.append(row.rfid_id)
         session.delete(row)
     if not reapplied:
@@ -1483,7 +1551,7 @@ def tag_info(rfid_id: str, session: Session = Depends(get_session)):
         return {"found": False, "printed_only": False, "epc": epc,
                 "print_job": None, "notes": notes}
 
-    sku_key = (row.sku or "").strip().upper()
+    sku_key = _up(row.sku)
     bin_key = (row.bin_location or "").strip().lower()
     siblings = session.scalars(
         select(RfidAssignment).where(
@@ -1572,15 +1640,16 @@ def unassign(
     # The tie IS the record — deleting it used to erase the fact that it
     # ever existed, so an unlink left no trace anywhere. History keeps the
     # receipt: which tag, which product, who pulled it.
-    session.add(BarcodeChange(
+    _log_change(
+        session,
         sku=row.sku,
-        product_title=row.product_title,
-        shopify_variant_id=row.shopify_variant_id,
-        changed_field="tag-unlinked",
-        old_barcode=(row.rfid_id or "")[:64] or None,
-        new_barcode=(row.bin_location or "")[:64] or None,
-        changed_by=(by or "").strip()[:100] or None,
-    ))
+        title=row.product_title,
+        variant_id=row.shopify_variant_id,
+        field="tag-unlinked",
+        old=row.rfid_id or "" or None,
+        new=row.bin_location or "" or None,
+        by=(by or "").strip() or None,
+    )
     session.delete(row)
     session.commit()
 
@@ -1634,9 +1703,9 @@ def _strip_box_note(bin_location: str | None) -> str | None:
 def _openbox_job(job: PrintJob) -> bool:
     """Is this label for an OPEN-BOX unit? The -O suffix on the SKU or
     barcode, or open-box wording in the title (hand-made twins)."""
-    if (job.sku or "").strip().upper().endswith("-O"):
+    if _up(job.sku).endswith("-O"):
         return True
-    if (job.barcode or "").strip().upper().endswith("-O"):
+    if _up(job.barcode).endswith("-O"):
         return True
     return bool(_OPENBOX_TITLE.search(job.product_title or ""))
 
@@ -1996,9 +2065,7 @@ def list_printers(session: Session = Depends(get_session)):
     now = datetime.utcnow()
     printers = []
     for p in session.scalars(select(Printer).order_by(Printer.name)).all():
-        seen = p.last_seen
-        if seen is not None and seen.tzinfo is not None:
-            seen = seen.astimezone(timezone.utc).replace(tzinfo=None)
+        seen = _naive_utc(p.last_seen)
         age = None if seen is None else (now - seen).total_seconds()
         printers.append({
             **p.as_dict(),
@@ -2030,9 +2097,7 @@ def _touch_printer(session: Session, name: str, kind: str | None) -> None:
     # and 500'd every claim after the first stamp (the printer showed
     # offline while the agent ran fine - Nick, 2026-08-26). Same
     # normalization list_printers uses. sqlite (tests) stays naive.
-    seen = row.last_seen
-    if seen is not None and seen.tzinfo is not None:
-        seen = seen.astimezone(timezone.utc).replace(tzinfo=None)
+    seen = _naive_utc(row.last_seen)
     if seen is None or (now - seen).total_seconds() > 45:
         row.last_seen = now
 
@@ -2083,7 +2148,7 @@ def _maybe_openbox_migrate(session: Session, job: PrintJob) -> None:
     ) if vid else None
     already = (
         bm_row is not None
-        and (bm_row.barcode or "").strip().upper() == new_bc.upper()
+        and _up(bm_row.barcode) == new_bc.upper()
     )
     if not already:
         if not _openbox_write_enabled():
@@ -2104,7 +2169,7 @@ def _maybe_openbox_migrate(session: Session, job: PrintJob) -> None:
         )
         if clash is not None and (
             clash.get("shopify_variant_id") != vid
-            and (clash.get("sku") or "").strip().upper() != sku.upper()
+            and _up(clash.get("sku")) != sku.upper()
         ):
             logger.warning(
                 "openbox: %s already belongs to %s - not migrating %s",
@@ -2112,14 +2177,16 @@ def _maybe_openbox_migrate(session: Session, job: PrintJob) -> None:
             )
             return
         shopify.update_variant_barcode(pid, vid, new_bc)
-        session.add(BarcodeChange(
+        _log_change(
+            session,
+            field="barcode",
             sku=job.sku,
-            product_title=job.product_title,
-            shopify_variant_id=vid,
-            old_barcode=bc,
-            new_barcode=new_bc,
-            changed_by="openbox-auto",
-        ))
+            title=job.product_title,
+            variant_id=vid,
+            old=bc,
+            new=new_bc,
+            by="openbox-auto",
+        )
         for bm in session.scalars(
             select(BinMapEntry).where(BinMapEntry.shopify_variant_id == vid)
         ):
@@ -2148,7 +2215,7 @@ def _maybe_openbox_migrate(session: Session, job: PrintJob) -> None:
             created_by="openbox-auto",
             kind="openbox",
         ))
-    elif (alias.sku or "").strip().upper() != sku.upper():
+    elif _up(alias.sku) != sku.upper():
         logger.warning(
             "openbox: %s is already linked to %s - alias left alone",
             bc, alias.sku,
@@ -2224,14 +2291,15 @@ def stop_printing(
     for job in rows:
         job.status = "canceled"
         job.error = "stopped by operator"
-    session.add(BarcodeChange(
-        product_title="Print queue",
-        changed_field="print-stop",
-        old_barcode=f"{len(rows)} job(s) canceled"[:64],
-        new_barcode=(f"{in_flight} in flight finished"
-                     if in_flight else "queue was drained")[:64],
-        changed_by=(payload.requested_by or "").strip()[:100] or None,
-    ))
+    _log_change(
+        session,
+        title="Print queue",
+        field="print-stop",
+        old=f"{len(rows)} job(s) canceled",
+        new=f"{in_flight} in flight finished"
+                     if in_flight else "queue was drained",
+        by=(payload.requested_by or "").strip() or None,
+    )
     session.commit()
     return {
         "canceled": len(rows),
@@ -2266,13 +2334,14 @@ def resume_printing(
     for job in rows:
         job.status = "pending"
         job.error = None
-    session.add(BarcodeChange(
-        product_title="Print queue",
-        changed_field="print-resume",
-        old_barcode=f"{len(rows)} job(s) resumed"[:64],
-        new_barcode="original order kept"[:64],
-        changed_by=(payload.requested_by or "").strip()[:100] or None,
-    ))
+    _log_change(
+        session,
+        title="Print queue",
+        field="print-resume",
+        old=f"{len(rows)} job(s) resumed",
+        new="original order kept",
+        by=(payload.requested_by or "").strip() or None,
+    )
     session.commit()
     return {
         "resumed": len(rows),
@@ -2316,24 +2385,6 @@ def log_refresh(payload: RefreshLogIn, session: Session = Depends(get_session)):
         session.execute(delete(RefreshLog).where(RefreshLog.id.in_(old_ids)))
     session.commit()
     return {"ok": True}
-
-
-def _mark_refresh_running(session: Session, kind: str) -> None:
-    """Server-side auto refresh started — visible to every open page."""
-    key = f"refresh_running:{kind}"
-    row = session.get(AppSetting, key)
-    if row is None:
-        row = AppSetting(key=key)
-        session.add(row)
-    row.value = datetime.utcnow().isoformat()
-
-
-def _clear_refresh_running(session: Session, kind: str, ms: int) -> None:
-    """Auto refresh finished: clear the marker and log the duration."""
-    row = session.get(AppSetting, f"refresh_running:{kind}")
-    if row is not None:
-        session.delete(row)
-    session.add(RefreshLog(kind=kind, source="auto", ms=ms))
 
 
 @app.get("/api/refresh-stats", dependencies=[Depends(require_user)])
@@ -2397,7 +2448,7 @@ def mark_assignments_sold(
     records only — Shopify is never touched; its on-hand already dropped
     when the orders fulfilled."""
     sku = payload.sku.strip()
-    uppers = {(e or "").strip().upper() for e in payload.epcs if e}
+    uppers = {_up(e) for e in payload.epcs if e}
     rows = session.scalars(
         select(RfidAssignment).where(
             func.upper(RfidAssignment.rfid_id).in_(sorted(uppers))
@@ -2406,7 +2457,7 @@ def mark_assignments_sold(
     if not rows:
         raise HTTPException(404, "None of those tags are on file.")
     wrong = [r.rfid_id for r in rows
-             if (r.sku or "").strip().upper() != sku.upper()]
+             if _up(r.sku) != sku.upper()]
     if wrong:
         raise HTTPException(
             409,
@@ -2416,15 +2467,16 @@ def mark_assignments_sold(
     units = 0
     for r in rows:
         units += r.case_units or 1
-        session.add(BarcodeChange(
+        _log_change(
+            session,
             sku=r.sku,
-            product_title=r.product_title,
-            shopify_variant_id=r.shopify_variant_id,
-            changed_field="tag-sold",
-            old_barcode=(r.rfid_id or "")[:64] or None,
-            new_barcode=(r.bin_location or "")[:64] or None,
-            changed_by=(payload.changed_by or "").strip()[:100] or None,
-        ))
+            title=r.product_title,
+            variant_id=r.shopify_variant_id,
+            field="tag-sold",
+            old=r.rfid_id or "" or None,
+            new=r.bin_location or "" or None,
+            by=(payload.changed_by or "").strip() or None,
+        )
         session.delete(r)
     retired = orders_sync.retire_units(session, sku, units)
     session.commit()
@@ -2531,22 +2583,27 @@ def split_products(
             if new_bc is not None:
                 t.barcode = new_bc[:64]
         if sku_changed:
-            session.add(BarcodeChange(
-                sku=new_sku, product_title=tags[0].product_title if tags
+            _log_change(
+                session,
+                sku=new_sku,
+                title=tags[0].product_title if tags
                 else None,
-                changed_field="sku",
-                old_barcode=cur[:64], new_barcode=new_sku[:64],
-                changed_by=by,
-            ))
+                field="sku",
+                old=cur,
+                new=new_sku,
+                by=by,
+            )
         if bc_changed:
-            session.add(BarcodeChange(
-                sku=new_sku, product_title=tags[0].product_title if tags
+            _log_change(
+                session,
+                sku=new_sku,
+                title=tags[0].product_title if tags
                 else None,
-                changed_field="barcode",
-                old_barcode=(old_bc or "")[:64] or None,
-                new_barcode=new_bc[:64],
-                changed_by=by,
-            ))
+                field="barcode",
+                old=old_bc or "" or None,
+                new=new_bc,
+                by=by,
+            )
         summary.append({
             "sku": new_sku, "barcode": new_bc,
             "shopify": wrote_shopify, "tags": len(tags),
@@ -2635,14 +2692,15 @@ def merge_products(
                 bm.shopify_product_id or t.shopify_product_id
             )
     by = (payload.changed_by or "").strip()[:100] or None
-    session.add(BarcodeChange(
+    _log_change(
+        session,
         sku=canonical,
-        product_title=title,
-        changed_field="product-merged",
-        old_barcode=frm[:64],
-        new_barcode=canonical[:64],
-        changed_by=by,
-    ))
+        title=title,
+        field="product-merged",
+        old=frm,
+        new=canonical,
+        by=by,
+    )
     # Close every open duplicate task naming this pair.
     closed = 0
     for t in session.scalars(
@@ -2902,14 +2960,15 @@ def delete_alias(
         raise HTTPException(404, "No such linked barcode.")
     # The live row IS how product history shows the link - once it's
     # gone, this receipt is the only trace (Nick, 2026-09-08).
-    session.add(BarcodeChange(
+    _log_change(
+        session,
         sku=row.sku,
-        product_title=row.product_title,
-        changed_field="alias-unlinked",
-        old_barcode=(row.alias_barcode or "")[:64] or None,
-        new_barcode=(row.sku or row.barcode or "?")[:64],
-        changed_by=(by or "").strip()[:100] or None,
-    ))
+        title=row.product_title,
+        field="alias-unlinked",
+        old=row.alias_barcode or "" or None,
+        new=row.sku or row.barcode or "?",
+        by=(by or "").strip() or None,
+    )
     session.delete(row)
     session.commit()
 
@@ -3171,8 +3230,8 @@ def product_refresh(
             404, "That variant is gone from Shopify - the listing was "
                  "deleted or merged. Re-scan to find its successor.")
     gid = fresh["shopify_variant_id"]
-    sku_u = (fresh.get("sku") or "").strip().upper()
-    bc_u = (fresh.get("barcode") or "").strip().upper()
+    sku_u = _up(fresh.get("sku"))
+    bc_u = _up(fresh.get("barcode"))
     # Other LOCAL products (catalog rows or tag records) wearing the
     # fresh codes - the confirm-not-block guardrail's subjects.
     clashes: dict[str, dict] = {}
@@ -3260,15 +3319,16 @@ def product_refresh(
         sku=fresh.get("sku"), barcode=fresh.get("barcode"),
     )
     summary = ", ".join(sorted(changed)) if changed else "no changes"
-    session.add(BarcodeChange(
+    _log_change(
+        session,
         sku=fresh.get("sku"),
-        product_title=fresh.get("product_title"),
-        shopify_variant_id=gid,
-        changed_field="product-refreshed",
-        old_barcode=summary[:64],
-        new_barcode="pulled from Shopify"[:64],
-        changed_by=(payload.changed_by or "").strip()[:100] or None,
-    ))
+        title=fresh.get("product_title"),
+        variant_id=gid,
+        field="product-refreshed",
+        old=summary,
+        new="pulled from Shopify",
+        by=(payload.changed_by or "").strip() or None,
+    )
     for c in clashes.values():
         _file_code_clash_task(
             session, "code",
@@ -3423,8 +3483,7 @@ def overwrite_barcode(
             422, "Confirmation checkbox is required for barcode replacement."
         )
     require_shopify_write("scan_station")
-    if config.check_shopify_env():
-        raise HTTPException(500, "Shopify credentials are not configured.")
+    _require_shopify_env()
 
     # Must resolve via the Shopify API: the mutation needs real Shopify ids.
     try:
@@ -3478,8 +3537,8 @@ def overwrite_barcode(
             existing.get("shopify_variant_id")
             == product.get("shopify_variant_id")
         ) or (
-            (existing.get("sku") or "").strip().upper()
-            == (product.get("sku") or "").strip().upper()
+            _up(existing.get("sku"))
+            == _up(product.get("sku"))
             != ""
         )
         if not same and not payload.force:
@@ -3503,15 +3562,16 @@ def overwrite_barcode(
     except RuntimeError as error:
         raise HTTPException(502, f"Shopify barcode update failed: {error}")
 
-    change = BarcodeChange(
+    change = _log_change(
+        session,
+        field="barcode",
         sku=product.get("sku"),
-        product_title=product.get("product_title"),
-        shopify_variant_id=product.get("shopify_variant_id"),
-        old_barcode=product.get("barcode"),
-        new_barcode=payload.new_barcode,
-        changed_by=payload.changed_by,
+        title=product.get("product_title"),
+        variant_id=product.get("shopify_variant_id"),
+        old=product.get("barcode"),
+        new=payload.new_barcode,
+        by=payload.changed_by,
     )
-    session.add(change)
     if barcode_clash is not None:
         _file_code_clash_task(
             session, "barcode", payload.new_barcode, product,
@@ -3591,8 +3651,7 @@ class BinUpdateIn(BaseModel):
 )
 def update_bin(payload: BinUpdateIn, session: Session = Depends(get_session)):
     require_shopify_write("scan_station")
-    if config.check_shopify_env():
-        raise HTTPException(500, "Shopify credentials are not configured.")
+    _require_shopify_env()
     # Shopify API resolution: the metafield write needs the variant GID.
     try:
         product = _lookup_api(payload.target)
@@ -3624,15 +3683,16 @@ def update_bin(payload: BinUpdateIn, session: Session = Depends(get_session)):
             logger.warning("EasyScan bin update failed for %s: %s",
                            product.get("sku"), error)
 
-    session.add(BarcodeChange(
+    _log_change(
+        session,
         sku=product.get("sku"),
-        product_title=product.get("product_title"),
-        shopify_variant_id=product.get("shopify_variant_id"),
-        changed_field="bin",
-        old_barcode=(product.get("bin_location") or "")[:64] or None,
-        new_barcode=payload.bin[:64],
-        changed_by=payload.changed_by,
-    ))
+        title=product.get("product_title"),
+        variant_id=product.get("shopify_variant_id"),
+        field="bin",
+        old=product.get("bin_location") or "" or None,
+        new=payload.bin,
+        by=payload.changed_by,
+    )
 
     # The LOCAL records move with it, immediately — otherwise the RFID
     # system keeps the OLD shelf until the next full bin-map refresh:
@@ -3752,15 +3812,16 @@ def rebin_tags(payload: RebinTagsIn, session: Session = Depends(get_session)):
         ):
             item.bin_location = new_bin
             item.other_bins = None
-    session.add(BarcodeChange(
+    _log_change(
+        session,
         sku=sku,
-        product_title=tags[0].product_title,
-        shopify_variant_id=tags[0].shopify_variant_id,
-        changed_field="bin-local",
-        old_barcode=(", ".join(old_bins))[:64] or None,
-        new_barcode=new_bin[:64],
-        changed_by=payload.changed_by,
-    ))
+        title=tags[0].product_title,
+        variant_id=tags[0].shopify_variant_id,
+        field="bin-local",
+        old=", ".join(old_bins) or None,
+        new=new_bin,
+        by=payload.changed_by,
+    )
     session.commit()
     return {"sku": sku, "bin": new_bin, "tags_moved": len(tags)}
 
@@ -3968,7 +4029,7 @@ UNLINKED_HUNT_CAP = 500
 def _still_unlinked(session: Session, epcs: list[str]) -> set[str]:
     """The subset of these EPCs that STILL belongs to nothing: no
     assignment, not retired, not operator-dismissed, not a companion."""
-    left = {(e or "").strip().upper() for e in epcs if e and e.strip()}
+    left = {_up(e) for e in epcs if e and e.strip()}
     if not left:
         return set()
     left -= {
@@ -4049,10 +4110,37 @@ class LocateQueueIn(BaseModel):
 def list_locate_queue(session: Session = Depends(get_session)):
     """The shared to-hunt list, newest first, with live tag context so the
     C72 can show where the tags THINK they are before the walk starts."""
-    entries = []
-    for e in session.scalars(
+    rows = session.scalars(
         select(LocateQueueEntry).order_by(LocateQueueEntry.id.desc())
-    ):
+    ).all()
+    # Tag counts, bins and bin-map previews for every queued SKU in two
+    # grouped queries (this used to be two queries PER entry).
+    skus = {e.sku.strip().upper() for e in rows
+            if e.sku.strip().upper() != UNLINKED_HUNT_SKU}
+    tag_counts: dict[str, int] = {}
+    bins_by_sku: dict[str, set] = {}
+    map_by_sku: dict[str, tuple] = {}
+    if skus:
+        for sku, bin_, n in session.execute(
+            select(RfidAssignment.sku, RfidAssignment.bin_location,
+                   func.count())
+            .where(func.upper(RfidAssignment.sku).in_(skus))
+            .group_by(RfidAssignment.sku, RfidAssignment.bin_location)
+        ):
+            k = _up(sku)
+            tag_counts[k] = tag_counts.get(k, 0) + n
+            b = (bin_ or "").strip()
+            if b:
+                bins_by_sku.setdefault(k, set()).add(b)
+        for sku, title, image in session.execute(
+            select(BinMapEntry.sku, BinMapEntry.product_title,
+                   BinMapEntry.image_url)
+            .where(func.upper(BinMapEntry.sku).in_(skus))
+        ):
+            map_by_sku.setdefault(
+                _up(sku), (title, image))
+    entries = []
+    for e in rows:
         if e.sku.strip().upper() == UNLINKED_HUNT_SKU:
             # Self-pruning: a sticker paired, retired or dismissed since
             # it was stashed drops off; an emptied entry disappears.
@@ -4080,29 +4168,19 @@ def list_locate_queue(session: Session = Depends(get_session)):
                 "epc_hunt": True,
             })
             continue
-        tags = session.scalars(
-            select(RfidAssignment).where(
-                func.upper(RfidAssignment.sku) == e.sku.upper()
-            )
-        ).all()
-        bins = sorted({(t.bin_location or "").strip() for t in tags
-                       if (t.bin_location or "").strip()})
+        k = e.sku.strip().upper()
         # Image + title fallback from the live bin map, so the C72's list
         # shows the same preview card a loaded product does.
-        map_row = session.scalar(
-            select(BinMapEntry).where(
-                func.upper(BinMapEntry.sku) == e.sku.upper()
-            )
-        )
+        title, image = map_by_sku.get(k, (None, None))
         entries.append({
             "id": e.id,
             "sku": e.sku,
-            "label": e.label or (map_row.product_title if map_row else None),
-            "image_url": map_row.image_url if map_row else None,
+            "label": e.label or title,
+            "image_url": image,
             "added_by": e.added_by,
             "created_at": e.created_at.isoformat() if e.created_at else None,
-            "tag_count": len(tags),
-            "bins": bins,
+            "tag_count": tag_counts.get(k, 0),
+            "bins": sorted(bins_by_sku.get(k, ())),
             # Specific EPCs to hunt (the audit's silent set); empty =
             # hunt every tag of the SKU.
             "epcs": e.epc_list(),
@@ -4122,7 +4200,7 @@ def add_locate_queue(
     an already-listed product is a no-op, not a duplicate."""
     sku = payload.sku.strip()
     epcs_text = "\n".join(sorted({
-        (e or "").strip().upper() for e in (payload.epcs or []) if e
+        _up(e) for e in (payload.epcs or []) if e
     })) or None
     existing = session.scalar(
         select(LocateQueueEntry).where(
@@ -4141,14 +4219,15 @@ def add_locate_queue(
         added_by=payload.worker, epcs=epcs_text,
     )
     session.add(entry)
-    session.add(BarcodeChange(
+    _log_change(
+        session,
         sku=sku,
-        product_title=entry.label,
-        changed_field="locate-list",
-        old_barcode=None,
-        new_barcode="on the locate list",
-        changed_by=payload.worker,
-    ))
+        title=entry.label,
+        field="locate-list",
+        old=None,
+        new="on the locate list",
+        by=payload.worker,
+    )
     session.commit()
     return {"id": entry.id, "sku": entry.sku, "already": False}
 
@@ -4166,14 +4245,15 @@ def remove_locate_queue(
     entry = session.get(LocateQueueEntry, entry_id)
     if entry is None:
         raise HTTPException(404, "Not on the locate list (already removed?).")
-    session.add(BarcodeChange(
+    _log_change(
+        session,
         sku=entry.sku,
-        product_title=entry.label,
-        changed_field="locate-list",
-        old_barcode="on the locate list",
-        new_barcode="removed",
-        changed_by=worker,
-    ))
+        title=entry.label,
+        field="locate-list",
+        old="on the locate list",
+        new="removed",
+        by=worker,
+    )
     session.delete(entry)
     session.commit()
     return {"ok": True, "sku": entry.sku}
@@ -4291,8 +4371,7 @@ def update_on_hand(
     on another shelf — this month's whole problem). Confirmed by the
     operator, logged, and undoable from History."""
     require_shopify_write("verify_onhand")
-    if config.check_shopify_env():
-        raise HTTPException(500, "Shopify credentials are not configured.")
+    _require_shopify_env()
     if not payload.confirmed:
         raise HTTPException(
             409, "This writes a stock number to Shopify — confirm it first."
@@ -4333,14 +4412,14 @@ def update_on_hand(
         before = shopify.set_on_hand(payload.sku, payload.new_qty)
     except RuntimeError as error:
         raise HTTPException(502, f"Shopify on-hand write failed: {error}")
-    change = BarcodeChange(
+    change = _log_change(
+        session,
         sku=payload.sku,
-        changed_field="on-hand",
-        old_barcode=str(before),
-        new_barcode=str(payload.new_qty),
-        changed_by=payload.changed_by,
+        field="on-hand",
+        old=str(before),
+        new=str(payload.new_qty),
+        by=payload.changed_by,
     )
-    session.add(change)
     # Keep the open batch's snapshot honest so the Verify table agrees
     # with the store the moment it re-renders.
     if payload.batch_id and payload.item_id:
@@ -4405,13 +4484,14 @@ def undo_on_hand(
     except RuntimeError as error:
         raise HTTPException(502, f"Shopify on-hand write failed: {error}")
     _refresh_binmap_onhand(session, row.sku, old)
-    session.add(BarcodeChange(
+    _log_change(
+        session,
         sku=row.sku,
-        changed_field="on-hand-undo",
-        old_barcode=str(before),
-        new_barcode=str(old),
-        changed_by=payload.changed_by,
-    ))
+        field="on-hand-undo",
+        old=str(before),
+        new=str(old),
+        by=payload.changed_by,
+    )
     session.commit()
     return {
         "sku": row.sku,
@@ -4488,8 +4568,7 @@ def lower_on_hand(
     payload: OnHandLowerIn, session: Session = Depends(get_session)
 ):
     require_shopify_write("verify_onhand_lower")
-    if config.check_shopify_env():
-        raise HTTPException(500, "Shopify credentials are not configured.")
+    _require_shopify_env()
     # Fires on the unconfirmed preview call too - the operator learns
     # the sweep is stale BEFORE reading a confirmation prompt.
     _guard_stale_sweep(payload.sku, payload.sweep_at)
@@ -4524,7 +4603,7 @@ def lower_on_hand(
                 func.upper(RfidAssignment.rfid_id) == epc.strip().upper()
             )
         )
-        if t is None or (t.sku or "").strip().upper() != key:
+        if t is None or _up(t.sku) != key:
             raise HTTPException(
                 422, f"{epc} is not a live tag of {payload.sku}."
             )
@@ -4573,15 +4652,16 @@ def lower_on_hand(
             retired_by=payload.changed_by,
         )
         session.add(rt)
-        session.add(BarcodeChange(
+        _log_change(
+            session,
             sku=t.sku,
-            product_title=t.product_title,
-            shopify_variant_id=t.shopify_variant_id,
-            changed_field="tag-retired",
-            old_barcode=t.rfid_id,
-            new_barcode="presumed-sold",
-            changed_by=payload.changed_by,
-        ))
+            title=t.product_title,
+            variant_id=t.shopify_variant_id,
+            field="tag-retired",
+            old=t.rfid_id,
+            new="presumed-sold",
+            by=payload.changed_by,
+        )
         session.delete(t)
         moved_rows.append((rt, t))
     if moved_rows:
@@ -4598,14 +4678,14 @@ def lower_on_hand(
     except RuntimeError as error:
         raise HTTPException(502, f"Shopify on-hand write failed: {error}")
     _refresh_binmap_onhand(session, payload.sku, payload.new_qty)
-    change = BarcodeChange(
+    change = _log_change(
+        session,
         sku=payload.sku,
-        changed_field="on-hand-lower",
-        old_barcode=str(before),
-        new_barcode=str(payload.new_qty),
-        changed_by=payload.changed_by,
+        field="on-hand-lower",
+        old=str(before),
+        new=str(payload.new_qty),
+        by=payload.changed_by,
     )
-    session.add(change)
     session.flush()
     for rt, _ in moved_rows:
         rt.note = f"onhand-lower #{change.id}"
@@ -4681,15 +4761,16 @@ def undo_lower_on_hand(
             case_units=r.case_units,
             assigned_by=payload.changed_by,
         ))
-        session.add(BarcodeChange(
+        _log_change(
+            session,
             sku=r.sku,
-            product_title=r.product_title,
-            shopify_variant_id=r.shopify_variant_id,
-            changed_field="tag-unretired",
-            old_barcode=r.rfid_id,
-            new_barcode=r.kind,
-            changed_by=payload.changed_by,
-        ))
+            title=r.product_title,
+            variant_id=r.shopify_variant_id,
+            field="tag-unretired",
+            old=r.rfid_id,
+            new=r.kind,
+            by=payload.changed_by,
+        )
         if r.sku and (r.ledger_consumed or 0) > 0:
             orders_sync.unretire_units(session, r.sku, r.ledger_consumed)
         session.delete(r)
@@ -4702,13 +4783,14 @@ def undo_lower_on_hand(
     )
     if untagged > 0:
         orders_sync.unretire_units(session, row.sku, untagged)
-    session.add(BarcodeChange(
+    _log_change(
+        session,
         sku=row.sku,
-        changed_field="on-hand-lower-undo",
-        old_barcode=str(before),
-        new_barcode=str(old),
-        changed_by=payload.changed_by,
-    ))
+        field="on-hand-lower-undo",
+        old=str(before),
+        new=str(old),
+        by=payload.changed_by,
+    )
     session.commit()
     return {
         "sku": row.sku,
@@ -4756,8 +4838,7 @@ def overwrite_vendor(
             422, "Confirmation is required for a vendor change."
         )
     require_shopify_write("scan_station")
-    if config.check_shopify_env():
-        raise HTTPException(500, "Shopify credentials are not configured.")
+    _require_shopify_env()
     try:
         product = _lookup_api(payload.target)
     except RuntimeError as error:
@@ -4787,15 +4868,16 @@ def overwrite_vendor(
     # rebuild - follow the product now.
     for row in rows:
         row.vendor = payload.new_vendor
-    session.add(BarcodeChange(
+    _log_change(
+        session,
         sku=product.get("sku"),
-        product_title=product.get("product_title"),
-        shopify_variant_id=product.get("shopify_variant_id"),
-        changed_field="vendor",
-        old_barcode=(old_vendor or "")[:64] or None,
-        new_barcode=payload.new_vendor[:64],
-        changed_by=payload.changed_by,
-    ))
+        title=product.get("product_title"),
+        variant_id=product.get("shopify_variant_id"),
+        field="vendor",
+        old=old_vendor or "" or None,
+        new=payload.new_vendor,
+        by=payload.changed_by,
+    )
     session.commit()
     return {
         "vendor": payload.new_vendor,
@@ -4843,8 +4925,7 @@ def overwrite_sku(
             422, "Confirmation checkbox is required for SKU replacement."
         )
     require_shopify_write("scan_station")
-    if config.check_shopify_env():
-        raise HTTPException(500, "Shopify credentials are not configured.")
+    _require_shopify_env()
 
     try:
         product = _lookup_api(payload.target)
@@ -4886,15 +4967,16 @@ def overwrite_sku(
         raise HTTPException(502, f"Shopify SKU update failed: {error}")
 
     old_sku = product.get("sku")
-    session.add(BarcodeChange(
+    _log_change(
+        session,
         sku=payload.new_sku,
-        product_title=product.get("product_title"),
-        shopify_variant_id=product.get("shopify_variant_id"),
-        changed_field="sku",
-        old_barcode=old_sku,
-        new_barcode=payload.new_sku,
-        changed_by=payload.changed_by,
-    ))
+        title=product.get("product_title"),
+        variant_id=product.get("shopify_variant_id"),
+        field="sku",
+        old=old_sku,
+        new=payload.new_sku,
+        by=payload.changed_by,
+    )
     if sku_clash is not None:
         _file_code_clash_task(
             session, "SKU", payload.new_sku, product, sku_clash,
@@ -4961,19 +5043,38 @@ def list_barcode_overwrites(
 
 # -------------------------------------------------------- inventory view ---
 # Live-quantity cache: refreshing on every tab visit is the useful moment,
-# but scan sessions reload the tab constantly — cache briefly.
-_qty_cache: dict = {"key": None, "at": 0.0, "data": {}}
-_QTY_CACHE_TTL = 120  # seconds
+# but scan sessions reload the tab constantly — cache briefly. Keyed PER
+# SKU (the old single-entry cache keyed on the whole sorted SKU tuple, so
+# any newly tagged product invalidated everything); None records "Shopify
+# had no answer" so misses don't refetch on every call either.
+_qty_cache: dict[str, tuple[float, int | None]] = {}
+_QTY_CACHE_TTL = 180  # seconds
+_QTY_CACHE_MAX = 8192
 
 
 def _live_quantities(skus: list[str]) -> dict[str, int]:
-    key = tuple(sorted(skus))
     now = time.time()
-    if _qty_cache["key"] == key and now - _qty_cache["at"] < _QTY_CACHE_TTL:
-        return _qty_cache["data"]
-    data = shopify.get_quantities_by_skus(skus)
-    _qty_cache.update(key=key, at=now, data=data)
-    return data
+    out: dict[str, int] = {}
+    missing: list[str] = []
+    for s in skus:
+        hit = _qty_cache.get(s)
+        if hit is not None and now - hit[0] < _QTY_CACHE_TTL:
+            if hit[1] is not None:
+                out[s] = hit[1]
+        else:
+            missing.append(s)
+    if missing:
+        fresh = shopify.get_quantities_by_skus(missing)
+        for s in missing:
+            q = fresh.get(s)
+            if q is not None:
+                out[s] = q
+            _qty_cache[s] = (now, q)
+    if len(_qty_cache) > _QTY_CACHE_MAX:
+        for s in [s for s, (at, _) in _qty_cache.items()
+                  if now - at >= _QTY_CACHE_TTL]:
+            _qty_cache.pop(s, None)
+    return out
 
 
 @app.get("/api/inventory/summary", dependencies=[Depends(require_user)])
@@ -5043,26 +5144,46 @@ def inventory_summary(
             ),
             "shopify_qty": None,
             "vendor": None,
-            "rfid_incompatible": (r.sku or "").strip().upper() in noscan,
+            "rfid_incompatible": _up(r.sku) in noscan,
         }
         for r in rows
     ]
     products.sort(key=lambda p: p["last_assigned_at"] or "", reverse=True)
 
-    # Vendor (the brand) for filtering and sorting. The bin map holds it
-    # live from Shopify. Some products genuinely have no vendor set —
-    # those stay blank. (The TELCAN mirror used to fall back here for
-    # unbinned products — removed 2026-08-07 with the rest of the mirror.)
+    # ONE pass over the bin map answers everything it holds — vendor (the
+    # brand, for filtering), the snapshot quantity (fast=1), the product
+    # GID for "open in Shopify admin" links, and Shopify's bin for the
+    # per-row shelf comparison. This used to be three separate walks of
+    # the whole table per request.
     vendor_by_sku: dict = {}
+    snap: dict[str, int] = {}
+    gid_by_sku: dict = {}
+    shopify_bin_by_sku: dict = {}
     try:
-        for sku, vendor in session.execute(
-            select(BinMapEntry.sku, BinMapEntry.vendor)
-            .where(BinMapEntry.vendor.isnot(None))
+        for sku, vendor, qty, pid, bin_, other in session.execute(
+            select(
+                BinMapEntry.sku,
+                BinMapEntry.vendor,
+                BinMapEntry.qty,
+                BinMapEntry.shopify_product_id,
+                BinMapEntry.bin,
+                BinMapEntry.other_bins,
+            )
         ):
-            if sku:
+            if not sku:
+                continue
+            key = sku.strip().upper()
+            if vendor:
                 vendor_by_sku.setdefault(sku, vendor)
+            if qty is not None:
+                snap[key] = snap.get(key, 0) + qty
+            if pid and str(pid).startswith("gid://"):
+                gid_by_sku.setdefault(key, pid)
+            full = ", ".join(x for x in ((bin_ or "").strip(), other) if x)
+            if full:
+                shopify_bin_by_sku.setdefault(key, full)
     except Exception as error:
-        logger.warning("vendor lookup (bin map) failed: %s", error)
+        logger.warning("bin-map pass failed: %s", error)
 
     skus = [p["sku"] for p in products if p["sku"]]
 
@@ -5070,16 +5191,8 @@ def inventory_summary(
     # no number rather than a stale one. fast=1 answers from the bin-map
     # snapshot instead (same shelf-expected semantic, minutes old).
     if fast:
-        snap: dict[str, int] = {}
-        for s, qty in session.execute(
-            select(BinMapEntry.sku, BinMapEntry.qty)
-            .where(BinMapEntry.sku.isnot(None))
-        ):
-            if s and qty is not None:
-                k = s.strip().upper()
-                snap[k] = snap.get(k, 0) + qty
         for p in products:
-            k = (p["sku"] or "").strip().upper()
+            k = _up(p["sku"])
             if k in snap:
                 p["shopify_qty"] = snap[k]
     elif skus and not config.check_shopify_env():
@@ -5094,34 +5207,8 @@ def inventory_summary(
             # to the mirror numbers, never 500 the whole Inventory tab.
             logger.warning("live quantity fetch failed: %s", error)
 
-    # Product GID for "open in Shopify admin" links — the live bin map is
-    # the reliable source (historical assignments carried surrogate ids no
-    # admin URL can be built from). Its bin also rides along so each row
-    # can compare Shopify's shelf against where the tags actually are.
-    gid_by_sku: dict = {}
-    shopify_bin_by_sku: dict = {}
-    try:
-        for sku, pid, bin_, other in session.execute(
-            select(
-                BinMapEntry.sku,
-                BinMapEntry.shopify_product_id,
-                BinMapEntry.bin,
-                BinMapEntry.other_bins,
-            )
-        ):
-            key = (sku or "").strip().upper()
-            if not key:
-                continue
-            if pid and str(pid).startswith("gid://"):
-                gid_by_sku.setdefault(key, pid)
-            full = ", ".join(x for x in ((bin_ or "").strip(), other) if x)
-            if full:
-                shopify_bin_by_sku.setdefault(key, full)
-    except Exception as error:
-        logger.warning("gid lookup failed: %s", error)
-
     for p in products:
-        key = (p["sku"] or "").strip().upper()
+        key = _up(p["sku"])
         p["vendor"] = vendor_by_sku.get(p["sku"])
         p["shopify_product_id"] = gid_by_sku.get(key)
         p["shopify_bin"] = shopify_bin_by_sku.get(key)
@@ -5243,14 +5330,15 @@ def edit_print_job(
     after = _label_lines_text(job)
     if after == before:
         return {"job": job.as_dict(), "message": "No changes to save."}
-    session.add(BarcodeChange(
-        product_title=job.product_title or job.sku or "",
+    _log_change(
+        session,
+        title=job.product_title or job.sku or "",
         sku=job.sku,
-        changed_field="label-edit",
-        old_barcode=before[:64],
-        new_barcode=after[:64],
-        changed_by=(payload.edited_by or "").strip()[:100] or None,
-    ))
+        field="label-edit",
+        old=before,
+        new=after,
+        by=(payload.edited_by or "").strip() or None,
+    )
     session.commit()
     session.refresh(job)
     return {"job": job.as_dict(), "message": "Label updated ✓"}
@@ -5297,14 +5385,15 @@ def refresh_print_job(
             "changed": False,
             "message": "Already current - nothing to refresh.",
         }
-    session.add(BarcodeChange(
-        product_title=job.product_title or job.sku or "",
+    _log_change(
+        session,
+        title=job.product_title or job.sku or "",
         sku=job.sku,
-        changed_field="label-edit",
-        old_barcode=before[:64],
-        new_barcode=f"(refreshed) {after}"[:64],
-        changed_by=(payload.edited_by or "").strip()[:100] or None,
-    ))
+        field="label-edit",
+        old=before,
+        new=f"(refreshed) {after}",
+        by=(payload.edited_by or "").strip() or None,
+    )
     session.commit()
     session.refresh(job)
     return {
@@ -5326,7 +5415,10 @@ def refresh_print_job(
 # persists across restarts so reads never wait on the walk.
 import threading
 
-_BIN_MAP_TTL = 6 * 60 * 60  # refresh when older than 6 hours
+# Refresh when older than 3 hours (was 6 - Nick, 2026-09-15: the walk is
+# ~1 background minute, and a fresher snapshot makes every fallback and
+# fast=1 answer better; DB storage is nowhere near a concern).
+_BIN_MAP_TTL = 3 * 60 * 60
 _bin_map_state = {"checked_at": 0.0, "running": False}
 _bin_map_lock = threading.Lock()
 
@@ -5367,10 +5459,10 @@ def _rebuild_bin_map() -> None:
                         shopify_variant_id=e["shopify_variant_id"],
                         shopify_product_id=e["shopify_product_id"],
                         bin=name[:100],
-                        other_bins=(", ".join(others))[:255] or None,
+                        other_bins=(", ".join(others))[:500] or None,
                         qty=e["qty"],
                         unavailable=e.get("unavailable") or 0,
-                        image_url=(e.get("image_url") or "")[:500] or None,
+                        image_url=(e.get("image_url") or "")[:1000] or None,
                         vendor=(e.get("vendor") or "")[:150] or None,
                     ))
             session.add_all(rows)
@@ -5751,7 +5843,7 @@ def set_bin_flagged(
 def _fold_plain(value: str | None) -> str:
     """NFKC-fold and uppercase: lookalike unicode reads as its plain
     counterpart (Roman numeral Ⅱ -> II, fullwidth digits, etc.)."""
-    return unicodedata.normalize("NFKC", value or "").strip().upper()
+    return _up(unicodedata.normalize("NFKC", value or ""))
 
 
 def _fold_seps(value: str | None) -> str:
@@ -6019,7 +6111,7 @@ def bin_check(
     A dash-less location ("F1") is a RACK: every bin on that shelf is
     audited as ONE zone (Nick, 2026-09-01 - the C72's read field can't
     localize below a rack anyway; bins are just levels of one shelf)."""
-    swept = {(e or "").strip().upper() for e in payload.epcs if e}
+    swept = {_up(e) for e in payload.epcs if e}
     if payload.capture_id:
         cap = session.get(EpcCapture, payload.capture_id)
         if cap is None:
@@ -6083,13 +6175,13 @@ def bin_check(
                 func.upper(BackorderDebt.sku).in_(sorted(wanted | extra)),
             )
         ):
-            k = (d.sku or "").strip().upper()
+            k = _up(d.sku)
             debt_map[k] = debt_map.get(k, 0) + (d.units or 0)
     # Open audit finds (tagless boxes barcode-scanned on a walk): shown
     # as owed work per product, never counted as evidence.
     finds_map: dict[str, dict] = {}
     for f in _active_audit_finds(session):
-        k = (f.sku or "").strip().upper()
+        k = _up(f.sku)
         if k not in wanted and k not in extra:
             continue
         d = finds_map.setdefault(k, {"open": 0, "printed": 0})
@@ -6124,7 +6216,7 @@ def bin_check(
             "retired_by": r.retired_by,
         }
         _openbox_decorate(g, r, open_returns)
-        k = (r.sku or "").strip().upper()
+        k = _up(r.sku)
         if k in wanted or k in extra:
             ghost_map.setdefault(k, []).append(g)
         else:
@@ -6248,7 +6340,7 @@ def bin_check(
                 # product above, not as an anonymous unknown.
                 if epc not in retired_heard:
                     unknown.append(epc)
-            elif (a.sku or "").strip().upper() not in covered:
+            elif _up(a.sku) not in covered:
                 foreign.append({
                     "epc": a.rfid_id,
                     "sku": a.sku,
@@ -6357,14 +6449,15 @@ def bin_check(
             )
             if not cleared:
                 continue
-            session.add(BarcodeChange(
+            _log_change(
+                session,
                 sku=sku_r,
-                product_title=r.get("product_title"),
-                changed_field="ledger-cleared",
-                old_barcode=f"{cleared} stale sale expectation(s)"[:64],
-                new_barcode="audit confirmed the shelf"[:64],
-                changed_by="bin-audit",
-            ))
+                title=r.get("product_title"),
+                field="ledger-cleared",
+                old=f"{cleared} stale sale expectation(s)",
+                new="audit confirmed the shelf",
+                by="bin-audit",
+            )
             open_check = session.scalar(
                 select(ReviewTask).where(
                     ReviewTask.category.in_(
@@ -6518,12 +6611,7 @@ def _active_audit_finds(session: Session) -> list[AuditFind]:
             dirty = True
             continue
         if f.status == "open":
-            created = f.created_at
-            # Azure SQL hands timestamps back tz-aware; sqlite naive.
-            if created is not None and created.tzinfo is not None:
-                created = created.astimezone(
-                    timezone.utc
-                ).replace(tzinfo=None)
+            created = _naive_utc(f.created_at)
             if created is not None and (
                 (now - created).total_seconds() > 3600
             ):
@@ -6753,7 +6841,7 @@ def audit_dismiss_labels(
     warned about nor listed as unknown."""
     added = 0
     for raw in payload.epcs:
-        epc = (raw or "").strip().upper()
+        epc = _up(raw)
         if not epc:
             continue
         exists = session.scalar(
@@ -6787,14 +6875,15 @@ def audit_complete(
     """The completed-audits log (Nick, 2026-09-01: a log, not a live
     link): one History row per finished audit naming the location and
     a one-line summary of what the check screen showed."""
-    session.add(BarcodeChange(
+    _log_change(
+        session,
         sku=None,
-        product_title=f"Audit of {payload.location.strip()}",
-        changed_field="bin-audited",
-        old_barcode=None,
-        new_barcode=(payload.summary or "").strip()[:64] or "audited",
-        changed_by=payload.by,
-    ))
+        title=f"Audit of {payload.location.strip()}",
+        field="bin-audited",
+        old=None,
+        new=(payload.summary or "").strip()[:64] or "audited",
+        by=payload.by,
+    )
     session.commit()
     return {"ok": True}
 
@@ -6853,7 +6942,7 @@ def mark_bin_tagged(
         )
     by_sku: dict[str, list[RfidAssignment]] = {}
     for t in tags:
-        by_sku.setdefault((t.sku or "").strip().upper(), []).append(t)
+        by_sku.setdefault(_up(t.sku), []).append(t)
     if not payload.confirmed:
         raise HTTPException(
             409,
@@ -6934,7 +7023,7 @@ def audit_bins(session: Session = Depends(get_session)):
     tags = session.scalars(select(RfidAssignment)).all()
     units: dict[str, int] = {}
     for t in tags:
-        key = (t.sku or "").strip().upper()
+        key = _up(t.sku)
         if not key:
             continue
         units[key] = units.get(key, 0) + (t.case_units or 1)
@@ -7020,7 +7109,7 @@ def audit_bins(session: Session = Depends(get_session)):
     # tags themselves claim, so someone can go look.
     orphans: dict[tuple, dict] = {}
     for t in tags:
-        key = (t.sku or "").strip().upper()
+        key = _up(t.sku)
         # Non-taggable products' hand-paired bag markers are Locate
         # helpers, not inventory — never orphan-flag them.
         if not key or key in seen_skus or key in no_tag:
@@ -7146,17 +7235,16 @@ def boxify_import(
     session.execute(delete(BoxifyDim))
     session.add_all(rows)
     missing = sum(1 for x in rows if not x.has_dims)
-    session.add(BarcodeChange(
+    _log_change(
+        session,
         sku=None,
-        product_title=(
-            f"Boxify export imported: {len(rows)} variant(s), "
-            f"{missing} missing dimensions"
-        )[:255],
-        changed_field="boxify-import",
-        old_barcode=f"{len(rows)} variant(s)"[:64],
-        new_barcode=f"{missing} missing dims"[:64],
-        changed_by=(payload.imported_by or "").strip()[:100] or None,
-    ))
+        title=f"Boxify export imported: {len(rows)} variant(s), "
+            f"{missing} missing dimensions",
+        field="boxify-import",
+        old=f"{len(rows)} variant(s)",
+        new=f"{missing} missing dims",
+        by=(payload.imported_by or "").strip() or None,
+    )
     session.commit()
     return {
         "variants": len(rows),
@@ -7234,7 +7322,7 @@ def audit_unavailable(session: Session = Depends(get_session)):
     for e in session.scalars(
         select(BinMapEntry).where(BinMapEntry.unavailable > 0)
     ):
-        key = (e.sku or "").strip().upper()
+        key = _up(e.sku)
         if not key:
             continue
         g = merged.setdefault(key, {
@@ -7258,7 +7346,7 @@ def audit_unavailable(session: Session = Depends(get_session)):
             .where(BarcodeChange.changed_field == "unavailable-move")
             .order_by(BarcodeChange.id.desc())
         ):
-            key = (c.sku or "").strip().upper()
+            key = _up(c.sku)
             g = merged.get(key)
             if g is None or g.get("set_at") is not None:
                 continue
@@ -7326,8 +7414,11 @@ def audit_unavailable(session: Session = Depends(get_session)):
     if merged:
         uppers = set(merged.keys())
         tags_by: dict[str, list] = {}
-        for t in session.scalars(select(RfidAssignment)):
-            k = (t.sku or "").strip().upper()
+        for t in session.scalars(
+            select(RfidAssignment)
+            .where(func.upper(RfidAssignment.sku).in_(uppers))
+        ):
+            k = _up(t.sku)
             if k in uppers:
                 tags_by.setdefault(k, []).append(t)
         for key, g in merged.items():
@@ -7396,12 +7487,37 @@ def _get_batch(session: Session, batch_id: int) -> Batch:
     return batch
 
 
+def _get_batch_item(
+    session: Session, batch_id: int, item_id: int
+) -> BatchItem:
+    item = session.get(BatchItem, item_id)
+    if item is None or item.batch_id != batch_id:
+        raise HTTPException(404, "No such item in this batch.")
+    return item
+
+
+def _get_review_task(session: Session, task_id: int) -> "ReviewTask":
+    task = session.get(ReviewTask, task_id)
+    if task is None:
+        raise HTTPException(404, "No such review task.")
+    return task
+
+
 def _batch_items(session: Session, batch_id: int) -> list[BatchItem]:
     return session.scalars(
         select(BatchItem)
         .where(BatchItem.batch_id == batch_id)
         .order_by(BatchItem.id)
     ).all()
+
+
+# The scan card asks for the expected count right after EVERY lookup, so
+# the live Shopify leg is cached briefly per SKU — a scan session hitting
+# the same shelf shouldn't pay an HTTP round trip per beep. Display-only:
+# every on-hand WRITE flow calls shopify.get_shelf_on_hand directly.
+_expected_cache: dict[str, tuple[float, int | None]] = {}
+_EXPECTED_TTL = 45  # seconds
+_EXPECTED_MAX = 4096
 
 
 def _expected_qty(session: Session, sku: str | None) -> int | None:
@@ -7413,12 +7529,22 @@ def _expected_qty(session: Session, sku: str | None) -> int | None:
     if not sku:
         return None
     if not config.check_shopify_env():
-        try:
-            live = shopify.get_shelf_on_hand(sku)
-            if live is not None:
-                return live
-        except Exception as error:
-            logger.warning("live on-hand failed for %s: %s", sku, error)
+        key = sku.strip().upper()
+        now = time.time()
+        hit = _expected_cache.get(key)
+        if hit is not None and now - hit[0] < _EXPECTED_TTL:
+            if hit[1] is not None:
+                return hit[1]
+        else:
+            try:
+                live = shopify.get_shelf_on_hand(sku)
+                if len(_expected_cache) > _EXPECTED_MAX:
+                    _expected_cache.clear()
+                _expected_cache[key] = (now, live)
+                if live is not None:
+                    return live
+            except Exception as error:
+                logger.warning("live on-hand failed for %s: %s", sku, error)
     try:
         total = session.execute(
             select(func.sum(BinMapEntry.qty))
@@ -7475,7 +7601,7 @@ def _merge_siblings(
         for c in candidates if c.get("shopify_variant_id")
     }
     seen_skus = {
-        (c.get("sku") or "").strip().upper()
+        _up(c.get("sku"))
         for c in candidates if c.get("sku")
     }
     merged = list(candidates)
@@ -7486,7 +7612,7 @@ def _merge_siblings(
             select(BinMapEntry).where(BinMapEntry.sku.isnot(None))
         ).scalars()
         for row in rows:
-            sku_key = (row.sku or "").strip().upper()
+            sku_key = _up(row.sku)
             if row.shopify_variant_id in seen or sku_key in seen_skus:
                 continue
             if _sku_root(row.sku) != root:
@@ -7553,7 +7679,7 @@ def _apply_product_to_item(
     saved = product.get("bin_location")
     if bin_contains(saved, batch.bin_name):
         others = bins_other_than(saved, batch.bin_name)
-        item.other_bins = (", ".join(others))[:255] if others else None
+        item.other_bins = (", ".join(others))[:500] if others else None
     else:
         item.other_bins = None
     # These three only overwrite when the lookup actually carried a value:
@@ -7561,7 +7687,7 @@ def _apply_product_to_item(
     # a known count just because one live call came back thin.
     if product.get("serial_prefix"):
         item.serial_prefix = product["serial_prefix"]
-    image = (product.get("image_url") or "")[:500]
+    image = (product.get("image_url") or "")[:1000]
     if image:
         item.image_url = image
     # Multi-box product or bundle? Only meaningful when the listing occupies
@@ -7682,7 +7808,7 @@ def _note_backorder_debt(session: Session, batch: Batch) -> None:
     # One batched call finds the (rare) SKUs worth a closer look; the
     # per-SKU breakdown call runs only for those.
     on_hand_ci = {
-        (k or "").strip().upper(): v
+        _up(k): v
         for k, v in (shopify.get_on_hand_by_skus(skus) or {}).items()
     }
     baselines = orders_sync._sku_baselines(session, skus)
@@ -7715,19 +7841,20 @@ def _note_backorder_debt(session: Session, batch: Batch) -> None:
         session.flush()
         title = next(
             (i.product_title for i in _batch_items(session, batch.id)
-             if (i.sku or "").strip().upper() == key and i.product_title),
+             if _up(i.sku) == key and i.product_title),
             None,
         )
         # old_barcode carries the row id so History can offer "clear
         # this note"; new_barcode carries the unit count for display.
-        session.add(BarcodeChange(
+        _log_change(
+            session,
             sku=sku,
-            product_title=title,
-            changed_field="backorder-debt",
-            old_barcode=str(row.id),
-            new_barcode=str(debt),
-            changed_by=batch.created_by,
-        ))
+            title=title,
+            field="backorder-debt",
+            old=str(row.id),
+            new=str(debt),
+            by=batch.created_by,
+        )
 
 
 @app.post(
@@ -7877,7 +8004,7 @@ def create_batch(payload: BatchIn, session: Session = Depends(get_session)):
         # box to tag — seeding them would just re-raise a settled question.
         # Non-taggable products (bins of loose thumbscrews) likewise stay
         # out: nobody labels those individually, by decision.
-        if excluded or (p.get("sku") or "").strip().upper() in no_tag:
+        if excluded or _up(p.get("sku")) in no_tag:
             dropped.append(p.get("sku") or "")
             continue
         contents = bundle_map.get((p.get("sku") or "").upper())
@@ -7899,9 +8026,9 @@ def create_batch(payload: BatchIn, session: Session = Depends(get_session)):
             sku=p.get("sku"),
             barcode=p.get("barcode"),
             bin_location=p.get("bin_location"),
-            other_bins=(p.get("other_bins") or "")[:255] or None,
+            other_bins=(p.get("other_bins") or "")[:500] or None,
             serial_prefix=sp.prefix if sp else None,
-            image_url=(p.get("image_url") or "")[:500] or None,
+            image_url=(p.get("image_url") or "")[:1000] or None,
             # Batch labels use the standard store header + SKU; Astronomik
             # item names are set in Scan Station, not here.
             label_name=None,
@@ -8181,7 +8308,7 @@ def list_batches(
         # batch itself runs the re-tag flow (quiet collect, shelf sweep
         # at Check). A done batch would match ITSELF — skip those rows.
         d["prev_done_at"] = (
-            prev_done.get((b.bin_name or "").strip().upper())
+            prev_done.get(_up(b.bin_name))
             if b.status != "done"
             else None
         )
@@ -8193,7 +8320,7 @@ def _nickname_map(session: Session, skus: list) -> dict[str, str]:
     """SKU -> the vendor's name for the product ("nickname" aliases):
     what the box actually says when the vendor's labelling has nothing
     to do with our SKU or title (Nick, 2026-09-01)."""
-    wanted = {(s or "").strip().upper() for s in skus if s and s.strip()}
+    wanted = {_up(s) for s in skus if s and s.strip()}
     if not wanted:
         return {}
     out: dict[str, str] = {}
@@ -8203,7 +8330,7 @@ def _nickname_map(session: Session, skus: list) -> dict[str, str]:
             func.upper(BarcodeAlias.sku).in_(sorted(wanted)),
         ).order_by(BarcodeAlias.id)
     ):
-        out[(a.sku or "").strip().upper()] = a.alias_barcode
+        out[_up(a.sku)] = a.alias_barcode
     return out
 
 
@@ -8234,14 +8361,14 @@ def get_batch(batch_id: int, session: Session = Depends(get_session)):
     for item in items:
         d = item.as_dict()
         d["printed_count"] = printed.get(item.sku or "", 0)
-        d["nickname"] = nicknames.get((item.sku or "").strip().upper())
+        d["nickname"] = nicknames.get(_up(item.sku))
         d["rfid_incompatible"] = (
-            (item.sku or "").strip().upper() in noscan
+            _up(item.sku) in noscan
         )
         # Tags already in the system from BEFORE this batch (a side trip,
         # an earlier session) — the C72 warns on the first scan of such a
         # product so stickered boxes aren't labelled twice.
-        d["prior_tags"] = prior.get((item.sku or "").strip().upper(), 0)
+        d["prior_tags"] = prior.get(_up(item.sku), 0)
         payload.append(d)
     b = batch.as_dict()
     # A "Receive entire shipment" batch carries its order receipt, so
@@ -8254,7 +8381,7 @@ def get_batch(batch_id: int, session: Session = Depends(get_session)):
     if batch.status != "done":
         b["prev_done_at"] = _prev_done_map(
             session, [batch.bin_name]
-        ).get((batch.bin_name or "").strip().upper())
+        ).get(_up(batch.bin_name))
         # Re-tagging a done bin leans on sales data: freshen the sold
         # ledger in the background (throttled; silently a no-op until
         # the read_orders scope exists).
@@ -8275,7 +8402,7 @@ def _prior_tag_counts(
     """Per SKU (upper-cased), how many tags exist that did NOT come from
     this batch. Case-insensitive: tags applied before a SKU's casing was
     tidied in Shopify must still count."""
-    wanted = {(s or "").strip().upper() for s in skus if s and s.strip()}
+    wanted = {_up(s) for s in skus if s and s.strip()}
     if not wanted:
         return {}
     counts: dict[str, int] = {}
@@ -8286,7 +8413,7 @@ def _prior_tag_counts(
     ):
         if t.batch_id == batch_id:
             continue
-        key = (t.sku or "").strip().upper()
+        key = _up(t.sku)
         counts[key] = counts.get(key, 0) + 1
     return counts
 
@@ -8301,7 +8428,7 @@ def _prior_tag_counts(
 def _prev_done_map(session: Session, bins: list[str]) -> dict[str, str]:
     """bin (upper) -> ISO time of its newest COMPLETED full batch.
     Side trips and receiving never count; abandoned never counts."""
-    wanted = {(b or "").strip().upper() for b in bins if b and b.strip()}
+    wanted = {_up(b) for b in bins if b and b.strip()}
     if not wanted:
         return {}
     out: dict[str, str] = {}
@@ -8397,7 +8524,7 @@ def _shelf_reconcile(
     try:
         raw = shopify.get_quantity_pairs_by_skus(sorted(skus_upper))
         for k, pair in (raw or {}).items():
-            key2 = (k or "").strip().upper()
+            key2 = _up(k)
             if pair[0] is not None:
                 on_hand[key2] = pair[0]
                 unavail_map[key2] = pair[1] or 0
@@ -8420,7 +8547,7 @@ def _shelf_reconcile(
                 continue
             if not bin_contains(bm.bin, batch.bin_name):
                 continue
-            key = (bm.sku or "").strip().upper()
+            key = _up(bm.sku)
             snapshot[key] = snapshot.get(key, 0) + bm.qty
             unavail_map.setdefault(key, 0)
             unavail_map[key] += bm.unavailable or 0
@@ -8446,7 +8573,7 @@ def _shelf_reconcile(
                 )),
             )
         ):
-            k = (bc.sku or "").strip().upper()
+            k = _up(bc.sku)
             t = orders_sync._as_utc(bc.changed_at)
             if t is not None and (
                 k not in onhand_marks or t > onhand_marks[k]
@@ -8777,15 +8904,16 @@ def retire_tags(
             note=payload.note,
         )
         session.add(rt)
-        session.add(BarcodeChange(
+        _log_change(
+            session,
             sku=t.sku,
-            product_title=t.product_title,
-            shopify_variant_id=t.shopify_variant_id,
-            changed_field="tag-retired",
-            old_barcode=t.rfid_id,
-            new_barcode=payload.kind,
-            changed_by=payload.changed_by,
-        ))
+            title=t.product_title,
+            variant_id=t.shopify_variant_id,
+            field="tag-retired",
+            old=t.rfid_id,
+            new=payload.kind,
+            by=payload.changed_by,
+        )
         session.delete(t)
         moved.append(t.rfid_id)
         moved_rows.append((rt, t))
@@ -8875,15 +9003,16 @@ def unretire_tags(
             case_units=r.case_units,
             assigned_by=payload.changed_by,
         ))
-        session.add(BarcodeChange(
+        _log_change(
+            session,
             sku=r.sku,
-            product_title=r.product_title,
-            shopify_variant_id=r.shopify_variant_id,
-            changed_field="tag-unretired",
-            old_barcode=r.rfid_id,
-            new_barcode=r.kind,
-            changed_by=payload.changed_by,
-        ))
+            title=r.product_title,
+            variant_id=r.shopify_variant_id,
+            field="tag-unretired",
+            old=r.rfid_id,
+            new=r.kind,
+            by=payload.changed_by,
+        )
         # Hand back exactly the ledger units this retirement consumed
         # (newest-first inverse), so undo round-trips conserve the books.
         if r.sku and (r.ledger_consumed or 0) > 0:
@@ -8920,7 +9049,7 @@ def _open_returns_by_sku(
             OpenboxReturn.status == "open"
         ).order_by(OpenboxReturn.id)
     ):
-        out.setdefault((r.sku or "").strip().upper(), []).append(r)
+        out.setdefault(_up(r.sku), []).append(r)
     return out
 
 
@@ -8933,8 +9062,8 @@ def _openbox_decorate(
     the operator already answered NO for stay generic."""
     if tag.kind != "presumed-sold":
         return
-    epc_u = (tag.rfid_id or "").strip().upper()
-    for ret in open_map.get((tag.sku or "").strip().upper(), []):
+    epc_u = _up(tag.rfid_id)
+    for ret in open_map.get(_up(tag.sku), []):
         nots = {
             e.strip().upper()
             for e in (ret.not_epcs or "").split(",") if e.strip()
@@ -9098,17 +9227,16 @@ def create_openbox_return(
             created_by=payload.created_by,
         )
         session.add(ret)
-    session.add(BarcodeChange(
-        product_title=payload.product_title or base,
+    _log_change(
+        session,
+        title=payload.product_title or base,
         sku=base,
-        changed_field="openbox",
-        old_barcode=base[:64],
-        new_barcode=(
-            f"returned as {ob_sku}"
-            + (" (draft created)" if created_listing else "")
-        )[:64],
-        changed_by=(payload.created_by or "").strip()[:100] or None,
-    ))
+        field="openbox",
+        old=base,
+        new=f"returned as {ob_sku}"
+            + (" (draft created)" if created_listing else ""),
+        by=(payload.created_by or "").strip() or None,
+    )
     session.commit()
     return {
         "openbox": listing,
@@ -9179,7 +9307,7 @@ def resolve_openbox_return(
         ]
         if epc.upper() not in {e.upper() for e in nots}:
             nots.append(epc)
-        ret.not_epcs = ",".join(nots)[:500]
+        ret.not_epcs = ",".join(nots)[:2000]
         session.commit()
         return {
             "return": ret.as_dict(),
@@ -9211,14 +9339,15 @@ def resolve_openbox_return(
                     "return; old sticker peeled"
                 )[:255]
         _close("peeled", note)
-        session.add(BarcodeChange(
-            product_title=ret.product_title or ret.sku,
+        _log_change(
+            session,
+            title=ret.product_title or ret.sku,
             sku=ret.sku,
-            changed_field="openbox",
-            old_barcode=f"return watch #{ret.id}"[:64],
-            new_barcode="old sticker peeled - watch closed"[:64],
-            changed_by=(payload.resolved_by or "").strip()[:100] or None,
-        ))
+            field="openbox",
+            old=f"return watch #{ret.id}",
+            new="old sticker peeled - watch closed",
+            by=(payload.resolved_by or "").strip() or None,
+        )
         session.commit()
         return {"return": ret.as_dict(), "message": note}
 
@@ -9258,15 +9387,16 @@ def resolve_openbox_return(
         )[:255]
         _close("peel", "Fresh open-box label already on the box - "
                        "old sticker flagged for peeling.")
-        session.add(BarcodeChange(
-            product_title=ret.product_title or ret.sku,
+        _log_change(
+            session,
+            title=ret.product_title or ret.sku,
             sku=ret.sku,
-            changed_field="openbox",
-            old_barcode=f"tag …{epc[-6:]} heard"[:64],
-            new_barcode=f"duplicate of {ret.openbox_sku} label - "
-                        "peel"[:64],
-            changed_by=(payload.resolved_by or "").strip()[:100] or None,
-        ))
+            field="openbox",
+            old=f"tag …{epc[-6:]} heard",
+            new=f"duplicate of {ret.openbox_sku} label - "
+                        "peel",
+            by=(payload.resolved_by or "").strip() or None,
+        )
         session.commit()
         return {
             "return": ret.as_dict(),
@@ -9301,14 +9431,15 @@ def resolve_openbox_return(
     session.delete(r)
     _close("adopted", f"Old tag adopted as {ret.openbox_sku}'s "
                       "live tag.")
-    session.add(BarcodeChange(
-        product_title=ret.product_title or ret.sku,
+    _log_change(
+        session,
+        title=ret.product_title or ret.sku,
         sku=ret.sku,
-        changed_field="openbox",
-        old_barcode=f"tag …{epc[-6:]} presumed sold"[:64],
-        new_barcode=f"adopted as {ret.openbox_sku}"[:64],
-        changed_by=(payload.resolved_by or "").strip()[:100] or None,
-    ))
+        field="openbox",
+        old=f"tag …{epc[-6:]} presumed sold",
+        new=f"adopted as {ret.openbox_sku}",
+        by=(payload.resolved_by or "").strip() or None,
+    )
     session.commit()
     return {
         "return": ret.as_dict(),
@@ -9349,7 +9480,7 @@ def cleanup_silent_tags(
     rows exactly like /api/assignments/retire; every tag is
     individually restorable (unretire)."""
     sku_u = payload.sku.strip().upper()
-    uppers = {(e or "").strip().upper() for e in payload.epcs if e}
+    uppers = {_up(e) for e in payload.epcs if e}
     rows = session.scalars(
         select(RfidAssignment).where(
             func.upper(RfidAssignment.rfid_id).in_(sorted(uppers))
@@ -9358,7 +9489,7 @@ def cleanup_silent_tags(
     if not rows:
         raise HTTPException(404, "None of those tags are on file.")
     wrong = [r.rfid_id for r in rows
-             if (r.sku or "").strip().upper() != sku_u]
+             if _up(r.sku) != sku_u]
     if wrong:
         raise HTTPException(
             409,
@@ -9409,15 +9540,16 @@ def cleanup_silent_tags(
                 note=note,
             )
             session.add(rt)
-            session.add(BarcodeChange(
+            _log_change(
+                session,
                 sku=r.sku,
-                product_title=r.product_title,
-                shopify_variant_id=r.shopify_variant_id,
-                changed_field="tag-retired",
-                old_barcode=r.rfid_id,
-                new_barcode=kind,
-                changed_by=by,
-            ))
+                title=r.product_title,
+                variant_id=r.shopify_variant_id,
+                field="tag-retired",
+                old=r.rfid_id,
+                new=kind,
+                by=by,
+            )
             session.delete(r)
             if kind == "presumed-sold":
                 moved_sold.append((rt, r))
@@ -9459,9 +9591,7 @@ def replace_dead_tag(
     'dead'. Either way the box counts as untagged and gets a fresh
     label. Sticker is discarded on the floor; records logged here."""
     batch = _get_batch(session, batch_id)
-    item = session.get(BatchItem, item_id)
-    if item is None or item.batch_id != batch_id:
-        raise HTTPException(404, "No such item in this batch.")
+    item = _get_batch_item(session, batch_id, item_id)
     if not item.sku:
         raise HTTPException(422, "This row has no SKU.")
 
@@ -9478,7 +9608,7 @@ def replace_dead_tag(
                 "That EPC isn't an active tag — it may already be "
                 "retired, or the read was garbled.",
             )
-        if (target.sku or "").strip().upper() \
+        if _up(target.sku) \
                 != item.sku.strip().upper():
             raise HTTPException(
                 409,
@@ -9525,15 +9655,16 @@ def replace_dead_tag(
         retired_by=payload.changed_by,
         note=f"batch {batch_id} · {batch.bin_name}",
     ))
-    session.add(BarcodeChange(
+    _log_change(
+        session,
         sku=target.sku,
-        product_title=target.product_title,
-        shopify_variant_id=target.shopify_variant_id,
-        changed_field="tag-retired",
-        old_barcode=target.rfid_id,
-        new_barcode=kind,
-        changed_by=payload.changed_by,
-    ))
+        title=target.product_title,
+        variant_id=target.shopify_variant_id,
+        field="tag-retired",
+        old=target.rfid_id,
+        new=kind,
+        by=payload.changed_by,
+    )
     retired_epc = target.rfid_id
     session.delete(target)
     # The box in hand is now untagged: it must NOT sit in the
@@ -9629,7 +9760,7 @@ def batch_scan(
     # collect scan right after flagging used to quietly re-add them
     # (Nick, 2026-09-08).
     if product is not None:
-        flag_ci = (product.get("sku") or "").strip().upper()
+        flag_ci = _up(product.get("sku"))
         if flag_ci and flag_ci in _non_taggable_skus(session):
             if flag_ci in _unlabelable_skus(session):
                 raise HTTPException(
@@ -9650,14 +9781,14 @@ def batch_scan(
     item = None
     if product is not None:
         sku = product.get("sku")
-        sku_ci = (sku or "").strip().upper()
+        sku_ci = _up(sku)
         barcode = product.get("barcode")
         for i in items:
             # SKU match is case-insensitive: the mirror's casing drifts
             # ('ZWO Anti-dew'), and an exact match here split one product
             # into two batch rows.
             if i.resolved and (
-                (sku and (i.sku or "").strip().upper() == sku_ci)
+                (sku and _up(i.sku) == sku_ci)
                 or (not sku and barcode and i.barcode == barcode)
             ):
                 item = i
@@ -9854,7 +9985,7 @@ def batch_review(batch_id: int, session: Session = Depends(get_session)):
     shelf_by_item: dict[int, dict] = {}
     if batch.status != "done" and _prev_done_map(
         session, [batch.bin_name]
-    ).get((batch.bin_name or "").strip().upper()):
+    ).get(_up(batch.bin_name)):
         cap = _latest_shelf_sweep(session, batch_id)
         if cap is not None:
             rec = _shelf_reconcile(
@@ -10050,7 +10181,7 @@ def batch_review(batch_id: int, session: Session = Depends(get_session)):
     # provably holds stock — keeping the stray here drags those boxes'
     # records along with the bin update.
     wrong_skus = {
-        (e["item"].get("sku") or "").strip().upper()
+        _up(e["item"].get("sku"))
         for e in flagged
         if "wrong-bin" in e["flags"] and e["item"].get("sku")
     }
@@ -10061,11 +10192,11 @@ def batch_review(batch_id: int, session: Session = Depends(get_session)):
                 func.upper(RfidAssignment.sku).in_(sorted(wrong_skus))
             )
         ):
-            tags_of.setdefault((t.sku or "").strip().upper(), []).append(t)
+            tags_of.setdefault(_up(t.sku), []).append(t)
         for entry in flagged:
             if "wrong-bin" not in entry["flags"]:
                 continue
-            key = (entry["item"].get("sku") or "").strip().upper()
+            key = _up(entry["item"].get("sku"))
             homes = {
                 b.lower()
                 for b in parse_bins(entry["item"].get("bin_location"))
@@ -10076,7 +10207,7 @@ def batch_review(batch_id: int, session: Session = Depends(get_session)):
             )
     for entry in flagged:
         entry["item"]["rfid_incompatible"] = (
-            (entry["item"].get("sku") or "").strip().upper() in noscan
+            _up(entry["item"].get("sku")) in noscan
         )
     # Biggest problems first; count-mismatch-only rows sink to the
     # bottom (Nick, 2026-08-26). Stable: shelf order holds within a tier.
@@ -10110,9 +10241,7 @@ def batch_item_reassign(
     afterwards). If the target product is already in the batch, the counts
     merge into that row."""
     _get_batch(session, batch_id)
-    item = session.get(BatchItem, item_id)
-    if item is None or item.batch_id != batch_id:
-        raise HTTPException(404, "No such item in this batch.")
+    item = _get_batch_item(session, batch_id, item_id)
     code = item.barcode or item.scanned_code
     # Same set the Check step offered, siblings included — an open-box twin
     # usually has no barcode at all, so a barcode-only test would refuse the
@@ -10137,7 +10266,7 @@ def batch_item_reassign(
             i for i in _batch_items(session, batch_id)
             if i.id != item.id and i.resolved and i.sku
             and i.sku.strip().upper()
-            == (match.get("sku") or "").strip().upper()
+            == _up(match.get("sku"))
         ),
         None,
     )
@@ -10165,7 +10294,7 @@ def batch_item_reassign(
     item.sku = match.get("sku")
     item.barcode = match.get("barcode")
     item.bin_location = match.get("bin_location")
-    item.image_url = (match.get("image_url") or "")[:500] or None
+    item.image_url = (match.get("image_url") or "")[:1000] or None
     item.expected_qty = _expected_qty(session, item.sku)
     session.commit()
     session.refresh(item)
@@ -10187,9 +10316,7 @@ def batch_item_resolve(
     Read-only as far as the store is concerned — nothing is written to
     Shopify here, so this needs no write gate."""
     batch = _get_batch(session, batch_id)
-    item = session.get(BatchItem, item_id)
-    if item is None or item.batch_id != batch_id:
-        raise HTTPException(404, "No such item in this batch.")
+    item = _get_batch_item(session, batch_id, item_id)
     code = (item.scanned_code or item.barcode or item.sku or "").strip()
     if not code:
         raise HTTPException(422, "This row has no barcode or SKU to look up.")
@@ -10452,14 +10579,15 @@ def _write_bundle_contents(
             pk.updated_at = datetime.now(timezone.utc)
     fmt = lambda items: ", ".join(  # noqa: E731
         f"{i['qty']}× {i['component_sku']}" for i in items) or "(none)"
-    session.add(BarcodeChange(
+    _log_change(
+        session,
         sku=sku,
-        changed_field="bundle-contents",
-        old_barcode=fmt(before)[:64] or None,
-        new_barcode=fmt([{"component_sku": c, "qty": q}
-                         for c, q in rows])[:64],
-        changed_by=updated_by,
-    ))
+        field="bundle-contents",
+        old=fmt(before) or None,
+        new=fmt([{"component_sku": c, "qty": q}
+                         for c, q in rows]),
+        by=updated_by,
+    )
     session.commit()
     return {
         "bundle_sku": sku,
@@ -10488,8 +10616,7 @@ class BundleImportIn(BaseModel):
 def import_bundle_contents(
     payload: BundleImportIn, session: Session = Depends(get_session)
 ):
-    if config.check_shopify_env():
-        raise HTTPException(500, "Shopify credentials are not configured.")
+    _require_shopify_env()
     sku = payload.sku.strip()
     try:
         product = _lookup_api(sku)
@@ -10543,9 +10670,7 @@ def set_item_kind(
     themselves — so it queues no labels. `excluded` goes further and keeps
     it out of future batches entirely."""
     batch = _get_batch(session, batch_id)
-    item = session.get(BatchItem, item_id)
-    if item is None or item.batch_id != batch_id:
-        raise HTTPException(404, "No such item in this batch.")
+    item = _get_batch_item(session, batch_id, item_id)
     if payload.excluded and payload.kind != "bundle":
         raise HTTPException(
             422, "Only a bundle can be dropped from the RFID system."
@@ -10641,9 +10766,7 @@ def batch_item_split(
     Refused once tags are paired: the tags were tied to ONE listing, and
     splitting under them would leave tags asserting the wrong product."""
     batch = _get_batch(session, batch_id)
-    item = session.get(BatchItem, item_id)
-    if item is None or item.batch_id != batch_id:
-        raise HTTPException(404, "No such item in this batch.")
+    item = _get_batch_item(session, batch_id, item_id)
     if not item.resolved:
         raise HTTPException(422, "That row never resolved to a product.")
     if item.paired_count:
@@ -10717,7 +10840,7 @@ def batch_item_split(
             sku=match.get("sku"),
             barcode=match.get("barcode"),
             bin_location=match.get("bin_location"),
-            image_url=(match.get("image_url") or "")[:500] or None,
+            image_url=(match.get("image_url") or "")[:1000] or None,
             qty_scanned=p.qty,
             expected_qty=_expected_qty(session, match.get("sku")),
             # Split rows share the original's walking-order slot.
@@ -10763,9 +10886,7 @@ def set_item_skipped(
     facts and only one of them is true. Completing the batch raises a
     review task instead, so it comes back to a human."""
     _get_batch(session, batch_id)
-    item = session.get(BatchItem, item_id)
-    if item is None or item.batch_id != batch_id:
-        raise HTTPException(404, "No such item in this batch.")
+    item = _get_batch_item(session, batch_id, item_id)
     if payload.skipped and item.paired_count:
         raise HTTPException(
             409,
@@ -10806,9 +10927,7 @@ def set_item_qty(
     session: Session = Depends(get_session),
 ):
     batch = _get_batch(session, batch_id)
-    item = session.get(BatchItem, item_id)
-    if item is None or item.batch_id != batch_id:
-        raise HTTPException(404, "No such item in this batch.")
+    item = _get_batch_item(session, batch_id, item_id)
     item.qty_scanned = payload.qty
     # A manual bump from zero counts as this row's first contact too.
     if payload.qty > 0 and item.first_scanned_at is None:
@@ -10845,9 +10964,7 @@ def set_item_label(
     session: Session = Depends(get_session),
 ):
     _get_batch(session, batch_id)
-    item = session.get(BatchItem, item_id)
-    if item is None or item.batch_id != batch_id:
-        raise HTTPException(404, "No such item in this batch.")
+    item = _get_batch_item(session, batch_id, item_id)
     item.label_name = payload.label_name
     # Serialized brands: saving here confirms the name exactly like the
     # Scan Station's Save button, so future scans auto-print with it.
@@ -10906,9 +11023,7 @@ def batch_item_labels(
     box that turned up late shouldn't mean reprinting the whole bin. Same
     label content as the batch run; the batch's status is untouched."""
     batch = _get_batch(session, batch_id)
-    item = session.get(BatchItem, item_id)
-    if item is None or item.batch_id != batch_id:
-        raise HTTPException(404, "No such item in this batch.")
+    item = _get_batch_item(session, batch_id, item_id)
     if not item.resolved or not item.shopify_variant_id:
         raise HTTPException(
             422, "That row never resolved to a product, so there's nothing "
@@ -11141,7 +11256,7 @@ def _void_and_requeue(
             c = session.scalar(
                 select(CompanionTag).where(
                     func.upper(CompanionTag.epc)
-                    == (job.epc or "").strip().upper()
+                    == _up(job.epc)
                 )
             )
             if c is not None:
@@ -11151,7 +11266,7 @@ def _void_and_requeue(
             a = session.scalar(
                 select(RfidAssignment).where(
                     func.upper(RfidAssignment.rfid_id)
-                    == (job.epc or "").strip().upper()
+                    == _up(job.epc)
                 )
             )
             if a is not None:
@@ -11183,13 +11298,14 @@ def _void_and_requeue(
     # still said "Box 1 of 3").
     _apply_label_notes(fresh)
     session.add_all(fresh)
-    session.add(BarcodeChange(
-        product_title=f"Batch {batch.id} · bin {batch.bin_name}",
-        changed_field="batch-reprint",
-        old_barcode=f"{len(old_jobs)} label(s) voided"[:64],
-        new_barcode=f"{len(fresh)} reprinted"[:64],
-        changed_by=requested_by,
-    ))
+    _log_change(
+        session,
+        title=f"Batch {batch.id} · bin {batch.bin_name}",
+        field="batch-reprint",
+        old=f"{len(old_jobs)} label(s) voided",
+        new=f"{len(fresh)} reprinted",
+        by=requested_by,
+    )
     session.commit()
     return {
         "voided": len(old_jobs),
@@ -11327,7 +11443,7 @@ def _held_available(session: Session, skus: list[str]) -> dict[str, dict]:
     """Unused held labels per SKU, across every vendor strip: label(s)
     printed for an order the product never actually shipped with (Nick,
     2026-09-01). {SKU: {"count": n, "where": "ZWO strip (SO 948)"}}."""
-    wanted = {(s or "").strip().upper() for s in skus if s and s.strip()}
+    wanted = {_up(s) for s in skus if s and s.strip()}
     if not wanted:
         return {}
     out: dict[str, dict] = {}
@@ -11430,7 +11546,7 @@ def _build_receiving_label_jobs(
         delta = want - have
         if delta <= 0:
             continue
-        h = held.get((item.sku or "").strip().upper())
+        h = held.get(_up(item.sku))
         if h and h["count"] > 0:
             use = min(h["count"], delta)
             delta -= use
@@ -11671,8 +11787,8 @@ def _receiving_intake(
         row = next(
             (i for i in items
              if (i.skip_reason or "")
-             and (i.scanned_code or "").strip().upper()
-             == (code or "").strip().upper()),
+             and _up(i.scanned_code)
+             == _up(code)),
             None,
         )
         if row is None:
@@ -11764,7 +11880,7 @@ def _receiving_intake(
             )
             if item.kind == "multi_box" and not item.other_bins:
                 item.other_bins = (
-                    (product.get("other_bins") or "")[:255] or None
+                    (product.get("other_bins") or "")[:500] or None
                 )
             boxes = entry.quantity * _item_box_slots(item)
             item.qty_scanned += boxes
@@ -11977,9 +12093,7 @@ def queue_missing_labels(
     linked receiving batch is still owed - mechanically identical to the
     planner's Print labels pass (only unlabelled boxes, home bins on the
     labels, no-bin items held out and named) - then close the task."""
-    task = session.get(ReviewTask, task_id)
-    if task is None:
-        raise HTTPException(404, "No such review task.")
+    task = _get_review_task(session, task_id)
     if task.category != "labels-not-printed":
         raise HTTPException(
             422, "Queue-labels is for the unprinted-stock safety net."
@@ -12048,9 +12162,7 @@ def unprinted_sold(
     tags that were never applied. Set-asides need no ledger touch -
     the Unavailable bucket already folds into expectations. History
     gets one receipt per SKU."""
-    task = session.get(ReviewTask, task_id)
-    if task is None:
-        raise HTTPException(404, "No such review task.")
+    task = _get_review_task(session, task_id)
     if task.category != "labels-not-printed":
         raise HTTPException(
             422, "Sold-write-off is for the unprinted-stock safety net."
@@ -12073,7 +12185,7 @@ def unprinted_sold(
             _NOT_COMPANION,
         )
     ):
-        key = (job.sku or "").strip().upper()
+        key = _up(job.sku)
         if key:
             printed[key] = printed.get(key, 0) + 1
     written_off: list[dict] = []
@@ -12095,18 +12207,17 @@ def unprinted_sold(
         written_off.append({
             "sku": item.sku, "units": gone, "sales_consumed": consumed,
         })
-        session.add(BarcodeChange(
+        _log_change(
+            session,
             sku=item.sku,
-            product_title=item.product_title,
-            shopify_variant_id=item.shopify_variant_id,
-            changed_field="unprinted-sold",
-            old_barcode=f"receiving batch {batch.id}"[:64],
-            new_barcode=(
-                f"{gone} unlabelled unit(s) sold"
-                + (f", {consumed} sale(s) consumed" if consumed else "")
-            )[:64],
-            changed_by=by,
-        ))
+            title=item.product_title,
+            variant_id=item.shopify_variant_id,
+            field="unprinted-sold",
+            old=f"receiving batch {batch.id}",
+            new=f"{gone} unlabelled unit(s) sold"
+                + (f", {consumed} sale(s) consumed" if consumed else ""),
+            by=by,
+        )
     session.flush()
     closed = False
     if batch.status not in ("done", "abandoned"):
@@ -12225,7 +12336,7 @@ def receiving_order_preview(
     for line in out["items"]:
         line["flag"] = None
         line["nickname"] = nicknames.get(
-            (line.get("sku") or "").strip().upper()
+            _up(line.get("sku"))
         )
         product = None
         for term in (line.get("sku"), line.get("barcode")):
@@ -12241,7 +12352,7 @@ def receiving_order_preview(
             line["flag"] = "unknown - no product matches this SKU or " \
                            "barcode"
             continue
-        sku_ci = (product.get("sku") or "").strip().upper()
+        sku_ci = _up(product.get("sku"))
         line["product_title"] = product.get("product_title")
         line["bin_location"] = product.get("bin_location")
         if sku_ci in no_tag:
@@ -12344,14 +12455,14 @@ def receiving_full_shipment(
         # sorter never scanned keep their order-line order at the back.
         pos = {}
         for idx, code in enumerate(payload.scan_order):
-            key = (code or "").strip().upper()
+            key = _up(code)
             if key and key not in pos:
                 pos[key] = idx
         far = len(payload.scan_order)
 
         def scan_pos(line: dict) -> int:
             for term in (line.get("sku"), line.get("barcode")):
-                p = pos.get((term or "").strip().upper())
+                p = pos.get(_up(term))
                 if p is not None:
                     return p
             return far
@@ -12502,7 +12613,7 @@ def receiving_sort_match(
             full: dict[str, dict] = {}
             for line in o["items"]:
                 for term in (line.get("sku"), line.get("barcode")):
-                    key = (term or "").strip().upper()
+                    key = _up(term)
                     if key:
                         full.setdefault(key, line)
                         if int(line.get("remaining") or 0) > 0:
@@ -12826,12 +12937,12 @@ def _unpaired_label_counts(session: Session, batch: Batch) -> list[dict]:
             _NOT_COMPANION,
         )
     ):
-        key = (job.sku or "").strip().upper()
+        key = _up(job.sku)
         if key:
             printed[key] = printed.get(key, 0) + 1
     out = []
     for item in _batch_items(session, batch.id):
-        key = (item.sku or "").strip().upper()
+        key = _up(item.sku)
         if not key:
             continue
         n = printed.get(key, 0) - (item.paired_count or 0)
@@ -12859,7 +12970,7 @@ def _receiving_unpaired_net(session: Session, batch: Batch) -> list[dict]:
         for it in session.scalars(
             select(HeldLabelItem).where(HeldLabelItem.list_id == hl.id)
         ):
-            key = (it.sku or "").strip().upper()
+            key = _up(it.sku)
             held[key] = held.get(key, 0) + (it.count or 0)
     dismissed: dict[str, int] = {}
     job_by_epc = {
@@ -12883,11 +12994,11 @@ def _receiving_unpaired_net(session: Session, batch: Batch) -> list[dict]:
         ):
             j = job_by_epc.get((epc or "").upper())
             if j is not None:
-                key = (j.sku or "").strip().upper()
+                key = _up(j.sku)
                 dismissed[key] = dismissed.get(key, 0) + 1
     out = []
     for r in rows:
-        key = (r["sku"] or "").strip().upper()
+        key = _up(r["sku"])
         n = r["count"] - held.get(key, 0) - dismissed.get(key, 0)
         if n > 0:
             out.append({**r, "count": n})
@@ -12917,7 +13028,7 @@ def _consume_unpaired_label(
     A receiving batch that becomes fully paired closes itself, same
     as pairing from the batch."""
     out: list[BatchItem] = []
-    sku_u = (sku or "").strip().upper()
+    sku_u = _up(sku)
     if n <= 0:
         return out
 
@@ -12930,7 +13041,7 @@ def _consume_unpaired_label(
         ):
             return False
         owed = any(
-            (u["sku"] or "").strip().upper() == item_sku_u
+            _up(u["sku"]) == item_sku_u
             for u in _receiving_unpaired_net(session, batch)
         )
         if not owed:
@@ -12954,7 +13065,7 @@ def _consume_unpaired_label(
     for raw in epcs or []:
         if len(out) >= n:
             break
-        epc = (raw or "").strip().upper()
+        epc = _up(raw)
         if not epc:
             continue
         job = session.scalar(
@@ -12969,7 +13080,7 @@ def _consume_unpaired_label(
         batch = session.get(Batch, job.batch_id)
         if batch is None:
             continue
-        _bump(batch, (job.sku or "").strip().upper())
+        _bump(batch, _up(job.sku))
 
     # 2) SKU fallback for whatever the EPCs didn't attribute.
     if sku_u:
@@ -12979,11 +13090,7 @@ def _consume_unpaired_label(
             select(Batch).where(Batch.kind == "receiving")
             .order_by(Batch.id.desc())
         ):
-            created = b.created_at
-            if created is not None and created.tzinfo is not None:
-                created = created.astimezone(
-                    timezone.utc
-                ).replace(tzinfo=None)
+            created = _naive_utc(b.created_at)
             if created is not None and created < cutoff:
                 continue
             candidates.append(b)
@@ -13036,11 +13143,7 @@ def _check_unpaired_label_tasks(session: Session) -> None:
         for b in session.scalars(
             select(Batch).where(Batch.kind == "receiving")
         ):
-            created = b.created_at
-            if created is not None and created.tzinfo is not None:
-                created = created.astimezone(
-                    timezone.utc
-                ).replace(tzinfo=None)
+            created = _naive_utc(b.created_at)
             # Old batches only stay in the walk while their task is open.
             if (
                 created is not None and created < cutoff
@@ -13054,10 +13157,7 @@ def _check_unpaired_label_tasks(session: Session) -> None:
             )
             if newest is None:
                 continue  # nothing was ever printed for this batch
-            if newest.tzinfo is not None:
-                newest = newest.astimezone(
-                    timezone.utc
-                ).replace(tzinfo=None)
+            newest = _naive_utc(newest)
             task = open_tasks.get(b.id)
             # Grace: while labels are still coming out, nobody is late.
             if task is None and (now - newest).total_seconds() < 7200:
@@ -13144,9 +13244,7 @@ def dismiss_sold_item(
             422, "Sold-before-label dismissal is for receiving batches - "
                  "bin batches count what is physically on the shelf.",
         )
-    item = session.get(BatchItem, item_id)
-    if item is None or item.batch_id != batch_id:
-        raise HTTPException(404, "No such item in this batch.")
+    item = _get_batch_item(session, batch_id, item_id)
     if item.skipped and item.skip_reason == SOLD_BEFORE_LABEL_REASON:
         raise HTTPException(409, "Already dismissed as sold.")
     item.skipped = True
@@ -13157,8 +13255,8 @@ def dismiss_sold_item(
     marker = f"dismiss-sold #{item.id}"
     net = [
         u for u in _receiving_unpaired_net(session, batch)
-        if (u["sku"] or "").strip().upper()
-        == (item.sku or "").strip().upper()
+        if _up(u["sku"])
+        == _up(item.sku)
     ]
     owed = net[0]["count"] if net else 0
     if owed > 0 and item.sku:
@@ -13181,17 +13279,16 @@ def dismiss_sold_item(
                 continue
             session.add(LabelDismissal(epc=j.epc, dismissed_by=marker))
             covered += 1
-    session.add(BarcodeChange(
+    _log_change(
+        session,
         sku=item.sku,
-        product_title=item.product_title,
-        shopify_variant_id=item.shopify_variant_id,
-        changed_field="receiving-dismissed",
-        old_barcode=f"item {item.id}"[:64],
-        new_barcode=(
-            f"sold before label - {covered} label(s) covered"
-        )[:64],
-        changed_by=(payload.worker or "").strip()[:100] or None,
-    ))
+        title=item.product_title,
+        variant_id=item.shopify_variant_id,
+        field="receiving-dismissed",
+        old=f"item {item.id}",
+        new=f"sold before label - {covered} label(s) covered",
+        by=(payload.worker or "").strip() or None,
+    )
     session.flush()
     receiving_done = _maybe_close_receiving(session, batch)
     session.commit()
@@ -13228,9 +13325,7 @@ def dismiss_sold_undo(
     removed (they carry its marker). A batch that closed itself in the
     meantime stays closed - the message says so."""
     batch = _get_batch(session, batch_id)
-    item = session.get(BatchItem, item_id)
-    if item is None or item.batch_id != batch_id:
-        raise HTTPException(404, "No such item in this batch.")
+    item = _get_batch_item(session, batch_id, item_id)
     if not item.skipped or item.skip_reason != SOLD_BEFORE_LABEL_REASON:
         raise HTTPException(
             409, "That item is not dismissed as sold - nothing to undo."
@@ -13244,15 +13339,16 @@ def dismiss_sold_undo(
     ):
         session.delete(d)
         removed += 1
-    session.add(BarcodeChange(
+    _log_change(
+        session,
         sku=item.sku,
-        product_title=item.product_title,
-        shopify_variant_id=item.shopify_variant_id,
-        changed_field="receiving-dismissed",
-        old_barcode="undone"[:64],
-        new_barcode=f"{removed} label(s) owed again"[:64],
-        changed_by=(payload.worker or "").strip()[:100] or None,
-    ))
+        title=item.product_title,
+        variant_id=item.shopify_variant_id,
+        field="receiving-dismissed",
+        old="undone",
+        new=f"{removed} label(s) owed again",
+        by=(payload.worker or "").strip() or None,
+    )
     session.commit()
     return {
         "item": item.as_dict(),
@@ -13282,9 +13378,7 @@ def receiving_unpaired_labels(session: Session = Depends(get_session)):
         select(Batch).where(Batch.kind == "receiving")
         .order_by(Batch.id.desc())
     ):
-        created = b.created_at
-        if created is not None and created.tzinfo is not None:
-            created = created.astimezone(timezone.utc).replace(tzinfo=None)
+        created = _naive_utc(b.created_at)
         if created is not None and created < cutoff:
             continue
         net = _receiving_unpaired_net(session, b)
@@ -13318,11 +13412,11 @@ def receiving_unpaired_labels(session: Session = Depends(get_session)):
         }
         by_sku: dict[str, list] = {}
         for j in jobs:
-            key = (j.sku or "").strip().upper()
+            key = _up(j.sku)
             if key and (j.epc or "").upper() not in dismissed:
                 by_sku.setdefault(key, []).append(j)
         for u in net:
-            key = (u["sku"] or "").strip().upper()
+            key = _up(u["sku"])
             cand = by_sku.get(key, [])
             products.append({
                 "batch_id": b.id,
@@ -13343,7 +13437,7 @@ def receiving_unpaired_labels(session: Session = Depends(get_session)):
     # not whatever the print job froze weeks ago - overlay the live
     # bin map, keep the job's bin as the fallback.
     wanted = {
-        (p["sku"] or "").strip().upper() for p in products if p["sku"]
+        _up(p["sku"]) for p in products if p["sku"]
     }
     if wanted:
         home = {}
@@ -13352,11 +13446,11 @@ def receiving_unpaired_labels(session: Session = Depends(get_session)):
                 func.upper(BinMapEntry.sku).in_(sorted(wanted))
             )
         ):
-            key = (e.sku or "").strip().upper()
+            key = _up(e.sku)
             if key not in home and (e.bin or "").strip():
                 home[key] = e.bin.strip()
         for p in products:
-            key = (p["sku"] or "").strip().upper()
+            key = _up(p["sku"])
             if key in home:
                 p["bin_location"] = home[key]
     return {
@@ -13382,7 +13476,7 @@ def epcs_unlinked(
     unlinked = _still_unlinked(session, payload.epcs)
     return {
         "checked": len({
-            (e or "").strip().upper() for e in payload.epcs if e
+            _up(e) for e in payload.epcs if e
         }),
         "unlinked": sorted(unlinked),
     }
@@ -13444,17 +13538,16 @@ def locate_pair_unlinked(
         session, product.get("sku"), epcs=[epc], n=1
     )
     bumped = consumed[0] if consumed else None
-    session.add(BarcodeChange(
+    _log_change(
+        session,
         sku=product.get("sku"),
-        product_title=product.get("product_title"),
-        shopify_variant_id=product.get("shopify_variant_id"),
-        changed_field="locate-paired",
-        old_barcode=(
-            f"receiving item {bumped.id}" if bumped else "loose sticker"
-        )[:64],
-        new_barcode=epc[:64],
-        changed_by=(payload.worker or "").strip()[:100] or None,
-    ))
+        title=product.get("product_title"),
+        variant_id=product.get("shopify_variant_id"),
+        field="locate-paired",
+        old=f"receiving item {bumped.id}" if bumped else "loose sticker",
+        new=epc,
+        by=(payload.worker or "").strip() or None,
+    )
     session.commit()
     session.refresh(a)
     return {
@@ -13499,15 +13592,16 @@ def locate_pair_unlinked_undo(
         item = session.get(BatchItem, payload.item_id)
         if item is not None and (item.paired_count or 0) > 0:
             item.paired_count -= 1
-    session.add(BarcodeChange(
+    _log_change(
+        session,
         sku=a.sku,
-        product_title=a.product_title,
-        shopify_variant_id=a.shopify_variant_id,
-        changed_field="tag-unlinked",
-        old_barcode=epc[:64],
-        new_barcode="locate pair undone"[:64],
-        changed_by=(payload.worker or "").strip()[:100] or None,
-    ))
+        title=a.product_title,
+        variant_id=a.shopify_variant_id,
+        field="tag-unlinked",
+        old=epc,
+        new="locate pair undone",
+        by=(payload.worker or "").strip() or None,
+    )
     session.delete(a)
     session.commit()
     return {"ok": True, "message": f"…{epc[-6:]} unlinked - the sticker "
@@ -13542,7 +13636,7 @@ def epcs_ignore_heard(
         if cap is None:
             raise HTTPException(404, "No such sweep on the server.")
         epcs += cap.epcs.split("\n") if cap.epcs else []
-    heard = {(e or "").strip().upper() for e in epcs if e and e.strip()}
+    heard = {_up(e) for e in epcs if e and e.strip()}
     if not heard:
         raise HTTPException(
             400, "No EPCs - send a list or pick a sent sweep.")
@@ -13584,14 +13678,15 @@ def epcs_ignore_heard(
             entry.epcs = "\n".join(live)
         else:
             session.delete(entry)
-    session.add(BarcodeChange(
+    _log_change(
+        session,
         sku=None,
-        product_title=f"{len(fresh)} unpaired sticker(s) written off",
-        changed_field="unpaired-ignored",
-        old_barcode=(f"sweep #{cap.id}" if cap else "C72 sweep")[:64],
-        new_barcode=marker[:64],
-        changed_by=(payload.dismissed_by or "").strip()[:100] or None,
-    ))
+        title=f"{len(fresh)} unpaired sticker(s) written off",
+        field="unpaired-ignored",
+        old=f"sweep #{cap.id}" if cap else "C72 sweep",
+        new=marker,
+        by=(payload.dismissed_by or "").strip() or None,
+    )
     session.commit()
     return {
         "ignored": len(fresh), "heard": len(heard),
@@ -13651,7 +13746,7 @@ def _packed_analysis(
     }
     by_sku: dict[str, list[RfidAssignment]] = {}
     for t in owned:
-        by_sku.setdefault((t.sku or "").strip().upper(), []).append(t)
+        by_sku.setdefault(_up(t.sku), []).append(t)
     keys = sorted(k for k in by_sku if k)
     coverage = orders_sync.sold_unretired_map(session, keys)
     sweep_day = None
@@ -13669,7 +13764,7 @@ def _packed_analysis(
         ):
             if max(0, (r.quantity or 0) - (r.retired or 0)) <= 0:
                 continue
-            k = (r.sku or "").strip().upper()
+            k = _up(r.sku)
             m = sold_meta.setdefault(
                 k, {"newest": None, "same_day": False}
             )
@@ -13688,7 +13783,7 @@ def _packed_analysis(
                 func.upper(BinMapEntry.sku).in_(keys)
             )
         ):
-            k = (e.sku or "").strip().upper()
+            k = _up(e.sku)
             if e.image_url and k not in images:
                 images[k] = e.image_url
     plan = []
@@ -13846,7 +13941,7 @@ def epcs_retire_sold(
                 f"once. Undo it from History first if that was wrong.",
             )
         epcs += cap.epcs.split("\n") if cap.epcs else []
-    heard = {(e or "").strip().upper() for e in epcs if e and e.strip()}
+    heard = {_up(e) for e in epcs if e and e.strip()}
     if not heard:
         raise HTTPException(
             400, "No EPCs - send a list or pick a sent sweep.")
@@ -13882,15 +13977,16 @@ def epcs_retire_sold(
             note=note,
         )
         session.add(rt)
-        session.add(BarcodeChange(
+        _log_change(
+            session,
             sku=t.sku,
-            product_title=t.product_title,
-            shopify_variant_id=t.shopify_variant_id,
-            changed_field="tag-retired",
-            old_barcode=t.rfid_id,
-            new_barcode="presumed-sold",
-            changed_by=by,
-        ))
+            title=t.product_title,
+            variant_id=t.shopify_variant_id,
+            field="tag-retired",
+            old=t.rfid_id,
+            new="presumed-sold",
+            by=by,
+        )
         session.delete(t)
         moved.append((rt, t))
     _consume_ledger_for_retirements(session, moved)
@@ -13900,17 +13996,16 @@ def epcs_retire_sold(
         # whole-sweep undo.
         cap.packed_retired_at = datetime.now(timezone.utc)
         cap.packed_retired_by = by
-        session.add(BarcodeChange(
+        _log_change(
+            session,
             sku=None,
-            product_title=(
-                f"{len(to_retire)} tag(s) retired sold from sweep "
-                f"#{cap.id}"
-            )[:255],
-            changed_field="packed-retired",
-            old_barcode=f"sweep #{cap.id}"[:64],
-            new_barcode=f"{len(to_retire)} tag(s)"[:64],
-            changed_by=by,
-        ))
+            title=f"{len(to_retire)} tag(s) retired sold from sweep "
+                f"#{cap.id}",
+            field="packed-retired",
+            old=f"sweep #{cap.id}",
+            new=f"{len(to_retire)} tag(s)",
+            by=by,
+        )
     session.commit()
     skipped = base["skip_total"]
     unowned = base["unowned"]
@@ -13979,32 +14074,32 @@ def epcs_retire_sold_undo(
             case_units=r.case_units,
             assigned_by=(payload.worker or "").strip()[:100] or None,
         ))
-        session.add(BarcodeChange(
+        _log_change(
+            session,
             sku=r.sku,
-            product_title=r.product_title,
-            shopify_variant_id=r.shopify_variant_id,
-            changed_field="tag-unretired",
-            old_barcode=r.rfid_id,
-            new_barcode=r.kind,
-            changed_by=(payload.worker or "").strip()[:100] or None,
-        ))
+            title=r.product_title,
+            variant_id=r.shopify_variant_id,
+            field="tag-unretired",
+            old=r.rfid_id,
+            new=r.kind,
+            by=(payload.worker or "").strip() or None,
+        )
         if r.sku and (r.ledger_consumed or 0) > 0:
             orders_sync.unretire_units(session, r.sku, r.ledger_consumed)
         session.delete(r)
         restored.append(r.rfid_id)
     cap.packed_retired_at = None
     cap.packed_retired_by = None
-    session.add(BarcodeChange(
+    _log_change(
+        session,
         sku=None,
-        product_title=(
-            f"{len(restored)} tag(s) restored - sweep #{cap.id} "
-            f"un-spent"
-        )[:255],
-        changed_field="packed-unretired",
-        old_barcode=f"sweep #{cap.id}"[:64],
-        new_barcode="packed retire undone"[:64],
-        changed_by=(payload.worker or "").strip()[:100] or None,
-    ))
+        title=f"{len(restored)} tag(s) restored - sweep #{cap.id} "
+            f"un-spent",
+        field="packed-unretired",
+        old=f"sweep #{cap.id}",
+        new="packed retire undone",
+        by=(payload.worker or "").strip() or None,
+    )
     session.commit()
     return {
         "restored": len(restored),
@@ -14040,14 +14135,15 @@ def epcs_ignore_heard_undo(
         )
     for r in rows:
         session.delete(r)
-    session.add(BarcodeChange(
+    _log_change(
+        session,
         sku=None,
-        product_title=f"{len(rows)} written-off sticker(s) restored",
-        changed_field="unpaired-unignored",
-        old_barcode=payload.marker.strip()[:64],
-        new_barcode="write-off undone"[:64],
-        changed_by=(payload.worker or "").strip()[:100] or None,
-    ))
+        title=f"{len(rows)} written-off sticker(s) restored",
+        field="unpaired-unignored",
+        old=payload.marker.strip(),
+        new="write-off undone",
+        by=(payload.worker or "").strip() or None,
+    )
     session.commit()
     return {
         "restored": len(rows),
@@ -14142,13 +14238,13 @@ def create_held_list(
         )
     if receipt.settled_at is None:
         receipt.settled_at = datetime.now(timezone.utc)
-    swept = {(e or "").strip().upper() for e in payload.epcs if e}
+    swept = {_up(e) for e in payload.epcs if e}
 
     # Swept tags recorded as paired boxes of THIS shipment: physically
     # they answered from the strip in the operator's hand, so they are
     # almost certainly pair-sweep over-hearings, not shelf boxes.
     items = _batch_items(session, batch.id)
-    by_sku = {(i.sku or "").strip().upper(): i for i in items if i.sku}
+    by_sku = {_up(i.sku): i for i in items if i.sku}
     owned_candidates: list[dict] = []
     unpaired_rolled_back = 0
     if swept:
@@ -14157,19 +14253,20 @@ def create_held_list(
                 func.upper(RfidAssignment.rfid_id).in_(sorted(swept))
             )
         ):
-            item = by_sku.get((a.sku or "").strip().upper())
+            item = by_sku.get(_up(a.sku))
             if item is None or (item.paired_count or 0) <= 0:
                 continue
             if payload.unpair_owned:
-                session.add(BarcodeChange(
+                _log_change(
+                    session,
                     sku=a.sku,
-                    product_title=a.product_title,
-                    shopify_variant_id=a.shopify_variant_id,
-                    changed_field="tag-unlinked",
-                    old_barcode=(a.rfid_id or "")[:64] or None,
-                    new_barcode="strip sweep rollback"[:64],
-                    changed_by=(payload.created_by or "")[:100] or None,
-                ))
+                    title=a.product_title,
+                    variant_id=a.shopify_variant_id,
+                    field="tag-unlinked",
+                    old=a.rfid_id or "" or None,
+                    new="strip sweep rollback",
+                    by=payload.created_by or "" or None,
+                )
                 item.paired_count = max(0, (item.paired_count or 0) - 1)
                 session.delete(a)
                 unpaired_rolled_back += 1
@@ -14374,12 +14471,7 @@ def _check_stock_update_tasks(session: Session) -> None:
                 OrderReceipt.review_task_id.is_(None),
             )
         ):
-            settled = r.settled_at
-            # Azure SQL hands timestamps back tz-aware; sqlite naive.
-            if settled is not None and settled.tzinfo is not None:
-                settled = settled.astimezone(
-                    timezone.utc
-                ).replace(tzinfo=None)
+            settled = _naive_utc(r.settled_at)
             if settled is None or (
                 (now - settled).total_seconds() < 3600
             ):
@@ -14511,7 +14603,7 @@ def divert_to_bin(
         # Its saved bin IS this batch's bin now, so it is no longer split
         # from the point of view of the shelf it's on.
         others = bins_other_than(item.bin_location, wanted)
-        item.other_bins = (", ".join(others))[:255] if others else None
+        item.other_bins = (", ".join(others))[:500] if others else None
 
     session.flush()
     jobs, skipped = _build_label_jobs(
@@ -14631,7 +14723,7 @@ def batch_baseline(
         i.sku for i in _batch_items(session, batch_id) if i.resolved and i.sku
     }
     for a in session.scalars(select(RfidAssignment)):
-        epc = (a.rfid_id or "").strip().upper()
+        epc = _up(a.rfid_id)
         known_epcs.add(epc)
         if epc not in swept:
             continue
@@ -14714,23 +14806,22 @@ def set_tagged_before(
             409,
             f"This batch is {batch.status} — its counts are settled.",
         )
-    item = session.get(BatchItem, item_id)
-    if item is None or item.batch_id != batch_id:
-        raise HTTPException(404, "No such item in this batch.")
+    item = _get_batch_item(session, batch_id, item_id)
     if not item.resolved:
         raise HTTPException(422, "That item never resolved to a product.")
     old = item.tagged_before
     item.tagged_before = payload.count
     if old != payload.count:
-        session.add(BarcodeChange(
+        _log_change(
+            session,
             sku=item.sku,
-            product_title=item.product_title,
-            shopify_variant_id=item.shopify_variant_id,
-            changed_field="tagged-before",
-            old_barcode=str(old),
-            new_barcode=str(payload.count),
-            changed_by=payload.updated_by,
-        ))
+            title=item.product_title,
+            variant_id=item.shopify_variant_id,
+            field="tagged-before",
+            old=str(old),
+            new=str(payload.count),
+            by=payload.updated_by,
+        )
     session.commit()
     session.refresh(item)
     d = item.as_dict()
@@ -14776,9 +14867,7 @@ def batch_pair(
     are rejected with what they're already assigned to; odd-looking EPCs
     save but come back flagged suspect (same rules as the Scan Station)."""
     batch = _get_batch(session, batch_id)
-    item = session.get(BatchItem, payload.item_id)
-    if item is None or item.batch_id != batch_id:
-        raise HTTPException(404, "No such item in this batch.")
+    item = _get_batch_item(session, batch_id, payload.item_id)
     if not item.resolved:
         raise HTTPException(422, "That item never resolved to a product.")
 
@@ -14790,12 +14879,12 @@ def batch_pair(
     comp = session.scalar(
         select(CompanionTag).where(
             func.upper(CompanionTag.epc)
-            == (payload.epc or "").strip().upper()
+            == _up(payload.epc)
         )
     )
     if comp is not None:
-        if ((comp.sku or "").strip().upper()
-                != (item.sku or "").strip().upper()):
+        if (_up(comp.sku)
+                != _up(item.sku)):
             raise HTTPException(
                 409,
                 f"That sticker is Box {comp.box_no or '?'} of "
@@ -14894,9 +14983,7 @@ def batch_pair_undo(
     batch_id: int, payload: PairUndoIn, session: Session = Depends(get_session)
 ):
     _get_batch(session, batch_id)
-    item = session.get(BatchItem, payload.item_id)
-    if item is None or item.batch_id != batch_id:
-        raise HTTPException(404, "No such item in this batch.")
+    item = _get_batch_item(session, batch_id, payload.item_id)
     row = session.scalar(
         select(RfidAssignment).where(
             RfidAssignment.rfid_id == payload.epc.strip()
@@ -15070,9 +15157,7 @@ def batch_item_reprint(
     batch = _get_batch(session, batch_id)
     if batch.status in ("done", "abandoned"):
         raise HTTPException(409, f"This batch is {batch.status}.")
-    item = session.get(BatchItem, item_id)
-    if item is None or item.batch_id != batch_id:
-        raise HTTPException(404, "No such item in this batch.")
+    item = _get_batch_item(session, batch_id, item_id)
     if not item.resolved:
         raise HTTPException(422, "That item never resolved to a product.")
     if item.kind == "bundle" or item.skipped:
@@ -15086,7 +15171,7 @@ def batch_item_reprint(
             f"confirm and try again.",
         )
 
-    sku_ci = (item.sku or "").strip().upper()
+    sku_ci = _up(item.sku)
 
     # 1. The saved preferred name is the usual culprit (right name, wrong
     # line) — fix it store-wide so the NEXT print anywhere is right too.
@@ -15098,7 +15183,7 @@ def batch_item_reprint(
     # 2. Release the ties to the old stickers (they're coming off/binned).
     released = 0
     for tie in _batch_tie_rows(session, batch):
-        if (tie.sku or "").strip().upper() == sku_ci:
+        if _up(tie.sku) == sku_ci:
             session.delete(tie)
             released += 1
     item.paired_count = 0
@@ -15112,14 +15197,14 @@ def batch_item_reprint(
             PrintJob.status.in_(("pending", "printing", "done")),
         )
     ):
-        if (job.sku or "").strip().upper() == sku_ci:
+        if _up(job.sku) == sku_ci:
             job.status = "canceled" if job.status == "pending" else "voided"
             voided += 1
             if job.kind == "companion":
                 c = session.scalar(
                     select(CompanionTag).where(
                         func.upper(CompanionTag.epc)
-                        == (job.epc or "").strip().upper()
+                        == _up(job.epc)
                     )
                 )
                 if c is not None:
@@ -15231,12 +15316,12 @@ def batch_verify(
                 sorted({i.sku for i in items if i.sku})
             )
             live_ci = {
-                (k or "").strip().upper(): v
+                _up(k): v
                 for k, v in (live or {}).items()
             }
             dirty = False
             for i in items:
-                key = (i.sku or "").strip().upper()
+                key = _up(i.sku)
                 if key in live_ci and i.expected_qty != live_ci[key]:
                     i.expected_qty = live_ci[key]
                     dirty = True
@@ -15345,7 +15430,7 @@ def batch_verify(
     shelf_by_item: dict[int, dict] = {}
     if batch.status != "done" and _prev_done_map(
         session, [batch.bin_name]
-    ).get((batch.bin_name or "").strip().upper()):
+    ).get(_up(batch.bin_name)):
         rec = _shelf_reconcile(session, batch, sorted(epcs))
         shelf_by_item = {r["item_id"]: r for r in rec["items"]}
 
@@ -15386,7 +15471,7 @@ def batch_verify(
             ],
             "image_url": i.image_url,
             # Expected silent: the tag never answers once it's on the box.
-            "rfid_incompatible": (i.sku or "").strip().upper() in noscan,
+            "rfid_incompatible": _up(i.sku) in noscan,
             # A walked batch is a deep manual check of the shelf: boxes
             # were physically handled here, so a Shopify bin that says
             # otherwise (or says nothing) earns a one-tap fix offer.
@@ -16048,9 +16133,7 @@ def batch_item_delete(
     counted, or a product that belongs on another shelf). Any tags already
     tied to it are released with it."""
     _get_batch(session, batch_id)
-    item = session.get(BatchItem, item_id)
-    if item is None or item.batch_id != batch_id:
-        raise HTTPException(404, "No such item in this batch.")
+    item = _get_batch_item(session, batch_id, item_id)
     if item.sku:
         for row in session.scalars(
             select(RfidAssignment).where(
@@ -16082,7 +16165,7 @@ def batch_unlinked(
     epcs = []
     seen: set = set()
     for raw in payload.epcs:
-        epc = (raw or "").strip().upper()
+        epc = _up(raw)
         if epc and epc not in seen:
             seen.add(epc)
             epcs.append(epc)
@@ -16118,7 +16201,7 @@ def _bin_mismatch_entries(session: Session) -> list[dict]:
         select(BinMapEntry.sku, BinMapEntry.bin, BinMapEntry.other_bins,
                BinMapEntry.barcode, BinMapEntry.image_url)
     ):
-        key = (sku or "").strip().upper()
+        key = _up(sku)
         if not key:
             continue
         full = ", ".join(x for x in ((bin_ or "").strip(), other) if x)
@@ -16133,7 +16216,7 @@ def _bin_mismatch_entries(session: Session) -> list[dict]:
     # Shopify's bin) triple still holds; either shelf changing makes it a
     # new situation and it comes back.
     dismissed = {
-        ((d.sku or "").strip().upper(),
+        (_up(d.sku),
          (d.tag_bin or "").strip().lower(),
          (d.shopify_bin or "").strip().lower())
         for d in session.scalars(select(MismatchDismissal))
@@ -16152,7 +16235,7 @@ def _bin_mismatch_entries(session: Session) -> list[dict]:
         .where(RfidAssignment.sku.isnot(None))
         .group_by(RfidAssignment.sku)
     ):
-        key = (sku or "").strip().upper()
+        key = _up(sku)
         rfid_bin = (tag_bin or "").strip()
         saved = shopify_bin_by_sku.get(key)
         # Only a real DISAGREEMENT counts: both sides have a bin and
@@ -16210,18 +16293,19 @@ def list_review_tasks(
     rows = session.scalars(stmt.limit(min(limit, 500))).all()
     # Product images for the expandable preview, from the local bin map.
     imgs: dict = {}
-    skus = {(t.sku or "").strip().upper() for t in rows if t.sku}
+    skus = {_up(t.sku) for t in rows if t.sku}
     if skus:
         for sku, img in session.execute(
             select(BinMapEntry.sku, BinMapEntry.image_url)
             .where(BinMapEntry.image_url.isnot(None))
+            .where(func.upper(BinMapEntry.sku).in_(skus))
         ):
-            if sku and sku.strip().upper() in skus:
+            if sku:
                 imgs.setdefault(sku.strip().upper(), img)
     tasks = []
     for t in rows:
         d = t.as_dict()
-        d["image_url"] = imgs.get((t.sku or "").strip().upper())
+        d["image_url"] = imgs.get(_up(t.sku))
         tasks.append(d)
     # Live bin disagreements ride along with the open inbox (they have no
     # stored row — see _bin_mismatch_entries).
@@ -16269,9 +16353,7 @@ def recount_review_task(
     the source batch row when there is one, and logs a History row - the
     RFID side only. Any Shopify on-hand change rides the existing audited
     on-hand endpoints (the client chains them), never this one."""
-    task = session.get(ReviewTask, task_id)
-    if task is None:
-        raise HTTPException(404, "No such review task.")
+    task = _get_review_task(session, task_id)
     if task.category != "inventory-check":
         raise HTTPException(422, "Manual recounts are for inventory checks.")
     if task.status != "open":
@@ -16302,14 +16384,15 @@ def recount_review_task(
             take = min(item.qty_scanned, -delta)
             item.qty_scanned -= take
             item.tagged_before = max(0, item.tagged_before - (-delta - take))
-    session.add(BarcodeChange(
+    _log_change(
+        session,
         sku=task.sku,
-        product_title=task.product_title,
-        changed_field="recount",
-        old_barcode=(str(old_count) if old_count is not None else None),
-        new_barcode=str(payload.count),
-        changed_by=by,
-    ))
+        title=task.product_title,
+        field="recount",
+        old=str(old_count) if old_count is not None else None,
+        new=str(payload.count),
+        by=by,
+    )
     session.add(ReviewNote(
         task_key=str(task.id),
         note=(
@@ -16359,9 +16442,7 @@ def retire_sold_n(
     relevant sweep retire first, then the oldest pairings. Local
     records only; Shopify is never written. Resolves the task when the
     numbers then agree."""
-    task = session.get(ReviewTask, task_id)
-    if task is None:
-        raise HTTPException(404, "No such review task.")
+    task = _get_review_task(session, task_id)
     if task.category not in ("inventory-check", "tag-onhand-mismatch"):
         raise HTTPException(422, "Retiring is for Inventory Check tasks.")
     if task.status != "open":
@@ -16430,15 +16511,16 @@ def retire_sold_n(
             note=f"review task #{task.id} · verdict retire",
         )
         session.add(rt)
-        session.add(BarcodeChange(
+        _log_change(
+            session,
             sku=t.sku,
-            product_title=t.product_title,
-            shopify_variant_id=t.shopify_variant_id,
-            changed_field="tag-retired",
-            old_barcode=t.rfid_id,
-            new_barcode="presumed-sold",
-            changed_by=by,
-        ))
+            title=t.product_title,
+            variant_id=t.shopify_variant_id,
+            field="tag-retired",
+            old=t.rfid_id,
+            new="presumed-sold",
+            by=by,
+        )
         session.delete(t)
         moved_rows.append((rt, t))
     _consume_ledger_for_retirements(session, moved_rows)
@@ -16475,9 +16557,7 @@ def retire_all_sold(
     ledger absorbs them, and the task resolves itself. The on-hand==0
     guard re-checks LIVE here - a stale window can't fire this after
     stock came back. Local records only; Shopify is never written."""
-    task = session.get(ReviewTask, task_id)
-    if task is None:
-        raise HTTPException(404, "No such review task.")
+    task = _get_review_task(session, task_id)
     if task.category not in ("tag-onhand-mismatch", "inventory-check"):
         raise HTTPException(
             422, "The sold-out shortcut is for Inventory Check tasks."
@@ -16535,15 +16615,16 @@ def retire_all_sold(
             note=f"review task #{task.id} · on-hand 0",
         )
         session.add(rt)
-        session.add(BarcodeChange(
+        _log_change(
+            session,
             sku=t.sku,
-            product_title=t.product_title,
-            shopify_variant_id=t.shopify_variant_id,
-            changed_field="tag-retired",
-            old_barcode=t.rfid_id,
-            new_barcode="presumed-sold",
-            changed_by=by,
-        ))
+            title=t.product_title,
+            variant_id=t.shopify_variant_id,
+            field="tag-retired",
+            old=t.rfid_id,
+            new="presumed-sold",
+            by=by,
+        )
         session.delete(t)
         moved_rows.append((rt, t))
     _consume_ledger_for_retirements(session, moved_rows)
@@ -16586,13 +16667,14 @@ def clear_backorder_debt(
     by = (payload.changed_by or "").strip()[:100] or None
     row.cleared_at = datetime.now(timezone.utc)
     row.cleared_by = by or "manual"
-    session.add(BarcodeChange(
+    _log_change(
+        session,
         sku=row.sku,
-        changed_field="backorder-debt-clear",
-        old_barcode=str(row.id),
-        new_barcode=str(row.units),
-        changed_by=by,
-    ))
+        field="backorder-debt-clear",
+        old=str(row.id),
+        new=str(row.units),
+        by=by,
+    )
     session.commit()
     return {
         "cleared": row.as_dict(),
@@ -16611,9 +16693,7 @@ def clear_backorder_debt(
 def resolve_review_task(
     task_id: int, payload: ResolveIn, session: Session = Depends(get_session)
 ):
-    task = session.get(ReviewTask, task_id)
-    if task is None:
-        raise HTTPException(404, "No such review task.")
+    task = _get_review_task(session, task_id)
     if task.status != "open":
         raise HTTPException(409, f"Task is already {task.status}.")
     task.status = "dismissed" if payload.dismissed else "resolved"
@@ -16634,9 +16714,7 @@ def reopen_review_task(
     """Undo a resolve/dismiss: the task returns to the open inbox. The
     original resolution stays in History (that event already happened) —
     this just puts the work back on the list."""
-    task = session.get(ReviewTask, task_id)
-    if task is None:
-        raise HTTPException(404, "No such review task.")
+    task = _get_review_task(session, task_id)
     if task.status == "open":
         raise HTTPException(409, "That task is already open.")
     task.status = "open"
@@ -16740,9 +16818,7 @@ def review_task_context(
     that let half the backlog resolve itself with one click. One quick
     query each; the single Shopify call (inventory-check) degrades to
     null on failure rather than slowing the window down."""
-    task = session.get(ReviewTask, task_id)
-    if task is None:
-        raise HTTPException(404, "No such review task.")
+    task = _get_review_task(session, task_id)
     ctx: dict = {"category": task.category}
     sku = (task.sku or "").strip()
     if task.category in ("inventory-check", "tag-onhand-mismatch") and sku:
@@ -16764,7 +16840,7 @@ def review_task_context(
         try:
             info = shopify.get_stock_info_by_skus([sku])
             info_ci = {
-                (k or "").strip().upper(): v for k, v in info.items()
+                _up(k): v for k, v in info.items()
             }
             row = info_ci.get(sku.upper())
             if row is not None:
@@ -17083,7 +17159,7 @@ def create_capture(payload: CaptureIn, session: Session = Depends(get_session)):
     seen: set[str] = set()
     epcs: list[str] = []
     for raw in payload.epcs:
-        epc = (raw or "").strip().upper()
+        epc = _up(raw)
         if epc and epc not in seen:
             seen.add(epc)
             epcs.append(epc)
@@ -17183,20 +17259,20 @@ def latest_capture_summary(session: Session = Depends(get_session)):
             epcs.append(epc)
     taken: set = set()
     if epcs:
+        # A rack sweep holds thousands of EPCs: shipping them all back as
+        # one giant IN() every 4 s poll melts the SQL tier. Past ~300,
+        # pulling the (narrow, indexed) EPC column and intersecting here
+        # is far cheaper.
+        q = select(RfidAssignment.rfid_id)
+        if len(epcs) <= 300:
+            q = q.where(func.upper(RfidAssignment.rfid_id).in_(epcs))
         taken = {
-            (e or "").strip().upper()
-            for e in session.scalars(
-                select(RfidAssignment.rfid_id).where(
-                    func.upper(RfidAssignment.rfid_id).in_(epcs)
-                )
-            )
-        }
+            _up(e)
+            for e in session.scalars(q)
+        } & seen
     age = None
     if row.created_at is not None:
-        created = row.created_at
-        # Azure SQL hands timestamps back tz-aware; sqlite naive.
-        if created.tzinfo is not None:
-            created = created.astimezone(timezone.utc).replace(tzinfo=None)
+        created = _naive_utc(row.created_at)
         age = max(0, int((datetime.utcnow() - created).total_seconds()))
     return {
         "ok": True,
@@ -17439,12 +17515,13 @@ def oneleft_auto(
     else:
         row.value = value
     row.updated_by = (payload.worker or "").strip()[:100] or None
-    session.add(BarcodeChange(
-        changed_field="oneleft",
-        old_barcode=f"auto-confirm {'off' if payload.on else 'on'}",
-        new_barcode=f"auto-confirm {value}",
-        changed_by=payload.worker,
-    ))
+    _log_change(
+        session,
+        field="oneleft",
+        old=f"auto-confirm {'off' if payload.on else 'on'}",
+        new=f"auto-confirm {value}",
+        by=payload.worker,
+    )
     session.commit()
     return {"ok": True, "auto": payload.on}
 
@@ -17750,7 +17827,7 @@ def _noscan_skus(session: Session) -> set[str]:
     answers a sweep (packaging kills the read), so sweep-side checks must
     not treat silence as a problem."""
     return {
-        (r.sku or "").strip().upper()
+        _up(r.sku)
         for r in session.scalars(select(RfidIncompatible))
     }
 
@@ -17782,19 +17859,16 @@ def set_rfid_incompatible(
         session.delete(row)
         changed = True
     if changed:
-        session.add(BarcodeChange(
+        _log_change(
+            session,
             sku=sku,
-            changed_field="rfid-scan",
-            old_barcode=(
-                "scans normally" if payload.incompatible
-                else "won't scan on box"
-            ),
-            new_barcode=(
-                "won't scan on box" if payload.incompatible
-                else "scans normally"
-            ),
-            changed_by=payload.changed_by,
-        ))
+            field="rfid-scan",
+            old="scans normally" if payload.incompatible
+                else "won't scan on box",
+            new="won't scan on box" if payload.incompatible
+                else "scans normally",
+            by=payload.changed_by,
+        )
     session.commit()
     return {"sku": sku, "rfid_incompatible": payload.incompatible}
 
@@ -17842,19 +17916,16 @@ def set_mislabel_flag(
         session.delete(row)
         changed = True
     if changed:
-        session.add(BarcodeChange(
+        _log_change(
+            session,
             sku=sku,
-            changed_field="mislabel-flag",
-            old_barcode=(
-                "labels trusted" if payload.flagged
-                else "vendor mis-label warning"
-            )[:64],
-            new_barcode=(
-                "vendor mis-label warning" if payload.flagged
-                else "labels trusted"
-            )[:64],
-            changed_by=(payload.changed_by or "").strip()[:100] or None,
-        ))
+            field="mislabel-flag",
+            old="labels trusted" if payload.flagged
+                else "vendor mis-label warning",
+            new="vendor mis-label warning" if payload.flagged
+                else "labels trusted",
+            by=(payload.changed_by or "").strip() or None,
+        )
     session.commit()
     return {
         "sku": sku,
@@ -17925,13 +17996,14 @@ def add_mislabel_alternate(
     if alt_sku.upper() not in {a.upper() for a in alts}:
         alts.append(alt_sku)
         row.alt_skus = "\n".join(alts)
-        session.add(BarcodeChange(
+        _log_change(
+            session,
             sku=sku,
-            changed_field="mislabel-flag",
-            old_barcode="picker option added"[:64],
-            new_barcode=alt_sku[:64],
-            changed_by=(payload.changed_by or "").strip()[:100] or None,
-        ))
+            field="mislabel-flag",
+            old="picker option added",
+            new=alt_sku,
+            by=(payload.changed_by or "").strip() or None,
+        )
     session.commit()
     return {
         "sku": sku,
@@ -17962,13 +18034,14 @@ def remove_mislabel_alternate(
     if len(kept) == len(alts):
         raise HTTPException(404, f"{alt_sku} isn't on {sku}'s list.")
     row.alt_skus = "\n".join(kept) or None
-    session.add(BarcodeChange(
+    _log_change(
+        session,
         sku=sku,
-        changed_field="mislabel-flag",
-        old_barcode="picker option removed"[:64],
-        new_barcode=alt_sku.strip()[:64],
-        changed_by=(by or "").strip()[:100] or None,
-    ))
+        field="mislabel-flag",
+        old="picker option removed",
+        new=alt_sku.strip(),
+        by=(by or "").strip() or None,
+    )
     session.commit()
     return {
         "sku": sku,
@@ -18093,16 +18166,15 @@ def unavailable_move(
         "safety_stock": "Safety stock", "reserved": "Other (Reserved)",
         "auto": ", ".join(moved.get("moved_from") or []) or "unavailable",
     }[payload.bucket]
-    session.add(BarcodeChange(
+    _log_change(
+        session,
         sku=sku,
-        product_title=title,
-        changed_field="unavailable-move",
-        old_barcode=f"{payload.direction}:{moved_qty}"[:64],
-        new_barcode=(
-            bucket_label if payload.bucket == "auto" else payload.bucket
-        )[:64],
-        changed_by=(payload.changed_by or "").strip()[:100] or None,
-    ))
+        title=title,
+        field="unavailable-move",
+        old=f"{payload.direction}:{moved_qty}",
+        new=bucket_label if payload.bucket == "auto" else payload.bucket,
+        by=(payload.changed_by or "").strip() or None,
+    )
     session.commit()
     verb = ("set aside as" if payload.direction == "in"
             else "brought back from")
@@ -18133,7 +18205,7 @@ def _non_taggable_skus(session: Session) -> set[str]:
     Callers that treat the two kinds differently (audit display, the
     box-marker label) also consult _unlabelable_skus."""
     return {
-        (r.sku or "").strip().upper()
+        _up(r.sku)
         for r in session.scalars(select(NonTaggable))
     }
 
@@ -18144,7 +18216,7 @@ def _unlabelable_skus(session: Session) -> set[str]:
     a bin for location/clarity, on-hand still shows and can be updated,
     but tag counts never enter any arithmetic."""
     return {
-        (r.sku or "").strip().upper()
+        _up(r.sku)
         for r in session.scalars(
             select(NonTaggable).where(NonTaggable.kind == "unlabelable-box")
         )
@@ -18192,16 +18264,15 @@ def set_non_taggable(
         session.delete(row)
         changed = True
     if changed:
-        session.add(BarcodeChange(
+        _log_change(
+            session,
             sku=sku,
-            changed_field="non-taggable",
-            old_barcode=was[:64],
-            new_barcode=(
-                "non-taggable" if payload.non_taggable
-                else "in the RFID system"
-            ),
-            changed_by=payload.changed_by,
-        ))
+            field="non-taggable",
+            old=was,
+            new="non-taggable" if payload.non_taggable
+                else "in the RFID system",
+            by=payload.changed_by,
+        )
     session.commit()
     return {"sku": sku, "non_taggable": payload.non_taggable}
 
@@ -18247,16 +18318,15 @@ def set_unlabelable_box(
         session.delete(row)
         changed = True
     if changed:
-        session.add(BarcodeChange(
+        _log_change(
+            session,
             sku=sku,
-            changed_field="unlabelable-box",
-            old_barcode=was[:64],
-            new_barcode=(
-                "unlabelable-box" if payload.flagged
-                else "in the RFID system"
-            ),
-            changed_by=payload.changed_by,
-        ))
+            field="unlabelable-box",
+            old=was,
+            new="unlabelable-box" if payload.flagged
+                else "in the RFID system",
+            by=payload.changed_by,
+        )
     session.commit()
     return {
         "sku": sku,
@@ -18385,14 +18455,15 @@ def put_scan_note(
     elif row is not None:
         session.delete(row)
     if (old or "") != note:
-        session.add(BarcodeChange(
+        _log_change(
+            session,
             sku=sku,
-            changed_field="scan-note",
-            old_barcode=(old or "")[:64] or None,
+            field="scan-note",
+            old=(old or "") or None,
             # new_barcode is NOT NULL — a cleared note records "(none)".
-            new_barcode=note[:64] or "(none)",
-            changed_by=(payload.changed_by or "").strip()[:100] or None,
-        ))
+            new=note[:64] or "(none)",
+            by=(payload.changed_by or "").strip() or None,
+        )
     session.commit()
     return {"sku": sku, "scan_note": note or None}
 
@@ -18409,6 +18480,47 @@ def _admin_product_url(pid: str | None) -> str | None:
         f"https://{config.SHOPIFY_STORE.strip()}"
         f"/admin/products/{m.group(1)}"
     )
+
+
+# BarcodeChange.changed_field → History event type. ONE shared map for
+# both history endpoints (they used to carry drifting private copies:
+# backorder events rendered as raw field names in product history).
+_CHANGE_TYPE_LABELS = {
+    "barcode": "barcode-replaced", "sku": "sku-updated",
+    "bin": "bin-updated", "bin-local": "tags-rebinned",
+    "vendor": "vendor-updated",
+    "recount": "manual-recount",
+    "bundle-contents": "bundle-contents-set",
+    "rfid-scan": "rfid-flag-changed",
+    "non-taggable": "non-taggable",
+    "unlabelable-box": "unlabelable-box",
+    "box-set": "box-set",
+    "alias-unlinked": "alias-unlinked",
+    "mislabel-flag": "mislabel-flag",
+    "unavailable-move": "unavailable-move",
+    "batch-reprint": "batch-reprinted",
+    "print-stop": "printing-stopped",
+    "print-resume": "printing-resumed",
+    "on-hand": "on-hand-updated", "on-hand-undo": "on-hand-undone",
+    "on-hand-lower": "on-hand-lowered",
+    "on-hand-lower-undo": "on-hand-lower-undone",
+    "tagged-before": "already-tagged-set",
+    "unprinted-sold": "unprinted-sold",
+    "box-renumbered": "box-renumbered",
+    "label-edit": "label-edited",
+    "openbox": "openbox-return",
+    "tag-unlinked": "tag-unlinked",
+    "tag-released": "tag-released",
+    "tag-reapplied": "tag-reapplied",
+    "locate-list": "locate-list",
+    "oneleft": "oneleft",
+    "tag-sold": "tag-sold",
+    "scan-note": "scan-note",
+    "tag-retired": "tag-retired",
+    "tag-unretired": "tag-unretired",
+    "backorder-debt": "backorder-noted",
+    "backorder-debt-clear": "backorder-cleared",
+}
 
 
 @app.get("/api/product-history", dependencies=[Depends(require_user)])
@@ -18501,38 +18613,7 @@ def product_history(term: str, session: Session = Depends(get_session)):
                 "shopify": False,
             })
 
-    change_types = {
-        "barcode": "barcode-replaced", "sku": "sku-updated",
-        "bin": "bin-updated", "bin-local": "tags-rebinned",
-        "vendor": "vendor-updated",
-        "recount": "manual-recount",
-        "bundle-contents": "bundle-contents-set",
-        "rfid-scan": "rfid-flag-changed",
-        "non-taggable": "non-taggable",
-        "unlabelable-box": "unlabelable-box",
-        "box-set": "box-set",
-        "alias-unlinked": "alias-unlinked",
-        "mislabel-flag": "mislabel-flag",
-        "unavailable-move": "unavailable-move",
-        "batch-reprint": "batch-reprinted",
-        "on-hand": "on-hand-updated", "on-hand-undo": "on-hand-undone",
-        "on-hand-lower": "on-hand-lowered",
-        "on-hand-lower-undo": "on-hand-lower-undone",
-        "tagged-before": "already-tagged-set",
-        "unprinted-sold": "unprinted-sold",
-        "box-renumbered": "box-renumbered",
-        "label-edit": "label-edited",
-        "openbox": "openbox-return",
-        "tag-unlinked": "tag-unlinked",
-        "tag-released": "tag-released",
-        "tag-reapplied": "tag-reapplied",
-        "locate-list": "locate-list",
-        "oneleft": "oneleft",
-        "tag-sold": "tag-sold",
-        "scan-note": "scan-note",
-        "tag-retired": "tag-retired",
-        "tag-unretired": "tag-unretired",
-    }
+    change_types = _CHANGE_TYPE_LABELS
     for c in session.scalars(
         select(BarcodeChange).where(or_(
             BarcodeChange.sku == sku,
@@ -18959,42 +19040,7 @@ def history(
                      "epcs": [x.rfid_id for x in group]},
         })
 
-    change_types = {
-        "barcode": "barcode-replaced", "sku": "sku-updated",
-        "bin": "bin-updated", "bin-local": "tags-rebinned",
-        "vendor": "vendor-updated",
-        "recount": "manual-recount",
-        "bundle-contents": "bundle-contents-set",
-        "rfid-scan": "rfid-flag-changed",
-        "non-taggable": "non-taggable",
-        "unlabelable-box": "unlabelable-box",
-        "box-set": "box-set",
-        "alias-unlinked": "alias-unlinked",
-        "mislabel-flag": "mislabel-flag",
-        "unavailable-move": "unavailable-move",
-        "batch-reprint": "batch-reprinted",
-        "print-stop": "printing-stopped",
-        "print-resume": "printing-resumed",
-        "on-hand": "on-hand-updated", "on-hand-undo": "on-hand-undone",
-        "on-hand-lower": "on-hand-lowered",
-        "on-hand-lower-undo": "on-hand-lower-undone",
-        "tagged-before": "already-tagged-set",
-        "unprinted-sold": "unprinted-sold",
-        "box-renumbered": "box-renumbered",
-        "label-edit": "label-edited",
-        "openbox": "openbox-return",
-        "tag-unlinked": "tag-unlinked",
-        "tag-released": "tag-released",
-        "tag-reapplied": "tag-reapplied",
-        "locate-list": "locate-list",
-        "oneleft": "oneleft",
-        "tag-sold": "tag-sold",
-        "scan-note": "scan-note",
-        "tag-retired": "tag-retired",
-        "tag-unretired": "tag-unretired",
-        "backorder-debt": "backorder-noted",
-        "backorder-debt-clear": "backorder-cleared",
-    }
+    change_types = _CHANGE_TYPE_LABELS
     # A sweep undo unlinks its tags with one shared timestamp — fold
     # those the same way sweep assigns fold. Release/re-apply rows (the
     # Assigned Tag undo chain) fold identically, keyed by their field so
@@ -19005,9 +19051,60 @@ def history(
     unlink_order: list = []
     retire_groups: dict = {}
     retire_order: list = []
-    for c in session.scalars(
+    page = session.scalars(
         select(BarcodeChange).order_by(BarcodeChange.id.desc()).limit(limit)
-    ):
+    ).all()
+    # Undo-offerable checks used to be point lookups INSIDE the loop (up
+    # to 5 extra round trips per row × 200 rows). Prefetch everything the
+    # page references in one batched query per table instead.
+    lp_epcs, rd_items, ui_markers, pr_caps, bd_ids = set(), set(), set(), set(), set()
+    for c in page:
+        if c.changed_field == "locate-paired" and c.new_barcode:
+            lp_epcs.add(c.new_barcode.strip().upper())
+        elif c.changed_field == "receiving-dismissed":
+            mm = re.match(r"item (\d+)$", c.old_barcode or "")
+            if mm:
+                rd_items.add(int(mm.group(1)))
+        elif c.changed_field == "unpaired-ignored" and c.new_barcode:
+            ui_markers.add(c.new_barcode)
+        elif c.changed_field == "packed-retired":
+            mm = re.match(r"sweep #(\d+)$", c.old_barcode or "")
+            if mm:
+                pr_caps.add(int(mm.group(1)))
+        elif c.changed_field == "backorder-debt":
+            try:
+                bd_ids.add(int(c.old_barcode or ""))
+            except ValueError:
+                pass
+    lp_live = {
+        _up(e)
+        for e in session.scalars(
+            select(RfidAssignment.rfid_id).where(
+                func.upper(RfidAssignment.rfid_id).in_(sorted(lp_epcs))
+            )
+        )
+    } if lp_epcs else set()
+    rd_rows = {
+        r.id: r
+        for r in session.scalars(
+            select(BatchItem).where(BatchItem.id.in_(sorted(rd_items))))
+    } if rd_items else {}
+    ui_live = set(session.scalars(
+        select(LabelDismissal.dismissed_by).distinct().where(
+            LabelDismissal.dismissed_by.in_(sorted(ui_markers)))
+    )) if ui_markers else set()
+    pr_rows = {
+        r.id: r
+        for r in session.scalars(
+            select(EpcCapture).where(EpcCapture.id.in_(sorted(pr_caps))))
+    } if pr_caps else {}
+    bd_live = set(session.scalars(
+        select(BackorderDebt.id).where(
+            BackorderDebt.id.in_(sorted(bd_ids)),
+            BackorderDebt.cleared_at.is_(None),
+        )
+    )) if bd_ids else set()
+    for c in page:
         if c.changed_field in ("tag-unlinked", "tag-released",
                                "tag-reapplied"):
             key = (c.changed_field, c.sku or "", c.changed_by or "",
@@ -19057,12 +19154,7 @@ def history(
         # stands - it also gives back the receiving label instance the
         # pair consumed (encoded as "receiving item N").
         elif c.changed_field == "locate-paired" and c.new_barcode:
-            if session.scalar(
-                select(RfidAssignment).where(
-                    func.upper(RfidAssignment.rfid_id)
-                    == c.new_barcode.strip().upper()
-                )
-            ) is not None:
+            if c.new_barcode.strip().upper() in lp_live:
                 mm = re.match(
                     r"receiving item (\d+)$", c.old_barcode or ""
                 )
@@ -19077,7 +19169,7 @@ def history(
         elif c.changed_field == "receiving-dismissed":
             mm = re.match(r"item (\d+)$", c.old_barcode or "")
             if mm:
-                it_row = session.get(BatchItem, int(mm.group(1)))
+                it_row = rd_rows.get(int(mm.group(1)))
                 if (
                     it_row is not None and it_row.skipped
                     and it_row.skip_reason == SOLD_BEFORE_LABEL_REASON
@@ -19095,11 +19187,7 @@ def history(
                 f"{c.product_title or 'unpaired stickers written off'}"
                 f" · {c.old_barcode or 'sweep'}"
             )
-            if c.new_barcode and session.scalar(
-                select(LabelDismissal).where(
-                    LabelDismissal.dismissed_by == c.new_barcode
-                )
-            ) is not None:
+            if c.new_barcode and c.new_barcode in ui_live:
                 event["undo"] = {
                     "kind": "unpaired-ignore",
                     "marker": c.new_barcode,
@@ -19112,7 +19200,7 @@ def history(
             event["detail"] = c.product_title or "packed sweep retired"
             mm = re.match(r"sweep #(\d+)$", c.old_barcode or "")
             if mm:
-                cap_row = session.get(EpcCapture, int(mm.group(1)))
+                cap_row = pr_rows.get(int(mm.group(1)))
                 if (cap_row is not None
                         and cap_row.packed_retired_at is not None):
                     event["undo"] = {
@@ -19138,12 +19226,7 @@ def history(
                 debt_id = int(c.old_barcode or "")
             except ValueError:
                 debt_id = None
-            if debt_id is not None and session.scalar(
-                select(BackorderDebt).where(
-                    BackorderDebt.id == debt_id,
-                    BackorderDebt.cleared_at.is_(None),
-                )
-            ) is not None:
+            if debt_id is not None and debt_id in bd_live:
                 event["undo"] = {
                     "kind": "backorder-debt",
                     "debt_id": debt_id,
@@ -19163,7 +19246,7 @@ def history(
     # where its tags sit NOW: a release is undoable while the snapshot
     # waits in the released table, a re-apply while the tags are live.
     chain_epcs = {
-        (x.old_barcode or "").strip().upper()
+        _up(x.old_barcode)
         for k in unlink_order if k[0] != "tag-unlinked"
         for x in unlink_groups[k] if x.old_barcode
     }
@@ -19171,7 +19254,7 @@ def history(
     live_now: set = set()
     if chain_epcs:
         released_now = {
-            (e or "").strip().upper()
+            _up(e)
             for e in session.scalars(
                 select(ReleasedTag.rfid_id).where(
                     func.upper(ReleasedTag.rfid_id).in_(sorted(chain_epcs))
@@ -19179,7 +19262,7 @@ def history(
             )
         }
         live_now = {
-            (e or "").strip().upper()
+            _up(e)
             for e in session.scalars(
                 select(RfidAssignment.rfid_id).where(
                     func.upper(RfidAssignment.rfid_id).in_(
@@ -19201,12 +19284,12 @@ def history(
         undo = None
         if field == "tag-released":
             still = [e for e in epcs
-                     if (e or "").strip().upper() in released_now]
+                     if _up(e) in released_now]
             if still:
                 undo = {"kind": "tag-release", "sku": c.sku, "epcs": still}
         elif field == "tag-reapplied":
             still = [e for e in epcs
-                     if (e or "").strip().upper() in live_now]
+                     if _up(e) in live_now]
             if still:
                 undo = {"kind": "tag-assign", "sku": c.sku, "epcs": still}
         if len(group) == 1:

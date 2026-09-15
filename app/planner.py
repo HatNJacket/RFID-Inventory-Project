@@ -25,6 +25,14 @@ _TIMEOUT = 10
 # (whose PO-detail endpoint does its own live Shopify metafield fetch).
 _TTL_SECONDS = 300
 _cache: dict[str, tuple[float, dict]] = {}
+_CACHE_MAX = 4096  # expired entries are swept when the dict outgrows this
+
+
+def _prune(cache: dict, ttl: float) -> None:
+    if len(cache) > _CACHE_MAX:
+        now = time.monotonic()
+        for k in [k for k, (at, _) in cache.items() if now - at >= ttl]:
+            cache.pop(k, None)
 
 # A SKU search can also match PO references, vendor names, or comments;
 # only this many candidate POs get the (slow) detail fetch before we stop.
@@ -253,6 +261,7 @@ def open_orders_lines(operator: str | None = None,
                     "items": items,
                 })
         result = {**base, "ok": True, "orders": orders}
+        _prune(_orders_cache, _ORDERS_TTL_SECONDS)
         _orders_cache[key] = (time.monotonic(), result)
         return result
     except Exception as exc:  # noqa: BLE001 — the sorter reports, not crashes
@@ -304,5 +313,6 @@ def on_order_for_sku(sku: str, operator: str | None = None) -> dict:
                   "total_remaining": sum(o["remaining"] for o in orders)}
     except Exception as exc:  # noqa: BLE001 — hints never break a scan
         result = {**base, "error": str(exc)[:200]}
+    _prune(_cache, _TTL_SECONDS)
     _cache[key] = (time.monotonic(), result)
     return result
