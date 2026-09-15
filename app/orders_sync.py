@@ -552,6 +552,16 @@ def refresh_mismatch_tasks(session: Session) -> dict:
         (r.part_sku or "").strip().upper(): r.set_sku
         for r in session.scalars(select(BoxSetPart))
     }
+    # Bundles have no box of their own - the components carry the tags
+    # (Nick, 2026-09-15, the DSLR Buddy couplers: bundle listings that
+    # hold inventory and deliberately zero tags). Skip AND close, like
+    # non-taggables.
+    from app.models import ProductKind
+    bundles = {
+        (r.sku or "").strip().upper()
+        for r in session.scalars(select(ProductKind))
+        if r.kind == "bundle"
+    }
 
     def _own(task) -> bool:
         # The arithmetic may only close its OWN filings; a human-filed
@@ -581,6 +591,19 @@ def refresh_mismatch_tasks(session: Session) -> dict:
                 task.resolution_note = (
                     "Product marked non-taggable — it sits outside the "
                     "RFID system, so the tag arithmetic no longer applies."
+                )
+                closed += 1
+            continue
+        if sku in bundles:
+            task = open_tasks.get(sku)
+            if task is not None and _own(task):
+                task.status = "resolved"
+                task.resolved_by = "orders-sync"
+                task.resolved_at = datetime.utcnow()
+                task.resolution_note = (
+                    "Marked as a bundle - its components carry the "
+                    "tags, so the listing holds inventory with no RFID "
+                    "arithmetic of its own."
                 )
                 closed += 1
             continue

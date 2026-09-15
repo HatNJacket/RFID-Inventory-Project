@@ -15,5 +15,6 @@ deploy.zip
 # Boxify CSV exports are data snapshots, not code - imported through
 # the Audit tab, never committed.
 *_for_Boxify.csv
+bundle-groups-*.csv
 
 c72-app/build/

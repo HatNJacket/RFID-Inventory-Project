@@ -156,11 +156,53 @@ with TestClient(app) as cl:
     check("status endpoint reports the waiting state",
           st["last_run"]["waiting_scope"] is True, st)
 
+
   # The refresh plumbing: marker cleared, duration logged as orders-sync.
   stats = cl.get("/api/refresh-stats").json()
   check("no stuck running marker", "orders-sync" not in stats["running"], stats)
   check("sync durations feed the shared ETA log",
         "orders-sync" in stats["stats"], stats)
+
+# Line-level counting (Nick, 2026-09-15, order #50260: the 8h0045 line
+# shipped while a sibling stayed backordered and the old whole-order
+# gate hid the sale). get_fulfilled_orders counts SHIPPED units per
+# line on both fulfilled and partially fulfilled orders.
+from app import shopify as _sh
+PAGE = {"orders": {"pageInfo": {"hasNextPage": False, "endCursor": None},
+  "nodes": [
+    {"id": "gid://o/1", "name": "#1", "displayFulfillmentStatus": "FULFILLED",
+     "fulfillments": [{"createdAt": "2026-09-11T14:00:00Z"}],
+     "lineItems": {"nodes": [
+         {"sku": "A-1", "quantity": 2, "unfulfilledQuantity": 0}]}},
+    {"id": "gid://o/2", "name": "#2",
+     "displayFulfillmentStatus": "PARTIALLY_FULFILLED",
+     "fulfillments": [{"createdAt": "2026-09-11T14:14:31Z"}],
+     "lineItems": {"nodes": [
+         {"sku": "8h0045", "quantity": 1, "unfulfilledQuantity": 0},
+         {"sku": "BACKORDERED", "quantity": 1, "unfulfilledQuantity": 1},
+         {"sku": "HALF", "quantity": 4, "unfulfilledQuantity": 3}]}},
+    {"id": "gid://o/3", "name": "#3",
+     "displayFulfillmentStatus": "ON_HOLD", "fulfillments": [],
+     "lineItems": {"nodes": [
+         {"sku": "NOPE", "quantity": 1, "unfulfilledQuantity": 0}]}},
+  ]}}
+seen_search = {}
+def fake_q(query, variables):
+    seen_search.update(variables)
+    return PAGE
+with patch("app.shopify.query_shopify", side_effect=fake_q):
+    out = _sh.get_fulfilled_orders("2026-09-01T00:00:00Z")
+check("the order search includes PARTIAL fulfillment",
+      "fulfillment_status:partial" in (seen_search.get("search") or ""),
+      seen_search)
+by_name = {o["name"]: o for o in out}
+check("a fully fulfilled order counts as before",
+      by_name["#1"]["lines"] == [{"sku": "A-1", "qty": 2}],
+      by_name.get("#1"))
+check("a partial order counts its SHIPPED lines only",
+      sorted((l["sku"], l["qty"]) for l in by_name["#2"]["lines"])
+      == [("8h0045", 1), ("HALF", 1)], by_name.get("#2"))
+check("other statuses never count", "#3" not in by_name, list(by_name))
 
 print()
 print("FAILED: "+", ".join(fails) if fails else "ALL CHECKS PASSED")

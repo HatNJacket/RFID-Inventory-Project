@@ -1901,6 +1901,18 @@ public class MainActivity extends Activity {
         act2.addView(locWriteOffBtn, new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
         v.addView(act2);
+        // Pinned label bin (Nick, 2026-09-15): one bin from LABEL BINS
+        // pinned to the main Locate screen - its owed-labels count
+        // stays live (refreshed on tab entry and after every pair) and
+        // one tap reopens that bin's labels-to-pair list.
+        locPinBtn = smallBtn("");
+        locPinBtn.setOnClickListener(x -> openPinnedBin());
+        locPinBtn.setVisibility(View.GONE);
+        LinearLayout.LayoutParams pinLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        pinLp.topMargin = dp(4);
+        v.addView(locPinBtn, pinLp);
         paintSoundBtn();
 
         locHint = new TextView(this);
@@ -3115,10 +3127,12 @@ public class MainActivity extends Activity {
         LinearLayout list = new LinearLayout(this);
         list.setOrientation(LinearLayout.VERTICAL);
         list.setPadding(dp(12), dp(8), dp(12), dp(8));
+        // SKU leads (Nick, 2026-09-15): the stickers in hand SAY the
+        // SKU - matching them to this list is the whole job here.
         for (JSONObject r : items) {
             list.addView(auditCard(
-                    r.optString("product_title", r.optString("sku", "?")),
-                    "SKU " + r.optString("sku", "?")
+                    r.optString("sku", "?"),
+                    r.optString("product_title", "?")
                             + (r.isNull("reference") ? ""
                                : " · " + r.optString("reference")),
                     r.optInt("count") + "×", C_WARN, null),
@@ -3138,9 +3152,24 @@ public class MainActivity extends Activity {
         list.addView(hint);
         ScrollView scroll = new ScrollView(this);
         scroll.addView(list);
+        // PIN (Nick, 2026-09-15): keep this bin on the main Locate
+        // screen with a live owed-labels count.
+        final String pinned = prefs.getString("up_pin_bin", "");
+        final boolean isPinned = bin.equalsIgnoreCase(pinned);
         dlg()
                 .setTitle("BIN " + bin + " - LABELS TO PAIR")
                 .setView(scroll)
+                .setNeutralButton(isPinned ? "UNPIN" : "PIN TO LOCATE",
+                        (d, w) -> {
+                            prefs.edit().putString("up_pin_bin",
+                                    isPinned ? "" : bin).apply();
+                            status.setText(isPinned
+                                    ? bin + " unpinned."
+                                    : bin + " pinned to Locate - its "
+                                      + "count stays live and updates "
+                                      + "as labels pair.");
+                            refreshPinnedBin();
+                        })
                 .setNegativeButton("CLOSE", null)
                 .show();
         if (unpairedHunt) {
@@ -3148,6 +3177,87 @@ public class MainActivity extends Activity {
                     + upChecked + " tag(s) checked");
             updateLocateUi();
         }
+    }
+
+    // ------------------------------------ pinned unpaired-label bin ---
+    /** Refresh the pinned bin's owed-labels count (tab entry and
+     *  every successful pair). No pin = no button. */
+    private void refreshPinnedBin() {
+        if (locPinBtn == null) return;
+        final String bin = prefs.getString("up_pin_bin", "");
+        if (bin.isEmpty()) {
+            locPinBtn.setVisibility(View.GONE);
+            return;
+        }
+        locPinBtn.setVisibility(View.VISIBLE);
+        locPinBtn.setText("⧉ " + bin + " · …");
+        new Thread(() -> {
+            try {
+                JSONObject resp = api("GET",
+                        "/api/receiving/unpaired-labels", null);
+                JSONArray rows = resp.optJSONArray("products");
+                int labels = 0;
+                for (int i = 0; rows != null && i < rows.length(); i++) {
+                    JSONObject r = rows.optJSONObject(i);
+                    if (r == null) continue;
+                    String rb = r.isNull("bin_location") ? ""
+                            : r.optString("bin_location", "");
+                    if (bin.equalsIgnoreCase(rb)) {
+                        labels += r.optInt("count");
+                    }
+                }
+                final int fl = labels;
+                ui.post(() -> {
+                    if (locPinBtn == null) return;
+                    locPinBtn.setText(fl > 0
+                            ? "⧉ " + bin + " · " + fl
+                                    + " LABEL(S) TO PAIR"
+                            : "⧉ " + bin + " · ALL PAIRED");
+                });
+            } catch (Exception ignored) {
+            }
+        }).start();
+    }
+
+    /** Tap on the pinned bin: enter Unpaired Tags mode if needed and
+     *  reopen that bin's labels-to-pair list, fresh from the server. */
+    private void openPinnedBin() {
+        final String bin = prefs.getString("up_pin_bin", "");
+        if (bin.isEmpty()) return;
+        if (!unpairedHunt) enterUnpairedHunt(null, null);
+        status.setText("Loading " + bin + "…");
+        new Thread(() -> {
+            try {
+                JSONObject resp = api("GET",
+                        "/api/receiving/unpaired-labels", null);
+                JSONArray rows = resp.optJSONArray("products");
+                final java.util.ArrayList<JSONObject> items =
+                        new java.util.ArrayList<>();
+                for (int i = 0; rows != null && i < rows.length(); i++) {
+                    JSONObject r = rows.optJSONObject(i);
+                    if (r == null) continue;
+                    String rb = r.isNull("bin_location") ? ""
+                            : r.optString("bin_location", "");
+                    if (bin.equalsIgnoreCase(rb)) items.add(r);
+                }
+                ui.post(() -> {
+                    if (items.isEmpty()) {
+                        beep(SOUND_OK);
+                        status.setText("✓ " + bin + " owes no labels - "
+                                + "everything paired.");
+                        refreshPinnedBin();
+                        return;
+                    }
+                    showUnpairedBinProducts(bin, items);
+                });
+            } catch (Exception e) {
+                ui.post(() -> {
+                    beep(SOUND_ERR);
+                    status.setText("Pinned-bin lookup failed: "
+                            + e.getMessage());
+                });
+            }
+        }).start();
     }
 
     /** Drain the pending reads into ONE classify call - 40 tags or
@@ -3307,6 +3417,9 @@ public class MainActivity extends Activity {
                             + (locTags.size() > 0
                                ? locTags.size() + " target(s) left."
                                : "No unpaired targets in earshot."));
+                    // The pinned bin's count moves with every pair
+                    // (Nick, 2026-09-15).
+                    refreshPinnedBin();
                     updateLocateUi();
                 });
             } catch (Exception e) {
@@ -3419,6 +3532,7 @@ public class MainActivity extends Activity {
                             status.setText("Undone - …" + epc.substring(
                                     Math.max(0, epc.length() - 6))
                                     + " is unpaired again.");
+                            refreshPinnedBin();
                             updateLocateUi();
                         });
                     } catch (Exception e) {
@@ -3824,6 +3938,13 @@ public class MainActivity extends Activity {
     private long upLeadSince = 0;
     private long upNarrowHeard = 0;
 
+    /** How long the found/pair prompt stays snoozed after a decline
+     *  (Nick, 2026-09-15: the old fixed 10 s meant standing on a box
+     *  waiting). Settings cycles 1-10 s; default 1. */
+    private long upFoundSnoozeMs() {
+        return Math.max(1, prefs.getInt("up_found_snooze", 1)) * 1000L;
+    }
+
     private void upAutoNarrowTick(long now) {
         if (!locating || !unpairedHunt) return;
         if (!prefs.getBoolean("up_autonarrow", true)) {
@@ -3916,7 +4037,7 @@ public class MainActivity extends Activity {
     private String upLastPairEpc = null;
     private int upLastPairItem = 0;
     private Button locUnpairedBtn, locUndoBtn, locWriteOffBtn,
-            locBinsBtn;
+            locBinsBtn, locPinBtn;
 
     /** Called from the SDK callback thread for every read while locating. */
     private void onLocateRead(String epc, double rssi) {
@@ -4000,11 +4121,13 @@ public class MainActivity extends Activity {
         autoPowerTick(now, fresh, pct);
         // Pegged AT the top while hunting: offer to mark the loudest
         // tag found so the hunt moves on to the rest. Declining
-        // snoozes it for 10 s. Unpaired Tags mode opens its OWN sheet
-        // at 99 (Nick, 2026-09-09): scan the box's barcode to pair the
-        // sticker, no mark-as-found detour.
+        // snoozes it (Settings, default 1 s - Nick, 2026-09-15).
+        // Unpaired Tags mode opens its OWN sheet at 99 (Nick,
+        // 2026-09-09): scan the box's barcode to pair the sticker, no
+        // mark-as-found detour.
         if (unpairedHunt && locating && pct >= 99 && heardThisTick
-                && !locFullPromptUp && now - locFullPromptAt > 10000) {
+                && !locFullPromptUp
+                && now - locFullPromptAt > upFoundSnoozeMs()) {
             final String epc = locLoudEpc;
             if (epc != null && locTags.containsKey(epc)) {
                 locFullPromptUp = true;
@@ -4012,7 +4135,8 @@ public class MainActivity extends Activity {
                 showUnpairedPairSheet(epc);
             }
         } else if (!unpairedHunt && locating && pct >= 100 && heardThisTick
-                && !locFullPromptUp && now - locFullPromptAt > 10000) {
+                && !locFullPromptUp
+                && now - locFullPromptAt > upFoundSnoozeMs()) {
             final String epc = locLoudEpc;
             if (epc != null && !locFound.contains(epc)) {
                 locFullPromptUp = true;
@@ -6342,6 +6466,7 @@ public class MainActivity extends Activity {
                     : "LOCATE: trigger to hunt, FOUND IT? to confirm a "
                       + "find.");
             refreshLocateListCount();
+            refreshPinnedBin();
             // AUTO power starts from the operator's chosen default each
             // time the tab opens (Settings → Locate).
             autoPowerOn = prefs.getBoolean("auto_default", false);
@@ -16993,6 +17118,22 @@ public class MainActivity extends Activity {
                 LinearLayout.LayoutParams.WRAP_CONTENT);
         flLp.topMargin = dp(4);
         box.addView(floorBtn, flLp);
+        // How long the found/pair prompt stays away after a decline
+        // (Nick, 2026-09-15: 10 s meant standing on a box waiting).
+        // Tap cycles 1-2-3-4-5-10 seconds; applies immediately.
+        final Button snoozeBtn = smallBtn("Found-prompt snooze: "
+                + Math.max(1, prefs.getInt("up_found_snooze", 1)) + "s");
+        snoozeBtn.setOnClickListener(x -> {
+            int cur = Math.max(1, prefs.getInt("up_found_snooze", 1));
+            int next = cur >= 10 ? 1 : cur >= 5 ? 10 : cur + 1;
+            prefs.edit().putInt("up_found_snooze", next).apply();
+            snoozeBtn.setText("Found-prompt snooze: " + next + "s");
+        });
+        LinearLayout.LayoutParams snLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        snLp.topMargin = dp(4);
+        box.addView(snoozeBtn, snLp);
 
         box.addView(sectionLabel("VISIBLE TABS · BATCH ALWAYS SHOWS"));
         final Switch swStation =

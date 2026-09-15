@@ -1,7 +1,51 @@
 # RFID Inventory System — Roadmap
 
 Source of truth for project status. Updated by Claude each working session.
-Last updated: 2026-09-15.
+Last updated: 2026-09-15 (second round).
+
+## 🎯 Unpaired labels round 2 + bundles + partial-order sales — ✅ DEPLOYED 2026-09-15 (C72 4.05)
+
+Nick's field notes, all landed:
+- **Pairing ANYWHERE consumes owed printed labels**
+  (_consume_unpaired_label): EPC-exact first (print jobs carry their
+  encoded EPCs - the exact batch that printed the label gets the
+  credit), then by SKU (newest owing receiving batch, then OPEN bin
+  batches). Wired into Scan Station pairs, sweep pairs and the locate
+  pair, each bump exactly as if paired from the batch's own pair
+  screen - so the locate hunt, the receiving unpaired list and open
+  batch tagging tasks all shrink together (his 3x F9123A + 3x F9127A
+  + 1x F9127B run). Held-strip labels stay NOT-owed (credit runs
+  before the held-note consumption); finished bin batches never
+  change; a fully-paired receiving batch still closes itself.
+  test_paircredit.py (10 checks).
+- **C72 4.05 (code 123)**: the LABEL BINS product list leads with the
+  SKU (the stickers in hand say SKUs); the found/pair prompt snooze
+  dropped from a fixed 10 s to a Settings knob (Locate section, taps
+  cycle 1-2-3-4-5-10 s, default 1 s); a bin can be PINNED from its
+  labels-to-pair window onto the main Locate screen - live owed count
+  (refreshed on tab entry and after every pair/undo), one tap reopens
+  the bin's list fresh and enters Unpaired Tags mode if needed.
+- **Bundle groups imported** (dev/import_bundle_groups.py, CSV
+  gitignored as bundle-groups-*.csv): Nick's export decodes as
+  master/component variant rows per group; 93 of 108 groups resolved
+  (bin map first, live Shopify fallback) and imported through
+  _write_bundle_contents - BundleContent recipes + ProductKind
+  kind="bundle" + History receipts. The DSLR Buddy V2 couplers are
+  covered; the 12 D2-5 inventory-check tasks they had opened were
+  closed with the story. The mismatch checker now skips-and-closes
+  bundle SKUs like non-taggables. 15 groups skipped: their master
+  variants have NO SKU in Shopify (give them SKUs and re-run the
+  import to cover them).
+- **Partially-fulfilled orders finally count their SHIPPED lines**
+  (Nick's 8H0045 / order #50260): the sync's whole-order-FULFILLED
+  gate hid any line that shipped while a sibling stayed backordered.
+  get_fulfilled_orders now searches shipped OR partial and counts
+  quantity-minus-unfulfilled per line; the existing upsert raises
+  quantities as the rest ships. dev/backfill_partial_orders.py
+  walked updated_at >= Jul 20 on prod: **279 missing sold records**
+  across ~230 orders backfilled. 8H0045's task closed itself; 7 real
+  previously-hidden mismatches opened for walking (SS TC20-R, S11740,
+  F9198J, ALP-T x2, 2423011, 18768).
 
 ## ⧉ Multi-box redo: marks at collect, sets at verify — ✅ DEPLOYED 2026-09-15 (C72 4.04)
 

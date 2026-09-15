@@ -1116,6 +1116,16 @@ def create_assignment(
     # tagless-box work queue from the C72 AUDIT tab), and an EPC off a
     # vendor strip retires its held-label note (the label found its box).
     _consume_audit_find(session, payload.sku)
+    # ...and consumes an owed printed label wherever one exists (Nick,
+    # 2026-09-15): a Scan Station pair of a batch's stray label credits
+    # that batch's pair step, so every unpaired-labels surface agrees.
+    # BEFORE the held-label consumption on purpose: a label resting on
+    # a held vendor strip is NOT owed (the strip has its own
+    # accounting), and eating the held note first would make it look
+    # owed and double-count the settled shipment's hand-off.
+    _consume_unpaired_label(
+        session, payload.sku, epcs=[payload.rfid_id], n=1
+    )
     _consume_held_label(session, payload.rfid_id, payload.sku)
     try:
         session.commit()
@@ -1222,6 +1232,13 @@ def sweep_assign(
         a.suspect = re.fullmatch(r"[0-9A-Fa-f]{24}", epc) is None
         session.add(a)
         assigned.append(a)
+    # Each newly tied tag consumes an owed printed label wherever one
+    # exists (Nick, 2026-09-15) - EPC-exact first, then by SKU.
+    if assigned:
+        _consume_unpaired_label(
+            session, payload.sku,
+            epcs=[a.rfid_id for a in assigned], n=len(assigned),
+        )
     try:
         session.commit()
     except IntegrityError:
@@ -13445,6 +13462,114 @@ def _receiving_unpaired_net(session: Session, batch: Batch) -> list[dict]:
     return out
 
 
+def _consume_unpaired_label(
+    session: Session,
+    sku: str | None,
+    epcs: list[str] | None = None,
+    n: int = 1,
+) -> list[BatchItem]:
+    """A pairing ANYWHERE consumes owed printed labels (Nick,
+    2026-09-15: "pairing any label from any of these lists should
+    count towards any Unpaired Labels list, including open batch
+    tagging tasks"). Each consumed label bumps its batch item's
+    paired count - exactly as if it had been paired from that batch's
+    own pair screen - so every surface (locate hunt, receiving list,
+    batch pair steps) shrinks together.
+
+    Attribution order:
+    1. EPC-exact: the paired tag IS a printed label (print jobs carry
+       their encoded EPCs) - credit the batch that printed it.
+    2. SKU fallback: newest owing RECEIVING batch first (the locate
+       flow's rule since 2026-09-09), then open BIN batches whose
+       pair step still owes labels for the SKU.
+    A receiving batch that becomes fully paired closes itself, same
+    as pairing from the batch."""
+    out: list[BatchItem] = []
+    sku_u = (sku or "").strip().upper()
+    if n <= 0:
+        return out
+
+    def _bump(batch: Batch, item_sku_u: str) -> bool:
+        # A finished BIN batch's story stays told as it was; receiving
+        # batches keep owing their labels after their auto-close (the
+        # unresolved-labels list works that way already).
+        if batch.kind != "receiving" and batch.status in (
+            "done", "abandoned",
+        ):
+            return False
+        owed = any(
+            (u["sku"] or "").strip().upper() == item_sku_u
+            for u in _receiving_unpaired_net(session, batch)
+        )
+        if not owed:
+            return False
+        item = session.scalar(
+            select(BatchItem).where(
+                BatchItem.batch_id == batch.id,
+                func.upper(BatchItem.sku) == item_sku_u,
+            )
+        )
+        if item is None:
+            return False
+        item.paired_count = (item.paired_count or 0) + 1
+        session.flush()
+        out.append(item)
+        if batch.kind == "receiving":
+            _maybe_close_receiving(session, batch)
+        return True
+
+    # 1) EPC-exact: this very sticker was printed by a batch.
+    for raw in epcs or []:
+        if len(out) >= n:
+            break
+        epc = (raw or "").strip().upper()
+        if not epc:
+            continue
+        job = session.scalar(
+            select(PrintJob).where(
+                func.upper(PrintJob.epc) == epc,
+                PrintJob.status.in_(("pending", "printing", "done")),
+                _NOT_COMPANION,
+            )
+        )
+        if job is None or not job.batch_id:
+            continue
+        batch = session.get(Batch, job.batch_id)
+        if batch is None:
+            continue
+        _bump(batch, (job.sku or "").strip().upper())
+
+    # 2) SKU fallback for whatever the EPCs didn't attribute.
+    if sku_u:
+        cutoff = datetime.utcnow() - timedelta(days=60)
+        candidates: list[Batch] = []
+        for b in session.scalars(
+            select(Batch).where(Batch.kind == "receiving")
+            .order_by(Batch.id.desc())
+        ):
+            created = b.created_at
+            if created is not None and created.tzinfo is not None:
+                created = created.astimezone(
+                    timezone.utc
+                ).replace(tzinfo=None)
+            if created is not None and created < cutoff:
+                continue
+            candidates.append(b)
+        for b in session.scalars(
+            select(Batch).where(
+                Batch.kind != "receiving",
+                Batch.status.notin_(("done", "abandoned")),
+            ).order_by(Batch.id.desc())
+        ):
+            candidates.append(b)
+        for b in candidates:
+            while len(out) < n and _bump(b, sku_u):
+                pass
+            if len(out) >= n:
+                break
+    return out
+
+
 # Throttle: the Review inbox is read often and this watchdog walks every
 # recent receiving batch - once per 5 minutes is plenty.
 _unpaired_check_last = 0.0
@@ -13880,38 +14005,13 @@ def locate_pair_unlinked(
         assigned_by=(payload.worker or "").strip()[:100] or None,
     )
     session.add(a)
-    # Consume one unresolved printed label of this product, newest
-    # owing receiving batch first (Nick: "remove one instance").
-    bumped = None
-    sku_u = (product.get("sku") or "").strip().upper()
-    if sku_u:
-        cutoff = datetime.utcnow() - timedelta(days=60)
-        for b in session.scalars(
-            select(Batch).where(Batch.kind == "receiving")
-            .order_by(Batch.id.desc())
-        ):
-            created = b.created_at
-            if created is not None and created.tzinfo is not None:
-                created = created.astimezone(
-                    timezone.utc
-                ).replace(tzinfo=None)
-            if created is not None and created < cutoff:
-                continue
-            if not any(
-                (u["sku"] or "").strip().upper() == sku_u
-                for u in _receiving_unpaired_net(session, b)
-            ):
-                continue
-            item = session.scalar(
-                select(BatchItem).where(
-                    BatchItem.batch_id == b.id,
-                    func.upper(BatchItem.sku) == sku_u,
-                )
-            )
-            if item is not None:
-                item.paired_count = (item.paired_count or 0) + 1
-                bumped = item
-                break
+    # Consume one owed printed label of this product - EPC-exact when
+    # the hunted sticker IS a printed label, else newest owing batch
+    # (receiving first, then open bin batches - Nick, 2026-09-15).
+    consumed = _consume_unpaired_label(
+        session, product.get("sku"), epcs=[epc], n=1
+    )
+    bumped = consumed[0] if consumed else None
     session.add(BarcodeChange(
         sku=product.get("sku"),
         product_title=product.get("product_title"),
@@ -13931,7 +14031,7 @@ def locate_pair_unlinked(
         "message": (
             f"Paired ✓ …{epc[-6:]} → {product.get('sku') or 'product'}"
             + (
-                f" - one unresolved receiving label consumed "
+                f" - one owed label consumed "
                 f"(batch #{bumped.batch_id})" if bumped else ""
             )
         ),

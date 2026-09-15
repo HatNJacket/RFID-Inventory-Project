@@ -1367,34 +1367,54 @@ query($search: String!, $cursor: String) {
 """
 
 
-def get_fulfilled_orders(updated_since: str) -> list[dict]:
-    """Fulfilled orders whose record changed since `updated_since` (ISO
-    date/time): [{order_id, name, fulfilled_at, lines: [{sku, qty}]}].
+def get_fulfilled_orders(
+    updated_since: str, max_pages: int = 10
+) -> list[dict]:
+    """Orders with SHIPPED units whose record changed since
+    `updated_since` (ISO date/time):
+    [{order_id, name, fulfilled_at, lines: [{sku, qty}]}].
 
     READ-ONLY, and requires the read_orders access scope — callers must
     treat an ACCESS_DENIED RuntimeError as "scope not granted yet", not
-    as an outage. Line quantities are the ORDERED units of each SKU on a
-    FULFILLED order: the sync counts a sale once the whole order shows
-    fulfilled, which is when committed stock actually left on-hand."""
-    search = f"updated_at:>={updated_since} fulfillment_status:shipped"
+    as an outage.
+
+    Counting is per LINE since 2026-09-15 (Nick's order #50260: the
+    8h0045 line shipped Sept 11 while a sibling line stayed
+    backordered, and the old whole-order-FULFILLED gate hid the sale
+    from the ledger indefinitely). A line counts its SHIPPED units
+    (quantity minus unfulfilledQuantity) on both fully-fulfilled and
+    PARTIALLY fulfilled orders; when the rest of an order ships later,
+    its updated_at moves and the sync's upsert raises the quantities."""
+    search = (
+        f"updated_at:>={updated_since} "
+        "(fulfillment_status:shipped OR fulfillment_status:partial)"
+    )
     out: list[dict] = []
     cursor = None
-    for _ in range(10):  # 500 orders per sync is plenty at this store size
+    # Default 500 orders per sync is plenty at this store size; the
+    # backfill script raises max_pages to walk a long window.
+    for _ in range(max_pages):
         data = query_shopify(_ORDERS_QUERY, {"search": search,
                                              "cursor": cursor})
         block = data["orders"]
         for node in block["nodes"]:
-            if node.get("displayFulfillmentStatus") != "FULFILLED":
+            if node.get("displayFulfillmentStatus") not in (
+                "FULFILLED", "PARTIALLY_FULFILLED",
+            ):
                 continue
             fulfilled_at = None
             for f in node.get("fulfillments") or []:
                 if f.get("createdAt"):
                     fulfilled_at = max(fulfilled_at or "", f["createdAt"])
-            lines = [
-                {"sku": li["sku"], "qty": li["quantity"]}
-                for li in node["lineItems"]["nodes"]
-                if li.get("sku") and (li.get("quantity") or 0) > 0
-            ]
+            lines = []
+            for li in node["lineItems"]["nodes"]:
+                if not li.get("sku"):
+                    continue
+                shipped = (li.get("quantity") or 0) - (
+                    li.get("unfulfilledQuantity") or 0
+                )
+                if shipped > 0:
+                    lines.append({"sku": li["sku"], "qty": shipped})
             if lines:
                 out.append({
                     "order_id": node["id"],
