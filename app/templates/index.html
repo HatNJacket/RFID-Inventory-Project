@@ -1246,7 +1246,7 @@
             <span class="audcard__sub" id="ahc-drift-sub">loading…</span>
           </button>
           <button class="audcard" type="button" data-pane="binaudit">
-            <span class="audcard__label">Run a bin audit</span>
+            <span class="audcard__label">Run an audit</span>
             <span class="audcard__num" id="ahc-sweep-num">–</span>
             <span class="audcard__sub" id="ahc-sweep-sub">loading…</span>
           </button>
@@ -1409,10 +1409,11 @@
       <div class="linkbox__actions u-mb10">
         <button class="reset apane-back" type="button">← Audits</button>
       </div>
-      <!-- Bin audit: sweep a shelf with the C72's SWEEP tab, SEND, then
-           check it here — the Check-step story for any bin, no batch. -->
+      <!-- Audit: sweep a shelf with the C72's SWEEP tab, SEND, then
+           check it here — the Check-step story for any bin, no batch.
+           Or name one product and check just it (Nick, 2026-09-15). -->
       <div class="recent__head">
-        <h2>Audit a bin with a C72 sweep</h2>
+        <h2>Audit a bin or product with a C72 sweep</h2>
       </div>
       <p class="linkbox__text u-maxw78ch">
         Sweep the shelf on the C72 (SWEEP tab → SEND), then pull it here
@@ -1434,6 +1435,16 @@
                 title="Reads the newest sweep sent from the C72 and checks it against this location. A rack (no dash: D2) checks every one of its bins as one zone.">Pull latest C72 sweep &amp; check</button>
         <button class="reset" id="binaudit-pick" type="button"
                 title="Pick one or more recent sweeps instead of the newest - ticking several combines them into one check">Recent sweeps ▾</button>
+      </div>
+      <!-- Single-product audit (Nick, 2026-09-15): checks just this
+           product at its home bin. The row steps aside once a BIN
+           audit starts; reopening the pane brings it back. -->
+      <div class="linkbox__actions u-mb10" id="binaudit-prodrow">
+        <input id="binaudit-code" class="recent__search u-maxw220"
+               type="text" placeholder="Or one product: barcode or SKU"
+               autocomplete="off" />
+        <button class="reset" id="binaudit-prodrun" type="button"
+                title="Looks the product up, reads the newest C72 sweep (or the pinned one) and checks just this product at its home bin: expected count, tags on file, which answered, which stayed silent.">Audit this product</button>
       </div>
       <div id="binaudit-sweeps" hidden></div>
       <div id="binaudit-report"></div>

@@ -12774,6 +12774,17 @@ function renderAuditBins() {
 // from History) and "Record as batch tagged" (local batch record only).
 let binAudit = null; // { rep, cap } — kept so toggles re-render for free
 let binAuditShowUntagged = false;
+// Single-product audit (Nick, 2026-09-15): {sku, title, bin} narrows
+// the whole report to one product; null = normal bin audit.
+let binAuditProduct = null;
+
+// The product row steps aside once the operator commits to a BIN audit
+// (a bin typed + a sweep pulled, or the ◀ ▶ arrows); reopening the
+// pane from the Audits hub brings it back.
+function binAuditProdRowShow(show) {
+  const row = document.getElementById("binaudit-prodrow");
+  if (row) row.hidden = !show;
+}
 
 // One-tap jump from a Review bin-check card: land on the Audits tab with
 // the bin loaded. If the newest C72 sweep is fresh the operator has
@@ -12862,6 +12873,8 @@ async function runBinAudit(cap) {
   // Page-local memory (Nick, 2026-09-14): a (sweep, bin) pair already
   // checked this session re-renders from the stored report instead of
   // asking the server again on every arrow press.
+  binAuditProduct = null;
+  binAuditProdRowShow(false);
   const key = String(cap.id) + "|" + bin.toUpperCase();
   const hit = binAuditCache.get(key);
   if (hit) {
@@ -12918,6 +12931,87 @@ document.getElementById("binaudit-run").addEventListener("click", async () => {
     await runBinAudit(cap);
   } catch (err) {
     out.innerHTML = `<p class="result result--err">${escapeHtml(err.message)}</p>`;
+  }
+});
+
+// ---- single-product audit (Nick, 2026-09-15) ------------------------
+// Same sweep, one product: look it up, check its HOME bin with the
+// product force-included (skus extra), and render just its row - plus
+// its ghosts, open-box prompts and never-paired labels.
+async function runProductAudit(cap) {
+  const codeEl = document.getElementById("binaudit-code");
+  const out = document.getElementById("binaudit-report");
+  const code = codeEl.value.trim();
+  if (!code) {
+    out.innerHTML = `<p class="result result--err">Which product? Type or scan its barcode or SKU first.</p>`;
+    codeEl.focus();
+    return;
+  }
+  out.innerHTML = `<p class="result">Looking up ${escapeHtml(code)}…</p>`;
+  let p;
+  try {
+    p = await apiJson(
+      `/api/products/by-barcode/${encodeURIComponent(code)}`
+    );
+  } catch (err) {
+    out.innerHTML = `<p class="result result--err">No product found for ${escapeHtml(code)} (${escapeHtml(err.message)}).</p>`;
+    return;
+  }
+  const sku = p.sku || code;
+  const bin =
+    p.bin_location && p.bin_location !== "No bin assigned"
+      ? p.bin_location
+      : "";
+  if (!bin) {
+    out.innerHTML = `<p class="result result--err">${escapeHtml(
+      p.product_title || sku
+    )} has no bin on file - a shelf check needs one. Set its bin from the product panel first.</p>`;
+    return;
+  }
+  out.innerHTML = `<p class="result">Checking ${escapeHtml(sku)} at ${escapeHtml(bin)}…</p>`;
+  try {
+    const single = /^\d+$/.test(String(cap.id));
+    const body = single
+      ? { capture_id: parseInt(cap.id, 10) }
+      : { epcs: cap.epcs };
+    // Force-include the product even when the bin map misses it.
+    body.skus = [sku];
+    const rep = await postJson(
+      `/api/bins/${encodeURIComponent(bin)}/check`,
+      body
+    );
+    binAudit = { rep, cap };
+    // The product must render even with zero tags in this bin.
+    binAuditShowUntagged = true;
+    binAuditProduct = { sku, title: p.product_title || sku, bin };
+    binAuditPinnedCap = cap;
+    renderPinnedSweep();
+    renderBinAudit();
+  } catch (err) {
+    out.innerHTML = `<p class="result result--err">${escapeHtml(err.message)}</p>`;
+  }
+}
+
+document
+  .getElementById("binaudit-prodrun")
+  .addEventListener("click", async () => {
+    const out = document.getElementById("binaudit-report");
+    if (binAuditPinnedCap) {
+      await runProductAudit(binAuditPinnedCap);
+      return;
+    }
+    out.innerHTML = `<p class="result">Pulling the latest sweep…</p>`;
+    try {
+      const cap = await apiJson("/api/epc-captures/latest?pickable=1");
+      await runProductAudit(cap);
+    } catch (err) {
+      out.innerHTML = `<p class="result result--err">${escapeHtml(err.message)}</p>`;
+    }
+  });
+document.getElementById("binaudit-code").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    document.getElementById("binaudit-prodrun").click();
   }
 });
 
@@ -13647,14 +13741,18 @@ async function binAuditRefreshRow(sku) {
   const bin = rep.bin;
   try {
     const single = /^\d+$/.test(String(cap.id));
+    const body = single
+      ? { capture_id: parseInt(cap.id, 10) }
+      : { epcs: cap.epcs };
+    if (binAuditProduct) body.skus = [binAuditProduct.sku];
     const fresh = await postJson(
-      `/api/bins/${encodeURIComponent(bin)}/check`,
-      single
-        ? { capture_id: parseInt(cap.id, 10) }
-        : { epcs: cap.epcs }
+      `/api/bins/${encodeURIComponent(bin)}/check`, body
     );
     binAudit = { rep: fresh, cap };
-    binAuditCache.set(String(cap.id) + "|" + bin.toUpperCase(), fresh);
+    if (!binAuditProduct) {
+      binAuditCache.set(
+        String(cap.id) + "|" + bin.toUpperCase(), fresh);
+    }
     const up = sku.toUpperCase();
     const tr = document.querySelector(
       `#binaudit-report tr[data-rowsku="${CSS.escape(up)}"]`
@@ -13691,11 +13789,20 @@ function renderBinAudit() {
   const out = document.getElementById("binaudit-report");
   if (!binAudit) return;
   const { rep, cap } = binAudit;
+  // Product mode: the whole report narrows to the one audited SKU -
+  // bin-level noise (other products, strays, batch-tagged state) is
+  // someone else's story.
+  const pm = binAuditProduct;
+  const pmSku = pm ? pm.sku.toUpperCase() : null;
 
   const scored = rep.items
     // Nothing expected, nothing tagged, nothing heard: not part of this
     // bin's story at all.
-    .filter((r) => (r.expected_qty || 0) > 0 || r.tags_here > 0 || r.detected > 0)
+    .filter((r) =>
+      pm
+        ? (r.sku || "").toUpperCase() === pmSku
+        : (r.expected_qty || 0) > 0 || r.tags_here > 0 || r.detected > 0
+    )
     .map(binAuditScoreRow)
     .sort(
       (a, b) =>
@@ -13709,7 +13816,7 @@ function renderBinAudit() {
     : scored.filter((s) => !s.untagged);
 
   const cells = shown.map(binAuditRowHtml).join("");
-  const strays = rep.foreign
+  const strays = (pm ? [] : rep.foreign)
     .map(
       (f) =>
         `<li>${
@@ -13721,13 +13828,14 @@ function renderBinAudit() {
         } <span class="mono">${escapeHtml(f.epc)}</span></li>`
     )
     .join("");
-  const unknowns = rep.unknown_epcs
+  const unknowns = (pm ? [] : rep.unknown_epcs)
     .map((e) => `<li>Unknown tag <span class="mono">${escapeHtml(e)}</span></li>`)
     .join("");
   // Printed labels that answered but were never paired - the strongest
   // owed-pairing signal (a label applied and forgotten answers sweeps
   // as a productless tag).
   const owedLabels = (rep.printed_labels_heard || [])
+    .filter((l) => !pm || (l.sku || "").toUpperCase() === pmSku)
     .map(
       (l) =>
         `<li>⚠ Printed label for ${
@@ -13739,6 +13847,7 @@ function renderBinAudit() {
     )
     .join("");
   const strayGhosts = (rep.stray_ghosts || [])
+    .filter((g) => !pm || (g.sku || "").toUpperCase() === pmSku)
     .map(
       (g) =>
         `<li>Retired tag (${escapeHtml(g.kind)}) of ${
@@ -13753,12 +13862,14 @@ function renderBinAudit() {
   // just "possible return". One block for every flagged ghost, per-SKU
   // rows and strays alike.
   const obxGhosts = [];
-  (rep.items || []).forEach((it) =>
+  (rep.items || []).forEach((it) => {
+    if (pm && (it.sku || "").toUpperCase() !== pmSku) return;
     (it.ghosts || []).forEach((g) => {
       if (g.openbox_return_id) obxGhosts.push(g);
-    })
-  );
+    });
+  });
   (rep.stray_ghosts || []).forEach((g) => {
+    if (pm && (g.sku || "").toUpperCase() !== pmSku) return;
     if (g.openbox_return_id) obxGhosts.push(g);
   });
   const obxBlock = obxGhosts.length
@@ -13785,15 +13896,23 @@ function renderBinAudit() {
     <p class="result result--ok">Sweep #${cap.id} from ${escapeHtml(
       cap.device || "the C72"
     )} - ${cap.epc_count} tag(s), ${escapeHtml(fmtWhen(cap.created_at))} -
-    checked against ${escapeHtml(rep.bin)}${
-      rep.rack
-        ? ` <b>(whole rack: ${(rep.bins_covered || [])
-            .map((b) => escapeHtml(b.toUpperCase()))
-            .join(", ")})</b>`
-        : ""
-    }.</p>
     ${
-      rep.rack
+      pm
+        ? `checked for <b>${escapeHtml(pm.title)}</b>
+           (<span class="mono">${escapeHtml(pm.sku)}</span>) at its home
+           bin ${escapeHtml(rep.bin)}.`
+        : `checked against ${escapeHtml(rep.bin)}${
+            rep.rack
+              ? ` <b>(whole rack: ${(rep.bins_covered || [])
+                  .map((b) => escapeHtml(b.toUpperCase()))
+                  .join(", ")})</b>`
+              : ""
+          }.`
+    }</p>
+    ${
+      pm
+        ? ""
+        : rep.rack
         ? `<p class="result">${
             (rep.bins_batch_done || []).length ===
             (rep.bins_covered || []).length
@@ -13807,7 +13926,7 @@ function renderBinAudit() {
         : ""
     }
     ${
-      rep.rack
+      pm || rep.rack
         ? ""
         : rep.batch_done
         ? `<p class="result result--ok">✓ Already recorded as batch tagged -
@@ -13839,14 +13958,16 @@ function renderBinAudit() {
       <tbody>${
         cells ||
         `<tr><td colspan="7">${
-          untaggedCount
+          pm
+            ? `${escapeHtml(pm.sku)} did not come back in this check.`
+            : untaggedCount
             ? "Nothing on this shelf is tagged yet."
             : `Nothing expected or tagged in ${escapeHtml(rep.bin)}.`
         }</td></tr>`
       }</tbody>
     </table></div>
     ${
-      untaggedCount
+      !pm && untaggedCount
         ? `<div class="linkbox__actions u-mt8">
              <button class="reset" id="binaudit-toggle" type="button">${
                binAuditShowUntagged ? "Hide" : "Show"
@@ -13861,7 +13982,7 @@ function renderBinAudit() {
         : ""
     }
     ${
-      (rep.companions_heard || []).length
+      !pm && (rep.companions_heard || []).length
         ? `<div class="recent__head u-mt14"><h2>Companion boxes heard (${rep.companions_heard.length})</h2></div>
            <ul class="recent__list">${rep.companions_heard
              .map(
@@ -13882,8 +14003,19 @@ function renderBinAudit() {
     ${obxBlock}
     ${
       strays || unknowns || strayGhosts
-        ? `<div class="recent__head u-mt14"><h2>Also heard on this shelf (${rep.foreign.length + rep.unknown_epcs.length + (rep.stray_ghosts || []).length})</h2></div>
+        ? `<div class="recent__head u-mt14"><h2>${
+            pm
+              ? "Retired tags of this product heard"
+              : "Also heard on this shelf"
+          } (${
+            pm
+              ? strayGhosts.split("<li>").length - 1
+              : rep.foreign.length + rep.unknown_epcs.length +
+                (rep.stray_ghosts || []).length
+          })</h2></div>
            <ul class="recent__list">${strays}${strayGhosts}${unknowns}</ul>`
+        : pm
+        ? `<p class="result">Run a bin audit of ${escapeHtml(rep.bin)} for the shelf's full story - strays and unknown tags included.</p>`
         : `<p class="result">No stray or unknown tags in the sweep.</p>`
     }`;
 }
@@ -13894,12 +14026,20 @@ async function binAuditRefetchAll() {
   if (!binAudit) return;
   const { rep, cap } = binAudit;
   const single = /^\d+$/.test(String(cap.id));
+  const body = single
+    ? { capture_id: parseInt(cap.id, 10) }
+    : { epcs: cap.epcs };
+  // Product mode keeps its product force-included across re-checks.
+  if (binAuditProduct) body.skus = [binAuditProduct.sku];
   const fresh = await postJson(
     `/api/bins/${encodeURIComponent(rep.bin)}/check`,
-    single ? { capture_id: parseInt(cap.id, 10) } : { epcs: cap.epcs }
+    body
   );
   binAudit = { rep: fresh, cap };
-  binAuditCache.set(String(cap.id) + "|" + rep.bin.toUpperCase(), fresh);
+  if (!binAuditProduct) {
+    binAuditCache.set(
+      String(cap.id) + "|" + rep.bin.toUpperCase(), fresh);
+  }
   renderBinAudit();
 }
 
@@ -14893,6 +15033,8 @@ function audShowPane(name) {
   document.querySelectorAll("#tab-audits .apane").forEach((p) => {
     p.hidden = p.id !== `apane-${name}`;
   });
+  // Reopening the audit pane offers the product box again.
+  if (name === "binaudit") binAuditProdRowShow(true);
 }
 
 document.querySelectorAll("#tab-audits .audcard").forEach((card) => {

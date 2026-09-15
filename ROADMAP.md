@@ -3,6 +3,23 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-15 (tenth round).
 
+## 🔍 Product audits — ✅ DEPLOYED 2026-09-15
+
+Nick: audit ONE product, not just a bin. The Audits hub card is now
+"Run an audit"; the pane gained a second input under the bin row
+(barcode or SKU + "Audit this product"). A product audit looks the
+product up, checks its HOME bin with the same sweep machinery
+(bin_check with the sku force-included via the existing skus extra -
+no server change), and renders ONLY that product: expected math,
+tagged-here, seen, silent boxes, its ghosts / open-box prompts /
+never-paired labels. Bin-level noise (other products, strays,
+batch-tagged state, record-as-tagged) is suppressed; a footer points
+at the full bin audit. The product row DISAPPEARS the moment a bin
+audit runs (bin typed + sweep pulled, or the ◀ ▶ arrows) and comes
+back when the pane is reopened from the hub. Per-product fix flows
+(Set to N, clean ghosts, obx answers) keep the product force-included
+across their quiet re-checks.
+
 ## 📝 Draft product from the gun — ✅ DEPLOYED 2026-09-15 (C72 4.10)
 
 Nick: unresolved box that NO listing owns -> draft it at the shelf.
