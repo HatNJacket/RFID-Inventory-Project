@@ -3,6 +3,23 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-15 (tenth round).
 
+## 📝 Draft product from the gun — ✅ DEPLOYED 2026-09-15 (C72 4.10)
+
+Nick: unresolved box that NO listing owns -> draft it at the shelf.
+- POST /api/products/create-draft (gated require_shopify_write
+  "draft_listings" - the flag was already in prod's mode): DRAFT
+  Shopify listing with the typed SKU, the scanned code as barcode,
+  bin metafields; 409 when any listing (active/draft/archived)
+  already carries the SKU. History "draft-created" -> "Draft Created"
+  chip. Pricing/publishing stay human jobs in Shopify.
+- C72 item editor (unresolved rows only): CREATE DRAFT PRODUCT…
+  asks for the SKU, then FULL PRODUCT vs INGREDIENT - an ingredient
+  (one box of a multi-box BUNDLE) only differs by the draft title
+  wearing "INGREDIENT", per the bundles-not-boxsets model. On
+  success the row re-resolves IN PLACE via the same /resolve call
+  the alias-link rescue uses; counts kept.
+Suites 74/74 (new test_draftcreate.py).
+
 ## 📡 Locate + unpaired labels round — ✅ DEPLOYED 2026-09-15 (C72 4.09)
 
 Nick's five asks, all shipped:

@@ -9131,6 +9131,87 @@ def openbox_info(sku: str, session: Session = Depends(get_session)):
     }
 
 
+class DraftCreateIn(BaseModel):
+    """C72 unresolved-box rescue (Nick, 2026-09-15): NO listing owns
+    this box at all - draft one on the spot so the row resolves and
+    tagging continues. "Ingredient" = one box of a multi-box BUNDLE;
+    the only difference is the draft's title wearing INGREDIENT, so
+    those drafts are easy to spot and wire into a bundle later."""
+
+    sku: str = Field(min_length=1, max_length=100)
+    # The scanned code goes on the draft's variant, so the same box
+    # resolves by scan from now on.
+    barcode: str | None = Field(default=None, max_length=64)
+    title: str | None = Field(default=None, max_length=240)
+    ingredient: bool = False
+    bin: str | None = Field(default=None, max_length=100)
+    worker: str | None = Field(default=None, max_length=100)
+
+
+@app.post(
+    "/api/products/create-draft", status_code=201,
+    dependencies=[Depends(require_user)],
+)
+def create_draft_product(
+    payload: DraftCreateIn, session: Session = Depends(get_session)
+):
+    """Create a DRAFT Shopify listing for a product nothing resolves:
+    title (INGREDIENT-prefixed for bundle parts), the given SKU, the
+    scanned barcode, and the bin metafields. Draft status = invisible
+    to customers; pricing/publishing stay human jobs in Shopify."""
+    require_shopify_write("draft_listings")
+    _require_shopify_env()
+    sku = payload.sku.strip()
+    existing = None
+    try:
+        existing = shopify.find_sku_listing(sku)
+    except Exception as error:  # noqa: BLE001
+        logger.warning("draft-create SKU probe failed for %s: %s",
+                       sku, error)
+    if existing is not None:
+        raise HTTPException(
+            409,
+            f"SKU {sku} already belongs to "
+            f"\"{existing.get('product_title')}\" "
+            f"({existing.get('status', 'ACTIVE')}) - scan or link that "
+            "instead of drafting a duplicate.",
+        )
+    base_title = (payload.title or "").strip() or sku
+    title = f"INGREDIENT {base_title}" if payload.ingredient else base_title
+    try:
+        made = shopify.create_draft_listing(
+            title, sku,
+            (payload.barcode or "").strip() or None,
+            (payload.bin or "").strip() or None,
+        )
+    except Exception as error:  # noqa: BLE001
+        raise HTTPException(
+            502, f"Could not create the draft: {error}"
+        )
+    _log_change(
+        session,
+        sku=sku,
+        title=title,
+        variant_id=made.get("variant_gid"),
+        field="draft-created",
+        old=(payload.barcode or "").strip() or None,
+        new=("ingredient draft (multi-box bundle part)"
+             if payload.ingredient else "full-product draft"),
+        by=(payload.worker or "").strip() or None,
+    )
+    session.commit()
+    return {
+        **made,
+        "ingredient": payload.ingredient,
+        "message": (
+            f"Draft \"{title}\" created for {sku}"
+            + (" - an INGREDIENT for a multi-box bundle."
+               if payload.ingredient else ".")
+            + " Price and publish it in Shopify when ready."
+        ),
+    }
+
+
 class OpenboxReturnIn(BaseModel):
     sku: str = Field(min_length=1, max_length=98)
     product_title: str | None = Field(default=None, max_length=255)
@@ -18610,6 +18691,7 @@ _CHANGE_TYPE_LABELS = {
     "backorder-debt": "backorder-noted",
     "backorder-debt-clear": "backorder-cleared",
     "epc-not-ours": "not-our-tag",
+    "draft-created": "draft-created",
 }
 
 

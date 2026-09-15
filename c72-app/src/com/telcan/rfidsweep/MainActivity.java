@@ -5692,6 +5692,7 @@ public class MainActivity extends Activity {
     private Button editFindBtn;
     private Button editRecommendBtn;
     private Button editLinkBtn;
+    private Button editDraftBtn;
     private Button editSkipBtn;
     private Button editBundleBtn;
     private Button editNoScanBtn;
@@ -5889,6 +5890,14 @@ public class MainActivity extends Activity {
         editLinkBtn = smallBtn("LINK TO A PRODUCT…");
         editLinkBtn.setOnClickListener(v -> showLinkDialog());
         mid.addView(editLinkBtn);
+
+        // NO listing owns this box at all (Nick, 2026-09-15): draft
+        // one on the spot - SKU typed here, scanned code becomes its
+        // barcode, row resolves in place. INGREDIENT question marks
+        // multi-box bundle parts by title.
+        editDraftBtn = smallBtn("CREATE DRAFT PRODUCT…");
+        editDraftBtn.setOnClickListener(v -> showCreateDraftDialog());
+        mid.addView(editDraftBtn);
 
         // "I can't do this one." One-off skip OR one of the durable
         // Can't Scan flags (3.90) - the chooser sorts it out.
@@ -6163,6 +6172,7 @@ public class MainActivity extends Activity {
         editFindBtn.setVisibility(it.resolved ? View.GONE : View.VISIBLE);
         editRecommendBtn.setVisibility(it.resolved ? View.GONE : View.VISIBLE);
         editLinkBtn.setVisibility(it.resolved ? View.GONE : View.VISIBLE);
+        editDraftBtn.setVisibility(it.resolved ? View.GONE : View.VISIBLE);
         editQty.setText(String.valueOf(it.qty)
                 + (it.expected != null ? " / " + it.expected : ""));
     }
@@ -13295,6 +13305,109 @@ public class MainActivity extends Activity {
                 })
                 .setNegativeButton("Cancel", null)
                 .show();
+    }
+
+    /** NO listing owns this box (Nick, 2026-09-15): draft one right
+     *  here. Ask for the SKU, then whether it's an INGREDIENT (one box
+     *  of a multi-box bundle - only the draft's title differs) or a
+     *  full product. The scanned code becomes the draft's barcode, so
+     *  the row resolves in place and future scans just work. */
+    private void showCreateDraftDialog() {
+        if (editEntry == null) return;
+        final String scanned = editEntry.item.scannedCode == null
+                ? "" : editEntry.item.scannedCode;
+        final EditText in = themedEdit();
+        in.setSingleLine(true);
+        in.setHint("New product's SKU");
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(20), dp(8), dp(20), 0);
+        TextView note = new TextView(this);
+        note.setText("Scanned: " + (scanned.isEmpty() ? "(none)"
+                : scanned) + "\n\nA DRAFT Shopify listing is created "
+                + "with this SKU and the scanned code as its barcode - "
+                + "invisible to customers until someone prices and "
+                + "publishes it. This row resolves on the spot.");
+        note.setTextSize(12);
+        note.setTextColor(C_MUTED);
+        note.setPadding(0, 0, 0, dp(8));
+        box.addView(note);
+        box.addView(in);
+        dlg()
+                .setTitle("CREATE DRAFT PRODUCT")
+                .setView(box)
+                .setPositiveButton("NEXT", (d, w) -> {
+                    String sku = in.getText().toString().trim();
+                    if (sku.isEmpty()) {
+                        editMsg.setText("No SKU typed - nothing "
+                                + "created.");
+                        return;
+                    }
+                    askDraftKind(sku, scanned);
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+        in.requestFocus();
+    }
+
+    private void askDraftKind(final String sku, final String scanned) {
+        dlg()
+                .setTitle("WHAT IS " + sku + "?")
+                .setMessage("INGREDIENT = one box of a multi-box "
+                        + "bundle (the draft's title says INGREDIENT "
+                        + "so it's easy to spot and wire into its "
+                        + "bundle later).\n\nFULL PRODUCT = sells on "
+                        + "its own.")
+                .setPositiveButton("FULL PRODUCT", (d, w) ->
+                        postCreateDraft(sku, scanned, false))
+                .setNeutralButton("INGREDIENT", (d, w) ->
+                        postCreateDraft(sku, scanned, true))
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void postCreateDraft(final String sku, final String scanned,
+            final boolean ingredient) {
+        final int itemId = editEntry == null ? -1 : editEntry.item.id;
+        editMsg.setText("Creating draft " + sku + "…");
+        new Thread(() -> {
+            final String msg;
+            try {
+                JSONObject resp = api("POST",
+                        "/api/products/create-draft",
+                        new JSONObject()
+                                .put("sku", sku)
+                                .put("barcode", scanned.isEmpty()
+                                        ? JSONObject.NULL : scanned)
+                                .put("ingredient", ingredient)
+                                .put("bin", batchBin == null
+                                        ? JSONObject.NULL : batchBin)
+                                .put("worker",
+                                        prefs.getString("device", "C72")));
+                msg = resp.optString("message", "Draft created.");
+            } catch (Exception e) {
+                ui.post(() -> {
+                    beep(SOUND_ERR);
+                    editMsg.setText("Draft failed: " + e.getMessage());
+                });
+                return;
+            }
+            // The scanned code resolves to the new draft now - turn
+            // the unresolved row into it IN PLACE (counts kept), same
+            // as the alias-link rescue.
+            if (itemId > 0) {
+                try {
+                    api("POST", "/api/batches/" + batchId + "/items/"
+                            + itemId + "/resolve", new JSONObject());
+                } catch (Exception ignore) { }
+            }
+            ui.post(() -> {
+                beep(SOUND_OK);
+                closeItemEditor();
+                status.setText("✓ " + msg);
+                reloadBatchAndReview();
+            });
+        }).start();
     }
 
     private void lookupLinkTarget(final String scanned, final String target) {

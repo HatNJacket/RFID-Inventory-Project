@@ -372,6 +372,7 @@ const EVENT_META = {
   "label-edited": ["Label Edited", "#5e548e"],
   "openbox-return": ["Open-Box Return", "#b06a2e"],
   "not-our-tag": ["Not Our Tag", "#6d3f5b"],
+  "draft-created": ["Draft Created", "#2f6f44"],
   "printing-stopped": ["Stopped Printing", "#d72c0d"],
   "printing-resumed": ["Resumed Printing", "#116329"],
   "on-hand-updated": ["Raised On-hand", "#0c5132"],
