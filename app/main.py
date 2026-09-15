@@ -13415,11 +13415,19 @@ def receiving_unpaired_labels(session: Session = Depends(get_session)):
             key = _up(j.sku)
             if key and (j.epc or "").upper() not in dismissed:
                 by_sku.setdefault(key, []).append(j)
+        item_ids = {
+            _up(i.sku): i.id
+            for i in session.scalars(
+                select(BatchItem).where(BatchItem.batch_id == b.id))
+        }
         for u in net:
             key = _up(u["sku"])
             cand = by_sku.get(key, [])
             products.append({
                 "batch_id": b.id,
+                # The receiving row behind this product - what the
+                # "sold without label" dismissal acts on.
+                "item_id": item_ids.get(key),
                 "reference": ref or None,
                 "sku": u["sku"],
                 "product_title": u["product_title"],
@@ -13696,6 +13704,87 @@ def epcs_ignore_heard(
             f"the locate list and stay ignored on future sweeps."
             + (f" ⚠ {len(printed)} of them were printed receiving "
                f"labels." if printed else "")
+        ),
+    }
+
+
+class EpcNotOursIn(BaseModel):
+    """A tag physically found that does NOT belong to us (Nick,
+    2026-09-15): vendor stock stickers, a return wearing another
+    shop's tag. Permanently dismissed so it leaves the orphaned-tags
+    hunt and never re-stashes on future sweeps."""
+
+    epcs: list[str] = Field(min_length=1, max_length=50)
+    worker: str | None = Field(default=None, max_length=100)
+
+
+@app.post("/api/epcs/not-ours", dependencies=[Depends(require_user)])
+def epcs_not_ours(
+    payload: EpcNotOursIn, session: Session = Depends(get_session)
+):
+    """Mark foreign tags: same permanent dismissal as ignore-heard,
+    but with the OPPOSITE safety stance - an EPC matching one of OUR
+    printed labels is REFUSED (it is ours, receiving still counts it
+    owed), and tags that belong to products / retirements / companions
+    are untouched as always. One History event, undoable as a unit."""
+    heard = {_up(e) for e in payload.epcs if e and e.strip()}
+    if not heard:
+        raise HTTPException(400, "No EPCs given.")
+    ours = {
+        (e or "").upper()
+        for e in session.scalars(
+            select(PrintJob.epc).where(
+                func.upper(PrintJob.epc).in_(sorted(heard))
+            )
+        )
+    }
+    fresh = _still_unlinked(session, sorted(heard - ours))
+    if not fresh:
+        detail = (
+            f"{len(ours)} of these are OUR printed labels - refused. "
+            if ours else ""
+        ) + "Nothing left to mark: the rest are already owned, " \
+            "retired or dismissed."
+        return {
+            "ignored": 0, "printed_labels": len(ours), "marker": None,
+            "message": detail,
+        }
+    marker = (
+        "not-ours " + datetime.utcnow().strftime("%Y%m%d%H%M%S")
+        + " " + (payload.worker or "?").strip()
+    )[:100]
+    for epc in sorted(fresh):
+        session.add(LabelDismissal(epc=epc, dismissed_by=marker))
+    entry = session.scalar(
+        select(LocateQueueEntry).where(
+            func.upper(LocateQueueEntry.sku) == UNLINKED_HUNT_SKU
+        )
+    )
+    if entry is not None:
+        live = [e for e in entry.epc_list() if e.upper() not in fresh]
+        if live:
+            entry.epcs = "\n".join(live)
+        else:
+            session.delete(entry)
+    tails = ", ".join("…" + e[-6:] for e in sorted(fresh)[:5])
+    _log_change(
+        session,
+        sku=None,
+        title=f"{len(fresh)} tag(s) marked NOT OURS",
+        field="epc-not-ours",
+        old=tails,
+        new=marker,
+        by=(payload.worker or "").strip() or None,
+    )
+    session.commit()
+    return {
+        "ignored": len(fresh), "printed_labels": len(ours),
+        "marker": marker,
+        "message": (
+            f"{len(fresh)} tag(s) marked not ours - off the hunt list, "
+            f"ignored on every future sweep."
+            + (f" ⚠ {len(ours)} refused: they are OUR printed "
+               f"receiving labels." if ours else "")
         ),
     }
 
@@ -18520,6 +18609,7 @@ _CHANGE_TYPE_LABELS = {
     "tag-unretired": "tag-unretired",
     "backorder-debt": "backorder-noted",
     "backorder-debt-clear": "backorder-cleared",
+    "epc-not-ours": "not-our-tag",
 }
 
 
@@ -19065,7 +19155,8 @@ def history(
             mm = re.match(r"item (\d+)$", c.old_barcode or "")
             if mm:
                 rd_items.add(int(mm.group(1)))
-        elif c.changed_field == "unpaired-ignored" and c.new_barcode:
+        elif c.changed_field in ("unpaired-ignored", "epc-not-ours") \
+                and c.new_barcode:
             ui_markers.add(c.new_barcode)
         elif c.changed_field == "packed-retired":
             mm = re.match(r"sweep #(\d+)$", c.old_barcode or "")
@@ -19186,6 +19277,18 @@ def history(
             event["detail"] = (
                 f"{c.product_title or 'unpaired stickers written off'}"
                 f" · {c.old_barcode or 'sweep'}"
+            )
+            if c.new_barcode and c.new_barcode in ui_live:
+                event["undo"] = {
+                    "kind": "unpaired-ignore",
+                    "marker": c.new_barcode,
+                }
+        # A foreign tag marked NOT OURS shares the marker-undo shape
+        # with the sweep write-off (same dismissal rows underneath).
+        elif c.changed_field == "epc-not-ours":
+            event["detail"] = (
+                f"{c.product_title or 'foreign tag(s) marked not ours'}"
+                + (f" · {c.old_barcode}" if c.old_barcode else "")
             )
             if c.new_barcode and c.new_barcode in ui_live:
                 event["undo"] = {

@@ -1713,10 +1713,13 @@ public class MainActivity extends Activity {
     private volatile boolean cmdPollBusy = false;
     private int cmdPollCounter = 0;
     private JSONObject locProduct = null;
-    private final java.util.LinkedHashMap<String, Double> locTags =
-            new java.util.LinkedHashMap<>();   // EPC -> last rssi heard
-    private final java.util.HashSet<String> locFound =
-            new java.util.HashSet<>();
+    // Concurrent (4.09): the SDK callback thread writes these while the
+    // UI thread iterates - the old LinkedHashMap/HashSet pair could
+    // corrupt or throw under a dense shelf.
+    private final java.util.concurrent.ConcurrentHashMap<String, Double>
+            locTags = new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.Set<String> locFound =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
     // ---- live-tunable locate parameters (server: /api/c72/tuning) ----
     // Polled every ~2 s while the Locate tab is up; changes apply on the
     // next tick, no APK build. Defaults = shipped behaviour.
@@ -3137,16 +3140,31 @@ public class MainActivity extends Activity {
         LinearLayout list = new LinearLayout(this);
         list.setOrientation(LinearLayout.VERTICAL);
         list.setPadding(dp(12), dp(8), dp(12), dp(8));
+        final AlertDialog[] dref = new AlertDialog[1];
         // SKU leads (Nick, 2026-09-15): the stickers in hand SAY the
         // SKU - matching them to this list is the whole job here.
         for (JSONObject r : items) {
-            list.addView(auditCard(
+            final JSONObject row = r;
+            final String sku = r.optString("sku", "");
+            LinearLayout card = auditCard(
                     r.optString("sku", "?"),
                     r.optString("product_title", "?")
                             + (r.isNull("reference") ? ""
                                : " · " + r.optString("reference")),
-                    r.optInt("count") + "×", C_WARN, null),
-                    auditRowLp());
+                    r.optInt("count") + "×", C_WARN, null);
+            // Tap = open in the gun's Scan station (Nick, 2026-09-15:
+            // when the hunt won't ping a label you can physically
+            // touch, pair it by hand). Hold = sold without label.
+            card.setOnClickListener(v -> {
+                if (dref[0] != null) dref[0].dismiss();
+                selectTab(TAB_STATION);
+                stationLookup(sku);
+            });
+            card.setOnLongClickListener(v -> {
+                confirmDismissSoldRow(row, dref[0]);
+                return true;
+            });
+            list.addView(card, auditRowLp());
         }
         TextView hint = new TextView(this);
         hint.setTextColor(C_MUTED);
@@ -3158,7 +3176,10 @@ public class MainActivity extends Activity {
                       + "hunt - walk to " + bin + " and trigger; 100% "
                       + "opens the pair window."
                     : " Their labels are already hunt targets - walk "
-                      + "to " + bin + " and trigger."));
+                      + "to " + bin + " and trigger.")
+                + "\nTAP a product to open it in Scan station and pair "
+                + "by hand. HOLD one to dismiss it as sold without a "
+                + "label (undo on the web).");
         list.addView(hint);
         ScrollView scroll = new ScrollView(this);
         scroll.addView(list);
@@ -3166,18 +3187,23 @@ public class MainActivity extends Activity {
         // screen with a live owed-labels count.
         final String pinned = prefs.getString("up_pin_bin", "");
         final boolean isPinned = bin.equalsIgnoreCase(pinned);
-        dlg()
+        dref[0] = dlg()
                 .setTitle("BIN " + bin + " - LABELS TO PAIR")
                 .setView(scroll)
                 .setNeutralButton(isPinned ? "UNPIN" : "PIN TO LOCATE",
                         (d, w) -> {
                             prefs.edit().putString("up_pin_bin",
                                     isPinned ? "" : bin).apply();
+                            if (!isPinned) {
+                                // The rows in hand ARE the cache - the
+                                // pin opens instantly from now on.
+                                savePinCache(bin, items);
+                            }
                             status.setText(isPinned
                                     ? bin + " unpinned."
-                                    : bin + " pinned to Locate - its "
-                                      + "count stays live and updates "
-                                      + "as labels pair.");
+                                    : bin + " pinned to Locate - opens "
+                                      + "instantly from the gun's "
+                                      + "cache, count stays live.");
                             refreshPinnedBin();
                         })
                 .setNegativeButton("CLOSE", null)
@@ -3190,8 +3216,58 @@ public class MainActivity extends Activity {
     }
 
     // ------------------------------------ pinned unpaired-label bin ---
+    // The pinned bin's rows also live in prefs (Nick, 2026-09-15) so
+    // the button paints and the list OPENS instantly instead of waiting
+    // on the server; every fetch rewrites the cache. Same _json pattern
+    // as the batch prefs: the "bin" field is the validity token.
+    private void savePinCache(String bin,
+            java.util.List<JSONObject> items) {
+        try {
+            JSONArray a = new JSONArray();
+            for (JSONObject r : items) a.put(r);
+            prefs.edit().putString("up_pin_cache_json", new JSONObject()
+                    .put("bin", bin)
+                    .put("at", System.currentTimeMillis())
+                    .put("items", a).toString()).apply();
+        } catch (Exception ignored) {
+        }
+    }
+
+    private java.util.ArrayList<JSONObject> loadPinCache(String bin) {
+        try {
+            JSONObject saved = new JSONObject(
+                    prefs.getString("up_pin_cache_json", "{}"));
+            if (!bin.equalsIgnoreCase(saved.optString("bin"))) {
+                return null;   // stale or different bin
+            }
+            JSONArray a = saved.optJSONArray("items");
+            java.util.ArrayList<JSONObject> out =
+                    new java.util.ArrayList<>();
+            for (int i = 0; a != null && i < a.length(); i++) {
+                JSONObject r = a.optJSONObject(i);
+                if (r != null) out.add(r);
+            }
+            return out;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private String pinBtnText(String bin, int labels) {
+        return labels > 0
+                ? "⧉ " + bin + " · " + labels + " LABEL(S) TO PAIR"
+                : "⧉ " + bin + " · ALL PAIRED";
+    }
+
+    private int pinCountOf(java.util.List<JSONObject> items) {
+        int n = 0;
+        for (JSONObject r : items) n += r.optInt("count");
+        return n;
+    }
+
     /** Refresh the pinned bin's owed-labels count (tab entry and
-     *  every successful pair). No pin = no button. */
+     *  every successful pair). Paints the cached count instantly,
+     *  then the fetch corrects it and rewrites the cache. */
     private void refreshPinnedBin() {
         if (locPinBtn == null) return;
         final String bin = prefs.getString("up_pin_bin", "");
@@ -3200,29 +3276,28 @@ public class MainActivity extends Activity {
             return;
         }
         locPinBtn.setVisibility(View.VISIBLE);
-        locPinBtn.setText("⧉ " + bin + " · …");
+        java.util.ArrayList<JSONObject> cached = loadPinCache(bin);
+        locPinBtn.setText(cached != null
+                ? pinBtnText(bin, pinCountOf(cached))
+                : "⧉ " + bin + " · …");
         new Thread(() -> {
             try {
                 JSONObject resp = api("GET",
                         "/api/receiving/unpaired-labels", null);
                 JSONArray rows = resp.optJSONArray("products");
-                int labels = 0;
+                final java.util.ArrayList<JSONObject> items =
+                        new java.util.ArrayList<>();
                 for (int i = 0; rows != null && i < rows.length(); i++) {
                     JSONObject r = rows.optJSONObject(i);
                     if (r == null) continue;
                     String rb = r.isNull("bin_location") ? ""
                             : r.optString("bin_location", "");
-                    if (bin.equalsIgnoreCase(rb)) {
-                        labels += r.optInt("count");
-                    }
+                    if (bin.equalsIgnoreCase(rb)) items.add(r);
                 }
-                final int fl = labels;
+                savePinCache(bin, items);
                 ui.post(() -> {
                     if (locPinBtn == null) return;
-                    locPinBtn.setText(fl > 0
-                            ? "⧉ " + bin + " · " + fl
-                                    + " LABEL(S) TO PAIR"
-                            : "⧉ " + bin + " · ALL PAIRED");
+                    locPinBtn.setText(pinBtnText(bin, pinCountOf(items)));
                 });
             } catch (Exception ignored) {
             }
@@ -3230,11 +3305,26 @@ public class MainActivity extends Activity {
     }
 
     /** Tap on the pinned bin: enter Unpaired Tags mode if needed and
-     *  reopen that bin's labels-to-pair list, fresh from the server. */
+     *  open that bin's labels-to-pair list - INSTANTLY from the cache
+     *  when one is saved (the background refresh keeps it honest),
+     *  from the server otherwise. */
     private void openPinnedBin() {
         final String bin = prefs.getString("up_pin_bin", "");
         if (bin.isEmpty()) return;
         if (!unpairedHunt) enterUnpairedHunt(null, null);
+        java.util.ArrayList<JSONObject> cached = loadPinCache(bin);
+        if (cached != null && !cached.isEmpty()) {
+            showUnpairedBinProducts(bin, cached);
+            refreshPinnedBin();   // silent re-fetch for next time
+            return;
+        }
+        if (cached != null) {
+            beep(SOUND_OK);
+            status.setText("✓ " + bin + " owes no labels - everything "
+                    + "paired.");
+            refreshPinnedBin();
+            return;
+        }
         status.setText("Loading " + bin + "…");
         new Thread(() -> {
             try {
@@ -3250,6 +3340,7 @@ public class MainActivity extends Activity {
                             : r.optString("bin_location", "");
                     if (bin.equalsIgnoreCase(rb)) items.add(r);
                 }
+                savePinCache(bin, items);
                 ui.post(() -> {
                     if (items.isEmpty()) {
                         beep(SOUND_OK);
@@ -3362,6 +3453,12 @@ public class MainActivity extends Activity {
                     locFullPromptUp = false;
                     pairUnlinkedTag(epc, in.getText().toString().trim());
                 })
+                // Found a tag that isn't ours at all (Nick, 2026-09-15:
+                // another shop's sticker on a return, vendor stock tag).
+                .setNeutralButton("NOT OURS", (d, w) -> {
+                    locFullPromptUp = false;
+                    markTagNotOurs(epc);
+                })
                 .setNegativeButton("KEEP HUNTING", (d, w) ->
                         locFullPromptUp = false)
                 .setOnCancelListener(d -> locFullPromptUp = false)
@@ -3436,6 +3533,135 @@ public class MainActivity extends Activity {
                 ui.post(() -> {
                     beep(SOUND_ERR);
                     status.setText("Pair failed: " + e.getMessage());
+                });
+            }
+        }).start();
+    }
+
+    /** A tag physically in hand that is NOT ours (Nick, 2026-09-15):
+     *  another shop's sticker, a vendor stock tag. Permanent
+     *  server-side dismissal - off the hunt, ignored on every future
+     *  sweep. The server REFUSES our own printed labels, and the undo
+     *  lives in the web History. */
+    private void markTagNotOurs(final String epc) {
+        dlg()
+                .setTitle("NOT OUR TAG?")
+                .setMessage("Mark …" + epc.substring(Math.max(0,
+                        epc.length() - 6)) + " as not ours. It leaves "
+                        + "the hunt and is ignored on every future "
+                        + "sweep. Our own printed labels are refused. "
+                        + "Undo from the web History.")
+                .setPositiveButton("NOT OURS", (d, w) ->
+                        postTagNotOurs(epc))
+                .setNegativeButton("KEEP HUNTING", null)
+                .show();
+    }
+
+    private void postTagNotOurs(final String epc) {
+        status.setText("Marking …" + epc.substring(Math.max(0,
+                epc.length() - 6)) + " not ours…");
+        new Thread(() -> {
+            try {
+                JSONObject resp = api("POST", "/api/epcs/not-ours",
+                        new JSONObject()
+                                .put("epcs", new JSONArray().put(epc))
+                                .put("worker",
+                                        prefs.getString("device", "C72")));
+                final String msg = resp.optString("message", "Marked.");
+                final boolean did = resp.optInt("ignored", 0) > 0;
+                ui.post(() -> {
+                    beep(did ? SOUND_OK : SOUND_ERR);
+                    if (did) {
+                        locTags.remove(epc);
+                        locFound.remove(epc);
+                        upKnown.add(epc);
+                        if (epc.equals(upAutoNarrow)) {
+                            upReleaseAutoNarrow(null);
+                        }
+                        if (unpairedHunt) {
+                            locSku.setText(locTags.size() + " unpaired "
+                                    + "target(s) · " + upChecked
+                                    + " tag(s) checked");
+                        }
+                        updateLocateUi();
+                    }
+                    status.setText(msg);
+                });
+            } catch (Exception e) {
+                ui.post(() -> {
+                    beep(SOUND_ERR);
+                    status.setText("Not-ours failed: " + e.getMessage());
+                });
+            }
+        }).start();
+    }
+
+    /** Long-press on an unpaired-labels row (Nick, 2026-09-15): the
+     *  product sold before it could be labelled. Dismisses the WHOLE
+     *  row's owed labels through the receiving item - our accounting
+     *  only, no Shopify writes - until an audit settles it. Undo
+     *  lives in the web History. */
+    private void confirmDismissSoldRow(final JSONObject r,
+            final AlertDialog host) {
+        final int batchId = r.optInt("batch_id", 0);
+        final int itemId = r.optInt("item_id", 0);
+        final String sku = r.optString("sku", "?");
+        if (batchId <= 0 || itemId <= 0) {
+            beep(SOUND_ERR);
+            status.setText("This row can't be dismissed from here - "
+                    + "use the web terminal's list.");
+            return;
+        }
+        dlg()
+                .setTitle("SOLD WITHOUT LABEL?")
+                .setMessage(sku + ": dismiss all " + r.optInt("count")
+                        + " owed label(s)? The box sold before it "
+                        + "could be labelled - no counts change, and "
+                        + "the web History can undo it.")
+                .setPositiveButton("DISMISS", (d, w) ->
+                        postDismissSoldRow(r, host))
+                .setNegativeButton("CANCEL", null)
+                .show();
+    }
+
+    private void postDismissSoldRow(final JSONObject r,
+            final AlertDialog host) {
+        new Thread(() -> {
+            try {
+                JSONObject resp = api("POST",
+                        "/api/batches/" + r.optInt("batch_id")
+                                + "/items/" + r.optInt("item_id")
+                                + "/dismiss-sold",
+                        new JSONObject().put("worker",
+                                prefs.getString("device", "C72")));
+                final String msg = resp.optString("message",
+                        "Dismissed.");
+                ui.post(() -> {
+                    beep(SOUND_OK);
+                    // Its label EPCs stop being hunt targets now.
+                    JSONArray eps = r.optJSONArray("epcs");
+                    for (int j = 0; eps != null && j < eps.length();
+                            j++) {
+                        String e = eps.optString(j)
+                                .toUpperCase(java.util.Locale.ROOT);
+                        locTags.remove(e);
+                        locFound.remove(e);
+                    }
+                    if (host != null) host.dismiss();
+                    if (unpairedHunt) {
+                        locSku.setText(locTags.size() + " unpaired "
+                                + "target(s) · " + upChecked
+                                + " tag(s) checked");
+                        updateLocateUi();
+                    }
+                    status.setText(msg);
+                    // Pin count + cache follow the dismissal.
+                    refreshPinnedBin();
+                });
+            } catch (Exception e) {
+                ui.post(() -> {
+                    beep(SOUND_ERR);
+                    status.setText("Dismiss failed: " + e.getMessage());
                 });
             }
         }).start();
@@ -3577,10 +3803,13 @@ public class MainActivity extends Activity {
                                 + "held or dismissed.");
                         list.addView(t);
                     }
+                    final AlertDialog[] dref = new AlertDialog[1];
                     for (int i = 0; rows != null && i < rows.length();
                             i++) {
                         JSONObject r = rows.optJSONObject(i);
                         if (r == null) continue;
+                        final JSONObject row = r;
+                        final String sku = r.optString("sku", "");
                         LinearLayout card = auditCard(
                                 r.optString("product_title",
                                         r.optString("sku", "?")),
@@ -3594,6 +3823,15 @@ public class MainActivity extends Activity {
                                            : "\nBin " + r.optString(
                                                    "bin_location")),
                                 r.optInt("count") + "×", C_WARN, null);
+                        card.setOnClickListener(v -> {
+                            if (dref[0] != null) dref[0].dismiss();
+                            selectTab(TAB_STATION);
+                            stationLookup(sku);
+                        });
+                        card.setOnLongClickListener(v -> {
+                            confirmDismissSoldRow(row, dref[0]);
+                            return true;
+                        });
                         list.addView(card, auditRowLp());
                     }
                     TextView hint = new TextView(this);
@@ -3601,13 +3839,15 @@ public class MainActivity extends Activity {
                     hint.setTextSize(11);
                     hint.setPadding(0, dp(6), 0, 0);
                     hint.setText("Pair them by resuming the receiving "
-                            + "batch, hunt the stickers from LOCATE - "
-                            + "UNPAIRED TAGS, or dismiss labels on the "
-                            + "web terminal (Batch tab).");
+                            + "batch, or hunt the stickers from LOCATE "
+                            + "- UNPAIRED TAGS.\nTAP a product to open "
+                            + "it in Scan station and pair by hand. "
+                            + "HOLD one to dismiss it as sold without "
+                            + "a label (undo on the web).");
                     list.addView(hint);
                     ScrollView scroll = new ScrollView(this);
                     scroll.addView(list);
-                    dlg()
+                    dref[0] = dlg()
                             .setTitle("UNRESOLVED PRINTED LABELS ("
                                     + total + ")")
                             .setView(scroll)
@@ -3821,35 +4061,51 @@ public class MainActivity extends Activity {
                     + "TARGET… to hunt them again.");
             return;
         }
-        try {
-            reader.setPower(locPower);
-            applyLocateGen2();
-            applyNarrowFilter();
-            reader.startInventoryTag();
-            locating = true;
-            locEma = 0;
-            locBestRssi = -999;
-            scheduleLocateBeep();
-            status.setText("Hunting… trigger again to stop.");
-        } catch (Exception e) {
-            status.setText("Reader failed: " + e.getMessage());
-        }
+        // Radio calls run OFF the UI thread (4.09): the synchronized
+        // SDK commands froze the app for their duration, a visible
+        // hitch on every trigger pull. One serial executor keeps
+        // start/stop ordered.
+        locating = true;
+        locEma = 0;
+        locBestRssi = -999;
+        scheduleLocateBeep();
+        status.setText("Hunting… trigger again to stop.");
+        radioExec.execute(() -> {
+            try {
+                reader.setPower(locPower);
+                applyLocateGen2();
+                applyNarrowFilter();
+                reader.startInventoryTag();
+            } catch (Exception e) {
+                ui.post(() -> {
+                    locating = false;
+                    status.setText("Reader failed: " + e.getMessage());
+                });
+            }
+        });
     }
+
+    private final java.util.concurrent.ExecutorService radioExec =
+            java.util.concurrent.Executors.newSingleThreadExecutor();
 
     private void stopLocate(boolean announce) {
         if (locating) {
             locating = false;
-            try {
-                reader.stopInventory();
-            } catch (Exception ignored) {
-            }
-            try {
-                // Hand the radio back the way other modes expect it.
-                reader.setPower(prefs.getInt("power", 20));
-            } catch (Exception ignored) {
-            }
-            restoreLocateGen2();
-            clearNarrowFilter();
+            radioExec.execute(() -> {
+                try {
+                    reader.stopInventory();
+                } catch (Exception ignored) {
+                }
+                try {
+                    // Hand the radio back the way other modes expect
+                    // it (5 = the app-wide default everywhere else;
+                    // this used to say 20).
+                    reader.setPower(prefs.getInt("power", 5));
+                } catch (Exception ignored) {
+                }
+                restoreLocateGen2();
+                clearNarrowFilter();
+            });
             if (announce) status.setText("Hunt paused.");
         }
     }
@@ -3905,7 +4161,7 @@ public class MainActivity extends Activity {
     // of them; filtering on the target's EPC lets the radio pound just
     // that one. Only while locating AND narrowed — cleared on stop, so
     // sweeps and batch never inherit a filter.
-    private boolean narrowFilterSet = false;
+    private volatile boolean narrowFilterSet = false;
 
     private void applyNarrowFilter() {
         try {
@@ -4035,8 +4291,9 @@ public class MainActivity extends Activity {
     // FIRST arms the product, drops to the favourited Station power and
     // pairs the sticker read in hand.
     private boolean unpairedHunt = false;
-    private final java.util.HashSet<String> upKnown =
-            new java.util.HashSet<>();
+    // upKnown is read on the SDK callback thread per read - concurrent.
+    private final java.util.Set<String> upKnown =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final java.util.HashSet<String> upPending =
             new java.util.HashSet<>();
     private volatile boolean upClassifyBusy = false;
@@ -4064,7 +4321,12 @@ public class MainActivity extends Activity {
         }
         if (!locTags.containsKey(key)) return;
         locTags.put(key, rssi);
-        if (!locTargets().contains(key)) return;
+        // Inline target test (4.09): locTargets() allocates a fresh set
+        // copy, and this runs per READ on the SDK thread. key is already
+        // in locTags, so target = matches the narrow lock, else not
+        // marked found.
+        if (locNarrow != null ? !locNarrow.equals(key)
+                : locFound.contains(key)) return;
         long now = System.currentTimeMillis();
         if (rssi > locBestRssi || now - locLastHeard > 700) {
             locBestRssi = rssi;
@@ -15097,8 +15359,19 @@ public class MainActivity extends Activity {
     // the ASI676MC: an 11AM sweep re-raised a count sold at 1PM).
     private String auditEvidenceAt = null;
 
+    // Last tags.size() merged (4.09): this runs every 400 ms tick while
+    // sweeping, and used to re-uppercase EVERY heard tag each pass while
+    // holding the lock the SDK callback needs. tags only grows between
+    // clears, so an unchanged size means nothing new - skip the loop AND
+    // the full view rebuild (every other state change calls auditRender
+    // itself).
+    private int auditMergedSize = -1;
+
     private void auditMergeTags() {
         synchronized (tags) {
+            int sz = tags.size();
+            if (sz == auditMergedSize) return;
+            auditMergedSize = sz;
             if (!tags.isEmpty() && auditEvidenceAt == null) {
                 auditEvidenceAt = java.time.Instant.now().toString();
             }
@@ -15174,6 +15447,7 @@ public class MainActivity extends Activity {
                         + " collected tag(s)? (Finds and labels are kept.)")
                 .setPositiveButton("Clear", (d, w) -> {
                     auditTagSet.clear();
+                    auditMergedSize = -1;
                     auditEvidenceAt = null;
                     auditRender();
                     status.setText("Cleared - ready for the next sweep.");

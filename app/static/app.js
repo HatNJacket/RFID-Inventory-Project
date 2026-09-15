@@ -371,6 +371,7 @@ const EVENT_META = {
   "batch-reprinted": ["Batch Reprint", "#5c5f62"],
   "label-edited": ["Label Edited", "#5e548e"],
   "openbox-return": ["Open-Box Return", "#b06a2e"],
+  "not-our-tag": ["Not Our Tag", "#6d3f5b"],
   "printing-stopped": ["Stopped Printing", "#d72c0d"],
   "printing-resumed": ["Resumed Printing", "#116329"],
   "on-hand-updated": ["Raised On-hand", "#0c5132"],
@@ -4648,7 +4649,10 @@ async function renderUnresolvedLabels() {
         </div>
         <button class="reset" type="button" data-dismiss
           ${p.epcs && p.epcs.length ? "" : "disabled"}
-          title="Retire ONE of these labels for good - it stops counting as owed everywhere, audits included">Dismiss one</button>`;
+          title="Retire ONE of these labels for good - it stops counting as owed everywhere, audits included">Dismiss one</button>
+        <button class="reset" type="button" data-soldout
+          ${p.item_id ? "" : "disabled"}
+          title="This product sold before it could be labelled - dismiss the WHOLE row (all its labels) until an audit settles it. Undoable from History.">Sold, no label</button>`;
       li.querySelector("[data-dismiss]").addEventListener(
         "click",
         async (ev) => {
@@ -4659,6 +4663,30 @@ async function renderUnresolvedLabels() {
               epcs: [p.epcs[0]],
               by: operatorEl.value || null,
             });
+            renderUnresolvedLabels();
+          } catch (err) {
+            alert(err.message);
+            btn.disabled = false;
+          }
+        }
+      );
+      li.querySelector("[data-soldout]").addEventListener(
+        "click",
+        async (ev) => {
+          if (
+            !confirm(
+              `${p.sku}: sold before labelling? Every owed label on ` +
+                `this row is dismissed (undo in History).`
+            )
+          )
+            return;
+          const btn = ev.currentTarget;
+          btn.disabled = true;
+          try {
+            await postJson(
+              `/api/batches/${p.batch_id}/items/${p.item_id}/dismiss-sold`,
+              { worker: operatorEl.value || null }
+            );
             renderUnresolvedLabels();
           } catch (err) {
             alert(err.message);

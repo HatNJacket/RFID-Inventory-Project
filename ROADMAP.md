@@ -1,7 +1,42 @@
 # RFID Inventory System — Roadmap
 
 Source of truth for project status. Updated by Claude each working session.
-Last updated: 2026-09-15 (ninth round).
+Last updated: 2026-09-15 (tenth round).
+
+## 📡 Locate + unpaired labels round — ✅ DEPLOYED 2026-09-15 (C72 4.09)
+
+Nick's five asks, all shipped:
+- **NOT OURS** (foreign tag found in the store): POST /api/epcs/not-ours
+  - permanent dismissal via LabelDismissal (the _still_unlinked
+  chokepoint honours it everywhere: hunt stash, classifier, sweeps,
+  bin checks), but OUR printed labels are REFUSED (opposite stance to
+  ignore-heard, which only reports them). History event "epc-not-ours"
+  -> "Not Our Tag" chip, marker undo shared with the sweep write-off.
+  Gun: NOT OURS button on the unpaired-hunt pair sheet (confirm ->
+  post -> tag leaves the hunt on the spot).
+- **Pinned bin cache** (gun): up_pin_cache_json pref (house _json
+  pattern, bin = validity token). The pin button paints its count and
+  the bin list OPENS instantly from cache; every fetch (tab entry,
+  every pair, every dismissal) rewrites it. Staleness window is one
+  pair; a stale EPC pairing just 409s harmlessly.
+- **Tap a bin-list product -> Scan station** (gun): rows in LABEL BINS
+  bin lists and UNRESOLVED PRINTED LABELS now open the product in the
+  gun's own Station tab (selectTab + stationLookup) for hand-pairing -
+  the workaround when the hunt won't ping a label you can touch.
+- **Sold-without-label dismissal from the unpaired list**: the list
+  endpoint now carries item_id per row; web overlay gained a
+  "Sold, no label" button and the gun's lists dismiss on LONG-PRESS -
+  both drive the existing dismiss-sold flow (our accounting only,
+  History-undoable).
+- **C72 read/processing speed** (4.09): locTags/locFound/upKnown are
+  concurrent (SDK callback vs UI thread races could corrupt or crash);
+  the per-READ locTargets() set copy on the SDK thread replaced with an
+  O(1) test; audit merge skips the full uppercase pass + view rebuild
+  when no new tag arrived (was every 400 ms while holding the lock the
+  SDK callback blocks on); locate start/stop radio commands moved off
+  the UI thread (the per-trigger-pull hitch) onto one serial executor;
+  stopLocate's power restore default aligned to 5 (was 20).
+Suites 73/73 (new test_notours.py).
 
 ## ⚡ Performance + consolidation pass — ✅ DEPLOYED 2026-09-15
 
