@@ -366,6 +366,7 @@ const EVENT_META = {
   "non-taggable": ["Non-taggable", "#8a6116"],
   "unlabelable-box": ["Un-labelable Box", "#8a6116"],
   "box-set": ["Multi-box Set", "#0b6e99"],
+  "box-renumbered": ["Box Renumbered", "#0b6e99"],
   "alias-unlinked": ["Link Removed", "#8a6116"],
   "batch-reprinted": ["Batch Reprint", "#5c5f62"],
   "printing-stopped": ["Stopped Printing", "#d72c0d"],
@@ -1683,10 +1684,74 @@ function openEditbox() {
   el.prefixNote.value = pendingProduct.serial_note || "";
   el.prefixSection.hidden = true;
   el.replaceSection.hidden = true;
+  // Box X of Y (Nick, 2026-09-15): a registered set part renumbers
+  // right here, beside the SKU and barcode saves.
+  const boxRow = document.getElementById("edit-boxrow");
+  const bs = pendingProduct.boxset;
+  boxRow.hidden = !bs;
+  editBoxState = bs
+    ? {
+        set: bs.set_sku,
+        saved: bs.box_no,
+        cur: bs.box_no,
+        total: bs.boxes,
+      }
+    : null;
+  paintEditBox();
   el.linkbox.hidden = false;
 }
 
 el.productEdit.addEventListener("click", openEditbox);
+
+// --- Box X of Y renumbering (Nick, 2026-09-15, the S11830) ------------------
+let editBoxState = null;
+
+function paintEditBox() {
+  if (!editBoxState) return;
+  document.getElementById("edit-boxno").textContent = editBoxState.cur;
+  document.getElementById("edit-boxtotal").textContent =
+    `of ${editBoxState.total} · ${editBoxState.set}`;
+  document.getElementById("edit-box-save").disabled =
+    editBoxState.cur === editBoxState.saved;
+}
+
+document.getElementById("edit-box-minus").addEventListener("click", () => {
+  if (!editBoxState) return;
+  editBoxState.cur = Math.max(1, editBoxState.cur - 1);
+  paintEditBox();
+});
+document.getElementById("edit-box-plus").addEventListener("click", () => {
+  if (!editBoxState) return;
+  editBoxState.cur = Math.min(editBoxState.total, editBoxState.cur + 1);
+  paintEditBox();
+});
+document
+  .getElementById("edit-box-save")
+  .addEventListener("click", async () => {
+    const operator = requireOperator();
+    if (!operator || !editBoxState || !pendingProduct) return;
+    const btn = document.getElementById("edit-box-save");
+    btn.disabled = true;
+    try {
+      const res = await postJson(
+        `/api/box-sets/${encodeURIComponent(editBoxState.set)}/renumber`,
+        {
+          part_sku: pendingProduct.sku,
+          box_no: editBoxState.cur,
+          changed_by: operator,
+        }
+      );
+      editBoxState.saved = editBoxState.cur;
+      if (pendingProduct.boxset) {
+        pendingProduct.boxset.box_no = editBoxState.cur;
+      }
+      editMsg(res.message);
+      paintEditBox();
+    } catch (err) {
+      editMsg(err.message);
+      paintEditBox();
+    }
+  });
 
 // --- Edit-window rows: inputs, ✕ resets, dynamic-grey saves ------------------
 ["edit-sku", "edit-barcode", "edit-note"].forEach((id) =>
@@ -5808,6 +5873,36 @@ function openSetMarkDialog(item) {
     "during verification, where every marked box is waiting.";
   box.appendChild(intro);
 
+  // Smart defaults (Nick, 2026-09-15): an X-Y SKU (S11830-3) means
+  // master X, box Y - and the master is a PARENT, so the box count
+  // defaults to the largest number the family already knows (other
+  // marks' totals and box numbers, a registered set's size, this
+  // box's own suffix).
+  const sfx = /^(.*?)-(\d{1,2})$/.exec((item.sku || "").trim());
+  const suffix =
+    sfx && +sfx[2] >= 1 && +sfx[2] <= 8 ? parseInt(sfx[2], 10) : 0;
+  const defaultMaster =
+    item.set_mark_master || (sfx ? sfx[1] : item.sku) || "";
+
+  function familyTotal(masterU) {
+    let t = 0;
+    if (!masterU) return t;
+    batchItems.forEach((it2) => {
+      if (
+        it2.id !== item.id &&
+        (it2.set_mark_master || "").trim().toUpperCase() === masterU
+      ) {
+        t = Math.max(t, it2.set_mark_total || 0, it2.set_mark_box || 0);
+      }
+    });
+    (batch.box_sets || []).forEach((s) => {
+      if ((s.set_sku || "").trim().toUpperCase() === masterU) {
+        t = Math.max(t, s.boxes || 0);
+      }
+    });
+    return t;
+  }
+
   const masterRow = document.createElement("div");
   masterRow.className = "boxset__row";
   const masterLbl = document.createElement("span");
@@ -5816,12 +5911,28 @@ function openSetMarkDialog(item) {
   const masterIn = document.createElement("input");
   masterIn.className = "linkbox__input boxset__fullin";
   masterIn.placeholder = "e.g. S11230";
-  masterIn.value = item.set_mark_master || item.sku || "";
+  masterIn.value = defaultMaster;
   masterRow.append(masterLbl, masterIn);
   box.appendChild(masterRow);
 
-  let boxNo = item.set_mark_box || 1;
-  let boxTotal = item.set_mark_total || 2;
+  let boxNo = item.set_mark_box || suffix || 1;
+  let boxTotal =
+    item.set_mark_total ||
+    Math.max(
+      2, suffix, familyTotal(defaultMaster.trim().toUpperCase())
+    );
+  if (boxNo > boxTotal) boxTotal = boxNo;
+  // Re-derive the count when the master changes, until the operator
+  // touches the steppers themselves.
+  let touched = false;
+  masterIn.addEventListener("change", () => {
+    if (touched || item.set_mark_total) return;
+    boxTotal = Math.max(
+      2, suffix, familyTotal(masterIn.value.trim().toUpperCase())
+    );
+    if (boxNo > boxTotal) boxNo = boxTotal;
+    paint();
+  });
   function stepper(get, set) {
     const holder = document.createElement("span");
     holder.className = "setmark__step";
@@ -5835,10 +5946,12 @@ function openSetMarkDialog(item) {
     plus.className = "reset";
     plus.textContent = "+";
     minus.addEventListener("click", () => {
+      touched = true;
       set(get() - 1);
       paint();
     });
     plus.addEventListener("click", () => {
+      touched = true;
       set(get() + 1);
       paint();
     });
@@ -6158,6 +6271,9 @@ function openBoxSetBuilder(seedItem, master) {
       .map((r) => ({
         sku: r.skuIn.value.trim(),
         barcode: r.bcIn.value.trim() || null,
+        // The mark's Box X survives into the registry (Nick,
+        // 2026-09-15: S11830's numbering came out in scan order).
+        box_no: markedFor(r.it) ? r.it.set_mark_box || null : null,
       }));
     if (parts.some((p) => !p.sku)) {
       alert("Every ticked box needs the SKU the carton says.");
@@ -7562,6 +7678,61 @@ function renderCheckList() {
 }
 
 // --- Check-item editor (candidates arrows, counts, serial name) -------------
+// Box X of Y in the check-item window (Nick, 2026-09-15).
+let bitemBoxState = null;
+
+function paintBitemBox() {
+  if (!bitemBoxState) return;
+  document.getElementById("bitem-boxno").textContent = bitemBoxState.cur;
+  document.getElementById("bitem-boxtotal").textContent =
+    `of ${bitemBoxState.total} · ${bitemBoxState.set}`;
+  document.getElementById("bitem-box-save").disabled =
+    bitemBoxState.cur === bitemBoxState.saved;
+}
+
+document.getElementById("bitem-box-minus").addEventListener("click", () => {
+  if (!bitemBoxState) return;
+  bitemBoxState.cur = Math.max(1, bitemBoxState.cur - 1);
+  paintBitemBox();
+});
+document.getElementById("bitem-box-plus").addEventListener("click", () => {
+  if (!bitemBoxState) return;
+  bitemBoxState.cur = Math.min(
+    bitemBoxState.total, bitemBoxState.cur + 1
+  );
+  paintBitemBox();
+});
+document
+  .getElementById("bitem-box-save")
+  .addEventListener("click", async () => {
+    const operator = requireOperator();
+    if (!operator || !bitemBoxState) return;
+    const btn = document.getElementById("bitem-box-save");
+    btn.disabled = true;
+    try {
+      const res = await postJson(
+        `/api/box-sets/${encodeURIComponent(bitemBoxState.set)}/renumber`,
+        {
+          part_sku: bitemBoxState.sku,
+          box_no: bitemBoxState.cur,
+          changed_by: operator,
+        }
+      );
+      bitemBoxState.saved = bitemBoxState.cur;
+      document.getElementById("bitem-msg").textContent = res.message;
+      paintBitemBox();
+      await pullBatch(false);
+    } catch (err) {
+      document.getElementById("bitem-msg").textContent = err.message;
+      paintBitemBox();
+    }
+  });
+document.getElementById("bitem-mark").addEventListener("click", () => {
+  if (!bitemEntry) return;
+  document.getElementById("bitem-overlay").hidden = true;
+  openSetMarkDialog(bitemEntry.item);
+});
+
 function openBitem(entry) {
   bitemEntry = entry;
   const cands = entry.candidates || [];
@@ -7584,9 +7755,12 @@ function renderBitem() {
   document.getElementById("bitem-title").textContent =
     (showing.product_title || "(unknown)") +
     (showing.variant_title ? ` (${showing.variant_title})` : "");
-  document.getElementById("bitem-meta").textContent =
-    `SKU: ${showing.sku || "—"} · Barcode: ${showing.barcode || it.scanned_code || "—"}` +
-    ` · Bin: ${showing.bin_location || "—"}`;
+  // Same grid the Edit-product window uses (Nick, 2026-09-15).
+  document.getElementById("bitem-gsku").textContent = showing.sku || "—";
+  document.getElementById("bitem-gbarcode").textContent =
+    showing.barcode || it.scanned_code || "—";
+  document.getElementById("bitem-gbin").textContent =
+    showing.bin_location || "—";
   const img = document.getElementById("bitem-img");
   const imgUrl = showing.image_url || (showing === it ? it.image_url : null);
   if (imgUrl) {
@@ -7669,6 +7843,45 @@ function renderBitem() {
     skuIn.value = it.sku || "";
     bcIn.value = it.barcode || "";
     updateBitemIdentButtons();
+    // Box X of Y (Nick, 2026-09-15): a registered set part renumbers
+    // right here; a merely MARKED box edits its mark instead.
+    let partInfo = null;
+    for (const s of batch.box_sets || []) {
+      for (const p of s.parts || []) {
+        if (
+          (p.sku || "").trim().toUpperCase() ===
+          (it.sku || "").trim().toUpperCase()
+        ) {
+          partInfo = {
+            set: s.set_sku,
+            box_no: p.box_no,
+            total: s.boxes || (s.parts || []).length,
+          };
+        }
+      }
+    }
+    const boxWrap = document.getElementById("bitem-boxwrap");
+    boxWrap.hidden = !partInfo;
+    if (partInfo) {
+      bitemBoxState = {
+        set: partInfo.set,
+        saved: partInfo.box_no,
+        cur: partInfo.box_no,
+        total: partInfo.total,
+        sku: it.sku,
+      };
+      paintBitemBox();
+    } else {
+      bitemBoxState = null;
+    }
+    const markWrap = document.getElementById("bitem-markwrap");
+    markWrap.hidden = !!partInfo;
+    if (!partInfo) {
+      document.getElementById("bitem-mark").textContent =
+        it.set_mark_total
+          ? `⧉ box ${it.set_mark_box} of ${it.set_mark_total} · ${it.set_mark_master} - change…`
+          : "⧉ Part of a set…";
+    }
   }
 
   const nameWrap = document.getElementById("bitem-namewrap");

@@ -2119,6 +2119,11 @@ class BoxSetPartIn(BaseModel):
     barcode: str | None = Field(default=None, max_length=64)
     create_draft: bool = False
     bin: str | None = Field(default=None, max_length=100)
+    # Explicit Box X (Nick, 2026-09-15: the S11830 registry came out
+    # numbered by SCAN order and box 3's label printed "Box 1 of 3").
+    # Parts carrying a number sort by it; the rest follow in list
+    # order. The stored numbering is always a clean 1..N.
+    box_no: int | None = Field(default=None, ge=1, le=8)
 
 
 class BoxSetIn(BaseModel):
@@ -2180,6 +2185,7 @@ def create_box_set(
             "sku": sku_p, "barcode": bc_p,
             "create_draft": bool(p.create_draft),
             "bin": (p.bin or "").strip() or None,
+            "box_no": p.box_no,
         })
     merged_parts: list[dict] = []
     by_bc: dict[str, dict] = {}
@@ -2202,6 +2208,8 @@ def create_box_set(
                 elif tgt["sku"].upper() == key:
                     tgt["sku"] = ""  # scanned-code sku -> auto-number
                 tgt["bin"] = e["bin"] or tgt["bin"]
+            if e["box_no"]:
+                tgt["box_no"] = e["box_no"]
             tgt["create_draft"] = True
             continue
         if key:
@@ -2226,7 +2234,8 @@ def create_box_set(
         return n
 
     seen: set[str] = set()
-    cleaned: list[tuple[str, str | None]] = []
+    # (sku, barcode, explicit box_no or None)
+    cleaned: list[tuple[str, str | None, int | None]] = []
     drafts_wanted: list[tuple[int, str | None]] = []  # (idx, bin)
     for e in merged_parts:
         sku_p = e["sku"]
@@ -2244,7 +2253,7 @@ def create_box_set(
         seen.add(sku_p.upper())
         if e["create_draft"]:
             drafts_wanted.append((len(cleaned), e["bin"]))
-        cleaned.append((sku_p, e["barcode"]))
+        cleaned.append((sku_p, e["barcode"], e["box_no"]))
     if len(cleaned) < 2:
         raise HTTPException(
             422,
@@ -2261,7 +2270,7 @@ def create_box_set(
     if drafts_wanted:
         existing: list[tuple[int, dict]] = []
         for idx, _bin_p in drafts_wanted:
-            sku_p, _bc = cleaned[idx]
+            sku_p = cleaned[idx][0]
             try:
                 hit = shopify.find_sku_listing(sku_p)
             except Exception:  # noqa: BLE001 - probe only
@@ -2283,11 +2292,11 @@ def create_box_set(
         if existing:
             used_idx = set()
             for idx, hit in existing:
-                sku_p, bc_p = cleaned[idx]
+                sku_p, bc_p, box_p = cleaned[idx]
                 # The premade listing's own barcode fills a blank
                 # entry so the physical box still scans.
                 if not bc_p and (hit.get("barcode") or "").strip():
-                    cleaned[idx] = (sku_p, hit["barcode"].strip())
+                    cleaned[idx] = (sku_p, hit["barcode"].strip(), box_p)
                 premade_used.append(hit)
                 used_idx.add(idx)
             drafts_wanted = [
@@ -2311,8 +2320,8 @@ def create_box_set(
         b = (e.barcode or "").strip().upper()
         if k and b and k not in own_bc:
             own_bc[k] = b
-    for i, (sku_a, bc_a) in enumerate(cleaned):
-        for sku_b, bc_b in cleaned[i + 1:]:
+    for i, (sku_a, bc_a, _box_a) in enumerate(cleaned):
+        for sku_b, bc_b, _box_b in cleaned[i + 1:]:
             a, b = sku_a.upper(), sku_b.upper()
             if (
                 a in own_bc and b in own_bc
@@ -2337,7 +2346,7 @@ def create_box_set(
         require_shopify_write("draft_listings")
         default_bin = (full.get("bin_location") or "").strip() or None
         for idx, bin_p in drafts_wanted:
-            sku_p, bc_p = cleaned[idx]
+            sku_p, bc_p, _box_p = cleaned[idx]
             title = (
                 f"DRAFT LISTING - INGREDIENT "
                 f"{full.get('product_title') or set_sku} {sku_p}"
@@ -2370,7 +2379,15 @@ def create_box_set(
         session.delete(row)
     session.flush()
     rows = []
-    for i, (sku_p, bc_p) in enumerate(cleaned, start=1):
+    # Explicit Box X wins the ordering (Nick, 2026-09-15: the marks'
+    # numbers must survive into the registry - S11830's came out in
+    # scan order and box 3's label said "Box 1 of 3"). Parts carrying
+    # a number sort by it, the rest keep their list order behind
+    # them; storage is always a clean 1..N.
+    ordered = sorted(
+        cleaned, key=lambda part: (part[2] or 99,)
+    ) if any(part[2] for part in cleaned) else cleaned
+    for i, (sku_p, bc_p, _box_p) in enumerate(ordered, start=1):
         rows.append(BoxSetPart(
             set_sku=set_sku,
             set_title=(full.get("product_title") or "")[:255] or None,
@@ -2401,7 +2418,7 @@ def create_box_set(
     # unlink receipt.
     aliases_cleared = 0
     part_codes = set()
-    for sku_p, bc_p in cleaned:
+    for sku_p, bc_p, _box_p in cleaned:
         part_codes.add(sku_p.upper())
         if bc_p:
             part_codes.add(bc_p.upper())
@@ -2555,6 +2572,138 @@ def create_box_set(
                 "the re-label pass can convert them."
                 if full_tags else ""
             )
+        ),
+    }
+
+
+class BoxRenumberIn(BaseModel):
+    part_sku: str = Field(min_length=1, max_length=100)
+    box_no: int = Field(ge=1, le=8)
+    changed_by: str | None = Field(default=None, max_length=100)
+
+
+@app.post(
+    "/api/box-sets/{set_sku}/renumber",
+    dependencies=[Depends(require_user)],
+)
+def renumber_box(
+    set_sku: str,
+    payload: BoxRenumberIn,
+    session: Session = Depends(get_session),
+):
+    """Move one box of a registered set to a different Box X (Nick,
+    2026-09-15: the S11830 registry came out in scan order and box 3's
+    label printed "Box 1 of 3"). The box holding the target number
+    swaps into the vacated slot; open-batch rows, live tag titles and
+    PENDING labels follow. History-logged."""
+    parts = _boxset_parts_of(session, set_sku)
+    if not parts:
+        raise HTTPException(404, f"{set_sku} is not a registered set.")
+    want = payload.part_sku.strip().upper()
+    target = next(
+        (p for p in parts if p.part_sku.strip().upper() == want), None
+    )
+    if target is None:
+        raise HTTPException(
+            404, f"{payload.part_sku} is not a box of {set_sku}."
+        )
+    total = len(parts)
+    if payload.box_no > total:
+        raise HTTPException(
+            422, f"The set has {total} box(es) - box {payload.box_no} "
+                 "doesn't exist.",
+        )
+    by = (payload.changed_by or "").strip()[:100] or None
+    if target.box_no == payload.box_no:
+        return {
+            "parts": [p.as_dict() for p in parts],
+            "message": (
+                f"{target.part_sku} already is box {target.box_no} of "
+                f"{total}."
+            ),
+        }
+    other = next(
+        (p for p in parts if p.box_no == payload.box_no), None
+    )
+    old_no = target.box_no
+    # UNIQUE (set_sku, box_no): shuffle through a free slot.
+    target.box_no = 99
+    session.flush()
+    if other is not None:
+        other.box_no = old_no
+        session.flush()
+    target.box_no = payload.box_no
+    session.flush()
+    session.add(BarcodeChange(
+        sku=set_sku,
+        product_title=target.set_title,
+        shopify_variant_id=target.set_variant_id,
+        changed_field="box-renumbered",
+        old_barcode=f"{target.part_sku}: box {old_no}"[:64],
+        new_barcode=(
+            f"box {payload.box_no}"
+            + (f", {other.part_sku} takes box {old_no}"
+               if other else "")
+        )[:64],
+        changed_by=by,
+    ))
+    # Open-batch rows, live tags and PENDING labels tell the new
+    # numbering; printed labels keep saying what they say - reprint
+    # from the product window if the paper matters.
+    open_ids = [
+        b.id for b in session.scalars(
+            select(Batch).where(
+                Batch.status.notin_(("done", "abandoned"))
+            )
+        )
+    ]
+    for changed in [target] + ([other] if other else []):
+        new_title = (
+            f"{changed.set_title or set_sku} - "
+            f"Box {changed.box_no} of {total}"
+        )[:255]
+        if open_ids:
+            for it in session.scalars(
+                select(BatchItem).where(
+                    BatchItem.batch_id.in_(open_ids),
+                    func.upper(BatchItem.sku)
+                    == changed.part_sku.upper(),
+                )
+            ):
+                it.product_title = new_title
+        for t in session.scalars(
+            select(RfidAssignment).where(
+                func.upper(RfidAssignment.sku)
+                == changed.part_sku.upper(),
+                RfidAssignment.product_title.like("%- Box %"),
+            )
+        ):
+            t.product_title = new_title
+        for j in session.scalars(
+            select(PrintJob).where(
+                PrintJob.status == "pending",
+                func.upper(PrintJob.sku) == changed.part_sku.upper(),
+            )
+        ):
+            if j.bin_location and ", Box " in j.bin_location:
+                j.bin_location = re.sub(
+                    r", Box \d+ of \d+",
+                    f", Box {changed.box_no} of {total}",
+                    j.bin_location,
+                )
+    session.commit()
+    parts = _boxset_parts_of(session, set_sku)
+    return {
+        "parts": [p.as_dict() for p in parts],
+        "message": (
+            f"{target.part_sku} is now box {payload.box_no} of {total}"
+            + (
+                f"; {other.part_sku} took box {old_no}"
+                if other else ""
+            )
+            + ". Open batches, live tags and pending labels follow - "
+            "labels already printed keep their old text (reprint if "
+            "it matters)."
         ),
     }
 
@@ -11518,14 +11667,45 @@ def set_item_set_mark(
     item.set_mark_master = master[:100]
     item.set_mark_box = payload.box_no
     item.set_mark_total = payload.box_total
+    # The master is a PARENT (Nick, 2026-09-15): every box of the same
+    # master shares one box count, so saving Y here updates the other
+    # marks of this family on open batches.
+    synced = 0
+    open_ids = [
+        b.id for b in session.scalars(
+            select(Batch).where(
+                Batch.status.notin_(("done", "abandoned"))
+            )
+        )
+    ]
+    if open_ids:
+        for sib in session.scalars(
+            select(BatchItem).where(
+                BatchItem.batch_id.in_(open_ids),
+                BatchItem.set_mark_master.isnot(None),
+                BatchItem.id != item.id,
+            )
+        ):
+            if (
+                (sib.set_mark_master or "").strip().upper()
+                == master.upper()
+                and sib.set_mark_total != payload.box_total
+            ):
+                sib.set_mark_total = payload.box_total
+                synced += 1
     session.commit()
     session.refresh(item)
     return {
         "item": item.as_dict(),
         "message": (
             f"Marked as box {payload.box_no} of {payload.box_total} of "
-            f"{master}. Define the set on the web terminal during "
-            "verification."
+            f"{master}."
+            + (
+                f" {synced} other marked box(es) of {master} follow "
+                f"the new count of {payload.box_total}."
+                if synced else ""
+            )
+            + " Define the set on the web terminal during verification."
         ),
     }
 
@@ -19280,6 +19460,7 @@ def product_history(term: str, session: Session = Depends(get_session)):
         "on-hand-lower-undo": "on-hand-lower-undone",
         "tagged-before": "already-tagged-set",
         "unprinted-sold": "unprinted-sold",
+        "box-renumbered": "box-renumbered",
         "tag-unlinked": "tag-unlinked",
         "tag-released": "tag-released",
         "tag-reapplied": "tag-reapplied",
@@ -19737,6 +19918,7 @@ def history(
         "on-hand-lower-undo": "on-hand-lower-undone",
         "tagged-before": "already-tagged-set",
         "unprinted-sold": "unprinted-sold",
+        "box-renumbered": "box-renumbered",
         "tag-unlinked": "tag-unlinked",
         "tag-released": "tag-released",
         "tag-reapplied": "tag-reapplied",

@@ -1,7 +1,39 @@
 # RFID Inventory System — Roadmap
 
 Source of truth for project status. Updated by Claude each working session.
-Last updated: 2026-09-15 (fourth round).
+Last updated: 2026-09-15 (fifth round).
+
+## 🔢 Box X of Y made robust — ✅ DEPLOYED 2026-09-15 (C72 4.06)
+
+Nick's report: S11830-3 saved as box 3 of 3 still PRINTED "Box 1 of
+3" (the registry numbered by scan order), and the marks' defaults
+ignored the SKU's own story.
+- **Prod repaired**: S11830 renumbered so box numbers match the SKU
+  suffixes (-1=1, -2=2, -3=3). The already-printed S11830-3 label
+  still says "Box 1 of 3" on paper - reprint from the product window
+  if it matters.
+- **The registry honors explicit numbers**: BoxSetPartIn takes
+  box_no; parts carrying one sort by it (rest follow in list order;
+  storage stays a clean 1..N), and the web builder passes each
+  marked row's Box X. Marks now SURVIVE into labels.
+- **Master = parent, smart defaults** (both clients, C72 4.06 code
+  124): an X-Y SKU (S11830-3) defaults master X and box Y; the box
+  count defaults to the largest number the family knows - other
+  marks' totals/numbers, a registered set's size, the own suffix
+  (Nick's exact example: S11830-2 first = box 2 of 2; set Y=3; then
+  S11830-1 = box 1 of 3). Saving Y syncs every same-master mark on
+  open batches (server-side); the web dialog re-derives Y when the
+  master field changes until the steppers are touched.
+- **Renumber anywhere**: POST /api/box-sets/{set}/renumber swaps a
+  box into a new slot (History "Box Renumbered"); open-batch rows,
+  live tag titles and PENDING labels follow (printed labels keep
+  their text). The row lives beside Save SKU / Save Barcode in BOTH
+  the Edit Product window and the batch-tagging check window; a
+  merely MARKED box offers its mark editor there instead.
+- **Check window restyled** to the Edit-product shape: title +
+  SKU/Barcode/Bin grid header; every batch-specific block (found-in-
+  bin-but-system-says, split, rescue) unchanged.
+test_boxsets +7, test_setmarks +2. Suites 74/74.
 
 ## 🔀 S11810 crossed part barcodes — repaired + guarded — ✅ DEPLOYED 2026-09-15
 

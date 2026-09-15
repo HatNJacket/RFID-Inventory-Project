@@ -13431,13 +13431,50 @@ public class MainActivity extends Activity {
         final BItem it = editEntry.item;
         final int itemId = it.id;
         closeItemEditor();
+        // Smart defaults (Nick, 2026-09-15): an X-Y SKU (S11830-3)
+        // means master X, box Y - and the master is a PARENT, so the
+        // box count defaults to the largest number the family already
+        // knows (other marks, a set header's size, this suffix).
+        String sku = it.sku == null ? "" : it.sku.trim();
+        String defMaster = it.markMaster != null
+                && !it.markMaster.isEmpty() ? it.markMaster : sku;
+        int suffix = 0;
+        java.util.regex.Matcher sm = java.util.regex.Pattern
+                .compile("^(.*?)-(\\d{1,2})$").matcher(sku);
+        if (sm.matches()) {
+            try {
+                suffix = Integer.parseInt(sm.group(2));
+            } catch (Exception ignored) {
+            }
+            if (suffix < 1 || suffix > 8) suffix = 0;
+            if (suffix > 0 && (it.markMaster == null
+                    || it.markMaster.isEmpty())) {
+                defMaster = sm.group(1);
+            }
+        }
+        int famTotal = 0;
+        for (BItem b2 : bItems) {
+            if (b2.id == it.id) continue;
+            if (b2.markMaster != null
+                    && b2.markMaster.equalsIgnoreCase(defMaster)) {
+                famTotal = Math.max(famTotal,
+                        Math.max(b2.markTotal, b2.markBox));
+            }
+            if (b2.rowKind == 1 && b2.sku != null
+                    && b2.sku.equalsIgnoreCase(defMaster)) {
+                famTotal = Math.max(famTotal, b2.setBoxes);
+            }
+        }
+        int defBox = it.markBox > 0 ? it.markBox
+                : suffix > 0 ? suffix : 1;
+        int defTotal = it.markTotal > 0 ? it.markTotal
+                : Math.max(2, Math.max(famTotal, suffix));
+        if (defBox > defTotal) defTotal = defBox;
         final EditText masterIn = themedEdit();
         masterIn.setHint("Master SKU (e.g. S11230)");
         masterIn.setTextSize(16);
-        masterIn.setText(it.markMaster != null && !it.markMaster.isEmpty()
-                ? it.markMaster : (it.sku == null ? "" : it.sku));
-        final int[] xy = {it.markBox > 0 ? it.markBox : 1,
-                it.markTotal > 0 ? it.markTotal : 2};
+        masterIn.setText(defMaster);
+        final int[] xy = {defBox, defTotal};
         final TextView xv = new TextView(this);
         final TextView yv = new TextView(this);
         for (TextView v : new TextView[]{xv, yv}) {

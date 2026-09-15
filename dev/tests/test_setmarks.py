@@ -88,6 +88,24 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
     check("a mark without a master SKU refused", r.status_code == 422,
           r.text[:150])
 
+    # The master is a PARENT (Nick, 2026-09-15): saving a new box
+    # count updates every other mark of the same family.
+    r = cl.post(f"/api/batches/{bid}/items/{it_main}/set-mark", json={
+        "master_sku": "S11230", "box_no": 1, "box_total": 3,
+        "changed_by": "Nick"})
+    check("raising Y announces the family sync",
+          r.status_code == 200
+          and "1 other marked box(es) of S11230 follow" in
+          r.json()["message"], r.text[:250])
+    r = cl.get(f"/api/batches/{bid}")
+    sib = next(i for i in r.json()["items"] if i["id"] == it_unres)
+    check("the sibling mark's box count followed",
+          sib["set_mark_total"] == 3 and sib["set_mark_box"] == 2,
+          (sib["set_mark_box"], sib["set_mark_total"]))
+    # ...and back to 2 so the define below stays a clean 2-box set.
+    cl.post(f"/api/batches/{bid}/items/{it_main}/set-mark", json={
+        "master_sku": "S11230", "box_no": 1, "box_total": 2})
+
     # ---- guardrails stand down inside the MARKED family ---------------
     # The box's draft listing exists; writing the PARENT's barcode onto
     # it must not ask, not block, and file NO Review task.

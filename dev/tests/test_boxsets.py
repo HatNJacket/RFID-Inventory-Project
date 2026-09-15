@@ -561,6 +561,80 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
             {"sku": "S11230-1", "barcode": "7411230001"},
             {"sku": "S11230-2", "barcode": "7411230002"}]})
 
+    # ---- explicit Box X + renumbering (Nick, 2026-09-15, S11830) -----
+    # Parts submitted OUT of order but carrying box_no land in Box X
+    # order; a registered box renumbers with a swap, and open-batch
+    # rows, tags and PENDING labels follow.
+    cl.delete("/api/box-sets/S11230?by=Nick")
+    r = cl.post("/api/box-sets", json={
+        "set_code": "S11230",
+        "parts": [
+            {"sku": "S11230-2", "barcode": "7411230002", "box_no": 2},
+            {"sku": "S11230-1", "barcode": "7411230001", "box_no": 1},
+        ], "changed_by": "Nick"})
+    check("explicit box_no beats list order",
+          r.status_code == 201
+          and [(p["part_sku"], p["box_no"]) for p in r.json()["parts"]]
+          == [("S11230-1", 1), ("S11230-2", 2)],
+          r.text[:250])
+    with S(get_engine()) as s:
+        b9 = Batch(bin_name="A7-1", created_by="t")
+        s.add(b9); s.flush()
+        s.add(BatchItem(batch_id=b9.id, scanned_code="7411230001",
+                        resolved=True, sku="S11230-1",
+                        barcode="7411230001",
+                        product_title="old title", qty_scanned=1))
+        s.add(RfidAssignment(rfid_id="RN00000000000000000000A1",
+                             shopify_variant_id="gid://v/11230",
+                             sku="S11230-1",
+                             product_title="Dob - Box 1 of 2",
+                             bin_location="A7-1"))
+        s.add(PrintJob(epc="RNJOB0000000000000000001",
+                       status="pending", sku="S11230-1",
+                       product_title="Dob",
+                       shopify_variant_id="gid://v/11230",
+                       bin_location="A7-1, Box 1 of 2"))
+        s.commit()
+        b9id = b9.id
+    r = cl.post("/api/box-sets/S11230/renumber", json={
+        "part_sku": "S11230-1", "box_no": 2, "changed_by": "Nick"})
+    check("renumber swaps the two boxes",
+          r.status_code == 200
+          and [(p["part_sku"], p["box_no"]) for p in r.json()["parts"]]
+          == [("S11230-2", 1), ("S11230-1", 2)]
+          and "S11230-2 took box 1" in r.json()["message"],
+          r.text[:300])
+    with S(get_engine()) as s:
+        it9 = s.scalars(select(BatchItem).where(
+            BatchItem.batch_id == b9id)).first()
+        check("open-batch row title follows the new number",
+              "Box 2 of 2" in (it9.product_title or ""),
+              it9.product_title)
+        t9 = s.scalars(select(RfidAssignment).where(
+            RfidAssignment.rfid_id
+            == "RN00000000000000000000A1")).one()
+        check("live tag title follows",
+              "Box 2 of 2" in t9.product_title, t9.product_title)
+        j9 = s.scalars(select(PrintJob).where(
+            PrintJob.epc == "RNJOB0000000000000000001")).one()
+        check("the PENDING label's bin line follows",
+              j9.bin_location == "A7-1, Box 2 of 2", j9.bin_location)
+    r = cl.post("/api/box-sets/S11230/renumber", json={
+        "part_sku": "S11230-1", "box_no": 5})
+    check("a box number past the set size is refused",
+          r.status_code == 422, r.text[:150])
+    r = cl.post("/api/box-sets/NOPE-1/renumber", json={
+        "part_sku": "X", "box_no": 1})
+    check("an unregistered set 404s", r.status_code == 404,
+          r.text[:120])
+    cl.post(f"/api/batches/{b9id}/abandon")
+    cl.delete("/api/box-sets/S11230?by=Nick")
+    # restore the standing set for the History section below
+    cl.post("/api/box-sets", json={
+        "set_code": "S11230", "parts": [
+            {"sku": "S11230-1", "barcode": "7411230001"},
+            {"sku": "S11230-2", "barcode": "7411230002"}]})
+
     # ---- History carries an UNDO on the create while the set stands --
     r = cl.get("/api/history?limit=50")
     ev = next((e for e in r.json()["events"]
