@@ -3,6 +3,27 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-15 (eighth round).
 
+## 🧹 Blank-roll sweep cleanup — ✅ RUN ON PROD 2026-09-15
+
+Nick accidentally swept the whole store including the unprinted blank
+RFID roll; the factory EPCs stuffed the orphaned-tags hunt list, and
+separately many receiving labels had been replaced by hand-paired
+tags (the ALP-T-2-Ha/OIII-HS shape: strip printed, boxes tagged with
+other stickers minutes later, before the Sept-15 credit system).
+dev/cleanup_unpaired.py (RUN --apply ONCE - a rerun would
+over-credit):
+- 238 blank/foreign stickers written off (ignore-heard mechanism;
+  printed-label EPCs were protected, though none were in the stash).
+  The orphaned-tags hunt list is empty.
+- 37 labels across receiving batches 219/230/233/240/241/242 credited
+  as covered by later hand pairs - off the unpaired-labels list, and
+  their receiving tasks settled.
+- Still genuinely owed (~61 labels, Nick walking them): most of batch
+  230's F/W SKUs, TL-ST3B-00, ALP-T-3NM/3.5NM-SET, one EPWP5210-01,
+  one F9127A.
+The Locate unpaired-labels list already reads ONLY receiving labels
+(by design since 2026-09-09) - no code change needed.
+
 ## 🗑 Multi-box sets SCRAPPED — ✅ DEPLOYED 2026-09-15 (C72 4.08)
 
 Nick's decision, his words: "as long as we know where the individual
