@@ -2693,6 +2693,9 @@ function renderCardLabelPreview(p, data) {
   }
   let top = STORE_HEADER;
   let skuLine = p.sku || "";
+  // Open-box labels print the BASE SKU - the -O suffix belongs to the
+  // barcode, not the product (Nick, 2026-09-15).
+  if (/-O$/i.test(skuLine.trim())) skuLine = skuLine.trim().slice(0, -2);
   if (p.serial_prefix) {
     top =
       el.serialLabelInput.value.trim() ||
@@ -2722,11 +2725,17 @@ function renderCardLabelPreview(p, data) {
   renderSkuPreviewLine("p-prev-sku", skuLine);
   document.getElementById("p-prev-bc").textContent =
     p.barcode || p.sku || "";
+  const obNote =
+    /-O$/i.test((p.sku || "").trim()) ||
+    /open[\s-]?box/i.test(p.product_title || "")
+      ? ", OPEN BOX"
+      : "";
   document.getElementById("p-prev-bin").textContent =
     "BIN: " +
     (p.bin_location && p.bin_location !== "No bin assigned"
       ? p.bin_location
-      : "—");
+      : "—") +
+    obNote;
   box.hidden = false;
 }
 

@@ -1742,10 +1742,34 @@ STORE_HEADER = "Telescopes Canada"
 # It must never leak into recorded bins, so everything that copies a
 # job's bin into a record strips it first.
 _BOX_NOTE_RE = re.compile(r",?\s*Box (\d+) of (\d+)\s*$", re.IGNORECASE)
+# The open-box note rides the bin line the same way ("D4-1, OPEN BOX",
+# Nick 2026-09-15) - records strip BOTH kinds of note.
+_BIN_NOTE_RE = re.compile(
+    r",?\s*(?:Box \d+ of \d+|OPEN BOX)\s*$", re.IGNORECASE
+)
+
+# Open-box wording alone (never "used"/"demo" - those are secondary
+# listings too, but only open box gets the label note).
+_OPENBOX_TITLE = re.compile(r"open[\s-]?box", re.I)
 
 
 def _strip_box_note(bin_location: str | None) -> str | None:
-    return _BOX_NOTE_RE.sub("", bin_location or "").strip() or None
+    out = (bin_location or "").strip()
+    while True:
+        new = _BIN_NOTE_RE.sub("", out).strip()
+        if new == out:
+            return new or None
+        out = new
+
+
+def _openbox_job(job: PrintJob) -> bool:
+    """Is this label for an OPEN-BOX unit? The -O suffix on the SKU or
+    barcode, or open-box wording in the title (hand-made twins)."""
+    if (job.sku or "").strip().upper().endswith("-O"):
+        return True
+    if (job.barcode or "").strip().upper().endswith("-O"):
+        return True
+    return bool(_OPENBOX_TITLE.search(job.product_title or ""))
 
 
 def _apply_part_box_notes(
@@ -1788,9 +1812,30 @@ def _apply_part_box_notes(
             if (key and key not in part_note
                     and it.set_mark_box and it.set_mark_total):
                 part_note[key] = (it.set_mark_box, it.set_mark_total)
+    # OPEN-BOX labels first, and with PRIORITY (Nick, 2026-09-15): the
+    # bin line says "OPEN BOX" instead of any Box X of Y, and the SKU
+    # LINE prints the BASE SKU - the -O suffix belongs to the barcode,
+    # not the product.
+    openbox = [_openbox_job(j) for j in jobs]
+    for job, is_ob in zip(jobs, openbox):
+        if not is_ob:
+            continue
+        base = _strip_box_note(job.bin_location) or ""
+        job.bin_location = (
+            f"{base}, OPEN BOX"[:100] if base else "OPEN BOX"
+        )
+        sku = (job.sku or "").strip()
+        centre_custom = job.label_sku or (
+            job.label_name
+            and (job.label_placement or "header") in ("sku", "both")
+        )
+        if sku.upper().endswith("-O") and not centre_custom:
+            job.label_sku = sku[:-2]
     if not part_note:
         return
-    for job in jobs:
+    for job, is_ob in zip(jobs, openbox):
+        if is_ob:
+            continue
         pi = part_note.get((job.sku or "").strip().upper())
         if not pi:
             continue
@@ -1842,8 +1887,11 @@ def _expand_multibox(
     for job in jobs:
         out.append(job)
         mark = marks.get((job.sku or "").strip().upper())
+        # An OPEN-BOX label keeps its OPEN BOX note - open box outranks
+        # multibox expansion (Nick, 2026-09-15).
         if (mark is None or mark.boxes_per_unit <= 1
-                or job.kind == "companion" or job.case_units):
+                or job.kind == "companion" or job.case_units
+                or _openbox_job(job)):
             continue
         bins = mark.bin_list()
 

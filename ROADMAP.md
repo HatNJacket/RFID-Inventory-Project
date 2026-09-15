@@ -23,7 +23,12 @@ Three threads, one round:
   stops asking about that EPC. Manual outs: "old sticker peeled" in
   the Review window, dismiss. History changed_field "openbox".
   New table rfid_openbox_returns (dev/alter_add_openbox_returns.py
-  RUN ON PROD). New suite test_openboxreturn (21 checks).
+  RUN ON PROD). New suite test_openboxreturn (26 checks).
+  Label pass (Nick's field report, same day): the SKU LINE prints the
+  BASE SKU - the -O suffix belongs to the barcode only - and the bin
+  line carries "OPEN BOX" (like multibox's Box X of Y note, and it
+  OUTRANKS box-set/multibox notes). Records strip the note; the card
+  preview matches.
 - **S30810: marks reach the stickers.** The Box X of Y note came only
   from the REGISTRY (defined at verify), so labels printed at the
   Print step had no note. Now `_apply_part_box_notes` also reads open

@@ -212,6 +212,39 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
     check("resolving a closed watch = 409", r.status_code == 409,
           r.text[:200])
 
+    # ---- the label itself (Nick, 2026-09-15, second pass) --------------
+    # SKU line = BASE SKU (the -O belongs to the barcode), bin line
+    # carries "OPEN BOX", records never keep the note.
+    from app.models import PrintJob
+    r = cl.post("/api/print-jobs", json={
+        "shopify_variant_id": "gid://v/new", "product_title":
+        "Widget One - Open Box", "sku": "OBX1-O",
+        "barcode": "7100001-O", "bin_location": "B1-1"})
+    j = r.json()["jobs"][0]
+    check("open-box label: OPEN BOX rides the bin line",
+          j["bin_location"] == "B1-1, OPEN BOX", j)
+    check("open-box label: SKU line prints the base SKU",
+          j["label_sku"] == "OBX1", j)
+    r = cl.post("/api/print-jobs", json={
+        "shopify_variant_id": "gid://v/new", "product_title":
+        "Widget One - Open Box", "sku": "OBX1-O",
+        "barcode": "7100001-O", "bin_location": "B1-1, OPEN BOX"})
+    check("note never stacks",
+          r.json()["jobs"][0]["bin_location"] == "B1-1, OPEN BOX",
+          r.text[:200])
+    r = cl.post("/api/print-jobs", json={
+        "shopify_variant_id": "gid://v/new", "product_title":
+        "Widget One - Open Box", "sku": "OBX1-O", "barcode": "7100001-O",
+        "bin_location": "B1-1", "label_sku": "CUSTOM LINE"})
+    check("a custom SKU line is never overwritten",
+          r.json()["jobs"][0]["label_sku"] == "CUSTOM LINE",
+          r.text[:200])
+    r = cl.post(f"/api/print-jobs/{j['id']}/complete")
+    check("printed: assignment record keeps the CLEAN bin",
+          r.status_code == 200
+          and r.json()["assignment"]["bin_location"] == "B1-1",
+          r.text[:300])
+
     # ---- history trail -------------------------------------------------
     with S(get_engine()) as s:
         n = len(s.scalars(select(BarcodeChange).where(

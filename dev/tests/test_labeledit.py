@@ -277,6 +277,15 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
         check("registry unchanged by the oversize mark",
               rows.get("SETQ-2") == 2 and rows.get("SETQ-1") == 1, rows)
 
+    # ---- OPEN BOX outranks the box-set note (Nick, 2026-09-15) ---------
+    r = cl.post("/api/print-jobs", json={
+        "shopify_variant_id": "gid://v/q",
+        "product_title": "Quad Kit - Open Box",
+        "sku": "SETQ-2", "barcode": "9000002", "bin_location": "A1-1"})
+    check("open box outranks the registered part's Box X of Y",
+          r.json()["jobs"][0]["bin_location"] == "A1-1, OPEN BOX",
+          r.text[:200])
+
 print()
 print(f"{'ALL PASS' if not fails else str(len(fails)) + ' FAILURES'}")
 sys.exit(1 if fails else 0)
