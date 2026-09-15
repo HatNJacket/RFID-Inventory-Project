@@ -1,7 +1,43 @@
 # RFID Inventory System — Roadmap
 
 Source of truth for project status. Updated by Claude each working session.
-Last updated: 2026-09-15 (sixth round).
+Last updated: 2026-09-15 (seventh round).
+
+## 📦 Open-box returns + marks rule the stickers — ✅ DEPLOYED 2026-09-15 (C72 4.07)
+
+Three threads, one round:
+- **Open-box returns, closed loop** (built from the approved preview):
+  Scan Station's "⧉ Set as Open Box…" flips the card to the -O twin
+  (found via SKU probe, or a DRAFT created on the spot - "<title> -
+  Open Box"), optionally prints its label right away (the existing
+  print-time migration writes the -O barcode + alias; prod gate
+  openbox_barcode confirmed ON), and opens a return watch: an
+  OpenboxReturn row + a Review task (category openbox-return). Sweeps
+  and audits hearing the original's presumed-sold tags upgrade the
+  generic ghost warning to "is this box the open-box unit?" - on the
+  web bin audit (prompt block with Yes/No) AND the gun (tappable rows
+  in verify/shelf-sweep, per-ghost action in audit CHECK). YES adopts
+  the old tag as the -O product's live tag (unretire + reassign, the
+  ledger units hand back) - or, when a fresh -O label already paired
+  since filing, says PEEL and flips the old record to replaced. NO
+  stops asking about that EPC. Manual outs: "old sticker peeled" in
+  the Review window, dismiss. History changed_field "openbox".
+  New table rfid_openbox_returns (dev/alter_add_openbox_returns.py
+  RUN ON PROD). New suite test_openboxreturn (21 checks).
+- **S30810: marks reach the stickers.** The Box X of Y note came only
+  from the REGISTRY (defined at verify), so labels printed at the
+  Print step had no note. Now `_apply_part_box_notes` also reads open
+  batches' set MARKS (registry outranks a mark for the same SKU), and
+  saving/clearing a mark restamps already-queued PENDING labels
+  (family Y sync restamps siblings too).
+- **S11810: defaults never override intent.** The registry rows
+  (suffix-derived) overrode Nick's marks (-1 is physically box 2).
+  Saving a mark on a REGISTERED part now RENUMBERS the set to match
+  (swap via the shared `_renumber_boxset_part` core; tags + pending
+  labels follow), and both mark dialogs default from the registry's
+  real numbers (boxset_of/box_no/boxes) before falling back to the
+  SKU suffix. Prod repaired: S11810-1 = box 2, S11810-2 = box 1.
+test_labeledit +12. Suites 76/76.
 
 ## 🏷 Reprints stop cloning stale labels; Queue edit button — ✅ DEPLOYED 2026-09-15
 

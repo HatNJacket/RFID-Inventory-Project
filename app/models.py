@@ -143,6 +143,75 @@ class RetiredTag(Base):
         }
 
 
+class OpenboxReturn(Base):
+    """A sold, RFID-tagged product that came BACK as an open-box return
+    (Nick, 2026-09-15). The Scan Station files one of these when the
+    operator presses Set as Open Box: the unit now sells as its -O twin,
+    but its ORIGINAL tag (retired presumed-sold at sale time) is still
+    somewhere on the packaging. The row keeps a watch open: when a sweep
+    or audit hears any presumed-sold tag of the original SKU, the
+    operator is asked whether that box is this open-box unit - YES either
+    adopts the old tag as the -O product's live tag (no fresh label was
+    paired) or says "peel the old sticker" (a fresh -O label already
+    went on). One linked ReviewTask (category openbox-return) shows the
+    open watch in the Review tab. Prod needs
+    dev/alter_add_openbox_returns.py."""
+
+    __tablename__ = "rfid_openbox_returns"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # The ORIGINAL (sealed) product whose retired tags are watched.
+    sku: Mapped[str] = mapped_column(String(100), index=True,
+                                     nullable=False)
+    product_title: Mapped[str | None] = mapped_column(String(255))
+    # The open-box twin the unit now sells as.
+    openbox_sku: Mapped[str] = mapped_column(String(100), nullable=False)
+    openbox_variant_id: Mapped[str | None] = mapped_column(String(64))
+    openbox_product_id: Mapped[str | None] = mapped_column(String(300))
+    status: Mapped[str] = mapped_column(
+        String(20), index=True, nullable=False, default="open"
+    )
+    # The old tag's EPC when the operator knew it at filing time.
+    known_epc: Mapped[str | None] = mapped_column(String(128))
+    # EPCs the operator answered NO for - never re-prompted on this row.
+    not_epcs: Mapped[str | None] = mapped_column(String(500))
+    # The linked Review task (closed together with this row).
+    task_id: Mapped[int | None] = mapped_column(Integer)
+    # How it closed: adopted / peel / peeled / dismissed.
+    resolution: Mapped[str | None] = mapped_column(String(40))
+    created_by: Mapped[str | None] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    resolved_by: Mapped[str | None] = mapped_column(String(100))
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+
+    def as_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "sku": self.sku,
+            "product_title": self.product_title,
+            "openbox_sku": self.openbox_sku,
+            "openbox_variant_id": self.openbox_variant_id,
+            "openbox_product_id": self.openbox_product_id,
+            "status": self.status,
+            "known_epc": self.known_epc,
+            "not_epcs": self.not_epcs,
+            "task_id": self.task_id,
+            "resolution": self.resolution,
+            "created_by": self.created_by,
+            "created_at": (
+                self.created_at.isoformat() if self.created_at else None
+            ),
+            "resolved_by": self.resolved_by,
+            "resolved_at": (
+                self.resolved_at.isoformat() if self.resolved_at else None
+            ),
+        }
+
+
 class ReleasedTag(Base):
     """A full snapshot of an RfidAssignment released from History's
     Assigned Tag undo (Nick, 2026-08-25). Unlike a plain unlink (which

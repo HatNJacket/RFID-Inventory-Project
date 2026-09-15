@@ -75,6 +75,7 @@ from app.models import (
     NonTaggable,
     OneLeftCheck,
     OnhandLog,
+    OpenboxReturn,
     OrderReceipt,
     Printer,
     PrintJob,
@@ -1757,8 +1758,6 @@ def _apply_part_box_notes(
     S11830-3's reprint kept saying "Box 1 of 3" after its renumber
     (Nick, 2026-09-15)."""
     all_parts = session.scalars(select(BoxSetPart)).all()
-    if not all_parts:
-        return
     totals: dict[str, int] = {}
     for r in all_parts:
         totals[r.set_sku] = totals.get(r.set_sku, 0) + 1
@@ -1766,6 +1765,31 @@ def _apply_part_box_notes(
         r.part_sku.strip().upper(): (r.box_no, totals[r.set_sku])
         for r in all_parts
     }
+    # Set MARKS made at collect count too (Nick, 2026-09-15, S30810):
+    # the set is only DEFINED at verify, but the boxes' labels print at
+    # the Print step - a saved mark is the operator saying which box
+    # this is, so its numbers reach the sticker. The registry outranks
+    # a mark for the same SKU.
+    open_ids = [
+        b.id for b in session.scalars(
+            select(Batch).where(
+                Batch.status.notin_(("done", "abandoned"))
+            )
+        )
+    ]
+    if open_ids:
+        for it in session.scalars(
+            select(BatchItem).where(
+                BatchItem.batch_id.in_(open_ids),
+                BatchItem.set_mark_box.isnot(None),
+            ).order_by(BatchItem.id)
+        ):
+            key = (it.sku or "").strip().upper()
+            if (key and key not in part_note
+                    and it.set_mark_box and it.set_mark_total):
+                part_note[key] = (it.set_mark_box, it.set_mark_total)
+    if not part_note:
+        return
     for job in jobs:
         pi = part_note.get((job.sku or "").strip().upper())
         if not pi:
@@ -1775,6 +1799,31 @@ def _apply_part_box_notes(
             f"{base}, Box {pi[0]} of {pi[1]}"[:100]
             if base else f"Box {pi[0]} of {pi[1]}"
         )
+
+
+def _restamp_pending_notes(session: Session, sku: str | None) -> int:
+    """Re-derive the Box N of M note on every PENDING label of one SKU
+    (Nick, 2026-09-15, S30810: a mark saved AFTER the labels queued
+    must still reach the stickers). Stripping first means a cleared
+    mark with no registry entry takes the note off."""
+    key = (sku or "").strip().upper()
+    if not key:
+        return 0
+    jobs = [
+        j for j in session.scalars(
+            select(PrintJob).where(PrintJob.status == "pending")
+        )
+        if (j.sku or "").strip().upper() == key
+    ]
+    if not jobs:
+        return 0
+    before = [j.bin_location for j in jobs]
+    for j in jobs:
+        j.bin_location = _strip_box_note(j.bin_location)
+    _apply_part_box_notes(session, jobs)
+    return sum(
+        1 for j, old in zip(jobs, before) if j.bin_location != old
+    )
 
 
 def _expand_multibox(
@@ -2635,17 +2684,51 @@ def renumber_box(
                 f"{total}."
             ),
         }
-    other = next(
-        (p for p in parts if p.box_no == payload.box_no), None
-    )
     old_no = target.box_no
+    other = _renumber_boxset_part(
+        session, set_sku, parts, target, payload.box_no, by
+    )
+    session.commit()
+    parts = _boxset_parts_of(session, set_sku)
+    return {
+        "parts": [p.as_dict() for p in parts],
+        "message": (
+            f"{target.part_sku} is now box {payload.box_no} of {total}"
+            + (
+                f"; {other.part_sku} took box {old_no}"
+                if other else ""
+            )
+            + ". Open batches, live tags and pending labels follow - "
+            "labels already printed keep their old text (reprint if "
+            "it matters)."
+        ),
+    }
+
+
+def _renumber_boxset_part(
+    session: Session,
+    set_sku: str,
+    parts: list[BoxSetPart],
+    target: BoxSetPart,
+    new_box: int,
+    by: str | None,
+) -> BoxSetPart | None:
+    """The renumber core, shared by the endpoint and by set-mark saves
+    (Nick, 2026-09-15, S11810: a mark on a registered part is the
+    newest intent, so the registry follows it). Swaps the target into
+    new_box (the holder takes the vacated slot), logs History, and
+    walks open-batch rows, live tag titles and PENDING labels onto the
+    new numbering. No commit; returns the displaced part, if any."""
+    total = len(parts)
+    old_no = target.box_no
+    other = next((p for p in parts if p.box_no == new_box), None)
     # UNIQUE (set_sku, box_no): shuffle through a free slot.
     target.box_no = 99
     session.flush()
     if other is not None:
         other.box_no = old_no
         session.flush()
-    target.box_no = payload.box_no
+    target.box_no = new_box
     session.flush()
     session.add(BarcodeChange(
         sku=set_sku,
@@ -2654,7 +2737,7 @@ def renumber_box(
         changed_field="box-renumbered",
         old_barcode=f"{target.part_sku}: box {old_no}"[:64],
         new_barcode=(
-            f"box {payload.box_no}"
+            f"box {new_box}"
             + (f", {other.part_sku} takes box {old_no}"
                if other else "")
         )[:64],
@@ -2704,21 +2787,7 @@ def renumber_box(
                     f", Box {changed.box_no} of {total}",
                     j.bin_location,
                 )
-    session.commit()
-    parts = _boxset_parts_of(session, set_sku)
-    return {
-        "parts": [p.as_dict() for p in parts],
-        "message": (
-            f"{target.part_sku} is now box {payload.box_no} of {total}"
-            + (
-                f"; {other.part_sku} took box {old_no}"
-                if other else ""
-            )
-            + ". Open batches, live tags and pending labels follow - "
-            "labels already printed keep their old text (reprint if "
-            "it matters)."
-        ),
-    }
+    return other
 
 
 @app.get("/api/box-sets", dependencies=[Depends(require_user)])
@@ -7358,6 +7427,9 @@ def bin_check(
         }
     ghost_map: dict[str, list[dict]] = {}
     stray_ghosts: list[dict] = []
+    open_returns = (
+        _open_returns_by_sku(session) if retired_heard else {}
+    )
     for epc, r in sorted(retired_heard.items()):
         g = {
             "epc": r.rfid_id,
@@ -7369,6 +7441,7 @@ def bin_check(
             ),
             "retired_by": r.retired_by,
         }
+        _openbox_decorate(g, r, open_returns)
         k = (r.sku or "").strip().upper()
         if k in wanted or k in extra:
             ghost_map.setdefault(k, []).append(g)
@@ -9998,6 +10071,7 @@ def _shelf_reconcile(
     known = set(by_epc.keys())
     strays = []
     unknown = 0
+    open_returns = _open_returns_by_sku(session)
     for e in sorted(swept - known):
         r = session.scalar(
             select(RetiredTag).where(
@@ -10005,7 +10079,7 @@ def _shelf_reconcile(
             )
         )
         if r is not None:
-            strays.append({
+            entry = {
                 "epc": r.rfid_id,
                 "sku": r.sku,
                 "kind": r.kind,
@@ -10014,7 +10088,9 @@ def _shelf_reconcile(
                     if r.kind in ("replaced", "dead")
                     else "retired tag heard — possible return; check the box"
                 ),
-            })
+            }
+            _openbox_decorate(entry, r, open_returns)
+            strays.append(entry)
         else:
             unknown += 1
     return {"items": out_items, "strays": strays, "unknown": unknown}
@@ -10281,6 +10357,427 @@ def unretire_tags(
         )
     session.commit()
     return {"restored": restored}
+
+
+# --------------------------------------------------- open-box returns ---
+# A sold, RFID-tagged product comes back as open box (Nick, 2026-09-15).
+# The Scan Station's Set as Open Box files an OpenboxReturn: the unit
+# now sells as its -O twin, and sweeps/audits hearing the original's
+# presumed-sold tags upgrade the generic ghost warning to "is this box
+# the open-box unit?" - YES adopts the old tag for the twin (or says
+# peel it, when a fresh -O label already paired).
+
+
+def _open_returns_by_sku(
+    session: Session,
+) -> dict[str, list[OpenboxReturn]]:
+    """Open return watches keyed by the ORIGINAL SKU (upper), oldest
+    first so prompts consume the longest-waiting return."""
+    out: dict[str, list[OpenboxReturn]] = {}
+    for r in session.scalars(
+        select(OpenboxReturn).where(
+            OpenboxReturn.status == "open"
+        ).order_by(OpenboxReturn.id)
+    ):
+        out.setdefault((r.sku or "").strip().upper(), []).append(r)
+    return out
+
+
+def _openbox_decorate(
+    entry: dict, tag: RetiredTag,
+    open_map: dict[str, list[OpenboxReturn]],
+) -> None:
+    """When a heard presumed-sold tag has an open return watch on its
+    SKU, upgrade the ghost/stray entry to the open-box question. EPCs
+    the operator already answered NO for stay generic."""
+    if tag.kind != "presumed-sold":
+        return
+    epc_u = (tag.rfid_id or "").strip().upper()
+    for ret in open_map.get((tag.sku or "").strip().upper(), []):
+        nots = {
+            e.strip().upper()
+            for e in (ret.not_epcs or "").split(",") if e.strip()
+        }
+        if epc_u in nots:
+            continue
+        entry["openbox_return_id"] = ret.id
+        entry["openbox_sku"] = ret.openbox_sku
+        entry["message"] = (
+            "retired-as-sold tag heard, and an open-box return of this "
+            "product is on file - is this box the open-box unit?"
+        )
+        return
+
+
+@app.get(
+    "/api/products/openbox-info/{sku}",
+    dependencies=[Depends(require_user)],
+)
+def openbox_info(sku: str, session: Session = Depends(get_session)):
+    """Everything the Set as Open Box window needs: whether the -O twin
+    listing exists, the original's presumed-sold tags (return
+    candidates), and any watch already open."""
+    base = (sku or "").strip()
+    if not base:
+        raise HTTPException(422, "No SKU.")
+    if base.upper().endswith("-O"):
+        raise HTTPException(
+            422, "This IS the open-box listing - scan the sealed "
+                 "product's code to file a return.",
+        )
+    ob_sku = f"{base}-O"
+    listing = None
+    listing_error = None
+    try:
+        listing = shopify.find_sku_listing(ob_sku)
+    except Exception as error:  # noqa: BLE001
+        listing_error = str(error)
+        logger.warning("openbox twin probe failed for %s: %s",
+                       ob_sku, error)
+    retired = [
+        r.as_dict()
+        for r in session.scalars(
+            select(RetiredTag).where(
+                func.upper(RetiredTag.sku) == base.upper(),
+                RetiredTag.kind == "presumed-sold",
+            ).order_by(RetiredTag.retired_at.desc())
+        )
+    ][:10]
+    open_returns = [
+        r.as_dict()
+        for r in session.scalars(
+            select(OpenboxReturn).where(
+                func.upper(OpenboxReturn.sku) == base.upper(),
+                OpenboxReturn.status == "open",
+            ).order_by(OpenboxReturn.id)
+        )
+    ]
+    return {
+        "openbox_sku": ob_sku,
+        "listing": listing,
+        "listing_error": listing_error,
+        "retired": retired,
+        "open_returns": open_returns,
+    }
+
+
+class OpenboxReturnIn(BaseModel):
+    sku: str = Field(min_length=1, max_length=98)
+    product_title: str | None = Field(default=None, max_length=255)
+    barcode: str | None = Field(default=None, max_length=62)
+    bin_location: str | None = Field(default=None, max_length=100)
+    # Create the -O draft listing when no twin exists yet.
+    create_draft: bool = False
+    # Watch sweeps for the original's presumed-sold tags (the loop).
+    watch: bool = True
+    # The old tag's EPC, when the operator knows which one came back.
+    epc: str | None = Field(default=None, max_length=128)
+    created_by: str | None = Field(default=None, max_length=100)
+
+
+@app.post(
+    "/api/openbox-returns", status_code=201,
+    dependencies=[Depends(require_user)],
+)
+def create_openbox_return(
+    payload: OpenboxReturnIn, session: Session = Depends(get_session)
+):
+    """File an open-box return: resolve (or draft) the -O twin listing,
+    open the sweep watch + its Review task, and hand back everything
+    the Scan Station needs to switch its card to the twin. The -O
+    BARCODE is not written here - the existing print-time migration
+    does that when the open-box label heads for the printer."""
+    base = payload.sku.strip()
+    if base.upper().endswith("-O"):
+        raise HTTPException(
+            422, "That SKU is already the open-box twin.",
+        )
+    ob_sku = f"{base}-O"
+    listing = None
+    created_listing = False
+    try:
+        listing = shopify.find_sku_listing(ob_sku)
+    except Exception as error:  # noqa: BLE001
+        logger.warning("openbox twin probe failed for %s: %s",
+                       ob_sku, error)
+    if listing is None:
+        if not payload.create_draft:
+            raise HTTPException(
+                409,
+                f"No listing carries {ob_sku} yet. Confirm to create "
+                "a draft open-box listing for it.",
+            )
+        title = (payload.product_title or base).strip()
+        try:
+            made = shopify.create_draft_listing(
+                f"{title} - Open Box", ob_sku,
+                (payload.barcode or "").strip() or None,
+                (payload.bin_location or "").strip() or None,
+            )
+        except Exception as error:  # noqa: BLE001
+            raise HTTPException(
+                502, f"Could not create the draft listing: {error}"
+            )
+        listing = {
+            "shopify_variant_id": made.get("variant_gid"),
+            "shopify_product_id": made.get("product_gid"),
+            "product_title": f"{title} - Open Box",
+            "status": "DRAFT",
+            "sku": ob_sku,
+            "barcode": (payload.barcode or "").strip() or None,
+        }
+        created_listing = True
+
+    ret = None
+    task = None
+    if payload.watch:
+        task = ReviewTask(
+            category="openbox-return",
+            sku=base,
+            product_title=payload.product_title,
+            detail=(
+                f"{base} returned as open box - it now sells as "
+                f"{ob_sku}. The unit's old presumed-sold tag is still "
+                "on the packaging somewhere: when a sweep or audit "
+                "hears it, answer the prompt there - or resolve here "
+                "once the old sticker is peeled off."
+            )[:500],
+            created_by=payload.created_by,
+        )
+        session.add(task)
+        session.flush()
+        ret = OpenboxReturn(
+            sku=base,
+            product_title=payload.product_title,
+            openbox_sku=ob_sku,
+            openbox_variant_id=listing.get("shopify_variant_id"),
+            openbox_product_id=listing.get("shopify_product_id"),
+            known_epc=(payload.epc or "").strip() or None,
+            task_id=task.id,
+            created_by=payload.created_by,
+        )
+        session.add(ret)
+    session.add(BarcodeChange(
+        product_title=payload.product_title or base,
+        sku=base,
+        changed_field="openbox",
+        old_barcode=base[:64],
+        new_barcode=(
+            f"returned as {ob_sku}"
+            + (" (draft created)" if created_listing else "")
+        )[:64],
+        changed_by=(payload.created_by or "").strip()[:100] or None,
+    ))
+    session.commit()
+    return {
+        "openbox": listing,
+        "created_listing": created_listing,
+        "return": ret.as_dict() if ret is not None else None,
+        "message": (
+            (f"Draft listing {ob_sku} created. "
+             if created_listing else "")
+            + (f"Return watch open - sweeps hearing {base}'s old "
+               "sold tags will ask about this unit."
+               if payload.watch else "No watch opened.")
+        ),
+    }
+
+
+class OpenboxResolveIn(BaseModel):
+    # yes = the heard tag IS the open-box unit (adopt or peel);
+    # no = that tag is not this return (stop asking about it);
+    # peeled = the old sticker came off by hand, watch done;
+    # dismiss = close the watch with no action.
+    answer: str = Field(pattern="^(yes|no|peeled|dismiss)$")
+    epc: str | None = Field(default=None, max_length=128)
+    bin_location: str | None = Field(default=None, max_length=100)
+    resolved_by: str | None = Field(default=None, max_length=100)
+
+
+@app.post(
+    "/api/openbox-returns/{return_id}/resolve",
+    dependencies=[Depends(require_user)],
+)
+def resolve_openbox_return(
+    return_id: int,
+    payload: OpenboxResolveIn,
+    session: Session = Depends(get_session),
+):
+    """Close (or narrow) an open-box return watch. YES with a heard EPC
+    picks a branch by whether a fresh -O label was paired since the
+    return was filed: paired = the old sticker is a duplicate, peel it
+    (the tag record flips to replaced); not paired = the old tag is
+    ADOPTED as the open-box product's live tag - no reprint needed, its
+    barcode already reaches the -O listing through the openbox alias."""
+    ret = session.get(OpenboxReturn, return_id)
+    if ret is None:
+        raise HTTPException(404, "No such open-box return.")
+    if ret.status != "open":
+        raise HTTPException(409, "That return is already resolved.")
+
+    def _close(resolution: str, note: str) -> None:
+        ret.status = "done"
+        ret.resolution = resolution
+        ret.resolved_by = payload.resolved_by
+        ret.resolved_at = datetime.now(timezone.utc)
+        task = session.get(ReviewTask, ret.task_id) if ret.task_id \
+            else None
+        if task is not None and task.status == "open":
+            task.status = "resolved"
+            task.resolved_by = payload.resolved_by
+            task.resolved_at = ret.resolved_at
+            task.resolution_note = note[:255]
+
+    epc = (payload.epc or "").strip()
+    if payload.answer == "no":
+        if not epc:
+            raise HTTPException(422, "NO needs the EPC it answers for.")
+        nots = [
+            e.strip() for e in (ret.not_epcs or "").split(",")
+            if e.strip()
+        ]
+        if epc.upper() not in {e.upper() for e in nots}:
+            nots.append(epc)
+        ret.not_epcs = ",".join(nots)[:500]
+        session.commit()
+        return {
+            "return": ret.as_dict(),
+            "message": (
+                "Noted - that tag won't be asked about again for this "
+                "return. Peel the stray sticker when the box is found."
+            ),
+        }
+
+    if payload.answer == "dismiss":
+        _close("dismissed", "Dismissed - no action taken.")
+        session.commit()
+        return {"return": ret.as_dict(),
+                "message": "Return watch dismissed."}
+
+    if payload.answer == "peeled":
+        note = "Old sticker peeled off and binned."
+        target = epc or (ret.known_epc or "")
+        if target:
+            r = session.scalar(
+                select(RetiredTag).where(
+                    func.upper(RetiredTag.rfid_id) == target.upper()
+                )
+            )
+            if r is not None and r.kind == "presumed-sold":
+                r.kind = "replaced"
+                r.note = (
+                    f"{(r.note + ' - ') if r.note else ''}open-box "
+                    "return; old sticker peeled"
+                )[:255]
+        _close("peeled", note)
+        session.add(BarcodeChange(
+            product_title=ret.product_title or ret.sku,
+            sku=ret.sku,
+            changed_field="openbox",
+            old_barcode=f"return watch #{ret.id}"[:64],
+            new_barcode="old sticker peeled - watch closed"[:64],
+            changed_by=(payload.resolved_by or "").strip()[:100] or None,
+        ))
+        session.commit()
+        return {"return": ret.as_dict(), "message": note}
+
+    # answer == "yes"
+    if not epc:
+        raise HTTPException(422, "YES needs the heard tag's EPC.")
+    r = session.scalar(
+        select(RetiredTag).where(
+            func.upper(RetiredTag.rfid_id) == epc.upper()
+        )
+    )
+    if r is None:
+        raise HTTPException(
+            404, "That EPC is not in the retired list (already "
+                 "adopted, or never retired).",
+        )
+    # A fresh -O label paired since the return was filed means the box
+    # already carries a live open-box tag - the old sticker is a
+    # duplicate to peel, never a second count.
+    filed_at = _aware(ret.created_at)
+    fresh = None
+    for a in session.scalars(
+        select(RfidAssignment).where(
+            func.upper(RfidAssignment.sku) == ret.openbox_sku.upper()
+        )
+    ):
+        if filed_at is None or (
+            _aware(a.assigned_at) or filed_at
+        ) >= filed_at:
+            fresh = a
+            break
+    if fresh is not None:
+        r.kind = "replaced"
+        r.note = (
+            f"{(r.note + ' - ') if r.note else ''}open-box return; "
+            f"superseded by fresh {ret.openbox_sku} label"
+        )[:255]
+        _close("peel", "Fresh open-box label already on the box - "
+                       "old sticker flagged for peeling.")
+        session.add(BarcodeChange(
+            product_title=ret.product_title or ret.sku,
+            sku=ret.sku,
+            changed_field="openbox",
+            old_barcode=f"tag …{epc[-6:]} heard"[:64],
+            new_barcode=f"duplicate of {ret.openbox_sku} label - "
+                        "peel"[:64],
+            changed_by=(payload.resolved_by or "").strip()[:100] or None,
+        ))
+        session.commit()
+        return {
+            "return": ret.as_dict(),
+            "adopted": False,
+            "message": (
+                "This box already wears its fresh open-box label - "
+                "PEEL THE OLD STICKER off and bin it. Watch closed."
+            ),
+        }
+    # Adopt: the old tag becomes the open-box product's live tag.
+    session.add(RfidAssignment(
+        rfid_id=r.rfid_id,
+        shopify_variant_id=(
+            ret.openbox_variant_id or r.shopify_variant_id or ""
+        ),
+        shopify_product_id=ret.openbox_product_id,
+        product_title=(
+            (ret.product_title or r.product_title or ret.sku)
+            + " - Open Box"
+        )[:255],
+        sku=ret.openbox_sku,
+        barcode=None,
+        bin_location=(
+            (payload.bin_location or "").strip()
+            or r.bin_location
+        ),
+        case_units=r.case_units,
+        assigned_by=payload.resolved_by,
+    ))
+    if r.sku and (r.ledger_consumed or 0) > 0:
+        orders_sync.unretire_units(session, r.sku, r.ledger_consumed)
+    session.delete(r)
+    _close("adopted", f"Old tag adopted as {ret.openbox_sku}'s "
+                      "live tag.")
+    session.add(BarcodeChange(
+        product_title=ret.product_title or ret.sku,
+        sku=ret.sku,
+        changed_field="openbox",
+        old_barcode=f"tag …{epc[-6:]} presumed sold"[:64],
+        new_barcode=f"adopted as {ret.openbox_sku}"[:64],
+        changed_by=(payload.resolved_by or "").strip()[:100] or None,
+    ))
+    session.commit()
+    return {
+        "return": ret.as_dict(),
+        "adopted": True,
+        "message": (
+            f"Old tag adopted - it now counts as {ret.openbox_sku}. "
+            "The sticker's printed text is stale but scans fine "
+            "(its barcode reaches the open-box listing). Watch closed."
+        ),
+    }
 
 
 class CleanupSilentIn(BaseModel):
@@ -11799,9 +12296,22 @@ def set_item_set_mark(
         item.set_mark_master = None
         item.set_mark_box = None
         item.set_mark_total = None
+        # Queued labels lose the mark's note with it (registry-backed
+        # notes stay - clearing a mark never touches a defined set).
+        # Sessions run autoflush=False: flush, or the restamp still
+        # sees the old mark.
+        session.flush()
+        cleared_labels = _restamp_pending_notes(session, item.sku)
         session.commit()
         session.refresh(item)
-        return {"item": item.as_dict(), "message": "Set mark removed."}
+        return {
+            "item": item.as_dict(),
+            "message": (
+                "Set mark removed."
+                + (f" {cleared_labels} queued label(s) updated."
+                   if cleared_labels else "")
+            ),
+        }
     master = (payload.master_sku or "").strip()
     if not master:
         raise HTTPException(
@@ -11844,6 +12354,63 @@ def set_item_set_mark(
             ):
                 sib.set_mark_total = payload.box_total
                 synced += 1
+    # A REGISTERED part follows the operator's newest word (Nick,
+    # 2026-09-15, S11810: -1 is physically box 2, but the registry rows
+    # said suffix order and the labels believed the registry). Saving a
+    # mark with a different number renumbers the set - the box holding
+    # that number swaps into the vacated slot, tags and pending labels
+    # follow, History "Box Renumbered".
+    renote = ""
+    part_row = None
+    if item.sku:
+        part_row = session.scalar(
+            select(BoxSetPart).where(
+                func.upper(BoxSetPart.part_sku)
+                == item.sku.strip().upper()
+            )
+        )
+    if part_row is not None:
+        reg_parts = _boxset_parts_of(session, part_row.set_sku)
+        reg_total = len(reg_parts)
+        if payload.box_no > reg_total:
+            renote = (
+                f" Note: {part_row.set_sku} is registered with "
+                f"{reg_total} box(es), so box {payload.box_no} does "
+                "not exist there - the registry was left alone."
+            )
+        elif part_row.box_no != payload.box_no:
+            _renumber_boxset_part(
+                session, part_row.set_sku, reg_parts, part_row,
+                payload.box_no,
+                (payload.changed_by or "").strip()[:100] or None,
+            )
+            renote = (
+                f" {part_row.set_sku}'s registry renumbered to match."
+            )
+    # The mark reaches the STICKERS too (Nick, 2026-09-15, S30810:
+    # labels printed without their Box X of Y because the set is only
+    # defined at verify). New queues pick marks up on their own; here
+    # the already-queued pending labels re-derive - this box's, and the
+    # synced family's whose Y just changed. (Sessions run
+    # autoflush=False: flush first, or the restamp sees old marks.)
+    session.flush()
+    restamped = _restamp_pending_notes(session, item.sku)
+    if synced:
+        seen = {(item.sku or "").strip().upper()}
+        for sib in session.scalars(
+            select(BatchItem).where(
+                BatchItem.batch_id.in_(open_ids),
+                BatchItem.set_mark_master.isnot(None),
+            )
+        ):
+            k = (sib.sku or "").strip().upper()
+            if (
+                (sib.set_mark_master or "").strip().upper()
+                == master.upper()
+                and k and k not in seen
+            ):
+                seen.add(k)
+                restamped += _restamp_pending_notes(session, sib.sku)
     session.commit()
     session.refresh(item)
     return {
@@ -11856,7 +12423,16 @@ def set_item_set_mark(
                 f"the new count of {payload.box_total}."
                 if synced else ""
             )
-            + " Define the set on the web terminal during verification."
+            + renote
+            + (
+                f" {restamped} queued label(s) picked up the box "
+                "number." if restamped else ""
+            )
+            + (
+                "" if part_row is not None
+                else " Define the set on the web terminal during "
+                     "verification."
+            )
         ),
     }
 
@@ -16410,6 +16986,7 @@ def batch_verify(
     retired_heard = []
     if unknown:
         still_unknown = []
+        open_returns = _open_returns_by_sku(session)
         for epc in unknown:
             r = session.scalar(
                 select(RetiredTag).where(
@@ -16419,7 +16996,7 @@ def batch_verify(
             if r is None:
                 still_unknown.append(epc)
             else:
-                retired_heard.append({
+                entry = {
                     "epc": r.rfid_id,
                     "sku": r.sku,
                     "product_title": r.product_title,
@@ -16430,7 +17007,9 @@ def batch_verify(
                         else "retired tag heard — possible return; "
                              "check the box"
                     ),
-                })
+                }
+                _openbox_decorate(entry, r, open_returns)
+                retired_heard.append(entry)
         unknown = still_unknown
 
     # Re-tag flow: the presumed-sold reconciliation rides each verify
@@ -19615,6 +20194,7 @@ def product_history(term: str, session: Session = Depends(get_session)):
         "unprinted-sold": "unprinted-sold",
         "box-renumbered": "box-renumbered",
         "label-edit": "label-edited",
+        "openbox": "openbox-return",
         "tag-unlinked": "tag-unlinked",
         "tag-released": "tag-released",
         "tag-reapplied": "tag-reapplied",
@@ -20074,6 +20654,7 @@ def history(
         "unprinted-sold": "unprinted-sold",
         "box-renumbered": "box-renumbered",
         "label-edit": "label-edited",
+        "openbox": "openbox-return",
         "tag-unlinked": "tag-unlinked",
         "tag-released": "tag-released",
         "tag-reapplied": "tag-reapplied",

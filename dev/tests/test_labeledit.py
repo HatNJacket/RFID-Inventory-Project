@@ -165,6 +165,118 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
     check("refresh refused once printed", r.status_code == 409,
           r.text[:200])
 
+    # ---- set MARKS reach the stickers (Nick, 2026-09-15, S30810) -------
+    # The set is only DEFINED at verify, but labels print first: a mark
+    # made at collect must put its Box X of Y on the label, and a mark
+    # saved AFTER the labels queued must update them.
+    from app.models import BatchItem
+    with S(get_engine()) as s:
+        mb = Batch(bin_name="C7-1", created_by="test",
+                   status="collecting")
+        s.add(mb); s.flush()
+        s.add(BatchItem(batch_id=mb.id, scanned_code="30810",
+                        resolved=True, sku="S30810", barcode="30810",
+                        product_title="Mount box 1", qty_scanned=1,
+                        set_mark_master="S30800", set_mark_box=1,
+                        set_mark_total=4))
+        it2 = BatchItem(batch_id=mb.id, scanned_code="30820",
+                        resolved=True, sku="S30820", barcode="30820",
+                        product_title="Mount box 2", qty_scanned=1)
+        s.add(it2)
+        s.commit(); mbid = mb.id; it2id = it2.id
+    r = cl.post("/api/print-jobs", json={
+        "shopify_variant_id": "gid://v/m1", "product_title": "Mount",
+        "sku": "S30810", "bin_location": "C7-1"})
+    check("a collect-step mark puts Box X of Y on the label",
+          r.json()["jobs"][0]["bin_location"] == "C7-1, Box 1 of 4",
+          r.text[:200])
+    r = cl.post("/api/print-jobs", json={
+        "shopify_variant_id": "gid://v/m2", "product_title": "Mount",
+        "sku": "S30820", "bin_location": "C7-1"})
+    j2 = r.json()["jobs"][0]
+    check("unmarked box queues without a note",
+          j2["bin_location"] == "C7-1", j2)
+    r = cl.post(f"/api/batches/{mbid}/items/{it2id}/set-mark", json={
+        "master_sku": "S30800", "box_no": 2, "box_total": 4,
+        "changed_by": "Nick"})
+    d = r.json()
+    check("marking after the queue restamps the pending label",
+          r.status_code == 200
+          and "1 queued label(s) picked up" in d["message"], d)
+    with S(get_engine()) as s:
+        j = s.get(PrintJob, j2["id"])
+        check("pending label now says Box 2 of 4",
+              j.bin_location == "C7-1, Box 2 of 4", j.bin_location)
+    # The registry outranks a mark for the same SKU.
+    with S(get_engine()) as s:
+        row = s.scalars(select(BatchItem).where(
+            BatchItem.sku == "S30810")).first()
+        row.set_mark_box = 9  # nonsense on purpose; registry SKUs win
+        s.commit()
+    r = cl.post("/api/print-jobs", json={
+        "shopify_variant_id": "gid://v/q", "product_title": "Quad Kit",
+        "sku": "SETQ-2", "barcode": "9000002", "bin_location": "A1-1"})
+    check("registry still outranks marks for registered parts",
+          r.json()["jobs"][0]["bin_location"] == "A1-1, Box 1 of 2",
+          r.text[:200])
+    # Clearing the mark takes the note back off the pending label.
+    r = cl.post(f"/api/batches/{mbid}/items/{it2id}/set-mark", json={
+        "clear": True})
+    check("clear restamps too", r.status_code == 200
+          and "1 queued label(s) updated" in r.json()["message"],
+          r.text[:200])
+    with S(get_engine()) as s:
+        j = s.get(PrintJob, j2["id"])
+        check("cleared mark removes the note",
+              j.bin_location == "C7-1", j.bin_location)
+
+    # ---- a mark on a REGISTERED part renumbers the registry ------------
+    # (Nick, 2026-09-15, S11810: -1 is physically box 2 - the operator's
+    # mark is the newest word, so the registry swaps to match instead of
+    # the suffix-derived rows overriding it.)
+    from app.models import BoxSetPart
+    with S(get_engine()) as s:
+        b2 = Batch(bin_name="A1-1", created_by="test",
+                   status="collecting")
+        s.add(b2); s.flush()
+        itq = BatchItem(batch_id=b2.id, scanned_code="9000002",
+                        resolved=True, sku="SETQ-2", barcode="9000002",
+                        product_title="Quad Kit - Box 1 of 2",
+                        qty_scanned=1)
+        s.add(itq); s.commit(); b2id = b2.id; itqid = itq.id
+    # SETQ-2 sits at box 1 after the renumber above; the operator says
+    # it is really box 2.
+    r = cl.post(f"/api/batches/{b2id}/items/{itqid}/set-mark", json={
+        "master_sku": "SETQ", "box_no": 2, "box_total": 2,
+        "changed_by": "Nick"})
+    d = r.json()
+    check("mark on a registered part renumbers the registry",
+          r.status_code == 200
+          and "registry renumbered" in d["message"], d)
+    with S(get_engine()) as s:
+        rows = {p.part_sku: p.box_no
+                for p in s.scalars(select(BoxSetPart))}
+        check("the displaced box took the vacated slot",
+              rows.get("SETQ-2") == 2 and rows.get("SETQ-1") == 1, rows)
+    r = cl.post("/api/print-jobs", json={
+        "shopify_variant_id": "gid://v/q", "product_title": "Quad Kit",
+        "sku": "SETQ-2", "barcode": "9000002", "bin_location": "A1-1"})
+    check("labels follow the operator's numbering",
+          r.json()["jobs"][0]["bin_location"] == "A1-1, Box 2 of 2",
+          r.text[:200])
+    # A number past the registered size cannot renumber anything.
+    r = cl.post(f"/api/batches/{b2id}/items/{itqid}/set-mark", json={
+        "master_sku": "SETQ", "box_no": 3, "box_total": 4,
+        "changed_by": "Nick"})
+    check("mark beyond the set size leaves the registry alone",
+          r.status_code == 200
+          and "left alone" in r.json()["message"], r.text[:300])
+    with S(get_engine()) as s:
+        rows = {p.part_sku: p.box_no
+                for p in s.scalars(select(BoxSetPart))}
+        check("registry unchanged by the oversize mark",
+              rows.get("SETQ-2") == 2 and rows.get("SETQ-1") == 1, rows)
+
 print()
 print(f"{'ALL PASS' if not fails else str(len(fails)) + ' FAILURES'}")
 sys.exit(1 if fails else 0)

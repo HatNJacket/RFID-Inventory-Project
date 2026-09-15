@@ -406,6 +406,12 @@ public class MainActivity extends Activity {
         String markMaster;
         int markBox;
         int markTotal;
+        // REGISTERED set membership stamped by the server (4.07): the
+        // real set SKU and box number outrank the suffix guess in the
+        // mark dialog's defaults (Nick, 2026-09-15, S11810).
+        String regOf;
+        int regBox;
+        int regBoxes;
 
         static BItem from(JSONObject o) {
             BItem b = new BItem();
@@ -449,6 +455,10 @@ public class MainActivity extends Activity {
                     : o.optString("set_mark_master");
             b.markBox = o.optInt("set_mark_box", 0);
             b.markTotal = o.optInt("set_mark_total", 0);
+            b.regOf = o.isNull("boxset_of") ? null
+                    : o.optString("boxset_of");
+            b.regBox = o.optInt("boxset_box_no", 0);
+            b.regBoxes = o.optInt("boxset_boxes", 0);
             return b;
         }
 
@@ -4642,6 +4652,62 @@ public class MainActivity extends Activity {
         return "…" + epc.substring(Math.max(0, epc.length() - 6));
     }
 
+    /** A heard presumed-sold tag with an open-box return on file (Nick,
+     *  2026-09-15): is the box it's on the open-box unit? YES adopts
+     *  the old tag as the -O twin's live tag - or says peel it, when a
+     *  fresh open-box label already paired. NO stops asking about this
+     *  EPC for that return. Entry needs openbox_return_id + epc, as the
+     *  server decorates sweep strays/ghosts. */
+    private void openOpenboxPrompt(JSONObject s) {
+        final String epc = s.optString("epc");
+        final int retId = s.optInt("openbox_return_id", -1);
+        if (retId < 0 || epc.isEmpty()) return;
+        final String obSku = s.optString("openbox_sku", "?");
+        dlg().setTitle("Open-box return?")
+                .setMessage("Tag " + epcTail(epc) + " of "
+                        + s.optString("product_title",
+                                s.optString("sku", "?"))
+                        + " was retired as SOLD, and an open-box return "
+                        + "of this product is on file.\n\nIs the box "
+                        + "this tag is on the open-box unit (" + obSku
+                        + ")?\n\nYES: if its fresh open-box label is "
+                        + "already on, you are told to peel the old "
+                        + "sticker; otherwise the old tag becomes the "
+                        + "open-box product's live tag - no reprint "
+                        + "needed.")
+                .setPositiveButton("YES - OPEN-BOX UNIT",
+                        (d, w) -> postOpenboxAnswer(retId, epc, "yes"))
+                .setNegativeButton("NO - STRAY STICKER",
+                        (d, w) -> postOpenboxAnswer(retId, epc, "no"))
+                .setNeutralButton("SKIP", null)
+                .show();
+    }
+
+    private void postOpenboxAnswer(int retId, String epc, String answer) {
+        final String device = prefs.getString("device", "C72");
+        new Thread(() -> {
+            try {
+                JSONObject resp = api("POST",
+                        "/api/openbox-returns/" + retId + "/resolve",
+                        new JSONObject().put("answer", answer)
+                                .put("epc", epc)
+                                .put("resolved_by", device));
+                final String msg = resp.optString("message");
+                ui.post(() -> {
+                    beep(SOUND_OK);
+                    dlg().setMessage(msg)
+                            .setPositiveButton("OK", null).show();
+                });
+            } catch (Exception e) {
+                ui.post(() -> {
+                    beep(SOUND_ERR);
+                    status.setText("Open-box answer failed: "
+                            + e.getMessage());
+                });
+            }
+        }).start();
+    }
+
     /** The pre-3.88 MARK FOUND outcome: found-mark the tag and resume
      *  the hunt if one was running and targets remain. */
     private void markFoundAndResume(String epc, boolean wasLocating) {
@@ -7948,14 +8014,21 @@ public class MainActivity extends Activity {
         // Tombstones and true unknowns, said out loud under the rows.
         if (shelfStrays != null) {
             for (int i = 0; i < shelfStrays.length(); i++) {
-                JSONObject s = shelfStrays.optJSONObject(i);
+                final JSONObject s = shelfStrays.optJSONObject(i);
                 if (s == null) continue;
                 TextView t = new TextView(this);
                 t.setText("⚠ " + s.optString("sku", "?") + ": "
-                        + s.optString("message"));
+                        + s.optString("message")
+                        + (s.has("openbox_return_id")
+                                ? "  [TAP TO ANSWER]" : ""));
                 t.setTextSize(11);
                 t.setTextColor(C_WARN);
                 t.setPadding(dp(4), dp(2), 0, dp(2));
+                // Open-box return on file (Nick, 2026-09-15): the row
+                // is the prompt - tap answers it right here.
+                if (s.has("openbox_return_id")) {
+                    t.setOnClickListener(v -> openOpenboxPrompt(s));
+                }
                 shelfRowsBox.addView(t);
             }
         }
@@ -8573,13 +8646,20 @@ public class MainActivity extends Activity {
         // Tombstones, foreign tags and unknowns — named, never lumped.
         JSONArray retired = rep.optJSONArray("retired_heard");
         for (int i = 0; retired != null && i < retired.length(); i++) {
-            JSONObject t = retired.optJSONObject(i);
+            final JSONObject t = retired.optJSONObject(i);
             if (t == null) continue;
             TextView w = new TextView(this);
             w.setText("⚠ " + t.optString("sku", "?") + ": "
-                    + t.optString("message"));
+                    + t.optString("message")
+                    + (t.has("openbox_return_id")
+                            ? "  [TAP TO ANSWER]" : ""));
             w.setTextSize(11);
             w.setTextColor(C_WARN);
+            // Open-box return on file (Nick, 2026-09-15): tapping the
+            // warning asks the question and closes the watch.
+            if (t.has("openbox_return_id")) {
+                w.setOnClickListener(v -> openOpenboxPrompt(t));
+            }
             box.addView(w);
         }
         JSONArray foreign = rep.optJSONArray("foreign");
@@ -13452,6 +13532,13 @@ public class MainActivity extends Activity {
                 defMaster = sm.group(1);
             }
         }
+        // A REGISTERED part's real set and number outrank the suffix
+        // guess (Nick, 2026-09-15, S11810: -1 is physically box 2 -
+        // defaults must never override what was set on purpose).
+        if ((it.markMaster == null || it.markMaster.isEmpty())
+                && it.regOf != null && !it.regOf.isEmpty()) {
+            defMaster = it.regOf;
+        }
         int famTotal = 0;
         for (BItem b2 : bItems) {
             if (b2.id == it.id) continue;
@@ -13466,9 +13553,11 @@ public class MainActivity extends Activity {
             }
         }
         int defBox = it.markBox > 0 ? it.markBox
+                : it.regBox > 0 ? it.regBox
                 : suffix > 0 ? suffix : 1;
         int defTotal = it.markTotal > 0 ? it.markTotal
-                : Math.max(2, Math.max(famTotal, suffix));
+                : Math.max(2, Math.max(it.regBoxes,
+                        Math.max(famTotal, suffix)));
         if (defBox > defTotal) defTotal = defBox;
         final EditText masterIn = themedEdit();
         masterIn.setHint("Master SKU (e.g. S11230)");
@@ -16358,6 +16447,16 @@ public class MainActivity extends Activity {
                                 }
                             }).start())
                     .setNegativeButton("Cancel", null).show());
+        }
+        // A ghost with an open-box return on file gets its own action:
+        // the box LEFT and came back opened, so un-retire is the wrong
+        // verb - the prompt adopts (or peels) instead (Nick, 2026-09-15).
+        for (int i = 0; ghostsArr != null && i < ghostsArr.length(); i++) {
+            final JSONObject g = ghostsArr.optJSONObject(i);
+            if (g == null || !g.has("openbox_return_id")) continue;
+            labels.add("OPEN-BOX RETURN? tag "
+                    + epcTail(g.optString("epc")));
+            acts.add(() -> openOpenboxPrompt(g));
         }
         if (exp >= 0 && heardUnits > exp) {
             labels.add("SET SHOPIFY STOCK TO " + heardUnits

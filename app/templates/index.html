@@ -388,6 +388,8 @@
             <div class="product__optrow product__optrow--head">
               <button class="reset" id="product-edit" type="button" title="Register an Astronomik serial prefix or update the SKU in Shopify">Edit product</button>
               <button class="reset" id="product-label" type="button" title="Change what prints on this product's labels (top line and SKU line) - saved store-wide">Edit label</button>
+              <button class="reset" id="product-openbox" type="button" hidden
+                      title="A sold, tagged unit came back opened: switch to the -O open-box twin (found or drafted), print its label - the twin takes the -O barcode automatically - and watch sweeps for the unit's old sold tag">⧉ Set as Open Box…</button>
               <button class="reset rfbtn" id="product-refresh" type="button" title="Re-read this exact variant from Shopify and take THAT as the source of truth - the card, catalog row and tag records all follow. Code clashes ask to confirm and go to Review, never block."><span class="rf-glyph">↻</span> Refresh</button>
               <details class="tags tags--right" id="tags-panel" hidden>
                 <summary class="tags__summary">Show tags</summary>
@@ -1598,6 +1600,34 @@
           <button class="reset" id="qedit-cancel" type="button">Cancel</button>
         </div>
         <p class="linkbox__text" id="qedit-msg"></p>
+      </section>
+    </div>
+
+    <!-- Set as Open Box (Scan Station card): a sold, tagged unit came
+         back opened. Files the return, flips the card to the -O twin
+         (found, or drafted on the spot) and optionally prints its
+         open-box label right away (Nick, 2026-09-15). -->
+    <div class="phist-overlay" id="obx-overlay" hidden>
+      <section class="linkbox serialbox phist-modal phist-modal--w560">
+        <div class="linkbox__title">Set as Open Box - <span id="obx-sku" class="mono">—</span></div>
+        <p class="linkbox__text" id="obx-listing">…</p>
+        <div id="obx-retired"></div>
+        <label class="overwrite__ack u-mt10">
+          <input type="checkbox" id="obx-watch" checked />
+          <span>Watch sweeps for this product's retired sold tags and ask
+          whether they are this open-box unit (a Review task tracks the
+          watch)</span>
+        </label>
+        <p class="linkbox__text">The open-box listing takes barcode
+          <b>[original]-O</b> in Shopify automatically when its label heads
+          for the printer; the original code stays linked so scanning the
+          physical box still finds the open-box product.</p>
+        <div class="linkbox__actions">
+          <button class="print__btn" id="obx-go-print" type="button">Switch card &amp; print open-box label</button>
+          <button class="reset" id="obx-go" type="button">Just switch, print later</button>
+          <button class="reset" id="obx-cancel" type="button">Cancel</button>
+        </div>
+        <p class="linkbox__text" id="obx-msg"></p>
       </section>
     </div>
 

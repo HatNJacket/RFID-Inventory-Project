@@ -370,6 +370,7 @@ const EVENT_META = {
   "alias-unlinked": ["Link Removed", "#8a6116"],
   "batch-reprinted": ["Batch Reprint", "#5c5f62"],
   "label-edited": ["Label Edited", "#5e548e"],
+  "openbox-return": ["Open-Box Return", "#b06a2e"],
   "printing-stopped": ["Stopped Printing", "#d72c0d"],
   "printing-resumed": ["Resumed Printing", "#116329"],
   "on-hand-updated": ["Raised On-hand", "#0c5132"],
@@ -922,6 +923,139 @@ function acceptProduct(product, message) {
   bulkVisitReset();
   maybeAutoPrint();
 }
+
+// --- Set as Open Box (Nick, 2026-09-15) -------------------------------------
+// A sold, RFID-tagged product returned as open box: the card flips to
+// the -O twin (found, or drafted on the spot), the open-box label prints
+// under the twin (the print-time migration gives it the -O barcode), and
+// a return watch opens - sweeps hearing the original's presumed-sold
+// tags will ask "is this box the open-box unit?".
+let obxProduct = null;
+let obxInfo = null;
+
+document
+  .getElementById("product-openbox")
+  .addEventListener("click", () => {
+    if (pendingProduct) openObxWindow(pendingProduct);
+  });
+
+async function openObxWindow(p) {
+  obxProduct = p;
+  obxInfo = null;
+  document.getElementById("obx-sku").textContent = p.sku || "?";
+  document.getElementById("obx-listing").textContent = "Checking Shopify…";
+  document.getElementById("obx-retired").innerHTML = "";
+  document.getElementById("obx-msg").textContent = "";
+  document.getElementById("obx-watch").checked = true;
+  document.getElementById("obx-go-print").disabled = true;
+  document.getElementById("obx-go").disabled = true;
+  document.getElementById("obx-overlay").hidden = false;
+  try {
+    obxInfo = await apiJson(
+      `/api/products/openbox-info/${encodeURIComponent(p.sku)}`
+    );
+  } catch (err) {
+    document.getElementById("obx-listing").textContent = err.message;
+    return;
+  }
+  const L = obxInfo.listing;
+  document.getElementById("obx-listing").innerHTML = L
+    ? `Found the open-box listing: <b>${escapeHtml(L.product_title)}</b> ` +
+      `(<span class="mono">${escapeHtml(L.sku)}</span>, ${escapeHtml((L.status || "?").toLowerCase())}).`
+    : obxInfo.listing_error
+      ? `Shopify probe failed: ${escapeHtml(obxInfo.listing_error)}`
+      : `No <span class="mono">${escapeHtml(obxInfo.openbox_sku)}</span> listing yet - ` +
+        `a DRAFT (<b>${escapeHtml(p.product_title || p.sku)} - Open Box</b>) will be ` +
+        `created for it. Publish and price it in Shopify when ready.`;
+  const host = document.getElementById("obx-retired");
+  const rt = obxInfo.retired || [];
+  if (rt.length) {
+    host.innerHTML =
+      `<div class="step__label">Which old tag came back? (optional)</div>` +
+      `<label class="obx-tagopt"><input type="radio" name="obx-epc" value="" checked /> Not sure - watch all of this product's sold tags</label>` +
+      rt
+        .map(
+          (r) =>
+            `<label class="obx-tagopt"><input type="radio" name="obx-epc" value="${escapeHtml(r.rfid_id)}" /> ` +
+            `<span class="mono">…${escapeHtml((r.rfid_id || "").slice(-6))}</span> · retired ${escapeHtml(fmtAgo(r.retired_at))}` +
+            `${r.note ? ` · ${escapeHtml(r.note)}` : ""}</label>`
+        )
+        .join("");
+  } else {
+    host.innerHTML =
+      `<p class="linkbox__text">No presumed-sold tags on record for this ` +
+      `product yet. The watch still arms - a tag retired later gets the ` +
+      `same prompt when heard.</p>`;
+  }
+  if ((obxInfo.open_returns || []).length) {
+    document.getElementById("obx-msg").textContent =
+      `${obxInfo.open_returns.length} return(s) of this product already ` +
+      `waiting - filing another is fine for another unit.`;
+  }
+  document.getElementById("obx-go-print").disabled = false;
+  document.getElementById("obx-go").disabled = false;
+}
+
+async function obxSubmit(printAfter) {
+  const p = obxProduct;
+  if (!p || !obxInfo) return;
+  const goBtns = [
+    document.getElementById("obx-go-print"),
+    document.getElementById("obx-go"),
+  ];
+  goBtns.forEach((b) => (b.disabled = true));
+  const picked = document.querySelector('input[name="obx-epc"]:checked');
+  try {
+    const res = await postJson("/api/openbox-returns", {
+      sku: p.sku,
+      product_title: p.product_title || null,
+      barcode: p.barcode || null,
+      bin_location: p.bin_location || null,
+      create_draft: !obxInfo.listing,
+      watch: document.getElementById("obx-watch").checked,
+      epc: picked && picked.value ? picked.value : null,
+      created_by: operatorEl.value || null,
+    });
+    document.getElementById("obx-overlay").hidden = true;
+    // Flip the card to the twin - the normal lookup first (full card:
+    // bin, image, preview), the create response as the fallback for a
+    // second-old draft the search index hasn't caught up with.
+    const ob = res.openbox || {};
+    let twin = null;
+    try {
+      twin = await apiJson(
+        `/api/products/by-barcode/${encodeURIComponent(ob.sku)}`
+      );
+    } catch {
+      twin = {
+        sku: ob.sku,
+        product_title: ob.product_title,
+        barcode: ob.barcode || null,
+        bin_location: p.bin_location || null,
+        shopify_variant_id: ob.shopify_variant_id,
+        shopify_product_id: ob.shopify_product_id,
+      };
+    }
+    acceptProduct(twin, res.message);
+    if (printAfter) {
+      el.printQty.value = 1;
+      document.getElementById("print-btn").click();
+    }
+  } catch (err) {
+    document.getElementById("obx-msg").textContent = err.message;
+    goBtns.forEach((b) => (b.disabled = false));
+  }
+}
+
+document
+  .getElementById("obx-go-print")
+  .addEventListener("click", () => obxSubmit(true));
+document
+  .getElementById("obx-go")
+  .addEventListener("click", () => obxSubmit(false));
+document.getElementById("obx-cancel").addEventListener("click", () => {
+  document.getElementById("obx-overlay").hidden = true;
+});
 
 // One label per unit scanned: when auto-print is on, any product that loads
 // from a scan prints one label with no button press. Astronomik serials ride
@@ -2448,6 +2582,11 @@ function showProduct(p) {
   // run must never silently ride into the next product.
   el.printQty.value = 1;
   renderCardLabelPreview(p, null);
+  // Set as Open Box only makes sense on a sealed product's card - the
+  // -O twin never files a return against itself.
+  const obxBtn = document.getElementById("product-openbox");
+  if (obxBtn)
+    obxBtn.hidden = !p.sku || /-O$/i.test(p.sku.trim());
   el.productCard.hidden = false;
   el.printPanel.hidden = !printingEnabled;
   updateNoBinWarn(p);
@@ -5882,8 +6021,14 @@ function openSetMarkDialog(item) {
   const sfx = /^(.*?)-(\d{1,2})$/.exec((item.sku || "").trim());
   const suffix =
     sfx && +sfx[2] >= 1 && +sfx[2] <= 8 ? parseInt(sfx[2], 10) : 0;
+  // A REGISTERED part's real numbers outrank the suffix guess (Nick,
+  // 2026-09-15, S11810: -1 is physically box 2 - a default must never
+  // override what was set on purpose).
   const defaultMaster =
-    item.set_mark_master || (sfx ? sfx[1] : item.sku) || "";
+    item.set_mark_master ||
+    item.boxset_of ||
+    (sfx ? sfx[1] : item.sku) ||
+    "";
 
   function familyTotal(masterU) {
     let t = 0;
@@ -5916,11 +6061,14 @@ function openSetMarkDialog(item) {
   masterRow.append(masterLbl, masterIn);
   box.appendChild(masterRow);
 
-  let boxNo = item.set_mark_box || suffix || 1;
+  let boxNo = item.set_mark_box || item.boxset_box_no || suffix || 1;
   let boxTotal =
     item.set_mark_total ||
     Math.max(
-      2, suffix, familyTotal(defaultMaster.trim().toUpperCase())
+      2,
+      item.boxset_boxes || 0,
+      suffix,
+      familyTotal(defaultMaster.trim().toUpperCase())
     );
   if (boxNo > boxTotal) boxTotal = boxNo;
   // Re-derive the count when the master changes, until the operator
@@ -11877,6 +12025,16 @@ function openResolveWindow(t) {
         The unlabelled units were sold or set aside
         <span class="rvw-choice__sub">They left before anyone could label them. Nothing prints: the batch stops owing the labels, and recorded sales for those SKUs are consumed so the tag arithmetic never waits for tags that were never applied.</span>
       </button>`;
+  } else if (t.category === "openbox-return") {
+    // The open-box return watch (Nick, 2026-09-15): normally a sweep
+    // hearing the old presumed-sold tag closes this with a prompt on
+    // the spot; the button here is the manual out.
+    middle = `
+      <button class="reset rvw-wide rvw-choice rvw-choice--amber" id="rvw-obxpeeled" type="button">
+        Old sticker peeled and binned
+        <span class="rvw-choice__sub">The unit's old label came off by hand, so no sweep will ever hear it - the watch closes. A known tag's record flips to "replaced" so a later hearing says peel, not return.</span>
+      </button>
+      <div class="recent__meta u-mb8">Or leave this open: the next sweep or audit that hears the old sold tag asks "is this box the open-box unit?" right there, and closes this task with the answer.</div>`;
   } else if (t.category === "label-unpaired") {
     // The receiving watchdog, back by request (Nick, 2026-09-09):
     // boxes were labelled but never RFID-paired. Held vendor strips
@@ -12113,6 +12271,39 @@ function openResolveWindow(t) {
       }
     });
   }
+
+  // Open-box return: the manual "old sticker peeled" resolution. The
+  // watch row is found through openbox-info (keyed by this task's id).
+  const obxPeeledBtn = document.getElementById("rvw-obxpeeled");
+  if (obxPeeledBtn)
+    obxPeeledBtn.addEventListener("click", async () => {
+      obxPeeledBtn.disabled = true;
+      try {
+        const info = await apiJson(
+          `/api/products/openbox-info/${encodeURIComponent(t.sku)}`
+        );
+        const mine = (info.open_returns || []).find(
+          (r) => r.task_id === t.id
+        );
+        if (!mine) {
+          alert("This task's return watch is already closed - mark " +
+            "the task resolved below.");
+        } else {
+          const res = await postJson(
+            `/api/openbox-returns/${mine.id}/resolve`,
+            { answer: "peeled", resolved_by: operatorEl.value || null }
+          );
+          alert(res.message);
+          document.getElementById("resolve-overlay").hidden = true;
+          loadReview();
+          return;
+        }
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        obxPeeledBtn.disabled = false;
+      }
+    });
 
   // Label-unpaired: jump straight into the receiving batch to pair.
   const resumeBatchBtn = document.getElementById("rvw-resumebatch");
@@ -14399,6 +14590,38 @@ function renderBinAudit() {
         } answered here <span class="mono">${escapeHtml(g.epc)}</span></li>`
     )
     .join("");
+  // Open-box return prompts (Nick, 2026-09-15): a heard presumed-sold
+  // tag with a return watch on file asks the real question here, not
+  // just "possible return". One block for every flagged ghost, per-SKU
+  // rows and strays alike.
+  const obxGhosts = [];
+  (rep.items || []).forEach((it) =>
+    (it.ghosts || []).forEach((g) => {
+      if (g.openbox_return_id) obxGhosts.push(g);
+    })
+  );
+  (rep.stray_ghosts || []).forEach((g) => {
+    if (g.openbox_return_id) obxGhosts.push(g);
+  });
+  const obxBlock = obxGhosts.length
+    ? `<div class="obxprompt u-mt14">
+         <div class="recent__head"><h2>Open-box return? (${obxGhosts.length})</h2></div>
+         ${obxGhosts
+           .map(
+             (g) => `<div class="obxprompt__row">
+               <div>Tag <span class="mono">…${escapeHtml((g.epc || "").slice(-6))}</span> of
+                 <span class="prodopen" data-sku="${escapeHtml(g.sku || "")}">${escapeHtml(g.product_title || g.sku || "?")}</span>
+                 was retired as SOLD, and an open-box return of it is on file.
+                 Is the box this tag is on the open-box unit (${escapeHtml(g.openbox_sku || "")})?</div>
+               <div class="obxprompt__btns">
+                 <button class="reset binaudit-obx" data-answer="yes" data-ret="${g.openbox_return_id}" data-epc="${escapeHtml(g.epc)}" type="button">Yes - it's the open-box unit</button>
+                 <button class="reset binaudit-obx" data-answer="no" data-ret="${g.openbox_return_id}" data-epc="${escapeHtml(g.epc)}" type="button">No - stray sticker</button>
+               </div>
+             </div>`
+           )
+           .join("")}
+       </div>`
+    : "";
 
   out.innerHTML = `
     <p class="result result--ok">Sweep #${cap.id} from ${escapeHtml(
@@ -14498,12 +14721,28 @@ function renderBinAudit() {
              .join("")}</ul>`
         : ""
     }
+    ${obxBlock}
     ${
       strays || unknowns || strayGhosts
         ? `<div class="recent__head u-mt14"><h2>Also heard on this shelf (${rep.foreign.length + rep.unknown_epcs.length + (rep.stray_ghosts || []).length})</h2></div>
            <ul class="recent__list">${strays}${strayGhosts}${unknowns}</ul>`
         : `<p class="result">No stray or unknown tags in the sweep.</p>`
     }`;
+}
+
+// Full quiet re-check + repaint, for answers that change more than one
+// row (the open-box prompts touch strays AND a product's ghost list).
+async function binAuditRefetchAll() {
+  if (!binAudit) return;
+  const { rep, cap } = binAudit;
+  const single = /^\d+$/.test(String(cap.id));
+  const fresh = await postJson(
+    `/api/bins/${encodeURIComponent(rep.bin)}/check`,
+    single ? { capture_id: parseInt(cap.id, 10) } : { epcs: cap.epcs }
+  );
+  binAudit = { rep: fresh, cap };
+  binAuditCache.set(String(cap.id) + "|" + rep.bin.toUpperCase(), fresh);
+  renderBinAudit();
 }
 
 // One delegated handler for the whole panel — the report re-renders on
@@ -14599,6 +14838,42 @@ document
       } catch (err) {
         alert(err.message);
         soldBtn.disabled = false;
+      }
+      return;
+    }
+    // Open-box return prompt (Nick, 2026-09-15): YES adopts the old
+    // tag for the -O twin (or says peel it, when a fresh open-box
+    // label already paired); NO stops asking about that EPC.
+    const obxAns = e.target.closest(".binaudit-obx");
+    if (obxAns) {
+      const yes = obxAns.dataset.answer === "yes";
+      if (
+        yes &&
+        !confirm(
+          `Confirm: the box wearing tag …${obxAns.dataset.epc.slice(-6)} ` +
+            `is the open-box unit?\n\nIf its fresh open-box label is ` +
+            `already on, you'll be told to peel the old sticker; ` +
+            `otherwise the old tag becomes the open-box product's ` +
+            `live tag (no reprint needed).`
+        )
+      )
+        return;
+      obxAns.disabled = true;
+      try {
+        const res = await postJson(
+          `/api/openbox-returns/${obxAns.dataset.ret}/resolve`,
+          {
+            answer: yes ? "yes" : "no",
+            epc: obxAns.dataset.epc,
+            bin_location: (binAudit && binAudit.rep.bin) || null,
+            resolved_by: operatorEl.value || null,
+          }
+        );
+        alert(res.message);
+        await binAuditRefetchAll();
+      } catch (err) {
+        alert(err.message);
+        obxAns.disabled = false;
       }
       return;
     }

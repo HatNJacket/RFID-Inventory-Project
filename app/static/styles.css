@@ -2641,6 +2641,26 @@ tr.binaudit-untagged td { opacity: 0.72; }
 #qedit-overlay .phist-inputwrap { width: 100%; }
 /* Queue-tab edit-label dialog: the refresh button sits under the lines */
 .qedit__refresh { margin-top: 12px; }
+
+/* Set as Open Box: the which-tag-came-back radio list */
+.obx-tagopt {
+  display: block;
+  padding: 5px 2px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.obx-tagopt input { margin-right: 7px; }
+
+/* Bin-audit open-box return prompts */
+.obxprompt__row {
+  border: 1px solid var(--border, #d0d3d6);
+  border-left: 3px solid #b06a2e;
+  border-radius: 0 6px 6px 0;
+  padding: 10px 12px;
+  margin: 8px 0;
+  font-size: 13.5px;
+}
+.obxprompt__btns { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
 .breprint__count { max-width: 110px; }
 .breprint__fitwarn {
   margin-top: 8px;
