@@ -1554,6 +1554,53 @@
          then PRINT (the everyday action), then the edge-case options
          folded behind one toggle, then the history table. Every control
          keeps its id — only the layout moved. -->
+    <!-- Edit label (Queue tab): fix one PENDING label's three text
+         lines before it prints. Refresh re-derives them from the
+         product: saved preferred name + current Box X of Y note
+         (Nick, 2026-09-15: a queued reprint carried a stale note).
+         Lives OUTSIDE the tab sections, like the printer picker - an
+         overlay inside a hidden tab never shows. -->
+    <div class="phist-overlay" id="qedit-overlay" hidden>
+      <section class="linkbox serialbox phist-modal phist-modal--w560">
+        <div class="linkbox__title">Edit label - <span id="qedit-title">—</span></div>
+        <p class="linkbox__text">Changes apply to <b>this label only</b>. Refresh pulls the product's current saved name and box number.</p>
+        <div class="labeledit">
+          <div class="labeledit__fields">
+            <label class="step__label" for="qedit-top">Top line</label>
+            <div class="phist-inputwrap">
+              <input class="linkbox__input" id="qedit-top" type="text" maxlength="76" autocomplete="off" autocapitalize="off" spellcheck="false" />
+              <button class="phist-clear" id="qedit-top-reset" type="button" title="Back to the store header">✕</button>
+            </div>
+            <label class="step__label" for="qedit-sku">SKU line</label>
+            <div class="phist-inputwrap">
+              <input class="linkbox__input" id="qedit-sku" type="text" maxlength="56" autocomplete="off" autocapitalize="off" spellcheck="false" />
+              <button class="phist-clear" id="qedit-sku-reset" type="button" title="Back to the plain SKU">✕</button>
+            </div>
+            <label class="step__label" for="qedit-bin">Bin line</label>
+            <div class="phist-inputwrap">
+              <input class="linkbox__input" id="qedit-bin" type="text" maxlength="100" autocomplete="off" autocapitalize="off" spellcheck="false" />
+            </div>
+            <button class="reset qedit__refresh" id="qedit-refresh" type="button"
+                    title="Re-derive the lines from what the system knows now: the saved label name and, for a box-set part, the current Box X of Y note.">↻ Refresh from product</button>
+          </div>
+          <div class="labeledit__preview">
+            <div class="label-preview">
+              <div class="label-preview__header" id="qedit-prev-header">Telescopes Canada</div>
+              <div class="label-preview__sku" id="qedit-prev-sku"></div>
+              <div class="label-preview__bc" id="qedit-prev-bc"></div>
+              <div class="label-preview__bin" id="qedit-prev-bin"></div>
+            </div>
+          </div>
+        </div>
+        <p class="breprint__fitwarn" id="qedit-fitwarn" hidden></p>
+        <div class="linkbox__actions">
+          <button class="print__btn" id="qedit-save" type="button">Save label</button>
+          <button class="reset" id="qedit-cancel" type="button">Cancel</button>
+        </div>
+        <p class="linkbox__text" id="qedit-msg"></p>
+      </section>
+    </div>
+
     <!-- Printer picker: one card per detected printer. Rows appear on
          their own when a print agent checks in — nothing is hand-typed.
          Lives OUTSIDE the tab sections so the header 🖨 opens it from

@@ -369,6 +369,7 @@ const EVENT_META = {
   "box-renumbered": ["Box Renumbered", "#0b6e99"],
   "alias-unlinked": ["Link Removed", "#8a6116"],
   "batch-reprinted": ["Batch Reprint", "#5c5f62"],
+  "label-edited": ["Label Edited", "#5e548e"],
   "printing-stopped": ["Stopped Printing", "#d72c0d"],
   "printing-resumed": ["Resumed Printing", "#116329"],
   "on-hand-updated": ["Raised On-hand", "#0c5132"],
@@ -10743,7 +10744,7 @@ function queueJobRow(j, child) {
           j.error ? ` <span class="recent__meta" title="${escapeHtml(j.error)}">ⓘ</span>` : ""
         }</td>
         <td class="recent__meta">${escapeHtml(fmtWhen(j.printed_at || j.created_at))}</td>
-        <td>${canCancel ? '<button class="recent__unassign" data-act="cancel">cancel</button>' : ""}${
+        <td>${canCancel ? '<button class="recent__unassign" data-act="edit">edit</button><button class="recent__unassign" data-act="cancel">cancel</button>' : ""}${
           canReprint ? '<button class="recent__unassign" data-act="reprint">reprint</button>' : ""
         }</td>`;
       // SKU and product name both open the product's own window.
@@ -10763,6 +10764,9 @@ function queueJobRow(j, child) {
             alert(err.message);
           }
         });
+      const editBtn = tr.querySelector('[data-act="edit"]');
+      if (editBtn)
+        editBtn.addEventListener("click", () => openQueueLabelEdit(j));
       const reprintBtn = tr.querySelector('[data-act="reprint"]');
       if (reprintBtn)
         reprintBtn.addEventListener("click", async () => {
@@ -10790,6 +10794,128 @@ function queueJobRow(j, child) {
         });
   return tr;
 }
+
+// --- Edit label (Queue tab) -----------------------------------------------
+// One PENDING job's three printed lines, fixable before the agent claims
+// it (Nick, 2026-09-15: a reprint queued with a stale "Box 1 of 3" note).
+// Refresh re-derives the lines server-side from the product's saved name
+// and the current box-set registry; Save applies the typed lines to THIS
+// job only - store-wide fixes stay the Pair-step reprint dialog's job.
+let qeditJob = null;
+
+function qeditLinesFromJob(j) {
+  const placement = j.label_placement || "header";
+  const top =
+    j.label_name && placement !== "sku" ? j.label_name : STORE_HEADER;
+  let sku = j.sku || "";
+  if (j.label_sku) sku = j.label_sku;
+  else if (j.label_name && (placement === "sku" || placement === "both"))
+    sku = j.label_name;
+  return { top, sku, bin: j.bin_location || "" };
+}
+
+function updateQeditPreview() {
+  if (!qeditJob) return;
+  const top =
+    document.getElementById("qedit-top").value.trim() || STORE_HEADER;
+  const skuLine = document.getElementById("qedit-sku").value.trim();
+  const el = document.getElementById("qedit-prev-header");
+  el.textContent = top;
+  el.className =
+    "label-preview__header " +
+    (top === STORE_HEADER || top.length <= 26
+      ? "label-preview__header--lg"
+      : top.length <= 56
+        ? "label-preview__header--md"
+        : "label-preview__header--sm");
+  renderSkuPreviewLine("qedit-prev-sku", skuLine);
+  document.getElementById("qedit-prev-bc").textContent =
+    qeditJob.barcode || qeditJob.sku || "";
+  const bin = document.getElementById("qedit-bin").value.trim();
+  document.getElementById("qedit-prev-bin").textContent =
+    bin ? "BIN: " + bin : "";
+  const warnEl = document.getElementById("qedit-fitwarn");
+  const issues = labelFitIssues(
+    top, skuLine, qeditJob.barcode || qeditJob.sku || ""
+  );
+  warnEl.hidden = !issues.length;
+  warnEl.textContent = issues.length
+    ? "⚠ " + issues.join("\n⚠ ") +
+      "\nYou can still print - this is a warning, not a block."
+    : "";
+}
+
+function paintQeditFields(j) {
+  const lines = qeditLinesFromJob(j);
+  document.getElementById("qedit-top").value = lines.top;
+  document.getElementById("qedit-sku").value = lines.sku;
+  document.getElementById("qedit-bin").value = lines.bin;
+  updateQeditPreview();
+}
+
+function openQueueLabelEdit(j) {
+  qeditJob = j;
+  document.getElementById("qedit-title").textContent =
+    `#${j.id} · ${j.sku || j.product_title || ""}`;
+  document.getElementById("qedit-msg").textContent = "";
+  paintQeditFields(j);
+  document.getElementById("qedit-overlay").hidden = false;
+}
+
+["qedit-top", "qedit-sku", "qedit-bin"].forEach((id) =>
+  document.getElementById(id).addEventListener("input", updateQeditPreview)
+);
+document.getElementById("qedit-top-reset").addEventListener("click", () => {
+  document.getElementById("qedit-top").value = STORE_HEADER;
+  updateQeditPreview();
+});
+document.getElementById("qedit-sku-reset").addEventListener("click", () => {
+  document.getElementById("qedit-sku").value =
+    qeditJob ? qeditJob.sku || "" : "";
+  updateQeditPreview();
+});
+document.getElementById("qedit-cancel").addEventListener("click", () => {
+  document.getElementById("qedit-overlay").hidden = true;
+  qeditJob = null;
+});
+document.getElementById("qedit-refresh").addEventListener("click", async () => {
+  if (!qeditJob) return;
+  const btn = document.getElementById("qedit-refresh");
+  btn.disabled = true;
+  try {
+    const res = await postJson(`/api/print-jobs/${qeditJob.id}/refresh`, {
+      edited_by: operatorEl.value || null,
+    });
+    qeditJob = res.job;
+    paintQeditFields(res.job);
+    document.getElementById("qedit-msg").textContent = res.message;
+  } catch (err) {
+    document.getElementById("qedit-msg").textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+document.getElementById("qedit-save").addEventListener("click", async () => {
+  if (!qeditJob) return;
+  const btn = document.getElementById("qedit-save");
+  btn.disabled = true;
+  try {
+    await postJson(`/api/print-jobs/${qeditJob.id}/edit`, {
+      top_text:
+        document.getElementById("qedit-top").value.trim() || STORE_HEADER,
+      sku_line: document.getElementById("qedit-sku").value.trim(),
+      bin_line: document.getElementById("qedit-bin").value.trim(),
+      edited_by: operatorEl.value || null,
+    });
+    document.getElementById("qedit-overlay").hidden = true;
+    qeditJob = null;
+    loadQueue();
+  } catch (err) {
+    document.getElementById("qedit-msg").textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 function queueStatusSummary(jobs) {
   const c = {};

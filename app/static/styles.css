@@ -2635,8 +2635,12 @@ tr.binaudit-untagged td { opacity: 0.72; }
 .prodopen:hover { color: var(--accent); }
 
 /* fix-label-&-reprint dialog: stacked line editors + fit warning */
-#breprint-overlay .step__label { display: block; margin: 10px 0 4px; }
-#breprint-overlay .phist-inputwrap { width: 100%; }
+#breprint-overlay .step__label,
+#qedit-overlay .step__label { display: block; margin: 10px 0 4px; }
+#breprint-overlay .phist-inputwrap,
+#qedit-overlay .phist-inputwrap { width: 100%; }
+/* Queue-tab edit-label dialog: the refresh button sits under the lines */
+.qedit__refresh { margin-top: 12px; }
 .breprint__count { max-width: 110px; }
 .breprint__fitwarn {
   margin-top: 8px;

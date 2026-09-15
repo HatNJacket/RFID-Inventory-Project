@@ -1,7 +1,29 @@
 # RFID Inventory System — Roadmap
 
 Source of truth for project status. Updated by Claude each working session.
-Last updated: 2026-09-15 (fifth round).
+Last updated: 2026-09-15 (sixth round).
+
+## 🏷 Reprints stop cloning stale labels; Queue edit button — ✅ DEPLOYED 2026-09-15
+
+Nick's report: reprinting during batch tagging still printed S11830-3
+as "Box 1 of 3" - reprints CLONE the old job's bin-line text, and the
+renumber only fixed pending jobs.
+- **Auto-refresh on every queue path**: `_apply_part_box_notes`
+  re-derives a registered box-set part's "Box N of M" note from the
+  CURRENT registry, replacing any stale note the job carried. Runs in
+  `_expand_multibox` (Scan Station prints, Queue-tab reprints, batch
+  label runs, receiving) AND in `_void_and_requeue` (the Print-step
+  reprint-selected / reprint-all path, which never re-derived at all).
+- **Queue tab "edit" button** on pending jobs: dialog with the three
+  printed lines (top / SKU / bin) + live sticker preview + fit
+  warnings. Save applies to THIS job only (POST
+  /api/print-jobs/{id}/edit); "Refresh from product" re-derives the
+  lines server-side - saved preferred name + current box note (POST
+  /api/print-jobs/{id}/refresh). Both 409 once the label printed.
+  History event "Label Edited" (changed_field label-edit).
+- Overlay lives OUTSIDE the tab sections (an overlay inside a hidden
+  tab never shows - same lesson as the printer picker).
+New suite test_labeledit (14 checks). Suites 75/75.
 
 ## 🔢 Box X of Y made robust — ✅ DEPLOYED 2026-09-15 (C72 4.06)
 

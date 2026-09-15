@@ -1732,6 +1732,10 @@ def _multibox_map(
     }
 
 
+# The default label header (the top line when no preferred name is
+# saved). Lives up here because print-job models default to it.
+STORE_HEADER = "Telescopes Canada"
+
 # The box note rides the BIN line ("BIN: B11-1, Box 1 of 2" - Nick,
 # 2026-09-02: the header stays Telescopes Canada / the saved name).
 # It must never leak into recorded bins, so everything that copies a
@@ -1743,6 +1747,36 @@ def _strip_box_note(bin_location: str | None) -> str | None:
     return _BOX_NOTE_RE.sub("", bin_location or "").strip() or None
 
 
+def _apply_part_box_notes(
+    session: Session, jobs: list[PrintJob]
+) -> None:
+    """Box-set parts get their "Box N of M" note on the bin line
+    (Nick, 2026-09-08) - same pairing-time strip as multibox labels.
+    The note is RE-derived from the current registry, replacing any
+    stale one the job carried: reprints clone the old job's text, so
+    S11830-3's reprint kept saying "Box 1 of 3" after its renumber
+    (Nick, 2026-09-15)."""
+    all_parts = session.scalars(select(BoxSetPart)).all()
+    if not all_parts:
+        return
+    totals: dict[str, int] = {}
+    for r in all_parts:
+        totals[r.set_sku] = totals.get(r.set_sku, 0) + 1
+    part_note = {
+        r.part_sku.strip().upper(): (r.box_no, totals[r.set_sku])
+        for r in all_parts
+    }
+    for job in jobs:
+        pi = part_note.get((job.sku or "").strip().upper())
+        if not pi:
+            continue
+        base = _strip_box_note(job.bin_location) or ""
+        job.bin_location = (
+            f"{base}, Box {pi[0]} of {pi[1]}"[:100]
+            if base else f"Box {pi[0]} of {pi[1]}"
+        )
+
+
 def _expand_multibox(
     session: Session, jobs: list[PrintJob]
 ) -> list[PrintJob]:
@@ -1752,28 +1786,7 @@ def _expand_multibox(
     (label order = sticking order). Jobs that are already companions,
     or case labels, pass through."""
     marks = _multibox_map(session, [j.sku for j in jobs])
-    # Box-set parts get their "Box N of M" note on the bin line too
-    # (Nick, 2026-09-08) - same pairing-time strip as multibox labels.
-    part_note: dict[str, tuple[int, int]] = {}
-    all_parts = session.scalars(select(BoxSetPart)).all()
-    if all_parts:
-        totals: dict[str, int] = {}
-        for r in all_parts:
-            totals[r.set_sku] = totals.get(r.set_sku, 0) + 1
-        for r in all_parts:
-            part_note[r.part_sku.strip().upper()] = (
-                r.box_no, totals[r.set_sku]
-            )
-        for job in jobs:
-            pi = part_note.get((job.sku or "").strip().upper())
-            already = (", Box " in (job.bin_location or "")
-                       or (job.bin_location or "").startswith("Box "))
-            if pi and not already:
-                base = (job.bin_location or "").strip()
-                job.bin_location = (
-                    f"{base}, Box {pi[0]} of {pi[1]}"[:100]
-                    if base else f"Box {pi[0]} of {pi[1]}"
-                )
+    _apply_part_box_notes(session, jobs)
     if not marks:
         return jobs
     out: list[PrintJob] = []
@@ -6394,6 +6407,144 @@ def cancel_print_job(job_id: int, session: Session = Depends(get_session)):
     job.status = "canceled"
     session.commit()
     return job.as_dict()
+
+
+def _label_lines_text(job: PrintJob) -> str:
+    """The three text lines a label will print, one string, for History
+    old/new comparisons: top line, centre (SKU) line, bin line."""
+    placement = job.label_placement or "header"
+    top = (
+        job.label_name
+        if job.label_name and placement != "sku" else STORE_HEADER
+    )
+    if job.label_sku:
+        centre = job.label_sku
+    elif job.label_name and placement in ("sku", "both"):
+        centre = job.label_name
+    else:
+        centre = job.sku or ""
+    return " | ".join([top, centre, job.bin_location or ""])
+
+
+def _pending_print_job(session: Session, job_id: int) -> PrintJob:
+    job = session.get(PrintJob, job_id)
+    if job is None:
+        raise HTTPException(404, "No such print job.")
+    if job.status != "pending":
+        raise HTTPException(
+            409,
+            f"Job #{job_id} is {job.status} - only labels still waiting "
+            "to print can be edited. Reprint it to get a fresh one.",
+        )
+    return job
+
+
+class PrintJobEditIn(BaseModel):
+    """Queue tab: fix one PENDING label's text before it prints (Nick,
+    2026-09-15: a queued reprint carried a stale "Box 1 of 3" note).
+    Lines equal to their defaults (store header on top, the SKU in the
+    centre) mean standard."""
+
+    top_text: str = Field(default=STORE_HEADER, max_length=76)
+    sku_line: str = Field(default="", max_length=56)
+    bin_line: str = Field(default="", max_length=100)
+    edited_by: str | None = Field(default=None, max_length=100)
+
+
+@app.post(
+    "/api/print-jobs/{job_id}/edit", dependencies=[Depends(require_user)]
+)
+def edit_print_job(
+    job_id: int,
+    payload: PrintJobEditIn,
+    session: Session = Depends(get_session),
+):
+    """Apply the typed lines to THIS job only. The store-wide preferred
+    name stays untouched - that's the Pair-step reprint dialog's job;
+    this one exists so a single queued label can be corrected without
+    voiding anything."""
+    job = _pending_print_job(session, job_id)
+    before = _label_lines_text(job)
+    typed = _two_line_fields(job.sku, payload.top_text, payload.sku_line)
+    if typed is not None:
+        job.label_name, job.label_placement, job.label_sku = typed
+    else:
+        job.label_name = None
+        job.label_placement = None
+        job.label_sku = None
+    job.bin_location = payload.bin_line.strip()[:100] or None
+    after = _label_lines_text(job)
+    if after == before:
+        return {"job": job.as_dict(), "message": "No changes to save."}
+    session.add(BarcodeChange(
+        product_title=job.product_title or job.sku or "",
+        sku=job.sku,
+        changed_field="label-edit",
+        old_barcode=before[:64],
+        new_barcode=after[:64],
+        changed_by=(payload.edited_by or "").strip()[:100] or None,
+    ))
+    session.commit()
+    session.refresh(job)
+    return {"job": job.as_dict(), "message": "Label updated ✓"}
+
+
+class PrintJobRefreshIn(BaseModel):
+    edited_by: str | None = Field(default=None, max_length=100)
+
+
+@app.post(
+    "/api/print-jobs/{job_id}/refresh",
+    dependencies=[Depends(require_user)],
+)
+def refresh_print_job(
+    job_id: int,
+    payload: PrintJobRefreshIn,
+    session: Session = Depends(get_session),
+):
+    """Re-derive a PENDING label's text from what the system knows NOW:
+    the product's saved preferred name and, for a registered box-set
+    part, the current "Box N of M" note (the base bin stays what the
+    job was queued with). Freshly queued labels get this automatically;
+    the button covers a job queued before a fix landed."""
+    job = _pending_print_job(session, job_id)
+    before = _label_lines_text(job)
+    job.label_name = None
+    job.label_placement = None
+    job.label_sku = None
+    if (job.sku or "").strip():
+        custom = session.scalar(
+            select(LabelName).where(
+                func.upper(LabelName.sku) == job.sku.strip().upper()
+            )
+        )
+        if custom is not None:
+            job.label_name = custom.label_name
+            job.label_placement = custom.placement or "header"
+            job.label_sku = custom.sku_text
+    _apply_part_box_notes(session, [job])
+    after = _label_lines_text(job)
+    if after == before:
+        return {
+            "job": job.as_dict(),
+            "changed": False,
+            "message": "Already current - nothing to refresh.",
+        }
+    session.add(BarcodeChange(
+        product_title=job.product_title or job.sku or "",
+        sku=job.sku,
+        changed_field="label-edit",
+        old_barcode=before[:64],
+        new_barcode=f"(refreshed) {after}"[:64],
+        changed_by=(payload.edited_by or "").strip()[:100] or None,
+    ))
+    session.commit()
+    session.refresh(job)
+    return {
+        "job": job.as_dict(),
+        "changed": True,
+        "message": "Label refreshed from the product ✓",
+    }
 
 
 # ------------------------------------------------------------ bin batches ---
@@ -12096,6 +12247,11 @@ def _void_and_requeue(
             printer=job.printer,
             requested_by=requested_by or job.requested_by,
         ))
+    # The clones copy the OLD jobs' bin lines verbatim - re-derive the
+    # box-set "Box N of M" note so a renumber done since the first run
+    # reaches the fresh labels (Nick, 2026-09-15: S11830-3's reprint
+    # still said "Box 1 of 3").
+    _apply_part_box_notes(session, fresh)
     session.add_all(fresh)
     session.add(BarcodeChange(
         product_title=f"Batch {batch.id} · bin {batch.bin_name}",
@@ -15850,9 +16006,6 @@ def batch_pair_undo(
     return {"item": item.as_dict()}
 
 
-STORE_HEADER = "Telescopes Canada"
-
-
 def _sync_label_aliases(
     session: Session,
     sku: str,
@@ -19461,6 +19614,7 @@ def product_history(term: str, session: Session = Depends(get_session)):
         "tagged-before": "already-tagged-set",
         "unprinted-sold": "unprinted-sold",
         "box-renumbered": "box-renumbered",
+        "label-edit": "label-edited",
         "tag-unlinked": "tag-unlinked",
         "tag-released": "tag-released",
         "tag-reapplied": "tag-reapplied",
@@ -19919,6 +20073,7 @@ def history(
         "tagged-before": "already-tagged-set",
         "unprinted-sold": "unprinted-sold",
         "box-renumbered": "box-renumbered",
+        "label-edit": "label-edited",
         "tag-unlinked": "tag-unlinked",
         "tag-released": "tag-released",
         "tag-reapplied": "tag-reapplied",
