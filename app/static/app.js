@@ -1819,74 +1819,10 @@ function openEditbox() {
   el.prefixNote.value = pendingProduct.serial_note || "";
   el.prefixSection.hidden = true;
   el.replaceSection.hidden = true;
-  // Box X of Y (Nick, 2026-09-15): a registered set part renumbers
-  // right here, beside the SKU and barcode saves.
-  const boxRow = document.getElementById("edit-boxrow");
-  const bs = pendingProduct.boxset;
-  boxRow.hidden = !bs;
-  editBoxState = bs
-    ? {
-        set: bs.set_sku,
-        saved: bs.box_no,
-        cur: bs.box_no,
-        total: bs.boxes,
-      }
-    : null;
-  paintEditBox();
   el.linkbox.hidden = false;
 }
 
 el.productEdit.addEventListener("click", openEditbox);
-
-// --- Box X of Y renumbering (Nick, 2026-09-15, the S11830) ------------------
-let editBoxState = null;
-
-function paintEditBox() {
-  if (!editBoxState) return;
-  document.getElementById("edit-boxno").textContent = editBoxState.cur;
-  document.getElementById("edit-boxtotal").textContent =
-    `of ${editBoxState.total} · ${editBoxState.set}`;
-  document.getElementById("edit-box-save").disabled =
-    editBoxState.cur === editBoxState.saved;
-}
-
-document.getElementById("edit-box-minus").addEventListener("click", () => {
-  if (!editBoxState) return;
-  editBoxState.cur = Math.max(1, editBoxState.cur - 1);
-  paintEditBox();
-});
-document.getElementById("edit-box-plus").addEventListener("click", () => {
-  if (!editBoxState) return;
-  editBoxState.cur = Math.min(editBoxState.total, editBoxState.cur + 1);
-  paintEditBox();
-});
-document
-  .getElementById("edit-box-save")
-  .addEventListener("click", async () => {
-    const operator = requireOperator();
-    if (!operator || !editBoxState || !pendingProduct) return;
-    const btn = document.getElementById("edit-box-save");
-    btn.disabled = true;
-    try {
-      const res = await postJson(
-        `/api/box-sets/${encodeURIComponent(editBoxState.set)}/renumber`,
-        {
-          part_sku: pendingProduct.sku,
-          box_no: editBoxState.cur,
-          changed_by: operator,
-        }
-      );
-      editBoxState.saved = editBoxState.cur;
-      if (pendingProduct.boxset) {
-        pendingProduct.boxset.box_no = editBoxState.cur;
-      }
-      editMsg(res.message);
-      paintEditBox();
-    } catch (err) {
-      editMsg(err.message);
-      paintEditBox();
-    }
-  });
 
 // --- Edit-window rows: inputs, ✕ resets, dynamic-grey saves ------------------
 ["edit-sku", "edit-barcode", "edit-note"].forEach((id) =>
@@ -4385,12 +4321,7 @@ function renderInventory() {
           ? ' <span class="noscan-chip" title="tag won\'t scan when on ' +
             'box - sweeps don\'t expect it to answer">⊘ no RFID</span>'
           : "") +
-        (p.boxset_part_of
-          ? ` <span class="noscan-chip" title="One box of the ${escapeHtml(p.boxset_part_of)} multi-box set - counts toward its unit total, never audited alone">📦 box ${p.box_no || "?"} of ${escapeHtml(p.boxset_part_of)}</span>`
-          : "") +
-        (p.box_parts
-          ? ` <span class="noscan-chip" title="Multi-box set: the unit count is the SMALLEST of the box counts">⧉ multi-box set</span>`
-          : "");
+        "";
       const when = p.last_assigned_at
         ? tsDate(p.last_assigned_at).toLocaleString(undefined, {
             dateStyle: "medium",
@@ -5820,112 +5751,15 @@ function renderBatchItems() {
     summary.hidden = true;
   }
   bEl.items.innerHTML = "";
-  // Multi-box SETS (Nick, 2026-09-09) lump visually on collect: one
-  // header row per set (full units = the smallest box count), its part
-  // rows right under it, and boxes whose home is a DIFFERENT bin shown
-  // read-only with the bin they belong in and their known count.
-  // Membership comes from batch.box_sets (not per-item stamps) so a
-  // freshly scanned row groups correctly before the next server pull.
-  const boxSets = {};
-  const partSet = {};
-  (batch.box_sets || []).forEach((s) => {
-    const key = (s.set_sku || "").toUpperCase();
-    boxSets[key] = s;
-    (s.parts || []).forEach((p) => {
-      if (p.sku) partSet[p.sku.toUpperCase()] = key;
-    });
-  });
-  const doneSets = new Set();
   batchItems.forEach((item) => {
-    const skuU = (item.sku || "").toUpperCase();
-    const setKey = partSet[skuU] || (boxSets[skuU] ? skuU : null);
-    if (!setKey) {
-      bEl.items.append(collectItemCard(item));
-      return;
-    }
-    if (doneSets.has(setKey)) return;
-    doneSets.add(setKey);
-    const meta = boxSets[setKey];
-    bEl.items.append(boxSetHeaderCard(meta));
-    batchItems.forEach((p) => {
-      const pu = (p.sku || "").toUpperCase();
-      if (partSet[pu] === setKey)
-        bEl.items.append(collectItemCard(p, true));
-    });
-    (meta.parts || []).forEach((p) => {
-      const pu = (p.sku || "").toUpperCase();
-      const hasItem = batchItems.some(
-        (i) => (i.sku || "").toUpperCase() === pu
-      );
-      if (!hasItem) bEl.items.append(boxSetRemoteCard(meta, p));
-    });
+    bEl.items.append(collectItemCard(item));
   });
   renderMultibinBar();
 }
 
-// The set line the parts lump under: full units on hand = the SMALLEST
-// box count, out-of-bin boxes counted by what the system already knows.
-function boxSetHeaderCard(meta) {
-  const li = document.createElement("li");
-  li.className = "bcell bcell--sethead";
-  let units = null;
-  (meta.parts || []).forEach((p) => {
-    const pu = (p.sku || "").toUpperCase();
-    const it = batchItems.find(
-      (i) => (i.sku || "").toUpperCase() === pu
-    );
-    const n = it
-      ? it.units_total != null
-        ? it.units_total
-        : it.qty_scanned
-      : p.known_units || 0;
-    units = units == null ? n : Math.min(units, n);
-  });
-  const shown = units == null ? "?" : units;
-  const tracker =
-    meta.expected_units != null
-      ? `${shown}/${meta.expected_units}`
-      : `${shown}`;
-  li.innerHTML = `
-    ${
-      meta.image_url
-        ? `<img class="bcell__img" src="${escapeHtml(meta.image_url)}" alt="" loading="lazy" />`
-        : `<span class="bcell__img bcell__img--empty"></span>`
-    }
-    <div class="bcell__info">
-      <div class="bcell__name">⧉ ${escapeHtml(meta.set_title || meta.set_sku)}</div>
-      <div class="bcell__meta">MULTI-BOX SET · SKU: ${escapeHtml(meta.set_sku)} · ${meta.boxes} box SKUs = 1 unit</div>
-      <div class="bcell__meta">Full units here = the smallest box count below</div>
-    </div>
-    <span class="bcell__tracker">${escapeHtml(tracker)}</span>`;
-  return li;
-}
-
-// A box of the set whose home is a different bin: nothing to scan here,
-// so it shows the bin it belongs in and the count being used for it.
-function boxSetRemoteCard(meta, p) {
-  const li = document.createElement("li");
-  li.className = "bcell bcell--setpart bcell--remote";
-  const inBin = p.in_bin;
-  li.innerHTML = `
-    <span class="bcell__img bcell__img--empty"></span>
-    <div class="bcell__info">
-      <div class="bcell__name">Box ${p.box_no} · ${escapeHtml(p.sku || "?")}</div>
-      <div class="bcell__meta">${
-        inBin
-          ? "Expected in this bin but not on the batch list yet"
-          : `In bin <b>${escapeHtml(p.bin || "?")}</b> - collect it there`
-      }</div>
-      <div class="bcell__meta">Using its known count: ${p.known_units || 0} box(es)</div>
-    </div>
-    <span class="bcell__tracker">${p.known_units || 0}</span>`;
-  return li;
-}
-
 // One collect-mode item card, with its qty stepper and per-row actions.
-function collectItemCard(item, inSet) {
+function collectItemCard(item) {
   const li = itemCard(item, "collect");
-  if (inSet) li.classList.add("bcell--setpart");
     const qty = document.createElement("span");
     qty.className = "bqty";
     qty.innerHTML = `
@@ -5963,29 +5797,6 @@ function collectItemCard(item, inSet) {
       // name instead of under it.
       li.classList.add("bcell--stacked");
     }
-    // "Part of a set" mark (Nick, 2026-09-15, the multi-box redo): a
-    // lightweight note at collect - master SKU + Box X of Y - offered
-    // on resolved AND unresolved rows. The SET itself is defined on
-    // the web during VERIFICATION, seeded by these marks.
-    const lump = document.createElement("button");
-    lump.type = "button";
-    lump.className = "reset bcell__lump";
-    lump.textContent = item.set_mark_total
-      ? `⧉ box ${item.set_mark_box} of ${item.set_mark_total} · ${item.set_mark_master}`
-      : "⧉ Part of a set…";
-    lump.title =
-      "This box is one of several boxes sold only as ONE product. " +
-      "Mark which box it is (Box X of Y) and the master SKU; the set " +
-      "itself is defined during verification, where the marks are " +
-      "waiting.";
-    lump.addEventListener("click", (ev) => {
-      ev.stopPropagation();
-      openSetMarkDialog(item);
-    });
-    // Inside the info column, under the name - as a bare flex child it
-    // landed in the right gutter, OVER the tracker and qty stepper
-    // (Nick, 2026-09-15).
-    (li.querySelector(".bcell__info") || li).append(lump);
     // Multi-select (Nick, 2026-09-01, ⚙ toggle): tick several products,
     // set all their bins in one pass - each write goes through the same
     // audited /api/bin-updates, logged per product with its undo.
@@ -6004,525 +5815,6 @@ function collectItemCard(item, inSet) {
       li.prepend(cb);
     }
     return li;
-}
-
-// --- "Part of a set" mark (Nick, 2026-09-15, the multi-box redo) ------------
-// Taken at collect on either client: master SKU (defaulted to the
-// row's own) + Box X of Y with steppers. The set itself - ingredient
-// parts, draft listings - is defined on the web during VERIFICATION,
-// where the marks seed the builder.
-function openSetMarkDialog(item) {
-  if (!batch) return;
-  const { wrap, box } = mlOverlay("Part of a set");
-  const intro = document.createElement("p");
-  intro.className = "linkbox__text";
-  intro.textContent =
-    "One product, several boxes. Note which box this is and the " +
-    "master SKU the boxes make up - the set itself gets defined " +
-    "during verification, where every marked box is waiting.";
-  box.appendChild(intro);
-
-  // Smart defaults (Nick, 2026-09-15): an X-Y SKU (S11830-3) means
-  // master X, box Y - and the master is a PARENT, so the box count
-  // defaults to the largest number the family already knows (other
-  // marks' totals and box numbers, a registered set's size, this
-  // box's own suffix).
-  const sfx = /^(.*?)-(\d{1,2})$/.exec((item.sku || "").trim());
-  const suffix =
-    sfx && +sfx[2] >= 1 && +sfx[2] <= 8 ? parseInt(sfx[2], 10) : 0;
-  // A REGISTERED part's real numbers outrank the suffix guess (Nick,
-  // 2026-09-15, S11810: -1 is physically box 2 - a default must never
-  // override what was set on purpose).
-  const defaultMaster =
-    item.set_mark_master ||
-    item.boxset_of ||
-    (sfx ? sfx[1] : item.sku) ||
-    "";
-
-  function familyTotal(masterU) {
-    let t = 0;
-    if (!masterU) return t;
-    batchItems.forEach((it2) => {
-      if (
-        it2.id !== item.id &&
-        (it2.set_mark_master || "").trim().toUpperCase() === masterU
-      ) {
-        t = Math.max(t, it2.set_mark_total || 0, it2.set_mark_box || 0);
-      }
-    });
-    (batch.box_sets || []).forEach((s) => {
-      if ((s.set_sku || "").trim().toUpperCase() === masterU) {
-        t = Math.max(t, s.boxes || 0);
-      }
-    });
-    return t;
-  }
-
-  const masterRow = document.createElement("div");
-  masterRow.className = "boxset__row";
-  const masterLbl = document.createElement("span");
-  masterLbl.className = "boxset__lbl";
-  masterLbl.textContent = "Master SKU:";
-  const masterIn = document.createElement("input");
-  masterIn.className = "linkbox__input boxset__fullin";
-  masterIn.placeholder = "e.g. S11230";
-  masterIn.value = defaultMaster;
-  masterRow.append(masterLbl, masterIn);
-  box.appendChild(masterRow);
-
-  let boxNo = item.set_mark_box || item.boxset_box_no || suffix || 1;
-  let boxTotal =
-    item.set_mark_total ||
-    Math.max(
-      2,
-      item.boxset_boxes || 0,
-      suffix,
-      familyTotal(defaultMaster.trim().toUpperCase())
-    );
-  if (boxNo > boxTotal) boxTotal = boxNo;
-  // Re-derive the count when the master changes, until the operator
-  // touches the steppers themselves.
-  let touched = false;
-  masterIn.addEventListener("change", () => {
-    if (touched || item.set_mark_total) return;
-    boxTotal = Math.max(
-      2, suffix, familyTotal(masterIn.value.trim().toUpperCase())
-    );
-    if (boxNo > boxTotal) boxNo = boxTotal;
-    paint();
-  });
-  function stepper(get, set) {
-    const holder = document.createElement("span");
-    holder.className = "setmark__step";
-    const minus = document.createElement("button");
-    minus.type = "button";
-    minus.className = "reset";
-    minus.textContent = "−";
-    const num = document.createElement("b");
-    const plus = document.createElement("button");
-    plus.type = "button";
-    plus.className = "reset";
-    plus.textContent = "+";
-    minus.addEventListener("click", () => {
-      touched = true;
-      set(get() - 1);
-      paint();
-    });
-    plus.addEventListener("click", () => {
-      touched = true;
-      set(get() + 1);
-      paint();
-    });
-    holder.append(minus, num, plus);
-    return { holder, num };
-  }
-  const numRow = document.createElement("div");
-  numRow.className = "boxset__row setmark__row";
-  const lblA = document.createElement("span");
-  lblA.className = "boxset__lbl";
-  lblA.textContent = "Box";
-  const sBox = stepper(
-    () => boxNo,
-    (v) => {
-      boxNo = Math.min(Math.max(1, v), boxTotal);
-    }
-  );
-  const lblB = document.createElement("span");
-  lblB.className = "boxset__lbl";
-  lblB.textContent = "of";
-  const sTot = stepper(
-    () => boxTotal,
-    (v) => {
-      boxTotal = Math.min(Math.max(2, v), 8);
-      boxNo = Math.min(boxNo, boxTotal);
-    }
-  );
-  function paint() {
-    sBox.num.textContent = String(boxNo);
-    sTot.num.textContent = String(boxTotal);
-  }
-  paint();
-  numRow.append(lblA, sBox.holder, lblB, sTot.holder);
-  box.appendChild(numRow);
-
-  const foot = document.createElement("div");
-  foot.className = "linkbox__actions linkbox__actions--end";
-  const cancel = document.createElement("button");
-  cancel.type = "button";
-  cancel.className = "reset";
-  cancel.textContent = "Cancel";
-  cancel.addEventListener("click", () => wrap.remove());
-  const save = document.createElement("button");
-  save.type = "button";
-  save.className = "reset";
-  save.textContent = "Save mark";
-  save.addEventListener("click", async () => {
-    const master = masterIn.value.trim();
-    if (!master) {
-      masterIn.focus();
-      return;
-    }
-    save.disabled = true;
-    try {
-      const r = await postJson(
-        `/api/batches/${batch.id}/items/${item.id}/set-mark`,
-        {
-          master_sku: master,
-          box_no: boxNo,
-          box_total: boxTotal,
-          changed_by: operatorEl.value || null,
-        }
-      );
-      wrap.remove();
-      setBatchResult(r.message, "ok");
-      await pullBatch(false);
-      renderBatchItems();
-    } catch (err) {
-      setBatchResult(err.message, "err");
-      save.disabled = false;
-    }
-  });
-  foot.append(cancel);
-  if (item.set_mark_total) {
-    const clear = document.createElement("button");
-    clear.type = "button";
-    clear.className = "reset";
-    clear.textContent = "Remove mark";
-    clear.addEventListener("click", async () => {
-      clear.disabled = true;
-      try {
-        const r = await postJson(
-          `/api/batches/${batch.id}/items/${item.id}/set-mark`,
-          { clear: true, changed_by: operatorEl.value || null }
-        );
-        wrap.remove();
-        setBatchResult(r.message, "ok");
-        await pullBatch(false);
-        renderBatchItems();
-      } catch (err) {
-        setBatchResult(err.message, "err");
-        clear.disabled = false;
-      }
-    });
-    foot.append(clear);
-  }
-  foot.append(save);
-  box.appendChild(foot);
-}
-
-// --- Multi-box set builder (Nick, 2026-09-08, the S11230) -------------------
-// Boxes with their OWN barcodes/SKUs (often drafts) sold only whole.
-// Since 2026-09-15 this lives on the VERIFY step, seeded by the
-// collect-stage "Part of a set" marks (pass `master`): marked rows
-// come pre-ticked in Box X order, the full product pre-filled.
-// Matching batch rows re-resolve as parts on the spot, and tags this
-// batch already paired follow their box identities.
-function openBoxSetBuilder(seedItem, master) {
-  if (!batch) return;
-  const masterU = (master || "").trim().toUpperCase();
-  const markedFor = (it) =>
-    !!masterU &&
-    (it.set_mark_master || "").trim().toUpperCase() === masterU;
-  // Marked boxes first, in their Box X order - list order IS the box
-  // numbering at create time.
-  const ordered = [...batchItems].sort((a, b) => {
-    const rank = (it) =>
-      markedFor(it) ? it.set_mark_box || 99 : 999;
-    return rank(a) - rank(b);
-  });
-  const { wrap, box } = mlOverlay("Lump boxes into one multi-box product");
-  const intro = document.createElement("p");
-  intro.className = "linkbox__text";
-  intro.textContent =
-    "For a product sold ONLY as a package whose boxes each carry " +
-    "their own barcode/SKU (S11230-1, S11230-2 under S11230). Tick " +
-    "every box of the set, fix each SKU to what the carton says, and " +
-    "name the full product. Each box then counts under its own SKU; " +
-    "the unit count is the smallest of them. (A selection of products " +
-    "sold in varying amounts is a BUNDLE - use the product window's " +
-    "bundle editor for those.)";
-  box.appendChild(intro);
-
-  const rows = [];
-  const list = document.createElement("div");
-  ordered.forEach((it) => {
-    const row = document.createElement("div");
-    row.className = "mlrow mlrow--wrap";
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.checked = masterU
-      ? markedFor(it)
-      : !!seedItem && it.id === seedItem.id;
-    const name = document.createElement("div");
-    name.className = "mlrow__main";
-    name.innerHTML =
-      `<b>${escapeHtml(it.product_title || it.scanned_code || "?")}</b>` +
-      `<span class="mlrow__meta"> · scanned ${escapeHtml(it.scanned_code || it.barcode || "—")}` +
-      `${it.resolved ? "" : " · unresolved"}` +
-      `${it.set_mark_total ? ` · marked box ${it.set_mark_box} of ${it.set_mark_total}` : ""}</span>`;
-    const skuIn = document.createElement("input");
-    skuIn.className = "linkbox__input boxset__in boxset__in--sku";
-    skuIn.placeholder = "SKU on the box";
-    skuIn.value = it.sku || it.scanned_code || "";
-    skuIn.disabled = !cb.checked;
-    // The box's barcode, VISIBLE and editable (Nick's S11230,
-    // 2026-09-14: the builder silently registered the resolved
-    // listing's catalog barcode, which matched nothing printed on the
-    // carton). The code the scanner actually read wins the pre-fill -
-    // it IS the physical box; a typed SKU is not a barcode.
-    const bcIn = document.createElement("input");
-    bcIn.className = "linkbox__input boxset__in boxset__in--rowbc";
-    bcIn.placeholder = "barcode on the box";
-    const scannedRaw = (it.scanned_code || "").trim();
-    const physical =
-      scannedRaw &&
-      scannedRaw.toUpperCase() !== (it.sku || "").trim().toUpperCase()
-        ? scannedRaw
-        : "";
-    bcIn.value = physical || it.barcode || "";
-    bcIn.disabled = !cb.checked;
-    cb.addEventListener("change", () => {
-      skuIn.disabled = !cb.checked;
-      bcIn.disabled = !cb.checked;
-    });
-    row.append(cb, name, skuIn, bcIn);
-    list.appendChild(row);
-    rows.push({ it, cb, skuIn, bcIn, nameEl: name, hint: null });
-  });
-  box.appendChild(list);
-
-  // NEW boxes with no listing anywhere (Nick, 2026-09-08): the system
-  // creates real DRAFT listings in Shopify. − / + set how many; each
-  // gets barcode/SKU (blank SKU = auto SET-X) and a bin.
-  const draftHead = document.createElement("div");
-  draftHead.className = "boxset__drafthead";
-  const minus = document.createElement("button");
-  minus.type = "button";
-  minus.className = "reset";
-  minus.textContent = "−";
-  const countEl = document.createElement("b");
-  countEl.textContent = "0";
-  const plus = document.createElement("button");
-  plus.type = "button";
-  plus.className = "reset";
-  plus.textContent = "+";
-  const draftLbl = document.createElement("span");
-  draftLbl.textContent =
-    "new draft listing(s) to create in Shopify for boxes with no " +
-    "listing";
-  draftHead.append(minus, countEl, plus, draftLbl);
-  box.appendChild(draftHead);
-  const draftList = document.createElement("div");
-  box.appendChild(draftList);
-  const draftRows = [];
-  function renderDraftRows(n) {
-    while (draftRows.length > n) {
-      draftRows.pop().row.remove();
-    }
-    while (draftRows.length < n) {
-      const i = draftRows.length;
-      const row = document.createElement("div");
-      row.className = "boxset__row";
-      const bcIn = document.createElement("input");
-      bcIn.className = "linkbox__input boxset__in boxset__in--bc";
-      bcIn.placeholder = `new box ${i + 1}: barcode`;
-      const skuIn = document.createElement("input");
-      skuIn.className = "linkbox__input boxset__in boxset__in--newsku";
-      skuIn.placeholder = "SKU (blank = auto -X)";
-      const binIn = document.createElement("input");
-      binIn.className = "linkbox__input boxset__in boxset__in--bin";
-      binIn.placeholder = "bin";
-      binIn.value = batch ? batch.bin_name || "" : "";
-      row.append(bcIn, skuIn, binIn);
-      draftList.appendChild(row);
-      draftRows.push({ row, bcIn, skuIn, binIn });
-    }
-    countEl.textContent = String(draftRows.length);
-  }
-  minus.addEventListener("click", () =>
-    renderDraftRows(Math.max(0, draftRows.length - 1))
-  );
-  plus.addEventListener("click", () =>
-    renderDraftRows(Math.min(8, draftRows.length + 1))
-  );
-
-  const fullRow = document.createElement("div");
-  fullRow.className = "boxset__row boxset__row--full";
-  const fullLbl = document.createElement("span");
-  fullLbl.className = "boxset__lbl";
-  fullLbl.textContent = "Full product (active listing):";
-  const fullIn = document.createElement("input");
-  fullIn.className = "linkbox__input boxset__fullin";
-  fullIn.placeholder = "Barcode or SKU, e.g. S11230";
-  // Seeded from verify-step marks: the marks' master IS the full
-  // product. Otherwise a resolved seed row is the best guess - the
-  // usual entry is a box carrying the full listing's barcode (Nick's
-  // S11230-1, 2026-09-14), which scans AS the full set.
-  if (master) {
-    fullIn.value = master;
-  } else if (seedItem && seedItem.resolved) {
-    fullIn.value = seedItem.sku || seedItem.barcode || "";
-  }
-  fullRow.append(fullLbl, fullIn);
-  box.appendChild(fullRow);
-
-  // Rows that scanned AS the full product are still individual boxes:
-  // flag them and blank the pre-filled full SKU so the operator gives
-  // each box its own (a premade draft's SKU works).
-  function syncFullHints() {
-    const fv = fullIn.value.trim().toUpperCase();
-    rows.forEach((r) => {
-      const keys = [r.it.sku, r.it.barcode, r.it.scanned_code]
-        .map((v) => (v || "").trim().toUpperCase())
-        .filter(Boolean);
-      const isFull = !!fv && keys.includes(fv);
-      if (isFull && !r.hint) {
-        r.hint = document.createElement("div");
-        r.hint.className = "boxset__fullhint";
-        r.hint.textContent =
-          "Scanned as the FULL product - give this box its own SKU " +
-          "(a premade draft's SKU works)";
-        r.nameEl.appendChild(r.hint);
-        const cur = r.skuIn.value.trim().toUpperCase();
-        if (cur === fv || cur === (r.it.sku || "").trim().toUpperCase()) {
-          r.skuIn.value = "";
-          r.skuIn.placeholder = "own box SKU (e.g. -1 / -2)";
-        }
-      } else if (!isFull && r.hint) {
-        r.hint.remove();
-        r.hint = null;
-        r.skuIn.placeholder = "SKU on the box";
-        if (!r.skuIn.value)
-          r.skuIn.value = r.it.sku || r.it.scanned_code || "";
-      }
-    });
-  }
-  fullIn.addEventListener("input", syncFullHints);
-  syncFullHints();
-
-  // A new-box SKU that already has a Shopify listing: the server asks
-  // (409) and this note + re-click uses the premade listing instead of
-  // creating a duplicate draft.
-  const premadeNote = document.createElement("p");
-  premadeNote.className = "linkbox__text boxset__premade";
-  premadeNote.hidden = true;
-  box.appendChild(premadeNote);
-  let useExisting = false;
-
-  const foot = document.createElement("div");
-  foot.className = "linkbox__actions linkbox__actions--end";
-  const cancel = document.createElement("button");
-  cancel.type = "button";
-  cancel.className = "reset";
-  cancel.textContent = "Cancel";
-  cancel.addEventListener("click", () => wrap.remove());
-  const create = document.createElement("button");
-  create.type = "button";
-  create.className = "reset";
-  create.textContent = "Create set";
-  foot.append(cancel, create);
-  box.appendChild(foot);
-
-  create.addEventListener("click", async () => {
-    const parts = rows
-      .filter((r) => r.cb.checked)
-      .map((r) => ({
-        sku: r.skuIn.value.trim(),
-        barcode: r.bcIn.value.trim() || null,
-        // The mark's Box X survives into the registry (Nick,
-        // 2026-09-15: S11830's numbering came out in scan order).
-        box_no: markedFor(r.it) ? r.it.set_mark_box || null : null,
-      }));
-    if (parts.some((p) => !p.sku)) {
-      alert("Every ticked box needs the SKU the carton says.");
-      return;
-    }
-    for (const dr of draftRows) {
-      const bc = dr.bcIn.value.trim();
-      const skuV = dr.skuIn.value.trim();
-      if (!bc && !skuV) {
-        alert("Every new draft box needs a barcode or a SKU.");
-        return;
-      }
-      parts.push({
-        sku: skuV || null,
-        barcode: bc || null,
-        create_draft: true,
-        bin: dr.binIn.value.trim() || null,
-      });
-    }
-    const setCode = fullIn.value.trim();
-    if (parts.length < 2) {
-      alert("A set needs at least two boxes (ticked or new).");
-      return;
-    }
-    if (!setCode) {
-      alert("Name the full product (its barcode or SKU).");
-      return;
-    }
-    create.disabled = true;
-    try {
-      const r = await postJson("/api/box-sets", {
-        set_code: setCode,
-        parts,
-        batch_id: batch.id,
-        changed_by: operatorEl.value || null,
-        use_existing: useExisting,
-      });
-      wrap.remove();
-      setBatchResult(r.message, "ok");
-      await pullBatch(false);
-      // Defined from the VERIFY step (the normal home since
-      // 2026-09-15): repaint the verify report so the boxes score
-      // under their part SKUs; collect keeps its own render.
-      if (batchStage === "verify") await runVerifyCheck();
-      else renderBatchItems();
-      // Legacy stock still tagged under the FULL SKU: offer the
-      // re-label pass (peel old, apply per-box labels, pair again).
-      if (r.full_tags > 0) {
-        const units = Math.max(
-          1, Math.round(r.full_tags / parts.length)
-        );
-        if (
-          confirm(
-            `${r.full_tags} tag(s) still sit under ${r.set_sku} ` +
-              `itself (the old double-counting). Queue ` +
-              `${units} unit(s) x ${parts.length} box labels and ` +
-              `unlink those old tags?\n\nPeel the old stickers off, ` +
-              `apply the new per-box labels, pair as usual.`
-          )
-        ) {
-          const r2 = await postJson(
-            `/api/box-sets/${encodeURIComponent(r.set_sku)}/relabel`,
-            {
-              units,
-              unlink_old: true,
-              confirmed: true,
-              changed_by: operatorEl.value || null,
-            }
-          );
-          setBatchResult(r2.message, "ok");
-        }
-      }
-    } catch (err) {
-      // The premade-listing question stays INSIDE the builder: show
-      // the server's finding, arm the flag, let the same button
-      // confirm (no bare confirm() - STYLEGUIDE).
-      if (/Confirm to use the premade/.test(err.message)) {
-        useExisting = true;
-        premadeNote.textContent =
-          err.message.replace(/\s*Confirm to use the premade[\s\S]*/, "") +
-          " Click again to use the premade listing(s) as the box(es) " +
-          "instead of creating new drafts.";
-        premadeNote.hidden = false;
-        create.textContent = "Use premade + create set";
-        create.disabled = false;
-        return;
-      }
-      alert(err.message);
-      create.disabled = false;
-    }
-  });
 }
 
 // --- Bulk bin updates (Nick, 2026-09-01) ------------------------------------
@@ -7836,61 +7128,6 @@ function renderCheckList() {
 }
 
 // --- Check-item editor (candidates arrows, counts, serial name) -------------
-// Box X of Y in the check-item window (Nick, 2026-09-15).
-let bitemBoxState = null;
-
-function paintBitemBox() {
-  if (!bitemBoxState) return;
-  document.getElementById("bitem-boxno").textContent = bitemBoxState.cur;
-  document.getElementById("bitem-boxtotal").textContent =
-    `of ${bitemBoxState.total} · ${bitemBoxState.set}`;
-  document.getElementById("bitem-box-save").disabled =
-    bitemBoxState.cur === bitemBoxState.saved;
-}
-
-document.getElementById("bitem-box-minus").addEventListener("click", () => {
-  if (!bitemBoxState) return;
-  bitemBoxState.cur = Math.max(1, bitemBoxState.cur - 1);
-  paintBitemBox();
-});
-document.getElementById("bitem-box-plus").addEventListener("click", () => {
-  if (!bitemBoxState) return;
-  bitemBoxState.cur = Math.min(
-    bitemBoxState.total, bitemBoxState.cur + 1
-  );
-  paintBitemBox();
-});
-document
-  .getElementById("bitem-box-save")
-  .addEventListener("click", async () => {
-    const operator = requireOperator();
-    if (!operator || !bitemBoxState) return;
-    const btn = document.getElementById("bitem-box-save");
-    btn.disabled = true;
-    try {
-      const res = await postJson(
-        `/api/box-sets/${encodeURIComponent(bitemBoxState.set)}/renumber`,
-        {
-          part_sku: bitemBoxState.sku,
-          box_no: bitemBoxState.cur,
-          changed_by: operator,
-        }
-      );
-      bitemBoxState.saved = bitemBoxState.cur;
-      document.getElementById("bitem-msg").textContent = res.message;
-      paintBitemBox();
-      await pullBatch(false);
-    } catch (err) {
-      document.getElementById("bitem-msg").textContent = err.message;
-      paintBitemBox();
-    }
-  });
-document.getElementById("bitem-mark").addEventListener("click", () => {
-  if (!bitemEntry) return;
-  document.getElementById("bitem-overlay").hidden = true;
-  openSetMarkDialog(bitemEntry.item);
-});
-
 function openBitem(entry) {
   bitemEntry = entry;
   const cands = entry.candidates || [];
@@ -8001,45 +7238,6 @@ function renderBitem() {
     skuIn.value = it.sku || "";
     bcIn.value = it.barcode || "";
     updateBitemIdentButtons();
-    // Box X of Y (Nick, 2026-09-15): a registered set part renumbers
-    // right here; a merely MARKED box edits its mark instead.
-    let partInfo = null;
-    for (const s of batch.box_sets || []) {
-      for (const p of s.parts || []) {
-        if (
-          (p.sku || "").trim().toUpperCase() ===
-          (it.sku || "").trim().toUpperCase()
-        ) {
-          partInfo = {
-            set: s.set_sku,
-            box_no: p.box_no,
-            total: s.boxes || (s.parts || []).length,
-          };
-        }
-      }
-    }
-    const boxWrap = document.getElementById("bitem-boxwrap");
-    boxWrap.hidden = !partInfo;
-    if (partInfo) {
-      bitemBoxState = {
-        set: partInfo.set,
-        saved: partInfo.box_no,
-        cur: partInfo.box_no,
-        total: partInfo.total,
-        sku: it.sku,
-      };
-      paintBitemBox();
-    } else {
-      bitemBoxState = null;
-    }
-    const markWrap = document.getElementById("bitem-markwrap");
-    markWrap.hidden = !!partInfo;
-    if (!partInfo) {
-      document.getElementById("bitem-mark").textContent =
-        it.set_mark_total
-          ? `⧉ box ${it.set_mark_box} of ${it.set_mark_total} · ${it.set_mark_master} - change…`
-          : "⧉ Part of a set…";
-    }
   }
 
   const nameWrap = document.getElementById("bitem-namewrap");
@@ -10478,49 +9676,8 @@ async function runVerifyCheck(onlyItemId = null) {
   }
 
   const lowCount = (rows.match(/data-low="1"/g) || []).length;
-  // "Part of a set" marks land HERE (Nick, 2026-09-15, the multi-box
-  // redo): every marked box is flagged and the set builder opens
-  // seeded from the marks. Duplicate-code guardrails stand down
-  // inside a marked family for the whole verification window.
-  const markGroups = {};
-  batchItems.forEach((it) => {
-    if (!it.set_mark_master) return;
-    const key = it.set_mark_master.trim().toUpperCase();
-    (markGroups[key] =
-      markGroups[key] || {
-        master: it.set_mark_master.trim(),
-        boxes: [],
-      }).boxes.push(it);
-  });
-  const setsPanel = Object.values(markGroups)
-    .map((g) => {
-      const total = Math.max(
-        ...g.boxes.map((b) => b.set_mark_total || 0)
-      );
-      const boxes = g.boxes
-        .slice()
-        .sort((a, b) => (a.set_mark_box || 0) - (b.set_mark_box || 0))
-        .map(
-          (b) =>
-            `box ${b.set_mark_box} of ${b.set_mark_total}: ${escapeHtml(
-              b.product_title || b.scanned_code || "?"
-            )}`
-        )
-        .join(" · ");
-      const missing =
-        total > g.boxes.length
-          ? ` Only ${g.boxes.length} of ${total} boxes are marked in this batch - the builder can add draft listings for the rest.`
-          : "";
-      return `<div class="result result--warn-soft bvset">⧉ <b>${escapeHtml(
-        g.master
-      )}</b> has ${g.boxes.length} box(es) marked as parts of a set: ${boxes}.${missing}
-        <button class="reset bvset-define" type="button" data-master="${escapeHtml(
-          g.master
-        )}" title="Open the set builder seeded from these marks - each box becomes an ingredient of the master product; boxes with no listing get real draft listings">Define the set…</button></div>`;
-    })
-    .join("");
   bEl.verifyReport.innerHTML = `
-    ${setsPanel}${verdict}${yellowNote}${retiredNote}${naNote}${tbNote}${unresolvedNote}
+    ${verdict}${yellowNote}${retiredNote}${naNote}${tbNote}${unresolvedNote}
     <div class="inventory__scroll"><table class="inventory__table">
       <thead><tr><th>Product</th><th>SKU</th><th class="num" title="Boxes physically collected this batch (new + already tagged)">Counted</th><th class="num" title="Shopify on-hand for this shelf; brackets show counted-vs-expected">Expected</th><th class="num">Detected</th><th></th></tr></thead>
       <tbody>${rows}</tbody>
@@ -10541,11 +9698,6 @@ async function runVerifyCheck(onlyItemId = null) {
            <ul class="recent__list" id="bverify-otherlist" hidden>${otherRows}</ul>`
         : ""
     }`;
-  bEl.verifyReport.querySelectorAll(".bvset-define").forEach((btn) =>
-    btn.addEventListener("click", () =>
-      openBoxSetBuilder(null, btn.dataset.master)
-    )
-  );
   const othersBtn = document.getElementById("bverify-others");
   if (othersBtn)
     othersBtn.addEventListener("click", () => {
@@ -10688,16 +9840,6 @@ bEl.complete.addEventListener("click", async () => {
     msg =
       `This bin has never been verified - no RFID sweep has been checked ` +
       `against it.\n\n${msg}`;
-  }
-  // "Part of a set" marks that never became a set (Nick, 2026-09-15):
-  // completing leaves the boxes counting as whatever they scanned as.
-  const undefinedMarks = batchItems.filter((i) => i.set_mark_master);
-  if (undefinedMarks.length) {
-    msg =
-      `⧉ ${undefinedMarks.length} box(es) are still marked as parts of ` +
-      `a set that was never defined (${[...new Set(undefinedMarks.map((i) => i.set_mark_master))].join(", ")}) - ` +
-      `define the set from the verify step first, or they stay counted ` +
-      `as-is.\n\n${msg}`;
   }
   if (!confirm(msg)) return;
   bEl.complete.disabled = true;
@@ -14338,18 +13480,6 @@ function binAuditScoreRow(r) {
   } else if (silent > 0) {
     flags.push([`${silent} tagged box(es) silent`, "chip--warn"]);
   }
-  // Multi-box sets: part rows say which set (and audit against the
-  // SET's shelf number); the set's own row defers to its parts.
-  if (r.boxset_of)
-    flags.push([
-      `box ${r.box_no || "?"} of ${r.boxset_of} - expected is the set's shelf count`,
-      "chip--na",
-    ]);
-  if (r.boxset)
-    flags.push([
-      "multi-box set - audits by its box SKUs above",
-      "chip--na",
-    ]);
   // Ghosts: presumed-sold (or replaced/dead) tags that ANSWERED -
   // the box never left. Treated as one more scan in the end; the
   // chip says why the numbers moved (Nick, 2026-09-01).
@@ -16150,53 +15280,6 @@ let phistPrintSession = null;
 // Inline bin edit in the parent product window (Nick, 2026-09-01):
 // click the bin, type, Enter saves (Escape cancels) - through the same
 // audited /api/bin-updates every other bin write uses.
-async function phistEditMultibox(sku, span, current) {
-  const n = prompt(
-    `How many boxes make ONE ${sku}?\n\n1 = a normal single-carton ` +
-      "product. 2+ marks it multi-box: box 1 carries the counting " +
-      "label, the rest print companion labels (recognized by sweeps, " +
-      "counted nowhere).",
-    current ? String(current.boxes_per_unit) : "2"
-  );
-  if (n === null) return;
-  const boxes = parseInt(n, 10);
-  if (!Number.isFinite(boxes) || boxes < 1 || boxes > 20) {
-    alert("Enter a whole number of boxes, 1 to 20.");
-    return;
-  }
-  let bins = null;
-  if (boxes > 1) {
-    const prior = current && current.bins ? current.bins : [];
-    const seed = [];
-    for (let i = 0; i < boxes; i++) seed.push(prior[i] || "");
-    const raw = prompt(
-      `Each box's own bin, comma-separated (box 1 first).\n\nLeave an ` +
-        "entry blank if it isn't known yet - blank boxes use the " +
-        "product's normal bin on labels.",
-      seed.join(", ")
-    );
-    if (raw === null) return;
-    bins = raw.split(",").map((b) => b.trim() || null);
-  }
-  try {
-    const r = await apiJson(`/api/multibox/${encodeURIComponent(sku)}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        boxes_per_unit: boxes,
-        bins,
-        updated_by: operatorEl.value || null,
-      }),
-    });
-    span.textContent = r.multibox
-      ? `📦 1 unit = ${r.multibox.boxes_per_unit} boxes`
-      : "📦 one box";
-    alert(r.message);
-  } catch (err) {
-    alert(err.message);
-  }
-}
-
 function phistEditBin(sku, span) {
   const inp = document.createElement("input");
   inp.className = "product__bin-input";
@@ -16377,30 +15460,6 @@ async function openProductHistory(term) {
     // to set the box count and each box's own bin; labels then print
     // "BOX X OF Y" with that box's bin, and audits recognize the extra
     // cartons instead of flagging them as untagged stock.
-    const mbSku = data.sku || (p && p.sku);
-    if (mbSku) {
-      metaEl.append(document.createTextNode(" · "));
-      const mbSpan = document.createElement("span");
-      mbSpan.className = "product__bin product__bin--edit";
-      mbSpan.textContent = "📦 …";
-      mbSpan.title =
-        "Multi-box unit: one product shipped as several cartons - box 1 " +
-        "carries the counting label, the rest print companion labels";
-      metaEl.append(mbSpan);
-      apiJson(`/api/multibox/${encodeURIComponent(mbSku)}`)
-        .then((r) => {
-          const mb = r.multibox;
-          mbSpan.textContent = mb
-            ? `📦 1 unit = ${mb.boxes_per_unit} boxes`
-            : "📦 one box";
-          mbSpan.addEventListener("click", () =>
-            phistEditMultibox(mbSku, mbSpan, mb)
-          );
-        })
-        .catch(() => {
-          mbSpan.remove();
-        });
-    }
     renderPhistTags(data, term);
     const img = document.getElementById("phist-img");
     if (data.image_url) {
@@ -18006,29 +17065,6 @@ async function undoHistoryEvent(e, btn) {
         marker: e.undo.marker,
         worker: operatorEl.value || null,
       });
-      await loadHistory();
-    } catch (err) {
-      btn.disabled = false;
-      alert(err.message);
-    }
-    return;
-  }
-  if (e.undo.kind === "box-set") {
-    if (
-      !confirm(
-        `Remove the ${e.undo.set_sku} multi-box set?\n\nIts boxes go ` +
-          `back to counting separately. Draft listings created for it ` +
-          `stay in Shopify.`
-      )
-    )
-      return;
-    btn.disabled = true;
-    try {
-      await apiFetch(
-        `/api/box-sets/${encodeURIComponent(e.undo.set_sku)}` +
-          `?by=${encodeURIComponent(operatorEl.value || "")}`,
-        { method: "DELETE" }
-      );
       await loadHistory();
     } catch (err) {
       btn.disabled = false;

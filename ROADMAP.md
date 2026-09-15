@@ -1,7 +1,41 @@
 # RFID Inventory System — Roadmap
 
 Source of truth for project status. Updated by Claude each working session.
-Last updated: 2026-09-15 (seventh round).
+Last updated: 2026-09-15 (eighth round).
+
+## 🗑 Multi-box sets SCRAPPED — ✅ DEPLOYED 2026-09-15 (C72 4.08)
+
+Nick's decision, his words: "as long as we know where the individual
+boxes are it doesn't matter what box it is." Every box is its own
+individual product now; Box X of Y is dead everywhere.
+- **Removed** (server + web + gun): the box-set registry and all its
+  endpoints (create/list/renumber/relabel), the "Part of a set" marks
+  and both mark dialogs, the set builder and verify panel, collect
+  grouping (set headers, remote-part rows), Edit Product's Box X of Y
+  and multibox rows, min-count set math in audits/checks/inventory,
+  the part-barcode lookup override and part fallback, the family
+  guardrail lift (duplicate code/SKU overwrites ask again, always),
+  MultiboxProduct + companion label CREATION. Companion-tag
+  RECOGNITION plumbing stays (inert - prod has zero companion rows
+  and nothing can create one now).
+- **Labels**: the only bin-line note is OPEN BOX (always shown on
+  open-box products); legacy "Box N of M" notes are STRIPPED wherever
+  a job re-derives. _strip_box_note keeps cleaning legacy text off
+  records.
+- **Prod migration** (dev/unlink_box_sets.py, RUN --apply): S11230 /
+  S11810 / S11830 masters converted to BUNDLES of their box products
+  (ProductKind bundle + BundleContent qty 1 - the go-forward model
+  for any boxes-sold-as-one-unit product); S11230-1's barcode written
+  to its draft listing; S11830-1/-2/-3 (registry-only identities) got
+  real draft listings created with their barcodes and the master's
+  bin, and their live tags repointed to the new variants; 7 registry
+  rows + the S11740 multibox row deleted; 13 marks cleared; 2 tag
+  titles cleaned. Draft listings and the products pointing at them
+  KEPT, per Nick.
+- Old History events (box-set, multibox, box-renumbered) keep their
+  chips so the paper trail still reads.
+Suites 72/72 (test_boxsets/test_boxset_collect/test_setmarks/
+test_multibox deleted; test_labeledit rewritten note-strip-first).
 
 ## 📦 Open-box returns + marks rule the stickers — ✅ DEPLOYED 2026-09-15 (C72 4.07)
 

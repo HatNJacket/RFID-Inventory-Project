@@ -296,20 +296,6 @@
                     title="Shown loudly every time this product is scanned - in the Scan Station's product card, and on the C72 with its own sound and warning-coloured text. Leave empty for no note.">?</button>
             <button class="reset" id="edit-note-save" type="button" disabled>Save note</button>
           </div>
-          <!-- Box X of Y (Nick, 2026-09-15): a registered set part can
-               be renumbered right here - the box holding the target
-               number swaps into this one's old slot. -->
-          <div class="editrow editrow--btns" id="edit-boxrow" hidden>
-            <span class="linkbox__text">⧉ Box</span>
-            <span class="setmark__step">
-              <button class="reset" id="edit-box-minus" type="button">−</button>
-              <b id="edit-boxno">1</b>
-              <button class="reset" id="edit-box-plus" type="button">+</button>
-            </span>
-            <span class="linkbox__text" id="edit-boxtotal">of ?</span>
-            <button class="reset" id="edit-box-save" type="button" disabled
-                    title="Renumber this box within its set - the box currently holding that number swaps into this one's old slot. Open batches, live tags and pending labels follow; printed labels keep their old text.">Save box number</button>
-          </div>
           <p class="linkbox__text" id="edit-msg"></p>
           <div class="editrow editrow--btns">
             <button class="reset" id="edit-astro" type="button"
@@ -983,23 +969,6 @@
                       <button class="phist-clear" id="bitem-bcreset" type="button" title="Back to the saved barcode">✕</button>
                     </span>
                     <button class="reset" id="bitem-bcsave" type="button" disabled>Save Barcode</button>
-                  </div>
-                  <!-- Box X of Y (Nick, 2026-09-15): registered set
-                       parts renumber here, beside the SKU/barcode
-                       saves; a merely MARKED box edits its mark. -->
-                  <div class="linkbox__form" id="bitem-boxwrap" hidden>
-                    <span class="linkbox__text">⧉ Box</span>
-                    <span class="setmark__step">
-                      <button class="reset" id="bitem-box-minus" type="button">−</button>
-                      <b id="bitem-boxno">1</b>
-                      <button class="reset" id="bitem-box-plus" type="button">+</button>
-                    </span>
-                    <span class="linkbox__text" id="bitem-boxtotal">of ?</span>
-                    <button class="reset" id="bitem-box-save" type="button" disabled
-                            title="Renumber this box within its set - the box currently holding that number swaps into this one's old slot. Open batches, live tags and pending labels follow.">Save box number</button>
-                  </div>
-                  <div class="linkbox__form" id="bitem-markwrap" hidden>
-                    <button class="reset" id="bitem-mark" type="button"></button>
                   </div>
                 </div>
                 <div id="bitem-namewrap" hidden>

@@ -5431,9 +5431,7 @@ public class MainActivity extends Activity {
     private Button editRecommendBtn;
     private Button editLinkBtn;
     private Button editSkipBtn;
-    private Button editBoxSetBtn;
     private Button editBundleBtn;
-    private Button editMultiBoxBtn;
     private Button editNoScanBtn;
     private Button editPriorBtn;
     private Button editDblBtn;
@@ -5630,16 +5628,6 @@ public class MainActivity extends Activity {
         editLinkBtn.setOnClickListener(v -> showLinkDialog());
         mid.addView(editLinkBtn);
 
-        // "Part of a set" mark (4.04, Nick's multi-box redo,
-        // 2026-09-15): the gun only NOTES that this box belongs to a
-        // set - master SKU + Box X of Y. The set itself (ingredient
-        // parts, draft listings) is defined on the WEB during
-        // verification, seeded by the marks. Offered on resolved AND
-        // unresolved rows.
-        editBoxSetBtn = smallBtn("PART OF A SET…");
-        editBoxSetBtn.setOnClickListener(v -> showSetMarkDialog());
-        mid.addView(editBoxSetBtn);
-
         // "I can't do this one." One-off skip OR one of the durable
         // Can't Scan flags (3.90) - the chooser sorts it out.
         editSkipBtn = smallBtn("CAN'T SCAN");
@@ -5712,17 +5700,6 @@ public class MainActivity extends Activity {
             startBundleCapture(editEntry.item);
         });
         mid.addView(editBundleBtn);
-
-        // Receiving-only (Nick, 2026-09-02): one UNIT split over
-        // several boxes of the same product (the 11740) - two cartons
-        // on the pallet, one label, one unit. Stops the "two boxes =
-        // two labels" instinct on the walk.
-        editMultiBoxBtn = smallBtn("ONE UNIT = SEVERAL BOXES…");
-        editMultiBoxBtn.setOnClickListener(v -> {
-            if (editEntry == null) return;
-            askUnitBoxes(editEntry.item);
-        });
-        mid.addView(editMultiBoxBtn);
 
         LinearLayout qtyRow = new LinearLayout(this);
         qtyRow.setGravity(Gravity.CENTER);
@@ -5897,21 +5874,12 @@ public class MainActivity extends Activity {
             editBundleBtn.setText(joined > 0
                     ? "✓ " + joined + " BOX(ES) BUNDLED — ADD MORE…"
                     : "BUNDLE OTHER BOXES ONTO THIS…");
-            Integer ub = recvUnitBoxes.get(it.id);
-            editMultiBoxBtn.setText(ub != null && ub > 1
-                    ? "✓ 1 UNIT = " + ub + " BOXES — CHANGE…"
-                    : "ONE UNIT = SEVERAL BOXES…");
         }
-        editMultiBoxBtn.setVisibility(recvMarks ? View.VISIBLE : View.GONE);
         // Only a real product can be skipped; an unknown barcode already has
         // its own rescue route.
         editSkipBtn.setVisibility(it.resolved ? View.VISIBLE : View.GONE);
         editSkipBtn.setText(it.skipped
                 ? "PUT IT BACK IN THE BATCH" : "CAN'T SCAN");
-        editBoxSetBtn.setText(it.markTotal > 0
-                ? "⧉ BOX " + it.markBox + " OF " + it.markTotal
-                        + " - CHANGE…"
-                : "PART OF A SET…");
         editNoScanBtn.setVisibility(
                 it.resolved && it.sku != null ? View.VISIBLE : View.GONE);
         editNoScanBtn.setText(it.noScan
@@ -10515,6 +10483,11 @@ public class MainActivity extends Activity {
     // THE GUN (prefs JSON keyed to the batch), like the scan order.
     private final java.util.HashMap<String, Integer> recvBundleCodes =
             new java.util.HashMap<>();          // scanned code -> item id
+    // Legacy (multi-box marks, feature removed 2026-09-15): the maps
+    // stay so saved prefs from old batches still parse; nothing fills
+    // them any more.
+    private final java.util.HashSet<Integer> mbCountAsked =
+            new java.util.HashSet<>();
     private final java.util.HashMap<Integer, Integer> recvUnitBoxes =
             new java.util.HashMap<>();          // item id -> boxes/unit
     private int bundleTargetId = 0;             // capture mode target
@@ -10573,97 +10546,6 @@ public class MainActivity extends Activity {
                 : "Bundling done - " + joined + " box(es) now open "
                   + target.name() + "'s card. ONE label pairs per set, "
                   + "on the main box.");
-    }
-
-    private void askUnitBoxes(final BItem it) {
-        final EditText in = themedEdit();
-        in.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
-        in.setTextSize(16);
-        Integer cur = recvUnitBoxes.get(it.id);
-        in.setHint(cur != null ? String.valueOf(cur) : "2");
-        LinearLayout wrap = new LinearLayout(this);
-        wrap.setOrientation(LinearLayout.VERTICAL);
-        wrap.setPadding(dp(20), dp(8), dp(20), dp(4));
-        wrap.addView(in);
-        dlg()
-                .setTitle("HOW MANY BOXES MAKE ONE " + it.name() + "?")
-                .setView(wrap)
-                .setPositiveButton("SET", (d, w) -> {
-                    int n;
-                    try {
-                        n = Integer.parseInt(in.getText().toString()
-                                .trim());
-                    } catch (Exception e) {
-                        n = 0;
-                    }
-                    if (n <= 1) {
-                        recvUnitBoxes.remove(it.id);
-                        status.setText(it.name()
-                                + ": back to one box per unit.");
-                    } else {
-                        recvUnitBoxes.put(it.id, n);
-                        status.setText(it.name() + ": 1 unit = " + n
-                                + " boxes - ONE label per unit, on the "
-                                + "main box.");
-                    }
-                    saveRecvMarks();
-                    saveMultiboxServer(it, Math.max(1, n));
-                    if (editEntry != null) renderItemEditor();
-                })
-                .setNegativeButton("CANCEL", null)
-                .show();
-    }
-
-    // Which items already got the two-cartons-one-unit question this
-    // batch - asked once per product, like the already-tagged prompt.
-    private final java.util.HashSet<Integer> mbCountAsked =
-            new java.util.HashSet<>();
-
-    /** Collect-step guard (Nick, 2026-09-02: "the collect count isn't
-     *  gated"): the moment a marked product's box count reaches 2, ask
-     *  whether those are separate units or cartons of the same unit -
-     *  the exact instinct that double-counted the 11740. */
-    private void maybeMultiboxCountAlert(final BItem it) {
-        if (!inBatch() || step != STEP_COLLECT || !it.resolved) return;
-        Integer n = recvUnitBoxes.get(it.id);
-        if (n == null || n <= 1) return;
-        if (it.qty < 2 || mbCountAsked.contains(it.id)) return;
-        mbCountAsked.add(it.id);
-        saveRecvMarks();
-        final int units = Math.max(1, it.qty / n);
-        dlg()
-                .setTitle("MULTI-BOX PRODUCT")
-                .setMessage(it.name() + ": 1 unit = " + n + " boxes.\n\n"
-                        + "You've counted " + it.qty + " box(es). If "
-                        + "those are cartons of the SAME unit(s), the "
-                        + "true count is " + units + " unit(s) - one "
-                        + "counting label each, on box 1.")
-                .setPositiveButton("COUNT AS " + units + " UNIT(S)",
-                        (d, w) -> setItemQty(it, units))
-                .setNegativeButton("THEY'RE " + it.qty + " UNITS", null)
-                .show();
-    }
-
-    /** The unit-split mark is durable and store-wide (Nick, 2026-09-02:
-     *  the S11740 is ALWAYS two cartons): saving it here means labels
-     *  print "BOX X OF Y" and audits recognize the extra cartons from
-     *  now on, on every surface. Best-effort - the local mark already
-     *  covers this batch either way. */
-    private void saveMultiboxServer(BItem it, final int boxes) {
-        final String sku = it.sku;
-        if (sku == null || sku.isEmpty()) return;
-        new Thread(() -> {
-            try {
-                api("PUT", "/api/multibox/"
-                        + java.net.URLEncoder.encode(sku, "UTF-8"),
-                        new JSONObject()
-                                .put("boxes_per_unit", boxes)
-                                .put("updated_by",
-                                        prefs.getString("device", "C72")));
-            } catch (Exception ignored) {
-                // The gun-local mark still guides this batch.
-            }
-        }).start();
     }
 
     private void saveRecvMarks() {
@@ -12205,11 +12087,6 @@ public class MainActivity extends Activity {
                     updateBatchCard();
                     refreshBatchList();
                     maybePriorTagAlert(item, true);
-                    // The mark rides the scan answer - a product first
-                    // scanned mid-batch gets its guidance immediately.
-                    int bpu = resp.optInt("boxes_per_unit", 0);
-                    if (bpu > 1) recvUnitBoxes.put(item.id, bpu);
-                    maybeMultiboxCountAlert(item);
                     if (receivingBatch && item.resolved
                             && item.sku != null && !item.sku.isEmpty()) {
                         fetchPlannerHint(item);
@@ -13506,183 +13383,6 @@ public class MainActivity extends Activity {
     // itself - ingredient parts riding the master product, draft
     // listings for boxes with no listing - is defined on the WEB
     // during verification, seeded by these marks.
-    private void showSetMarkDialog() {
-        if (editEntry == null) return;
-        final BItem it = editEntry.item;
-        final int itemId = it.id;
-        closeItemEditor();
-        // Smart defaults (Nick, 2026-09-15): an X-Y SKU (S11830-3)
-        // means master X, box Y - and the master is a PARENT, so the
-        // box count defaults to the largest number the family already
-        // knows (other marks, a set header's size, this suffix).
-        String sku = it.sku == null ? "" : it.sku.trim();
-        String defMaster = it.markMaster != null
-                && !it.markMaster.isEmpty() ? it.markMaster : sku;
-        int suffix = 0;
-        java.util.regex.Matcher sm = java.util.regex.Pattern
-                .compile("^(.*?)-(\\d{1,2})$").matcher(sku);
-        if (sm.matches()) {
-            try {
-                suffix = Integer.parseInt(sm.group(2));
-            } catch (Exception ignored) {
-            }
-            if (suffix < 1 || suffix > 8) suffix = 0;
-            if (suffix > 0 && (it.markMaster == null
-                    || it.markMaster.isEmpty())) {
-                defMaster = sm.group(1);
-            }
-        }
-        // A REGISTERED part's real set and number outrank the suffix
-        // guess (Nick, 2026-09-15, S11810: -1 is physically box 2 -
-        // defaults must never override what was set on purpose).
-        if ((it.markMaster == null || it.markMaster.isEmpty())
-                && it.regOf != null && !it.regOf.isEmpty()) {
-            defMaster = it.regOf;
-        }
-        int famTotal = 0;
-        for (BItem b2 : bItems) {
-            if (b2.id == it.id) continue;
-            if (b2.markMaster != null
-                    && b2.markMaster.equalsIgnoreCase(defMaster)) {
-                famTotal = Math.max(famTotal,
-                        Math.max(b2.markTotal, b2.markBox));
-            }
-            if (b2.rowKind == 1 && b2.sku != null
-                    && b2.sku.equalsIgnoreCase(defMaster)) {
-                famTotal = Math.max(famTotal, b2.setBoxes);
-            }
-        }
-        int defBox = it.markBox > 0 ? it.markBox
-                : it.regBox > 0 ? it.regBox
-                : suffix > 0 ? suffix : 1;
-        int defTotal = it.markTotal > 0 ? it.markTotal
-                : Math.max(2, Math.max(it.regBoxes,
-                        Math.max(famTotal, suffix)));
-        if (defBox > defTotal) defTotal = defBox;
-        final EditText masterIn = themedEdit();
-        masterIn.setHint("Master SKU (e.g. S11230)");
-        masterIn.setTextSize(16);
-        masterIn.setText(defMaster);
-        final int[] xy = {defBox, defTotal};
-        final TextView xv = new TextView(this);
-        final TextView yv = new TextView(this);
-        for (TextView v : new TextView[]{xv, yv}) {
-            v.setTextSize(20);
-            v.setTypeface(null, Typeface.BOLD);
-            v.setTextColor(C_TEXT);
-            v.setGravity(Gravity.CENTER);
-        }
-        final Runnable paint = () -> {
-            xv.setText(String.valueOf(xy[0]));
-            yv.setText(String.valueOf(xy[1]));
-        };
-        paint.run();
-        LinearLayout wrap = new LinearLayout(this);
-        wrap.setOrientation(LinearLayout.VERTICAL);
-        wrap.setPadding(dp(20), dp(8), dp(20), dp(4));
-        TextView t = new TextView(this);
-        t.setTextSize(12);
-        t.setTextColor(C_MUTED);
-        t.setText(it.name() + "\nMark which box this is. The set "
-                + "itself gets defined on the web terminal during "
-                + "verification.");
-        t.setPadding(0, 0, 0, dp(6));
-        wrap.addView(t);
-        wrap.addView(masterIn);
-        wrap.addView(stepperRow("BOX", xv, () -> {
-            xy[0] = Math.max(1, xy[0] - 1);
-            paint.run();
-        }, () -> {
-            xy[0] = Math.min(xy[1], xy[0] + 1);
-            paint.run();
-        }));
-        wrap.addView(stepperRow("OF", yv, () -> {
-            xy[1] = Math.max(2, xy[1] - 1);
-            if (xy[0] > xy[1]) xy[0] = xy[1];
-            paint.run();
-        }, () -> {
-            xy[1] = Math.min(8, xy[1] + 1);
-            paint.run();
-        }));
-        AlertDialog.Builder b = dlg()
-                .setTitle("PART OF A SET - box X of Y")
-                .setView(wrap)
-                .setPositiveButton("SAVE", (d, w) -> {
-                    String master = masterIn.getText().toString().trim();
-                    if (master.isEmpty()) {
-                        beep(SOUND_ERR);
-                        status.setText("The mark needs the master SKU.");
-                        return;
-                    }
-                    postSetMark(itemId, master, xy[0], xy[1], false);
-                })
-                .setNegativeButton("CANCEL", null);
-        if (it.markTotal > 0) {
-            b.setNeutralButton("REMOVE MARK",
-                    (d, w) -> postSetMark(itemId, null, 0, 0, true));
-        }
-        b.show();
-    }
-
-    /** One "LABEL  [-]  N  [+]" line for the mark dialog. */
-    private LinearLayout stepperRow(String label, TextView num,
-            Runnable minus, Runnable plus) {
-        LinearLayout row = new LinearLayout(this);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        TextView l = new TextView(this);
-        l.setText(label);
-        l.setTextSize(14);
-        l.setTextColor(C_TEXT);
-        Button m = smallBtn("\u2212");
-        m.setOnClickListener(v -> minus.run());
-        Button p = smallBtn("+");
-        p.setOnClickListener(v -> plus.run());
-        row.addView(l, new LinearLayout.LayoutParams(
-                dp(48), LinearLayout.LayoutParams.WRAP_CONTENT));
-        row.addView(m, new LinearLayout.LayoutParams(
-                dp(64), LinearLayout.LayoutParams.WRAP_CONTENT));
-        row.addView(num, weight());
-        row.addView(p, new LinearLayout.LayoutParams(
-                dp(64), LinearLayout.LayoutParams.WRAP_CONTENT));
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT);
-        lp.topMargin = dp(6);
-        row.setLayoutParams(lp);
-        return row;
-    }
-
-    private void postSetMark(final int itemId, final String master,
-            final int boxNo, final int boxTotal, final boolean clear) {
-        status.setText(clear ? "Removing the mark\u2026" : "Marking\u2026");
-        new Thread(() -> {
-            try {
-                JSONObject body = new JSONObject().put("changed_by",
-                        prefs.getString("device", "C72"));
-                if (clear) {
-                    body.put("clear", true);
-                } else {
-                    body.put("master_sku", master)
-                            .put("box_no", boxNo)
-                            .put("box_total", boxTotal);
-                }
-                JSONObject resp = api("POST", "/api/batches/" + batchId
-                        + "/items/" + itemId + "/set-mark", body);
-                final String msg = resp.optString("message", "Marked \u2713");
-                ui.post(() -> {
-                    beep(SOUND_OK);
-                    status.setText(msg);
-                    reloadBatchAndReview();
-                });
-            } catch (Exception e) {
-                ui.post(() -> {
-                    beep(SOUND_ERR);
-                    status.setText("Mark failed: " + e.getMessage());
-                });
-            }
-        }).start();
-    }
-
     private void setItemSkip(boolean skipped, String reason) {
         if (editEntry == null) return;
         final int itemId = editEntry.item.id;
@@ -15793,22 +15493,6 @@ public class MainActivity extends Activity {
                 final String msg = e.getMessage() == null ? ""
                         : e.getMessage();
                 ui.post(() -> {
-                    // The multi-box guard: an untagged second carton of
-                    // a multi-box unit is not untagged stock (Nick,
-                    // 2026-09-02, the S11740). Ask, retry on YES.
-                    if (msg.startsWith("MULTIBOX:")) {
-                        beep(SOUND_OTHER);
-                        dlg()
-                                .setTitle("MULTI-BOX PRODUCT")
-                                .setMessage(msg.substring(9).trim()
-                                        + "\n\nNote it as a separate "
-                                        + "untagged UNIT anyway?")
-                                .setPositiveButton("IT'S A SEPARATE UNIT",
-                                        (d, w) -> auditBarcode(code, true))
-                                .setNegativeButton("CANCEL", null)
-                                .show();
-                        return;
-                    }
                     beep(SOUND_ERR);
                     status.setText("Not counted: " + msg);
                 });
