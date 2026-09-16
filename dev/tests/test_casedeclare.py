@@ -18,7 +18,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 from app.main import app
 from app.database import get_engine
-from app.models import Batch, BatchItem, PrintJob
+from app.models import Batch, BatchItem, BinMapEntry, CaseCode, PrintJob
 from sqlalchemy.orm import Session
 fails=[]
 def check(l,c,x=""):
@@ -84,25 +84,71 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
           and it["case_count"] == 0 and it["case_units"] is None,
           r.text[:250])
 
-    # ---- unresolved rows welcome (Nick: where it's needed most) --------
+    # ---- unresolved rows: say what's INSIDE, code becomes a case -------
     with Session(get_engine()) as s:
         u = BatchItem(batch_id=bid, scanned_code="UNK-99",
                       resolved=False,
                       product_title="Unresolved: UNK-99",
                       qty_scanned=2)
         s.add(u)
+        s.add(BinMapEntry(sku="INNER-1", barcode="850", bin="D1-1",
+                          product_title="Inner Product", qty=10,
+                          shopify_variant_id="t:IN"))
         s.commit()
         uid = u.id
     r = cl.post(f"/api/batches/{bid}/items/{uid}/case",
                 json={"units": 12, "boxes": 2})
+    check("unresolved without contains asks what's inside",
+          r.status_code == 422
+          and "inside" in r.json()["detail"], r.text[:250])
+    r = cl.post(f"/api/batches/{bid}/items/{uid}/case",
+                json={"units": 12, "boxes": 2, "contains": "850"})
     body = r.json()
     it = body.get("item") or {}
-    check("unresolved row declares cases too",
-          r.status_code == 200 and it["case_count"] == 2
+    check("contains resolves the row and declares the cases",
+          r.status_code == 200 and it["resolved"] is True
+          and it["sku"] == "INNER-1" and it["case_count"] == 2
           and it["case_units"] == 12 and it["qty_scanned"] == 0
-          and body["converted"] == 2, r.text[:300])
-    check("message names the scanned code",
-          "UNK-99" in body["message"], body.get("message"))
+          and body["converted"] == 2, r.text[:350])
+    check("message says the code is now a case barcode",
+          "case barcode" in body["message"], body.get("message"))
+    with Session(get_engine()) as s:
+        cc = s.get(CaseCode, "UNK-99")
+        check("CaseCode registered: UNK-99 = 12 x INNER-1",
+              cc is not None and cc.sku == "INNER-1"
+              and cc.units == 12, cc)
+    # Same batch already answered SEALED (the declare), so a re-scan
+    # of the code just adds one more box - no dialog (Nick, 2026-09-16).
+    r = cl.post(f"/api/batches/{bid}/scan", json={"code": "UNK-99"})
+    d = r.json()
+    check("re-scan in the same batch auto-adds a sealed box",
+          r.status_code == 201 and d.get("case_auto") is True
+          and d.get("needs_case_decision") is None
+          and d["item"]["case_count"] == 3, r.text[:300])
+
+    # A FRESH batch asks once, then repeats on its own.
+    with Session(get_engine()) as s:
+        b3 = Batch(bin_name="D3-3", status="collecting",
+                   created_by="Nick")
+        s.add(b3)
+        s.commit()
+        b3id = b3.id
+    r = cl.post(f"/api/batches/{b3id}/scan", json={"code": "UNK-99"})
+    check("first scan in a new batch still asks opened/sealed",
+          r.status_code == 201
+          and r.json().get("needs_case_decision") is True,
+          r.text[:250])
+    r = cl.post(f"/api/batches/{b3id}/scan",
+                json={"code": "UNK-99", "case_action": "sealed"})
+    check("answering sealed counts the first box",
+          r.status_code == 201
+          and r.json()["item"]["case_count"] == 1, r.text[:250])
+    r = cl.post(f"/api/batches/{b3id}/scan", json={"code": "UNK-99"})
+    d = r.json()
+    check("second scan repeats the answer - one more box, no dialog",
+          r.status_code == 201 and d.get("case_auto") is True
+          and d["item"]["case_count"] == 2
+          and d["item"]["units_total"] == 24, r.text[:300])
 
     # ---- guards ---------------------------------------------------------
     r = cl.post(f"/api/batches/{bid}/items/{bunid}/case",
@@ -123,14 +169,18 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
     r = cl.post(f"/api/batches/{bid}/queue-labels",
                 json={"requested_by": "Nick"})
     body = r.json()
-    check("strip holds 2 loose + 1 case label",
-          r.status_code == 201 and body["count"] == 3, r.text[:250])
+    # 2 loose + 1 case of CASE-1, plus the 3 INNER-1 cases (2 declared
+    # + 1 auto-added by the same-batch re-scan above).
+    check("strip holds every loose box and sealed case",
+          r.status_code == 201 and body["count"] == 6, r.text[:250])
     with Session(get_engine()) as s:
         jobs = s.query(PrintJob).filter(PrintJob.batch_id == bid).all()
-        case_jobs = [j for j in jobs if j.case_units]
-    check("the case label carries its unit count",
-          len(case_jobs) == 1 and case_jobs[0].case_units == 4
-          and case_jobs[0].sku == "CASE-1", str(case_jobs))
+        c1 = [j for j in jobs if j.case_units and j.sku == "CASE-1"]
+        c2 = [j for j in jobs if j.case_units and j.sku == "INNER-1"]
+    check("case labels carry their unit counts",
+          len(c1) == 1 and c1[0].case_units == 4
+          and len(c2) == 3 and all(j.case_units == 12 for j in c2),
+          f"CASE-1:{c1} INNER-1:{c2}")
 
     # ---- printed labels lock the split ---------------------------------
     r = cl.post(f"/api/batches/{bid}/items/{aid}/case",

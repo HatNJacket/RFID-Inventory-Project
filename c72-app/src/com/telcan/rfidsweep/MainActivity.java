@@ -751,6 +751,12 @@ public class MainActivity extends Activity {
         dTitle.setTextColor(C_TEXT);
         dTitle.setPadding(dp(6), 0, 0, dp(10));
         drawerPanel.addView(dTitle);
+        // Eight tabs outgrew the screen (Nick, 2026-09-16): the plain
+        // column started CRUSHING every row, Settings included. The tab
+        // list scrolls now; Settings and the version stay pinned below
+        // at full size.
+        LinearLayout tabList = new LinearLayout(this);
+        tabList.setOrientation(LinearLayout.VERTICAL);
         for (int i = 0; i < TAB_COUNT; i++) {
             final int tab = i;
             Button b = smallBtn(TAB_NAMES[i]);
@@ -765,8 +771,13 @@ public class MainActivity extends Activity {
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT);
             bl.bottomMargin = dp(6);
-            drawerPanel.addView(b, bl);
+            tabList.addView(b, bl);
         }
+        ScrollView tabScroll = new ScrollView(this);
+        tabScroll.setVerticalScrollBarEnabled(true);
+        tabScroll.addView(tabList);
+        drawerPanel.addView(tabScroll, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
         gearBtn = smallBtn("⚙  Settings");
         gearBtn.setTextSize(14);
         gearBtn.setMinimumHeight(dp(44));
@@ -6114,6 +6125,7 @@ public class MainActivity extends Activity {
 
     private void openItemEditor(CheckEntry entry) {
         editEntry = entry;
+        editPendingQty = -1;
         editIdx = 0;
         for (int i = 0; i < entry.candidates.size(); i++) {
             if (entry.candidates.get(i).optString("shopify_variant_id")
@@ -6132,6 +6144,13 @@ public class MainActivity extends Activity {
     }
 
     private void closeItemEditor() {
+        // Flush the staged count as ONE write - every +/- press up to
+        // here was local (Nick, 2026-09-16).
+        if (editEntry != null && editPendingQty >= 0
+                && editPendingQty != editEntry.item.qty) {
+            setItemQty(editEntry.item, editPendingQty);
+        }
+        editPendingQty = -1;
         editScrim.setVisibility(View.GONE);
         editEntry = null;
         if (inBatch() && step == STEP_COLLECT) {
@@ -6273,7 +6292,8 @@ public class MainActivity extends Activity {
         editRecommendBtn.setVisibility(it.resolved ? View.GONE : View.VISIBLE);
         editLinkBtn.setVisibility(it.resolved ? View.GONE : View.VISIBLE);
         editDraftBtn.setVisibility(it.resolved ? View.GONE : View.VISIBLE);
-        editQty.setText(String.valueOf(it.qty)
+        editQty.setText(String.valueOf(
+                editPendingQty >= 0 ? editPendingQty : it.qty)
                 + (it.expected != null ? " / " + it.expected : ""));
     }
 
@@ -6695,12 +6715,18 @@ public class MainActivity extends Activity {
         }).start();
     }
 
+    // Count edits are LOCAL until the editor closes (Nick, 2026-09-16):
+    // thirty taps of "+" used to be thirty server round trips. -1 =
+    // nothing pending; the one write fires from closeItemEditor().
+    private int editPendingQty = -1;
+
     private void exactCountDialog() {
         if (editEntry == null) return;
         final BItem it = editEntry.item;
         final EditText in = themedEdit();
         in.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
-        in.setText(String.valueOf(it.qty));
+        in.setText(String.valueOf(
+                editPendingQty >= 0 ? editPendingQty : it.qty));
         in.setSelectAllOnFocus(true);
         int pad = dp(16);
         in.setPadding(pad, pad, pad, pad);
@@ -6709,9 +6735,8 @@ public class MainActivity extends Activity {
                 .setView(in)
                 .setPositiveButton("Set", (d, w) -> {
                     try {
-                        setItemQty(it, Math.max(0,
-                                Integer.parseInt(
-                                        in.getText().toString().trim())));
+                        stageQty(Math.max(0, Integer.parseInt(
+                                in.getText().toString().trim())));
                     } catch (NumberFormatException ignored) {
                     }
                 })
@@ -6721,7 +6746,20 @@ public class MainActivity extends Activity {
 
     private void editorAdjust(int delta) {
         if (editEntry == null) return;
-        setItemQty(editEntry.item, Math.max(0, editEntry.item.qty + delta));
+        int base = editPendingQty >= 0 ? editPendingQty
+                : editEntry.item.qty;
+        stageQty(Math.max(0, base + delta));
+    }
+
+    private void stageQty(int qty) {
+        if (editEntry == null) return;
+        BItem it = editEntry.item;
+        editPendingQty = qty == it.qty ? -1 : qty;
+        editQty.setText(String.valueOf(qty)
+                + (it.expected != null ? " / " + it.expected : ""));
+        editMsg.setText(editPendingQty >= 0
+                ? "Count " + qty + " - saves when this window closes."
+                : "");
     }
 
     private void setItemQty(BItem item, int qty) {
@@ -6733,6 +6771,8 @@ public class MainActivity extends Activity {
                         + "/items/" + it.id + "/qty", body);
                 final BItem updated = BItem.from(resp);
                 ui.post(() -> {
+                    // The server's number is authoritative again.
+                    editPendingQty = -1;
                     if (editEntry != null) editEntry.item = updated;
                     BItem inList = itemById(updated.id);
                     if (inList != null) {
@@ -6759,9 +6799,34 @@ public class MainActivity extends Activity {
     private void showDeclareCaseDialog() {
         if (editEntry == null) return;
         final BItem it = editEntry.item;
+        final boolean unresolved = !it.resolved;
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(dp(16), dp(8), dp(16), 0);
+        // Unknown outer barcode (Nick, 2026-09-16): first say WHAT is
+        // inside - typed, or picked from this bin's products - and the
+        // scanned code becomes that product's durable case barcode.
+        final EditText contains;
+        if (unresolved) {
+            TextView l0 = new TextView(this);
+            l0.setText("What product is inside? Barcode or SKU:");
+            l0.setTextSize(12);
+            l0.setTextColor(C_MUTED);
+            box.addView(l0);
+            contains = themedEdit();
+            contains.setHint("scan or type it");
+            box.addView(contains);
+            Button pick = smallBtn("PICK FROM THIS BIN…");
+            pick.setOnClickListener(v ->
+                    pickBinProductForCase(contains));
+            LinearLayout.LayoutParams pl = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            pl.bottomMargin = dp(6);
+            box.addView(pick, pl);
+        } else {
+            contains = null;
+        }
         TextView l1 = new TextView(this);
         l1.setText("Units inside each box:");
         l1.setTextSize(12);
@@ -6778,21 +6843,29 @@ public class MainActivity extends Activity {
         box.addView(l2);
         final EditText boxes = themedEdit();
         boxes.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
-        boxes.setText("1");
+        boxes.setText(unresolved && it.qty > 0
+                ? String.valueOf(it.qty) : "1");
         boxes.setSelectAllOnFocus(true);
         box.addView(boxes);
         TextView note = new TextView(this);
-        note.setText("One label + one tag per box; the label reads "
-                + "\"N x " + (it.sku == null ? "SKU" : it.sku)
-                + "\" and each tag counts N units. Boxes you already "
-                + "scanned counted 1 each - they convert, no double "
-                + "count.");
+        note.setText(unresolved
+                ? "The row resolves to that product, the unknown code "
+                  + "is saved as its CASE barcode (future scans "
+                  + "recognize it everywhere), and each box gets ONE "
+                  + "label reading \"N x SKU\" worth N units."
+                : "One label + one tag per box; the label reads "
+                  + "\"N x " + (it.sku == null ? "SKU" : it.sku)
+                  + "\" and each tag counts N units. Boxes you already "
+                  + "scanned counted 1 each - they convert, no double "
+                  + "count.");
         note.setTextSize(11);
         note.setTextColor(C_MUTED);
         box.addView(note);
+        ScrollView caseScroll = new ScrollView(this);
+        caseScroll.addView(box);
         dlg()
                 .setTitle("Box of multiple products")
-                .setView(box)
+                .setView(caseScroll)
                 .setPositiveButton("Declare", (d, w) -> {
                     int u, n;
                     try {
@@ -6810,7 +6883,50 @@ public class MainActivity extends Activity {
                         return;
                     }
                     if (n < 1) n = 1;
-                    postItemCase(u, n, false);
+                    String inner = contains == null ? null
+                            : contains.getText().toString().trim();
+                    if (unresolved
+                            && (inner == null || inner.isEmpty())) {
+                        beep(SOUND_ERR);
+                        editMsg.setText("Say what's inside first - "
+                                + "type its barcode or SKU, or pick "
+                                + "it from the bin.");
+                        return;
+                    }
+                    postItemCase(u, n, false, inner);
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    /** "What's inside?" picker: this batch is pre-seeded with the
+     *  bin's expected products, so its resolved rows ARE the bin
+     *  list - no round trip needed. */
+    private void pickBinProductForCase(final EditText into) {
+        final List<BItem> opts = new ArrayList<>();
+        for (BItem b : bItems) {
+            if (b.resolved && b.rowKind == 0
+                    && (b.sku != null || b.barcode != null)) {
+                opts.add(b);
+            }
+        }
+        if (opts.isEmpty()) {
+            Toast.makeText(this, "Nothing resolved in this batch to "
+                    + "pick from - type the barcode or SKU instead.",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        String[] names = new String[opts.size()];
+        for (int i = 0; i < opts.size(); i++) {
+            BItem b = opts.get(i);
+            names[i] = b.name()
+                    + (b.sku == null ? "" : "\n" + b.sku);
+        }
+        dlg()
+                .setTitle("Products in " + batchBin)
+                .setItems(names, (d, w) -> {
+                    BItem b = opts.get(w);
+                    into.setText(b.sku != null ? b.sku : b.barcode);
                 })
                 .setNegativeButton("Cancel", null)
                 .show();
@@ -6821,6 +6937,26 @@ public class MainActivity extends Activity {
     private void showCaseManageDialog() {
         if (editEntry == null) return;
         final BItem it = editEntry.item;
+        if (!it.resolved) {
+            // Declared before the what's-inside rework: no product on
+            // the row means no label can print for its cases. The way
+            // out is undo, then declare again naming the product.
+            dlg()
+                    .setTitle(it.caseCount + " sealed case(s) - no "
+                            + "product yet")
+                    .setMessage("This row was never matched to a "
+                            + "product, so its case labels CAN'T print "
+                            + "(there is nothing to put on the "
+                            + "sticker). UNDO the cases, then declare "
+                            + "again - the dialog now asks what's "
+                            + "inside and the labels print as \"N x "
+                            + "SKU\".")
+                    .setPositiveButton("Undo - start over", (d, w) ->
+                            postItemCase(0, 1, true, null))
+                    .setNegativeButton("Cancel", null)
+                    .show();
+            return;
+        }
         dlg()
                 .setTitle(it.caseCount + " sealed case(s) of "
                         + it.caseUnits)
@@ -6829,14 +6965,15 @@ public class MainActivity extends Activity {
                         + "\") and its tag counts " + it.caseUnits
                         + " units.")
                 .setPositiveButton("Add 1 more box", (d, w) ->
-                        postItemCase(it.caseUnits, 1, false))
+                        postItemCase(it.caseUnits, 1, false, null))
                 .setNegativeButton("Undo - they're loose", (d, w) ->
-                        postItemCase(0, 1, true))
+                        postItemCase(0, 1, true, null))
                 .setNeutralButton("Cancel", null)
                 .show();
     }
 
-    private void postItemCase(int units, int boxes, boolean undo) {
+    private void postItemCase(int units, int boxes, boolean undo,
+                              String contains) {
         if (editEntry == null) return;
         final BItem it = editEntry.item;
         new Thread(() -> {
@@ -6847,6 +6984,9 @@ public class MainActivity extends Activity {
                         .put("changed_by",
                                 prefs.getString("device", "C72"));
                 if (!undo) body.put("units", units);
+                if (contains != null && !contains.isEmpty()) {
+                    body.put("contains", contains);
+                }
                 JSONObject resp = api("POST", "/api/batches/" + batchId
                         + "/items/" + it.id + "/case", body);
                 final BItem updated =
@@ -15429,13 +15569,17 @@ public class MainActivity extends Activity {
     private static final java.util.Map<String, String> RET_ASK =
             new java.util.HashMap<String, String>() {{
         put("as-new", "Box goes back to live stock as new: the tag "
-                + "comes back live (its condition clears to Good) and "
-                + "the box shelves in its home bin. The refund and any "
-                + "Shopify stock re-add happen in the Returns app.");
+                + "comes back live (its condition clears to Good), "
+                + "Shopify on-hand goes UP by the unit(s) on this tag "
+                + "(undoable from History), and the box shelves in its "
+                + "home bin. The refund happens in the Returns app - "
+                + "do NOT also use its add-back-to-stock option, or "
+                + "the unit counts twice.");
         put("used", "Box comes back USED: the tag comes back live "
-                + "with condition Used. Process the 20% fee and the "
-                + "used draft in the Returns app; relabel the box when "
-                + "it relists.");
+                + "with condition Used and Shopify on-hand goes UP by "
+                + "the unit(s) on this tag (undoable from History). "
+                + "Process the 20% fee and the used draft in the "
+                + "Returns app; relabel the box when it relists.");
         put("unsellable", "Box is unsellable: the tag retires for "
                 + "good - out of every count, but sweeps still "
                 + "recognize it. Log it in the Returns app's Parts & "
@@ -15467,14 +15611,21 @@ public class MainActivity extends Activity {
                         new JSONObject()
                                 .put("epc", epc)
                                 .put("action", action)
+                                // The confirm dialog said the on-hand
+                                // goes up - this is that confirmation.
+                                .put("restock", true)
                                 .put("changed_by",
                                         prefs.getString("device",
                                                 "C72")));
                 final String msg = resp.optString("message", "Done.");
                 ui.post(() -> {
                     beep(SOUND_OK);
+                    // The workflow is DONE for this box: clear the card
+                    // and let the outcome message stand (Nick,
+                    // 2026-09-16 - the old refresh re-filled the card
+                    // and wiped the message a split second later).
+                    clearReturnsCard();
                     status.setText("✓ " + msg);
-                    returnsLookup(epc);   // card reflects the new state
                 });
             } catch (Exception e) {
                 ui.post(() -> {
@@ -15500,17 +15651,21 @@ public class MainActivity extends Activity {
         final boolean withTag = !retBarcodeOnly;
         dlg()
                 .setTitle("OPEN BOX?")
-                .setMessage(withTag
+                .setMessage((withTag
                         ? "The old tag unpairs NOW (peel the sticker "
                           + "off), the -O twin listing is found or "
                           + "drafted, and the -O label prints at the "
                           + "warehouse printer - pair it to the box "
-                          + "there. 10% fee side happens in the "
-                          + "Returns app."
+                          + "there."
                         : "No tag was read, so this files the open-box "
                           + "WATCH: the -O twin is found or drafted "
                           + "and the next sweep asks which box is the "
                           + "returned unit.")
+                        + "\n\nThe -O twin's Shopify on-hand goes UP "
+                        + "by 1 (a fresh draft can't take stock until "
+                        + "it's published - the answer says which). "
+                        + "The 10% fee side happens in the Returns "
+                        + "app.")
                 .setPositiveButton("Do it", (d, w) ->
                         postReturnsOpenBox(withTag))
                 .setNegativeButton("Cancel", null)
@@ -15537,20 +15692,18 @@ public class MainActivity extends Activity {
                 } else {
                     body.put("watch", true);
                 }
+                // The dialog said the twin's on-hand goes up by 1.
+                body.put("restock", true);
                 JSONObject resp = api("POST", "/api/openbox-returns",
                         body);
-                final String msg = (resp.isNull("old_tag") ? ""
-                        : resp.optString("old_tag") + " ")
-                        + resp.optString("message", "Filed.");
+                final String msg = resp.optString("message", "Filed.");
                 ui.post(() -> {
                     beep(SOUND_OK);
+                    // Workflow DONE for this box: clear the card and
+                    // let the outcome message stand (Nick, 2026-09-16
+                    // - re-looking the tag up wiped it instantly).
+                    clearReturnsCard();
                     status.setText("✓ " + msg);
-                    if (withTag) {
-                        returnsLookup(d.optString("epc"));
-                    } else {
-                        clearReturnsCard();
-                        status.setText("✓ " + msg);
-                    }
                 });
             } catch (Exception e) {
                 ui.post(() -> {
@@ -18004,6 +18157,86 @@ public class MainActivity extends Activity {
                 + "without scanning each barcode. Which way you're "
                 + "going is learned from your first products, then "
                 + "locked.", swPairNext));
+
+        // Whole-strip printing (Nick, 2026-09-16): SERVER-stored - the
+        // same switch as the web Queue tab, flipped live from here (no
+        // Save needed). ON holds side-trip labels so the PRINT step
+        // queues main bin + every trip as ONE strip; OFF prints each
+        // trip the moment it's created.
+        LinearLayout strip = new LinearLayout(this);
+        strip.setOrientation(LinearLayout.HORIZONTAL);
+        strip.setGravity(Gravity.CENTER_VERTICAL);
+        strip.setBackground(btnBg(C_CARD, C_LINE, C_PRESS, 8));
+        strip.setPadding(dp(12), dp(10), dp(12), dp(10));
+        LinearLayout stCol = new LinearLayout(this);
+        stCol.setOrientation(LinearLayout.VERTICAL);
+        TextView stTitle = new TextView(this);
+        stTitle.setText("Whole strip at once");
+        stTitle.setTextSize(14);
+        stTitle.setTextColor(C_TEXT);
+        stTitle.setTypeface(null, Typeface.BOLD);
+        stCol.addView(stTitle);
+        final TextView stSum = new TextView(this);
+        stSum.setTextSize(11);
+        stSum.setTextColor(C_MUTED);
+        stSum.setText("checking the server…");
+        stCol.addView(stSum);
+        strip.addView(stCol, new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        final Switch stSw = mkToggle(false);
+        stSw.setEnabled(false);
+        strip.addView(stSw);
+        LinearLayout.LayoutParams stLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        stLp.topMargin = dp(8);
+        strip.setLayoutParams(stLp);
+        box.addView(strip);
+        final java.util.function.Function<Boolean, String> stripSum =
+                on -> on
+                ? "ON - side trips wait; PRINT queues main bin + every "
+                  + "trip as one strip (applies everywhere, instantly)"
+                : "OFF - each side trip's labels print the moment the "
+                  + "trip is created (one burst per bin)";
+        new Thread(() -> {
+            try {
+                JSONObject r = api("GET", "/api/print-agent/status",
+                        null);
+                final boolean on = r.optBoolean("strip_at_once");
+                ui.post(() -> {
+                    stSw.setChecked(on);
+                    stSw.setEnabled(true);
+                    stSum.setText(stripSum.apply(on));
+                });
+            } catch (Exception e) {
+                ui.post(() -> stSum.setText("server unreachable - "
+                        + "flip it from the web Queue tab"));
+            }
+        }).start();
+        stSw.setOnCheckedChangeListener((btn, on) -> {
+            if (!btn.isPressed()) return;  // programmatic set = no post
+            stSw.setEnabled(false);
+            new Thread(() -> {
+                try {
+                    api("POST", "/api/print-strip-mode",
+                            new JSONObject()
+                                    .put("all_at_once", on)
+                                    .put("worker", prefs.getString(
+                                            "device", "C72")));
+                    ui.post(() -> {
+                        stSw.setEnabled(true);
+                        stSum.setText(stripSum.apply(on));
+                    });
+                } catch (Exception e) {
+                    ui.post(() -> {
+                        stSw.setEnabled(true);
+                        stSw.setChecked(!on);
+                        stSum.setText("change failed: "
+                                + e.getMessage());
+                    });
+                }
+            }).start();
+        });
 
         // Trigger pulls card — hold-to-sweep lives one tap deeper, like
         // Connection, so the everyday screen stays short.

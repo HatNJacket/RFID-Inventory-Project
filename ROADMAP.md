@@ -3,6 +3,66 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-16 (eleventh round).
 
+## 🔧 Field-test round 2 (six asks, one afternoon) — ✅ DEPLOYED 2026-09-16 (C72 4.16)
+
+- **Staged collect counts**: the item editor's +/- (and the exact-
+  count dialog) edit LOCALLY and flush ONE server write when the
+  window closes ("Count N - saves when this window closes").
+- **Case scans ask once per batch**: after a SEALED answer for a
+  product in a batch, re-scans of its case barcode just add one more
+  sealed box (server-side, `case_auto` in the scan answer; both
+  clients fall through). An "opened" first answer keeps asking - the
+  guidance is to open boxes BEFORE batch tagging. Also fixed a
+  latent crash: sealed FIRST scan creating a brand-new row hit
+  case_count=None.
+- **Returned tags vs the sold ledger** (Nick's review-task report):
+  a returns-processed restore no longer blindly hands the consumed
+  sale back. Restock SUCCESS keeps the SoldRecord consumed - the
+  return IS that sale's physical resolution (message: "its sold
+  order stays settled by this return"), so expected-tag math stops
+  hunting the unit that came back. No/failed restock hands back as
+  before, keeping every combination balanced. History's
+  return-processed row is the when/who log.
+- **Unresolved case rows print** via the what's-inside flow (the
+  earlier build's case-on-unresolved rows couldn't label - no
+  product). Legacy stuck rows get a gun dialog: UNDO, then declare
+  again naming the product.
+- **Drawer scrolls**: 8 tabs outgrew the screen and crushed every
+  row; the tab list scrolls, Settings + version pinned full-size.
+- **Whole-strip toggle on the gun**: Settings > Batch tagging gains
+  the server-stored "Whole strip at once" switch (same switch as the
+  web Queue tab, applied live, no Save).
+Suites 80/80 (returnstab 25 checks incl. ledger arithmetic;
+casedeclare 21 incl. ask-once + auto-add).
+
+## ↩️ Returns polish: done = clear + restock; case dialog rework — ✅ DEPLOYED 2026-09-16 (C72 4.14)
+
+Three field asks, same day:
+- **Done means done**: finishing any Returns-tab workflow (process
+  actions AND open-box) now CLEARS the card and leaves the outcome
+  message standing - the old auto re-lookup refilled the card and
+  wiped the message a split second later.
+- **Restock on confirmed re-entry**: as-new and used raise the
+  product's Shopify on-hand by the tag's units; open-box raises the
+  -O TWIN's by 1. Same rails as the verify raise: gated by
+  SHOPIFY_WRITE_MODE `returns_restock` (ENABLED on prod), History
+  "on-hand" event with undo, bin-map snapshot refreshed. The gun's
+  confirm dialog states the raise (that dialog IS the operator
+  confirmation, `restock:true` on the call); FAIL-SOFT - a Shopify
+  hiccup (e.g. a fresh unpublished -O draft can't take stock) becomes
+  a note in the answer, never a rollback of the RFID side. The gun
+  dialog warns NOT to also use the returns app's add-back-to-stock
+  (double count). Web flows unchanged (they don't send restock).
+- **Box of multiple products, unresolved rework**: on an unknown
+  barcode the dialog now asks WHAT'S INSIDE - type a barcode/SKU or
+  PICK FROM THIS BIN (the batch's pre-seeded rows are the bin list).
+  Declaring resolves the row to that product, registers the unknown
+  outer code as a durable CASE barcode (POST /api/cases semantics:
+  future scans auto-ask opened/sealed everywhere), and converts the
+  scans to sealed cases (boxes prefilled with the scan count).
+Suites 80/80 (test_returnstab +5 restock checks, test_casedeclare
+reworked for the contains flow + durable re-scan check).
+
 ## ↩️ C72 RETURNS tab — ✅ BUILT & DEPLOYED 2026-09-16 (C72 4.13)
 
 The approved preview (artifact "C72 Returns Bridge", Version 3),

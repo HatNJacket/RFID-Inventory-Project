@@ -9341,6 +9341,48 @@ def _returns_matches(sku: str | None) -> list[dict]:
     return out
 
 
+def _returns_restock(
+    session: Session, sku: str | None, units: int, by: str | None
+) -> tuple[bool, str]:
+    """Operator-confirmed +units on Shopify on-hand for a returned box
+    physically back in the store (Nick, 2026-09-16) - the same rails as
+    the verify raise: gated by SHOPIFY_WRITE_MODE "returns_restock",
+    History-logged with undo, bin-map snapshot refreshed. FAIL-SOFT by
+    design: the RFID side of the return is already settled when this
+    runs, so a Shopify hiccup becomes a note in the answer, never a
+    rollback. The confirm dialog on the gun is the operator's yes."""
+    if not sku:
+        return False, "On-hand untouched: no SKU on this tag."
+    if not shopify_write_enabled("returns_restock"):
+        return False, ("On-hand NOT raised - add returns_restock to "
+                       "SHOPIFY_WRITE_MODE to enable restock writes.")
+    try:
+        _require_shopify_env()
+        live = shopify.get_on_hand(sku)
+        if live is None:
+            return False, (
+                f"On-hand untouched: Shopify has no product for {sku}"
+                + (" yet - publish the draft, then set its stock."
+                   if sku.upper().endswith("-O") else ".")
+            )
+        target = live + max(1, units)
+        before = shopify.set_on_hand(sku, target)
+        _log_change(
+            session,
+            sku=sku,
+            field="on-hand",
+            old=str(before),
+            new=str(target),
+            by=by,
+        )
+        _refresh_binmap_onhand(session, sku, target)
+        return True, (f"Shopify on-hand for {sku}: {before} → {target} "
+                      f"✓ (undo from History).")
+    except Exception as error:  # noqa: BLE001 - note, never a rollback
+        return False, (f"On-hand raise failed ({error}) - raise it "
+                       f"by hand.")
+
+
 @app.get("/api/returns/tag/{epc}", dependencies=[Depends(require_user)])
 def returns_tag(epc: str, session: Session = Depends(get_session)):
     """The returned box's whole story for the Returns card: tag state
@@ -9446,6 +9488,11 @@ class ReturnsProcessIn(BaseModel):
     # forever recognizable to sweeps. Open box is NOT here: the gun
     # calls /api/openbox-returns (the -O twin flow) for that.
     action: Literal["as-new", "used", "unsellable", "display"]
+    # The box is back on the shelf, so Shopify on-hand goes UP with it
+    # (Nick, 2026-09-16). Only meaningful for as-new/used; the client's
+    # confirm dialog says it out loud, so sending true IS the
+    # operator's confirmation. Gated + fail-soft in _returns_restock.
+    restock: bool = False
     changed_by: str | None = Field(default=None, max_length=100)
 
 
@@ -9476,6 +9523,7 @@ def returns_process(
             "Pair it in a batch, or mark it NOT OURS.",
         )
     steps: list[str] = []
+    ledger_owed = 0
     if payload.action in ("as-new", "used"):
         if retired is not None:
             # Same restore unretire_tags does, for this one EPC: the
@@ -9503,10 +9551,16 @@ def returns_process(
                 new=retired.kind,
                 by=by,
             )
-            if retired.sku and (retired.ledger_consumed or 0) > 0:
-                orders_sync.unretire_units(
-                    session, retired.sku, retired.ledger_consumed
-                )
+            # The sold-ledger units this retirement consumed: whether
+            # they go BACK depends on how the return lands (below). A
+            # successful restock keeps the sale consumed - the return
+            # IS that sale's physical resolution, and handing it back
+            # is what made audits re-expect the "missing" sold unit
+            # (Nick, 2026-09-16). Without a restock, the handback
+            # keeps the books balanced the old way.
+            ledger_owed = (
+                retired.ledger_consumed or 0
+            ) if retired.sku else 0
             session.delete(retired)
             steps.append("tag restored to live")
         else:
@@ -9588,10 +9642,29 @@ def returns_process(
         new=payload.action,
         by=by,
     )
+    restock_ok = False
+    restock_note = None
+    if payload.restock and payload.action in ("as-new", "used"):
+        restock_ok, restock_note = _returns_restock(
+            session, product.sku, product.case_units or 1, by
+        )
+    if ledger_owed:
+        if restock_ok:
+            # The sale this tag was retired against stays CONSUMED:
+            # the returned unit now lives in the raised on-hand, so
+            # expected-tag math no longer hunts a "missing" sold unit.
+            # The return-processed History row is the when/who log.
+            steps.append(
+                "its sold order stays settled by this return"
+            )
+        else:
+            orders_sync.unretire_units(
+                session, product.sku, ledger_owed
+            )
     session.commit()
     tail = {
-        "as-new": "Shelve it in its home bin; the returns app handles "
-                  "the refund and any stock re-add.",
+        "as-new": "Shelve it in its home bin; the refund happens in "
+                  "the returns app.",
         "used": "Log the return in the returns app (20% fee, used "
                 "draft); relabel when it relists.",
         "unsellable": "Parts bin or disposal; log it in the returns "
@@ -9603,7 +9676,11 @@ def returns_process(
         "action": payload.action,
         "epc": e.upper(),
         "sku": product.sku,
-        "message": f"{' + '.join(steps).capitalize()}. {tail}",
+        "restock": restock_note,
+        "message": (
+            f"{' + '.join(steps).capitalize()}. {tail}"
+            + (f" {restock_note}" if restock_note else "")
+        ),
     }
 
 
@@ -9804,6 +9881,11 @@ class OpenboxReturnIn(BaseModel):
     # Box in hand (Nick, 2026-09-16): the old tag was scanned right off
     # the returned unit - unpair/flip it NOW instead of watching for it.
     peel_old: bool = False
+    # Raise the -O TWIN's Shopify on-hand by 1 - the returned unit is
+    # physically back and sells as the twin (Nick, 2026-09-16, Returns
+    # tab). Confirmed by the client's dialog; gated + fail-soft in
+    # _returns_restock. The web's Set as Open Box doesn't send it.
+    restock: bool = False
     created_by: str | None = Field(default=None, max_length=100)
 
 
@@ -9973,12 +10055,22 @@ def create_openbox_return(
             + (" (draft created)" if created_listing else ""),
         by=(payload.created_by or "").strip() or None,
     )
+    restock_note = None
+    if payload.restock:
+        # The unit sells as the twin now, so the twin's count gets it.
+        # A fresh DRAFT usually can't take stock yet - the note says so
+        # and the raise waits for publishing.
+        _ok, restock_note = _returns_restock(
+            session, ob_sku, 1,
+            (payload.created_by or "").strip() or None,
+        )
     session.commit()
     return {
         "openbox": listing,
         "created_listing": created_listing,
         "return": ret.as_dict() if ret is not None else None,
         "old_tag": old_note,
+        "restock": restock_note,
         "message": (
             (old_note + " " if old_note else "")
             + (f"Draft listing {ob_sku} created. "
@@ -9986,6 +10078,7 @@ def create_openbox_return(
             + (f"Return watch open - sweeps hearing {base}'s old "
                "sold tags will ask about this unit."
                if want_watch else "No watch needed.")
+            + (f" {restock_note}" if restock_note else "")
         ),
     }
 
@@ -10478,16 +10571,36 @@ def batch_scan(
     # because the answer changes the count, the labels and the tags — then
     # carry on as a scan of the product INSIDE.
     case = _case_for(session, code)
+    case_auto = False
     if case is not None and payload.case_action is None:
-        return {
-            "needs_case_decision": True,
-            "case": case,
-            "item": None,
-            "message": (
-                f"{code} is a case of {case['units']} x {case['sku']}"
-                + (f" — {case['scan_note']}" if case.get("scan_note") else "")
-            ),
-        }
+        # Ask ONCE PER BATCH (Nick, 2026-09-16): a prior SEALED answer
+        # for this product here means every later scan of the case code
+        # just adds one more sealed box - one label, N units - as if
+        # the operator answered again. Boxes meant to be opened get
+        # opened BEFORE batch tagging. (An "opened" first answer leaves
+        # no case rows, so the question simply comes back - the rare
+        # path stays explicit.)
+        for i in _batch_items(session, batch_id):
+            if (
+                i.resolved
+                and _up(i.sku) == _up(case["sku"])
+                and (i.case_count or 0) > 0
+                and i.case_units == case["units"]
+            ):
+                payload.case_action = "sealed"
+                case_auto = True
+                break
+        if payload.case_action is None:
+            return {
+                "needs_case_decision": True,
+                "case": case,
+                "item": None,
+                "message": (
+                    f"{code} is a case of {case['units']} x {case['sku']}"
+                    + (f" — {case['scan_note']}"
+                       if case.get("scan_note") else "")
+                ),
+            }
 
     lookup = case["sku"] if case is not None else code
     product = None
@@ -10572,8 +10685,10 @@ def batch_scan(
         # exactly like that many loose boxes.
         item.qty_scanned += case["units"]
     else:
-        # Sealed: ONE box, one label, one tag — but worth `units` of stock.
-        item.case_count += 1
+        # Sealed: ONE box, one label, one tag — but worth `units` of
+        # stock. (item.case_count is None on a row born from THIS scan
+        # - the column default only lands at flush.)
+        item.case_count = (item.case_count or 0) + 1
         item.case_units = case["units"]
     # First physical contact stamps the walking order — labels queue in
     # this order so the printed stack matches the shelf walk.
@@ -10614,6 +10729,9 @@ def batch_scan(
         # Present whenever a case was scanned, so the note shows here too.
         "case": case,
         "case_action": payload.case_action if case is not None else None,
+        # This scan repeated the batch's earlier SEALED answer on its
+        # own - one more box, no dialog.
+        "case_auto": case_auto,
     }
 
 
@@ -10623,6 +10741,11 @@ class ItemCaseIn(BaseModel):
     boxes: int = Field(default=1, ge=1, le=200)
     # Open every declared case back into loose boxes (1 scan each).
     undo: bool = False
+    # UNRESOLVED rows (Nick, 2026-09-16): the barcode or SKU of the
+    # product INSIDE the box. The row resolves to it, and the unknown
+    # outer code is saved as that product's CASE barcode, so every
+    # future scan of this box auto-asks opened/sealed.
+    contains: str | None = Field(default=None, max_length=100)
     changed_by: str | None = Field(default=None, max_length=100)
 
 
@@ -10711,6 +10834,58 @@ def batch_item_case(
         raise HTTPException(
             422, "How many units are inside each box?"
         )
+    case_code_note = ""
+    if not item.resolved:
+        # The unknown outer code holds multiples of a KNOWN product:
+        # name it (typed, or picked from the bin) and the row resolves
+        # to it, with the outer code registered as its case barcode.
+        inner = (payload.contains or "").strip()
+        if not inner:
+            raise HTTPException(
+                422,
+                "Which product is inside the box? Type its barcode or "
+                "SKU (or pick it from this bin) - the unknown outer "
+                "code becomes that product's case barcode.",
+            )
+        product = None
+        try:
+            product = product_by_barcode(inner)
+        except HTTPException as error:
+            if error.status_code != 404:
+                raise
+        if product is None:
+            raise HTTPException(
+                404, f"No product found for {inner} - check the "
+                     f"barcode or SKU."
+            )
+        code = (item.scanned_code or "").strip()
+        if code:
+            # Durable: any future scan of this box - any tab, any
+            # batch - now asks opened/sealed on its own.
+            case_row = session.get(CaseCode, code)
+            if case_row is None:
+                case_row = CaseCode(
+                    barcode=code, sku=product.get("sku") or inner
+                )
+                session.add(case_row)
+            case_row.sku = product.get("sku") or inner
+            case_row.units = payload.units
+            case_row.product_title = (
+                (product.get("product_title") or "")[:255] or None
+            )
+            case_row.created_by = (
+                case_row.created_by or payload.changed_by
+            )
+            case_row.updated_at = datetime.now(timezone.utc)
+        _apply_product_to_item(session, item, product, batch)
+        item.label_name = None
+        sku_label = (item.sku or item.scanned_code
+                     or item.product_title or "unit")
+        if code:
+            case_code_note = (
+                f" {code} is saved as {sku_label}'s case barcode - "
+                f"future scans of this box recognize it everywhere."
+            )
     if (
         item.case_count
         and item.case_units
@@ -10754,7 +10929,7 @@ def batch_item_case(
             )
             + f". Each prints ONE label reading "
               f"\"{payload.units} x {sku_label}\" and its tag counts "
-              f"{payload.units} units."
+              f"{payload.units} units." + case_code_note
         ),
     }
 

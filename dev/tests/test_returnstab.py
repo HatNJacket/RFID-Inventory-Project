@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(
 os.environ["SHOPIFY_STORE"]="t.myshopify.com"; os.environ["SHOPIFY_CLIENT_ID"]="x"
 os.environ["SHOPIFY_CLIENT_SECRET"]="x"
 os.environ["ORDERS_SYNC_DISABLE"]="1"
+os.environ["SHOPIFY_WRITE_MODE"]="returns_restock"
 os.environ.pop("STATION_KEY", None); os.environ.pop("PRINT_AGENT_KEY", None)
 os.environ.pop("RETURNS_API_URL", None); os.environ.pop("RETURNS_API_TOKEN", None)
 db = os.path.join(tempfile.gettempdir(), "rfid_returnstab_test.db")
@@ -20,7 +21,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.database import get_engine
 from app.models import (BinMapEntry, PrintJob, RetiredTag,
-                        RfidAssignment)
+                        RfidAssignment, SoldRecord)
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 fails=[]
@@ -150,6 +151,109 @@ with patch("app.main._returns_app_orders", return_value=FAKE_ORDERS):
                 json={"epc": SOLD, "action": "nonsense"})
     check("unknown action refused 422", r.status_code == 422,
           r.text[:200])
+
+    # ---- restock: the box is back, on-hand goes up with it -------------
+    SOLD2 = "0C0E000000000000000000B5"
+    with Session(get_engine()) as s:
+        s.add(RetiredTag(rfid_id=SOLD2, sku="RET-1",
+                         product_title="Ret Cam",
+                         shopify_variant_id="t:R1",
+                         kind="presumed-sold"))
+        s.commit()
+    with patch("app.main.shopify.get_on_hand", return_value=5), \
+         patch("app.main.shopify.set_on_hand", return_value=5):
+        r = cl.post("/api/returns/process",
+                    json={"epc": SOLD2, "action": "as-new",
+                          "restock": True, "changed_by": "C72"})
+        d = r.json()
+        check("as-new + restock raises on-hand 5 -> 6",
+              r.status_code == 200
+              and "RET-1: 5 → 6" in (d.get("restock") or "")
+              and "5 → 6" in d["message"], r.text[:350])
+        fake_listing = {"shopify_variant_id": "t:RO",
+                        "shopify_product_id": "p:RO",
+                        "product_title": "Ret Cam - Open Box",
+                        "status": "ACTIVE", "sku": "RET-1-O",
+                        "barcode": None}
+        with patch("app.main.shopify.find_sku_listing",
+                   return_value=fake_listing):
+            r = cl.post("/api/openbox-returns",
+                        json={"sku": "RET-1", "create_draft": False,
+                              "peel_old": True, "epc": SOLD2,
+                              "restock": True, "created_by": "C72"})
+            d = r.json()
+            check("open-box + restock raises the TWIN's on-hand",
+                  r.status_code == 201
+                  and "RET-1-O: 5 → 6" in (d.get("restock") or ""),
+                  r.text[:350])
+    with patch("app.main.shopify.get_on_hand",
+               side_effect=RuntimeError("boom")):
+        with Session(get_engine()) as s:
+            s.add(RetiredTag(rfid_id="0C0E000000000000000000B6",
+                             sku="RET-1", product_title="Ret Cam",
+                             shopify_variant_id="t:R1",
+                             kind="presumed-sold"))
+            s.commit()
+        r = cl.post("/api/returns/process",
+                    json={"epc": "0C0E000000000000000000B6",
+                          "action": "as-new", "restock": True})
+        d = r.json()
+        check("Shopify hiccup is a note, never a rollback",
+              r.status_code == 200
+              and "raise it by hand" in d["message"], r.text[:350])
+        with Session(get_engine()) as s:
+            a = s.scalar(select(RfidAssignment).where(
+                RfidAssignment.rfid_id
+                == "0C0E000000000000000000B6"))
+            check("RFID side still settled despite the hiccup",
+                  a is not None, a)
+    r = cl.post("/api/returns/process",
+                json={"epc": SOLD2, "action": "used"})
+    check("no restock flag = restock is null",
+          r.status_code == 200 and r.json().get("restock") is None,
+          r.text[:250])
+
+    # ---- the sold-order arithmetic (Nick, 2026-09-16) ------------------
+    # A returned tag whose retirement consumed a sale: restock SUCCESS
+    # keeps that sale consumed (the return resolves it - no more
+    # "expecting N + 1 sold" review noise); no/failed restock hands it
+    # back like the plain undo always did.
+    L1 = "0C0E000000000000000000B7"
+    L2 = "0C0E000000000000000000B8"
+    with Session(get_engine()) as s:
+        s.add(SoldRecord(order_id="o1", order_name="#1", sku="RET-1",
+                         quantity=2, retired=2))
+        s.add(RetiredTag(rfid_id=L1, sku="RET-1", product_title="Ret Cam",
+                         shopify_variant_id="t:R1", kind="presumed-sold",
+                         ledger_consumed=1))
+        s.add(RetiredTag(rfid_id=L2, sku="RET-1", product_title="Ret Cam",
+                         shopify_variant_id="t:R1", kind="presumed-sold",
+                         ledger_consumed=1))
+        s.commit()
+    with patch("app.main.shopify.get_on_hand", return_value=5), \
+         patch("app.main.shopify.set_on_hand", return_value=5):
+        r = cl.post("/api/returns/process",
+                    json={"epc": L1, "action": "as-new",
+                          "restock": True})
+        d = r.json()
+        check("restocked return keeps the sale consumed",
+              r.status_code == 200
+              and "stays settled by this return" in d["message"],
+              r.text[:350])
+    with Session(get_engine()) as s:
+        row = s.scalar(select(SoldRecord).where(
+            SoldRecord.order_id == "o1"))
+        check("SoldRecord.retired untouched after restocked return",
+              row.retired == 2, row.retired)
+    r = cl.post("/api/returns/process",
+                json={"epc": L2, "action": "as-new"})
+    check("un-restocked return still hands the sale back",
+          r.status_code == 200, r.text[:250])
+    with Session(get_engine()) as s:
+        row = s.scalar(select(SoldRecord).where(
+            SoldRecord.order_id == "o1"))
+        check("SoldRecord.retired handed back without a restock",
+              row.retired == 1, row.retired)
 
     # ---- history got the umbrella event --------------------------------
     hist = cl.get("/api/history?limit=50").json()["events"]
