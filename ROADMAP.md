@@ -3,6 +3,22 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-16 (eleventh round).
 
+## 🔍 Check step opens the real Edit-product view — ✅ DEPLOYED 2026-09-16
+
+Nick: "clicking an item on check step produces the actual edit
+product view rather than what it currently shows."
+- Clicking a resolved row now opens the product window
+  (openProductHistory) - the same Edit-product view every other tab
+  uses (label lines + preview, Edit product dock, bin chip, flags,
+  live tags, full history) - instead of the check-editor clone.
+- Batch-ONLY decisions stay reachable: flagged rows carry a
+  "🛠 Batch fixes…" button that opens the old check editor (pick
+  between listings sharing a barcode, wrong-bin drop/move/ignore,
+  the bundle call, split, per-row reprint). Unresolved rows still
+  open the check editor directly - the barcode rescue lives there
+  and there is no product to open.
+Browser-verified all three routes on run_local.
+
 ## 🖨️ Whole-strip printing + hand-declared cases — ✅ DEPLOYED 2026-09-16 (C72 4.12)
 
 Two asks in one round (Nick, 2026-09-16):

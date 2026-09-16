@@ -7236,7 +7236,43 @@ function renderCheckList() {
       li.querySelector(".bcell__info").append(flags);
     }
     li.classList.add("u-pointer");
-    li.addEventListener("click", () => openBitem(entry));
+    // Clicking a row opens the ACTUAL Edit-product view (Nick,
+    // 2026-09-16) - the same product window every other tab uses -
+    // instead of the check editor clone. Unresolved rows keep the
+    // check editor: the barcode rescue lives there, and there is no
+    // product to open.
+    const canOpenProduct =
+      entry.item.resolved && (entry.item.sku || entry.item.barcode);
+    li.addEventListener("click", () =>
+      canOpenProduct
+        ? openProductHistory(entry.item.sku || entry.item.barcode)
+        : openBitem(entry)
+    );
+    // Batch-only decisions (pick between listings sharing a barcode,
+    // wrong-bin actions, the bundle call, per-row reprints) still
+    // live in the check editor - its own button on flagged rows, so
+    // nothing becomes unreachable.
+    if (
+      canOpenProduct &&
+      (entry.flags.length || (entry.candidates || []).length > 1)
+    ) {
+      const row = document.createElement("div");
+      row.className = "bcell__meta";
+      const fix = document.createElement("button");
+      fix.className = "reset";
+      fix.type = "button";
+      fix.textContent = "🛠 Batch fixes…";
+      fix.title =
+        "Check-step tools for this row: pick between listings sharing " +
+        "the barcode, act on the wrong-bin warning, make the bundle " +
+        "call, edit the label, or reprint";
+      fix.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        openBitem(entry);
+      });
+      row.append(fix);
+      li.querySelector(".bcell__info").append(row);
+    }
     list.append(li);
   });
 }
