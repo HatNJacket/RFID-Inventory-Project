@@ -964,7 +964,10 @@ async function openObxWindow(p) {
   document.getElementById("obx-listing").textContent = "Checking Shopify…";
   document.getElementById("obx-retired").innerHTML = "";
   document.getElementById("obx-msg").textContent = "";
-  document.getElementById("obx-watch").checked = true;
+  document.getElementById("obx-oldtag").value = "";
+  const watchEl = document.getElementById("obx-watch");
+  watchEl.checked = true;
+  watchEl.disabled = false;
   document.getElementById("obx-go-print").disabled = true;
   document.getElementById("obx-go").disabled = true;
   document.getElementById("obx-overlay").hidden = false;
@@ -1023,6 +1026,9 @@ async function obxSubmit(printAfter) {
   ];
   goBtns.forEach((b) => (b.disabled = true));
   const picked = document.querySelector('input[name="obx-epc"]:checked');
+  // A scanned in-hand tag outranks the retired-list radios: it is
+  // unpaired on the spot and the watch stands down.
+  const inHand = document.getElementById("obx-oldtag").value.trim();
   try {
     const res = await postJson("/api/openbox-returns", {
       sku: p.sku,
@@ -1031,7 +1037,8 @@ async function obxSubmit(printAfter) {
       bin_location: p.bin_location || null,
       create_draft: !obxInfo.listing,
       watch: document.getElementById("obx-watch").checked,
-      epc: picked && picked.value ? picked.value : null,
+      epc: inHand || (picked && picked.value ? picked.value : null),
+      peel_old: !!inHand,
       created_by: operatorEl.value || null,
     });
     document.getElementById("obx-overlay").hidden = true;
@@ -1073,6 +1080,17 @@ document
   .addEventListener("click", () => obxSubmit(false));
 document.getElementById("obx-cancel").addEventListener("click", () => {
   document.getElementById("obx-overlay").hidden = true;
+});
+// Scanning the in-hand tag makes the watch pointless - THE tag is
+// dealt with. Clearing the box brings the watch back.
+document.getElementById("obx-oldtag").addEventListener("input", () => {
+  const has = !!document.getElementById("obx-oldtag").value.trim();
+  const watchEl = document.getElementById("obx-watch");
+  watchEl.checked = !has;
+  watchEl.disabled = has;
+});
+document.getElementById("obx-oldtag").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") e.preventDefault(); // wedge's Enter stays put
 });
 
 // One label per unit scanned: when auto-print is on, any product that loads

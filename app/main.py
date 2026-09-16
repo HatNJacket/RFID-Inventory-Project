@@ -9403,6 +9403,9 @@ class OpenboxReturnIn(BaseModel):
     watch: bool = True
     # The old tag's EPC, when the operator knows which one came back.
     epc: str | None = Field(default=None, max_length=128)
+    # Box in hand (Nick, 2026-09-16): the old tag was scanned right off
+    # the returned unit - unpair/flip it NOW instead of watching for it.
+    peel_old: bool = False
     created_by: str | None = Field(default=None, max_length=100)
 
 
@@ -9459,9 +9462,83 @@ def create_openbox_return(
         }
         created_listing = True
 
+    # Box in hand (Nick, 2026-09-16): the old tag was scanned right off
+    # the returned unit, so it is dealt with NOW instead of watched for.
+    # A live tag retires as replaced (peel the sticker); a presumed-sold
+    # tombstone flips to replaced the way the watch's peeled answer
+    # does. Either way the old EPC stops answering hunts and audits,
+    # and no watch opens - the unit's tag is accounted for.
+    old_note = None
+    if payload.peel_old:
+        epc = (payload.epc or "").strip()
+        if not epc:
+            raise HTTPException(
+                422, "Peeling the old tag needs its EPC - scan the "
+                     "sticker on the returned box.")
+        live = session.scalar(
+            select(RfidAssignment).where(
+                func.upper(RfidAssignment.rfid_id) == epc.upper()
+            )
+        )
+        if live is not None:
+            if _up(live.sku) not in (base.upper(), ob_sku.upper()):
+                raise HTTPException(
+                    422,
+                    f"…{epc[-6:]} is a live tag of "
+                    f"{live.sku or live.product_title}, not {base} - "
+                    "scan the sticker on the returned box.",
+                )
+            rt = RetiredTag(
+                rfid_id=live.rfid_id,
+                sku=live.sku,
+                product_title=live.product_title,
+                shopify_variant_id=live.shopify_variant_id,
+                bin_location=live.bin_location,
+                case_units=live.case_units,
+                condition=live.condition,
+                kind="replaced",
+                retired_by=payload.created_by,
+                note="open-box return - old sticker peeled",
+            )
+            session.add(rt)
+            _log_change(
+                session,
+                sku=live.sku,
+                title=live.product_title,
+                variant_id=live.shopify_variant_id,
+                field="tag-retired",
+                old=live.rfid_id,
+                new="replaced",
+                by=(payload.created_by or "").strip() or None,
+            )
+            session.delete(live)
+            old_note = (f"Old tag …{epc[-6:]} unpaired - peel the "
+                        "sticker off.")
+        else:
+            r = session.scalar(
+                select(RetiredTag).where(
+                    func.upper(RetiredTag.rfid_id) == epc.upper()
+                )
+            )
+            if r is not None:
+                if r.kind == "presumed-sold":
+                    r.kind = "replaced"
+                    r.note = (
+                        f"{(r.note + ' - ') if r.note else ''}open-box "
+                        "return; old sticker peeled"
+                    )[:255]
+                old_note = (f"Old tag …{epc[-6:]} was already retired - "
+                            "marked peeled.")
+            else:
+                old_note = (f"…{epc[-6:]} is not in the system - "
+                            "nothing to unpair; peel it anyway.")
+
     ret = None
     task = None
-    if payload.watch:
+    # A peeled-in-hand return needs no watch: THE unit's tag is dealt
+    # with, and watching would ask about other units' sold tags.
+    want_watch = payload.watch and not payload.peel_old
+    if want_watch:
         task = ReviewTask(
             category="openbox-return",
             sku=base,
@@ -9503,12 +9580,14 @@ def create_openbox_return(
         "openbox": listing,
         "created_listing": created_listing,
         "return": ret.as_dict() if ret is not None else None,
+        "old_tag": old_note,
         "message": (
-            (f"Draft listing {ob_sku} created. "
-             if created_listing else "")
+            (old_note + " " if old_note else "")
+            + (f"Draft listing {ob_sku} created. "
+               if created_listing else "")
             + (f"Return watch open - sweeps hearing {base}'s old "
                "sold tags will ask about this unit."
-               if payload.watch else "No watch opened.")
+               if want_watch else "No watch needed.")
         ),
     }
 

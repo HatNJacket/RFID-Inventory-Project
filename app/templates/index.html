@@ -1594,6 +1594,11 @@
         <div class="linkbox__title">Set as Open Box - <span id="obx-sku" class="mono">—</span></div>
         <p class="linkbox__text" id="obx-listing">…</p>
         <div id="obx-retired"></div>
+        <!-- Box in hand (Nick, 2026-09-16): scan the sticker on the
+             returned unit and it is unpaired on the spot - no watch. -->
+        <div class="step__label u-mt10">Old tag on the returned box - scan it to unpair now (optional)</div>
+        <input id="obx-oldtag" class="recent__search" type="text"
+               placeholder="Scan the old sticker's EPC" autocomplete="off" />
         <label class="overwrite__ack u-mt10">
           <input type="checkbox" id="obx-watch" checked />
           <span>Watch sweeps for this product's retired sold tags and ask

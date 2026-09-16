@@ -3,6 +3,30 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-15 (tenth round).
 
+## ↩️ Open-box return with the box IN HAND — ✅ DEPLOYED 2026-09-16
+
+Nick: "unpair the old tag, check for an open box listing and create
+one if there isn't one, then print that new tag with the -O barcode
+suffix." The watch-and-prompt loop already covered a tag SOMEWHERE;
+this covers the tag on the box you're holding.
+- /api/openbox-returns gained `peel_old`: with the scanned EPC, a
+  LIVE tag of the product retires as replaced on the spot (condition
+  carried, History tag-retired), a presumed-sold tombstone flips to
+  replaced exactly like the watch's peeled answer, an unknown EPC is
+  reported ("nothing to unpair; peel it anyway"), and another
+  product's live tag is refused. When peeling, NO watch/Review task
+  opens - the unit's tag is accounted for (server-enforced even if
+  watch:true rides along).
+- Web "Set as Open Box" overlay gained an "Old tag on the returned
+  box - scan it to unpair now" input; filling it unchecks + disables
+  the watch checkbox, and the wedge's Enter stays in the field. The
+  rest is the existing flow: twin found or drafted, card flips,
+  "Switch card & print" queues the -O label (base SKU line, OPEN BOX
+  bin note; the -O BARCODE is written by the print-time migration
+  when the printer claims the job, as before).
+Suites 77/77 (new test_obxpeel.py). The future C72 Returns tab
+reuses peel_old as its open-box action.
+
 ## 📦 Per-box conditions — ✅ DEPLOYED 2026-09-16 (C72 4.11)
 
 The foundation for returns + future condition workflows (Nick: "each
