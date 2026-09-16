@@ -132,6 +132,34 @@ def _up(s: str | None) -> str:
     return s.strip().upper() if s else ""
 
 
+# Per-BOX conditions (Nick, 2026-09-16): what state ONE physical unit is
+# in - the foundation for returns and future condition workflows.
+# Distinct from stock buckets (available/committed/on-hand). NULL/absent
+# = "good", the normal box; the slug is what's stored, the label is what
+# every surface prints. Semantics are deliberately inert for now: no
+# count, audit or sweep math reads these yet.
+BOX_CONDITIONS = {
+    "good": "Good",
+    "open-box": "Open Box",
+    "used": "Used",
+    "damaged": "Damaged",
+    "needs-parts": "Needs Parts",
+    "display": "Display Only",
+    "safety-stock": "Safety Stock",
+}
+
+
+def _condition_label(slug: str | None) -> str:
+    return BOX_CONDITIONS.get(slug or "good", slug or "Good")
+
+
+def _seed_condition(a: "RfidAssignment") -> None:
+    """Conditions we already know at pair time: a tag paired to a -O
+    twin is on an open-box unit, by definition."""
+    if a.condition is None and _up(a.sku).endswith("-O"):
+        a.condition = "open-box"
+
+
 def _require_shopify_env() -> None:
     if config.check_shopify_env():
         raise HTTPException(
@@ -1071,6 +1099,7 @@ def create_assignment(
     assignment.suspect = (
         re.fullmatch(r"[0-9A-Fa-f]{24}", payload.rfid_id) is None
     )
+    _seed_condition(assignment)
     session.add(assignment)
     # A pairing answers the oldest open audit find for this SKU (the
     # tagless-box work queue from the C72 AUDIT tab), and an EPC off a
@@ -1190,6 +1219,7 @@ def sweep_assign(
             assigned_at=now,
         )
         a.suspect = re.fullmatch(r"[0-9A-Fa-f]{24}", epc) is None
+        _seed_condition(a)
         session.add(a)
         assigned.append(a)
     # Each newly tied tag consumes an owed printed label wherever one
@@ -1323,6 +1353,7 @@ def tags_release(payload: TagChainIn, session: Session = Depends(get_session)):
             case_units=row.case_units,
             suspect=row.suspect,
             batch_id=row.batch_id,
+            condition=row.condition,
             assigned_at=row.assigned_at,
             assigned_by=row.assigned_by,
             released_at=now,
@@ -1413,6 +1444,7 @@ def tags_reapply(payload: TagChainIn, session: Session = Depends(get_session)):
             case_units=row.case_units,
             suspect=row.suspect,
             batch_id=row.batch_id,
+            condition=row.condition,
             assigned_at=row.assigned_at or now,
             assigned_by=row.assigned_by,
         ))
@@ -1583,6 +1615,8 @@ def tag_info(rfid_id: str, session: Session = Depends(get_session)):
             f"This tag says bin {row.bin_location}, but Shopify now puts "
             f"{row.sku} in {', '.join(live_bins)}."
         )
+    if row.condition:
+        notes.append(f"Box condition: {_condition_label(row.condition)}.")
     if row.suspect:
         notes.append("Flagged as a SUSPECT read when it was paired — the "
                      "EPC doesn't look like a normal tag.")
@@ -1618,7 +1652,78 @@ def tag_info(rfid_id: str, session: Session = Depends(get_session)):
              "status": batch.status}
             if batch else None
         ),
+        "condition": row.condition,
+        "condition_label": _condition_label(row.condition),
         "notes": notes,
+    }
+
+
+class TagConditionIn(BaseModel):
+    """Set ONE box's condition (Nick, 2026-09-16). "good" or empty
+    clears back to the default."""
+
+    condition: str | None = Field(default=None, max_length=20)
+    worker: str | None = Field(default=None, max_length=100)
+
+
+@app.post(
+    "/api/tags/{rfid_id}/condition",
+    dependencies=[Depends(require_user)],
+)
+def set_tag_condition(
+    rfid_id: str,
+    payload: TagConditionIn,
+    session: Session = Depends(get_session),
+):
+    """The per-box condition setter. Applies to a LIVE tag; the value
+    rides the record through retire/unretire and release/re-apply.
+    History-logged; setting the same value is a no-op answer."""
+    epc = (rfid_id or "").strip()
+    row = session.scalar(
+        select(RfidAssignment).where(
+            func.upper(RfidAssignment.rfid_id) == epc.upper()
+        )
+    )
+    if row is None:
+        raise HTTPException(
+            404, "No live tag with that EPC - conditions sit on the box "
+                 "a live tag is stuck to.")
+    want = (payload.condition or "").strip().lower()
+    if want in ("", "good", "none"):
+        want = None
+    elif want not in BOX_CONDITIONS:
+        raise HTTPException(
+            422,
+            "Unknown condition. One of: "
+            + ", ".join(sorted(BOX_CONDITIONS)) + ".",
+        )
+    if want == row.condition:
+        return {
+            "epc": row.rfid_id, "condition": row.condition,
+            "condition_label": _condition_label(row.condition),
+            "message": f"Already {_condition_label(row.condition)}.",
+        }
+    old = row.condition
+    row.condition = want
+    _log_change(
+        session,
+        sku=row.sku,
+        title=row.product_title,
+        variant_id=row.shopify_variant_id,
+        field="tag-condition",
+        old=f"…{row.rfid_id[-6:]}: {_condition_label(old)}",
+        new=_condition_label(want),
+        by=(payload.worker or "").strip() or None,
+    )
+    session.commit()
+    return {
+        "epc": row.rfid_id,
+        "condition": row.condition,
+        "condition_label": _condition_label(row.condition),
+        "message": (
+            f"…{row.rfid_id[-6:]} marked {_condition_label(want)} "
+            f"(was {_condition_label(old)})."
+        ),
     }
 
 
@@ -2797,6 +2902,7 @@ def complete_print_job(
         bin_location=_strip_box_note(job.bin_location),
         assigned_by=job.requested_by or "printer",
     )
+    _seed_condition(assignment)
     session.add(assignment)
     try:
         session.commit()
@@ -4688,6 +4794,7 @@ def lower_on_hand(
             shopify_variant_id=t.shopify_variant_id,
             bin_location=t.bin_location,
             case_units=t.case_units,
+            condition=t.condition,
             kind="presumed-sold",
             retired_by=payload.changed_by,
         )
@@ -4801,6 +4908,7 @@ def undo_lower_on_hand(
             sku=r.sku,
             bin_location=r.bin_location,
             case_units=r.case_units,
+            condition=r.condition,
             assigned_by=payload.changed_by,
         ))
         _log_change(
@@ -8969,6 +9077,7 @@ def retire_tags(
             shopify_variant_id=t.shopify_variant_id,
             bin_location=t.bin_location,
             case_units=t.case_units,
+            condition=t.condition,
             kind=payload.kind,
             retired_by=payload.changed_by,
             note=payload.note,
@@ -9071,6 +9180,7 @@ def unretire_tags(
             sku=r.sku,
             bin_location=r.bin_location,
             case_units=r.case_units,
+            condition=r.condition,
             assigned_by=payload.changed_by,
         ))
         _log_change(
@@ -9575,6 +9685,7 @@ def resolve_openbox_return(
             or r.bin_location
         ),
         case_units=r.case_units,
+        condition="open-box",
         assigned_by=payload.resolved_by,
     ))
     if r.sku and (r.ledger_consumed or 0) > 0:
@@ -9686,6 +9797,7 @@ def cleanup_silent_tags(
                 shopify_variant_id=r.shopify_variant_id,
                 bin_location=r.bin_location,
                 case_units=r.case_units,
+                condition=r.condition,
                 kind=kind,
                 retired_by=by,
                 note=note,
@@ -9802,6 +9914,7 @@ def replace_dead_tag(
         shopify_variant_id=target.shopify_variant_id,
         bin_location=target.bin_location,
         case_units=target.case_units,
+        condition=target.condition,
         kind=kind,
         retired_by=payload.changed_by,
         note=f"batch {batch_id} · {batch.bin_name}",
@@ -13689,6 +13802,7 @@ def locate_pair_unlinked(
         bin_location=product.get("bin_location"),
         assigned_by=(payload.worker or "").strip()[:100] or None,
     )
+    _seed_condition(a)
     session.add(a)
     # Consume one owed printed label of this product - EPC-exact when
     # the hunted sticker IS a printed label, else newest owing batch
@@ -14212,6 +14326,7 @@ def epcs_retire_sold(
             shopify_variant_id=t.shopify_variant_id,
             bin_location=t.bin_location,
             case_units=t.case_units,
+            condition=t.condition,
             kind="presumed-sold",
             retired_by=by,
             note=note,
@@ -14312,6 +14427,7 @@ def epcs_retire_sold_undo(
             sku=r.sku,
             bin_location=r.bin_location,
             case_units=r.case_units,
+            condition=r.condition,
             assigned_by=(payload.worker or "").strip()[:100] or None,
         ))
         _log_change(
@@ -15172,6 +15288,7 @@ def batch_pair(
     assignment.suspect = (
         re.fullmatch(r"[0-9A-Fa-f]{24}", payload.epc) is None
     )
+    _seed_condition(assignment)
     session.add(assignment)
     # A pairing answers the oldest open audit find for this SKU (the
     # tagless-box work queue from the C72 AUDIT tab), and an EPC off a
@@ -16765,6 +16882,7 @@ def retire_sold_n(
             shopify_variant_id=t.shopify_variant_id,
             bin_location=t.bin_location,
             case_units=t.case_units,
+            condition=t.condition,
             kind="presumed-sold",
             retired_by=by,
             note=f"review task #{task.id} · verdict retire",
@@ -16869,6 +16987,7 @@ def retire_all_sold(
             shopify_variant_id=t.shopify_variant_id,
             bin_location=t.bin_location,
             case_units=t.case_units,
+            condition=t.condition,
             kind="presumed-sold",
             retired_by=by,
             note=f"review task #{task.id} · on-hand 0",
@@ -18781,6 +18900,7 @@ _CHANGE_TYPE_LABELS = {
     "backorder-debt-clear": "backorder-cleared",
     "epc-not-ours": "not-our-tag",
     "draft-created": "draft-created",
+    "tag-condition": "condition-set",
 }
 
 

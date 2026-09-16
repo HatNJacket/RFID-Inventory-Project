@@ -373,6 +373,7 @@ const EVENT_META = {
   "openbox-return": ["Open-Box Return", "#b06a2e"],
   "not-our-tag": ["Not Our Tag", "#6d3f5b"],
   "draft-created": ["Draft Created", "#2f6f44"],
+  "condition-set": ["Box Condition", "#4a7a6a"],
   "printing-stopped": ["Stopped Printing", "#d72c0d"],
   "printing-resumed": ["Resumed Printing", "#116329"],
   "on-hand-updated": ["Raised On-hand", "#0c5132"],
@@ -3950,6 +3951,51 @@ document.getElementById("bulk-warn-keep").addEventListener("click", () => {
 });
 
 // --- Recent list -----------------------------------------------------------
+// Per-BOX conditions (Nick, 2026-09-16) - mirror of the server's
+// BOX_CONDITIONS; the server validates, this list just draws.
+const BOX_CONDITIONS = {
+  "good": "Good",
+  "open-box": "Open Box",
+  "used": "Used",
+  "damaged": "Damaged",
+  "needs-parts": "Needs Parts",
+  "display": "Display Only",
+  "safety-stock": "Safety Stock",
+};
+
+function conditionSelect(a) {
+  const sel = document.createElement("select");
+  sel.className = "condsel";
+  sel.title =
+    "This BOX's condition - rides the tag through retire/return. " +
+    "Good is the default.";
+  for (const [slug, label] of Object.entries(BOX_CONDITIONS)) {
+    const o = document.createElement("option");
+    o.value = slug;
+    o.textContent = label;
+    sel.append(o);
+  }
+  sel.value = a.condition || "good";
+  sel.classList.toggle("condsel--set", !!a.condition);
+  sel.addEventListener("change", async () => {
+    sel.disabled = true;
+    try {
+      const r = await postJson(
+        `/api/tags/${encodeURIComponent(a.rfid_id)}/condition`,
+        { condition: sel.value, worker: operatorEl.value || null }
+      );
+      a.condition = r.condition;
+      sel.classList.toggle("condsel--set", !!r.condition);
+      setResult(r.message, "ok");
+    } catch (err) {
+      sel.value = a.condition || "good";
+      setResult(err.message, "err");
+    }
+    sel.disabled = false;
+  });
+  return sel;
+}
+
 function recentRow(a) {
   const li = document.createElement("li");
   li.dataset.rfid = a.rfid_id;
@@ -3974,6 +4020,7 @@ function recentRow(a) {
     <span class="recent__meta recent__when">${escapeHtml(when)}</span>
     <button class="recent__unassign" type="button">unassign</button>
   `;
+  li.querySelector(".recent__when").before(conditionSelect(a));
   li.querySelector(".recent__unassign").addEventListener("click", () =>
     unassign(a.rfid_id, li)
   );

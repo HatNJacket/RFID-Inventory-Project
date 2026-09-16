@@ -1247,6 +1247,20 @@ public class MainActivity extends Activity {
         meta.setText(sb.toString());
         box.addView(meta);
 
+        // Per-box condition (Nick, 2026-09-16): shown and set right on
+        // the sticker sheet - the box's state, not the listing's.
+        if (found && a != null) {
+            Button condBtn = smallBtn("CONDITION: "
+                    + condLabel(a.isNull("condition") ? null
+                            : a.optString("condition")) + "  ▸");
+            condBtn.setOnClickListener(x -> pickTagCondition(epc, a));
+            LinearLayout.LayoutParams cl = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            cl.topMargin = dp(8);
+            box.addView(condBtn, cl);
+        }
+
         org.json.JSONArray notes = info.optJSONArray("notes");
         for (int i = 0; notes != null && i < notes.length(); i++) {
             TextView n = new TextView(this);
@@ -1315,6 +1329,64 @@ public class MainActivity extends Activity {
                 }).start())
                 .setNegativeButton("Cancel", null)
                 .show();
+    }
+
+    // ---- per-box condition (Nick, 2026-09-16) -------------------------
+    // Mirror of the server's BOX_CONDITIONS - the server validates,
+    // these arrays just draw. "good" = the default, stored as clear.
+    private static final String[] COND_SLUGS = {
+            "good", "open-box", "used", "damaged", "needs-parts",
+            "display", "safety-stock"};
+    private static final String[] COND_LABELS = {
+            "Good", "Open Box", "Used", "Damaged", "Needs Parts",
+            "Display Only", "Safety Stock"};
+
+    private String condLabel(String slug) {
+        if (slug == null || slug.isEmpty()) return "Good";
+        for (int i = 0; i < COND_SLUGS.length; i++) {
+            if (COND_SLUGS[i].equals(slug)) return COND_LABELS[i];
+        }
+        return slug;
+    }
+
+    private void pickTagCondition(final String epc, final JSONObject a) {
+        String cur = a == null || a.isNull("condition") ? "good"
+                : a.optString("condition");
+        int sel = 0;
+        for (int i = 0; i < COND_SLUGS.length; i++) {
+            if (COND_SLUGS[i].equals(cur)) sel = i;
+        }
+        dlg()
+                .setTitle("BOX CONDITION")
+                .setSingleChoiceItems(COND_LABELS, sel, (d, w) -> {
+                    d.dismiss();
+                    postTagCondition(epc, COND_SLUGS[w]);
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void postTagCondition(final String epc, final String slug) {
+        new Thread(() -> {
+            try {
+                JSONObject resp = api("POST",
+                        "/api/tags/" + encPath(epc) + "/condition",
+                        new JSONObject()
+                                .put("condition", slug)
+                                .put("worker",
+                                        prefs.getString("device", "C72")));
+                final String msg = resp.optString("message", "Saved.");
+                ui.post(() -> {
+                    beep(SOUND_OK);
+                    status.setText(msg);
+                });
+            } catch (Exception e) {
+                ui.post(() -> {
+                    beep(SOUND_ERR);
+                    status.setText("Condition failed: " + e.getMessage());
+                });
+            }
+        }).start();
     }
 
     private View buildSweepView() {

@@ -1407,6 +1407,23 @@ body {
   cursor: pointer;
 }
 .recent__unassign:hover { color: var(--bad-ink); border-color: var(--bad-ink); }
+
+/* Per-box condition dropdown on tag rows (Nick, 2026-09-16). Quiet at
+   "Good" (the default), tinted once a real condition is set. */
+.condsel {
+  font-size: 12px;
+  color: var(--ink-dim);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 3px 6px;
+  cursor: pointer;
+}
+.condsel--set {
+  color: var(--accent);
+  border-color: var(--accent);
+  font-weight: 600;
+}
 .recent__empty {
   color: var(--ink-dim); font-size: 13px; padding: 8px 2px;
   border: none !important; background: transparent !important;

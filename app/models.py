@@ -67,6 +67,13 @@ class RfidAssignment(Base):
     # be un-tied wholesale (abandon, or "undo pairing" to re-scan a shelf).
     batch_id: Mapped[int | None] = mapped_column(Integer, index=True)
 
+    # Per-BOX condition (Nick, 2026-09-16): what state THIS physical unit
+    # is in - "open-box", "used", "damaged", "needs-parts", "display",
+    # "safety-stock". NULL = good (the normal box). Distinct from stock
+    # buckets (available/committed/on-hand); vocabulary lives in
+    # main.BOX_CONDITIONS. Prod needs dev/alter_add_condition.py.
+    condition: Mapped[str | None] = mapped_column(String(20))
+
     def as_dict(self) -> dict:
         return {
             "id": self.id,
@@ -81,6 +88,7 @@ class RfidAssignment(Base):
             "barcode": self.barcode,
             "bin_location": self.bin_location,
             "case_units": self.case_units,
+            "condition": self.condition,
             "assigned_at": (
                 self.assigned_at.isoformat() if self.assigned_at else None
             ),
@@ -125,6 +133,9 @@ class RetiredTag(Base):
     ledger_consumed: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )
+    # The box's condition at retirement - carried so an unretire (a
+    # return coming back, an undo) restores it. NULL = good.
+    condition: Mapped[str | None] = mapped_column(String(20))
 
     def as_dict(self) -> dict:
         return {
@@ -135,6 +146,7 @@ class RetiredTag(Base):
             "bin_location": self.bin_location,
             "case_units": self.case_units,
             "kind": self.kind,
+            "condition": self.condition,
             "retired_at": (
                 self.retired_at.isoformat() if self.retired_at else None
             ),
@@ -250,6 +262,8 @@ class ReleasedTag(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     released_by: Mapped[str | None] = mapped_column(String(100))
+    # Snapshot of the box's condition - re-apply restores it. NULL = good.
+    condition: Mapped[str | None] = mapped_column(String(20))
 
     def as_dict(self) -> dict:
         return {

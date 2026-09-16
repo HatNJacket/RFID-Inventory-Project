@@ -3,6 +3,33 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-15 (tenth round).
 
+## 📦 Per-box conditions — ✅ DEPLOYED 2026-09-16 (C72 4.11)
+
+The foundation for returns + future condition workflows (Nick: "each
+product [box] its own condition... different from stock levels").
+- **Vocabulary** (BOX_CONDITIONS in main.py, single source): good
+  (default, stored as NULL), open-box, used, damaged, needs-parts,
+  display, safety-stock. Deliberately INERT semantics for now - no
+  count, audit or sweep math reads conditions yet.
+- **Model**: `condition` on rfid_assignments + rfid_retired_tags +
+  rfid_released_tags (dev/alter_add_condition.py RUN ON PROD;
+  "condition" is reserved on SQL Server - bracketed). The value rides
+  the whole tag lifecycle: all 7 retire paths carry it, both unretire
+  restores return it, release/re-apply snapshots it.
+- **Setter**: POST /api/tags/{epc}/condition (live tags only; "good"
+  clears; 422 unknown slug). History "tag-condition" -> "Box
+  Condition" chip ("…{epc6}: Good → Damaged").
+- **Auto-seeded** where the answer is known: pairing to a -O twin
+  (all five pair paths) and the open-box adopt set "open-box".
+- **Surfaces**: web Scan Station recent-tags rows get a quiet
+  dropdown (tints when a real condition is set); tag-info carries
+  condition + label + a note; C72 4.11 (code 129) sticker sheet shows
+  CONDITION: X ▸ with a single-choice picker.
+- The planned RETURNS tab (preview approved 2026-09-16) will be
+  another writer; the standardized product previews will render the
+  per-box condition badge from this field.
+Suites 76/76 (new test_condition.py).
+
 ## ⇩ On-hand lowering past sales — ✅ DEPLOYED 2026-09-15
 
 Nick: "let the user decrease shopify product on audits or future
