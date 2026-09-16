@@ -8138,9 +8138,12 @@ public class MainActivity extends Activity {
             // box already wears a sticker. That used to dead-end at the
             // queue-labels 422; now it's a question, and the road ahead
             // (verify) stays open (Nick, 2026-08-19).
+            // labelsTotal = loose boxes + sealed cases; counting qty
+            // alone made a batch of sealed cases dead-end here on
+            // "Nothing to print" (Nick, 2026-09-16).
             int printable = 0, alreadyTagged = 0;
             for (BItem b : bItems) {
-                if (b.resolved && !b.skipped) printable += b.qty;
+                if (b.resolved && !b.skipped) printable += b.labelsTotal;
                 alreadyTagged += b.taggedBefore;
             }
             if (printable == 0) {
@@ -13205,8 +13208,19 @@ public class MainActivity extends Activity {
     // can't print the bin twice; singles are reprinted from Print Queue.
     private void queueLabels() {
         if (!inBatch()) return;
+        // Labels = loose boxes + sealed cases (ONE label per case,
+        // worth N units). Counting qty alone hid the cases: a batch
+        // of sealed boxes read "Nothing to print" and the dialog
+        // undercounted (Nick, 2026-09-16).
         int total = 0;
-        for (BItem b : bItems) if (b.resolved) total += b.qty;
+        int caseLabels = 0;
+        int caseUnits = 0;
+        for (BItem b : bItems) {
+            if (!b.resolved) continue;
+            total += b.labelsTotal;
+            caseLabels += b.caseCount;
+            caseUnits += b.caseCount * b.caseUnits;
+        }
         if (total == 0) {
             beep(SOUND_ERR);
             status.setText("Nothing to print — scan boxes first.");
@@ -13215,9 +13229,15 @@ public class MainActivity extends Activity {
         final int n = total;
         dlg()
                 .setTitle("Print labels for bin " + batchBin + "?")
-                .setMessage(n + " label(s) — one per scanned box — will "
-                        + "print at the warehouse printer. Collect them "
-                        + "there, stick them on, then PAIR.")
+                .setMessage(n + " label(s) — one per box — will "
+                        + "print at the warehouse printer."
+                        + (caseLabels > 0
+                           ? " " + caseLabels + " of them are sealed "
+                             + "cases counting " + caseUnits
+                             + " units between them."
+                           : "")
+                        + " Collect them there, stick them on, then "
+                        + "PAIR.")
                 .setPositiveButton("Queue " + n + " label(s)",
                         (d, w) -> new Thread(() -> {
                     try {

@@ -5843,7 +5843,11 @@ function renderBatchItems() {
     const started = expected.filter(
       (i) => i.qty_scanned > 0 || i.tagged_before > 0
     ).length;
-    const boxes = batchItems.reduce((n, i) => n + i.qty_scanned, 0);
+    // Physical boxes = loose scans + sealed cases (one box each).
+    const boxes = batchItems.reduce(
+      (n, i) => n + i.qty_scanned + (i.case_count || 0),
+      0
+    );
     const tagged = batchItems.reduce(
       (n, i) => n + (i.tagged_before || 0), 0
     );
@@ -6958,7 +6962,12 @@ bEl.toLabels.addEventListener("click", () => {
 // Only items needing a human decision appear here (server decides why);
 // everything else sails straight through to label queueing.
 function labelItems() {
-  return batchItems.filter((i) => i.resolved && i.qty_scanned > 0);
+  // A row can be ALL sealed cases (loose scans converted), so
+  // qty_scanned alone made it vanish from every label count
+  // (Nick, 2026-09-16).
+  return batchItems.filter(
+    (i) => i.resolved && (i.qty_scanned > 0 || (i.case_count || 0) > 0)
+  );
 }
 
 const FLAG_TEXT = {
@@ -8275,7 +8284,14 @@ document.getElementById("bitem-overlay").addEventListener("click", (e) => {
 });
 
 bEl.queue.addEventListener("click", async () => {
-  const total = labelItems().reduce((n, i) => n + i.qty_scanned, 0);
+  // Labels = loose boxes + sealed cases (one label per case, worth
+  // N units) - counting qty_scanned alone hid the cases and a
+  // case-only batch dead-ended on "nothing to print" (Nick,
+  // 2026-09-16).
+  const total = labelItems().reduce(
+    (n, i) => n + (i.labels_total ?? i.qty_scanned),
+    0
+  );
   // Re-tagged bins often have NOTHING to print — every box already
   // wears a sticker. Ask instead of dead-ending on the server's 422;
   // verify still matters (the final sweep checks every tag).

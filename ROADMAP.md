@@ -3,6 +3,24 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-16 (eleventh round).
 
+## 🏷 Sealed cases count in every label tally — ✅ DEPLOYED 2026-09-16 (C72 4.17)
+
+Nick's 2-labels-instead-of-11 report: the SERVER always queued case
+labels correctly, but the CLIENTS' own label math only counted loose
+scans (qty_scanned), so sealed cases vanished from the tallies:
+- C72 queueLabels dialog said "Queue 2 label(s)" for an 11-label
+  batch, and the check->print gate ("Nothing to print") dead-ended a
+  batch that was ALL sealed cases. Both now use labels_total (loose
+  + cases); the dialog names the case share ("9 of them are sealed
+  cases counting 36 units between them").
+- Web: labelItems() filtered on qty_scanned > 0, so a row whose
+  scans all converted to cases vanished from every label count -
+  same dead end, same undercount. Filter + queue confirm + collect
+  "boxes total" all count cases now.
+Browser-verified Nick's exact shape (2 loose + 9 cases of 4): the
+confirm reads "Queue 11 label(s)" and 11 jobs queue. Suites 80/80
+(server behavior was already covered and unchanged).
+
 ## 🔧 Field-test round 2 (six asks, one afternoon) — ✅ DEPLOYED 2026-09-16 (C72 4.16)
 
 - **Staged collect counts**: the item editor's +/- (and the exact-
@@ -3676,6 +3694,19 @@ bigger ones (receiving in particular needs interviews).
 7. ~~**TEAR OUT multi-box SETS and redo them semi-manually**~~
    ✅ Done 2026-09-15 (C72 4.04) - see "Multi-box redo: marks at
    collect, sets at verify" above.
+8. **In-app bug reporter** (captured 2026-09-16, Nick's words, NOT
+   scoped - do not build unasked). A bug-icon button on every C72
+   page - best spot: top-right of the drawer's title card ("TC RFID
+   Sweep") - that snaps a screenshot of the current screen (when
+   tapped from inside a window/dialog, likely just that window).
+   Tapping it offers categories like "Aesthetic", "Bad Feature",
+   "Missing Feature" (plus others) and an optional message. The same
+   bug icon appears on the web terminal. Reports land in the Review
+   tab under their own tag/category.
+9. **Review tab type filter becomes a checklist** (captured
+   2026-09-16). The category dropdown should be a multi-select
+   checklist instead of a single pick: each type toggles on/off with
+   a green checkmark, and the list shows/hides tasks per toggle.
 
 ## 📥 Steve's TODO list (captured 2026-07-28, not yet designed)
 
