@@ -376,6 +376,8 @@ const EVENT_META = {
   "condition-set": ["Box Condition", "#4a7a6a"],
   "printing-stopped": ["Stopped Printing", "#d72c0d"],
   "printing-resumed": ["Resumed Printing", "#116329"],
+  "strip-mode": ["Strip Mode", "#5b5b8a"],
+  "case-declared": ["Sealed Cases", "#3f5b6d"],
   "on-hand-updated": ["Raised On-hand", "#0c5132"],
   "on-hand-undone": ["Undid On-hand", "#6d7175"],
   "on-hand-lowered": ["Lowered On-hand", "#8a4b0e"],
@@ -7060,6 +7062,16 @@ async function divertToBin(binName) {
       bin: binName,
       created_by: operatorEl.value.trim() || null,
     });
+    if (res.labels_held) {
+      // Whole-strip printing: the trip's labels wait for THIS bin's
+      // PRINT step, so stay here - the trip is walked after printing.
+      batch = res.parent;
+      batchItems = [];
+      await pullBatch(false);
+      loadBatchReview();
+      setBatchResult(res.message, "ok");
+      return;
+    }
     parentBatch = res.parent;
     batch = res.batch;
     batchItems = [];
@@ -8265,7 +8277,16 @@ bEl.queue.addEventListener("click", async () => {
       requested_by: operatorEl.value || null,
     });
     batch.status = "printing";
-    setBatchResult(`${data.count} label(s) queued.`, "ok");
+    setBatchResult(
+      `${data.count} label(s) queued.` +
+        (data.side_labels
+          ? ` The strip's tail carries ${data.side_labels} more for ` +
+            `${(data.side_trips || [])
+              .map((t) => `${t.bin} (${t.labels})`)
+              .join(", ")} - pair those on their side trips.`
+          : ""),
+      "ok"
+    );
     showBatchStage("print");
   } catch (err) {
     setBatchResult(err.message, "err");
@@ -10125,6 +10146,30 @@ document
     }
   });
 
+// Whole strip at once (Nick, 2026-09-16): ON holds a side trip's labels
+// until the main bin's PRINT step, so the whole batch tears off as ONE
+// strip (main bin first, then each side bin) instead of one print burst
+// per bin. Server-stored - the gun and every terminal follow it.
+document
+  .getElementById("strip-mode")
+  .addEventListener("change", async (e) => {
+    const box = e.target;
+    const want = box.checked;
+    box.disabled = true;
+    try {
+      const res = await postJson("/api/print-strip-mode", {
+        all_at_once: want,
+        worker: operatorEl.value || null,
+      });
+      setResult(res.message, "ok");
+    } catch (err) {
+      box.checked = !want;
+      alert(`Could not change the strip mode: ${err.message}`);
+    } finally {
+      box.disabled = false;
+    }
+  });
+
 // Queue grouping (Nick, 2026-08-25): jobs collapse under their batch —
 // a batch-tagging run expands to its flat job rows; a RECEIVING batch
 // (TC-Planner "Print labels" or the desk flow) gets a second level, one
@@ -10622,6 +10667,10 @@ async function loadQueue() {
         "/api/print-agent/script (open it with the station link), " +
         "replace print_agent.py, and restart the print agent's " +
         "scheduled task.";
+    // Whole-strip toggle mirrors the server-stored setting (skip while
+    // a flip of it is in flight).
+    const stripBox = document.getElementById("strip-mode");
+    if (!stripBox.disabled) stripBox.checked = !!agent.strip_at_once;
     // Stop printing is live only while something is actually queued or
     // coming out of the printer; otherwise it sits grayed (Nick,
     // 2026-08-25).

@@ -5770,6 +5770,7 @@ public class MainActivity extends Activity {
     private Button editNoScanBtn;
     private Button editPriorBtn;
     private Button editDblBtn;
+    private Button editCaseBtn;
     private Button editSplitBtn;
     private Button editIdentBtn;
 
@@ -6006,6 +6007,19 @@ public class MainActivity extends Activity {
         });
         mid.addView(editPriorBtn);
 
+        // "Box of multiple products" (Nick, 2026-09-16): a shelf whose
+        // boxes each hold several units of one product - labelling the
+        // boxes beats unpacking them. Declares sealed cases BY HAND (no
+        // registered case barcode): one label + one tag per box, each
+        // worth N units, label reading "N x SKU".
+        editCaseBtn = smallBtn("BOX OF MULTIPLE PRODUCTS…");
+        editCaseBtn.setOnClickListener(v -> {
+            if (editEntry == null) return;
+            if (editEntry.item.caseCount > 0) showCaseManageDialog();
+            else showDeclareCaseDialog();
+        });
+        mid.addView(editCaseBtn);
+
         // One-tap fix for the double-count flag: the stickered boxes were
         // barcode-scanned too, so the scan count drops by that many.
         // Local batch numbers only — nothing writes to Shopify.
@@ -6236,6 +6250,14 @@ public class MainActivity extends Activity {
         editPriorBtn.setText(it.taggedBefore > 0
                 ? "✓ " + it.taggedBefore + " ALREADY TAGGED — CHANGE…"
                 : "ALREADY TAGGED…");
+        // Only while counts still matter (labels not queued yet). The
+        // server also refuses once this product's labels are queued.
+        editCaseBtn.setVisibility(it.resolved && !it.skipped
+                && step <= STEP_CHECK ? View.VISIBLE : View.GONE);
+        editCaseBtn.setText(it.caseCount > 0
+                ? "✓ " + it.caseCount + " SEALED CASE(S) OF "
+                  + it.caseUnits + " — CHANGE…"
+                : "BOX OF MULTIPLE PRODUCTS…");
         editDblBtn.setVisibility(it.resolved && it.qty > 0
                 && it.taggedBefore > 0 ? View.VISIBLE : View.GONE);
         editDblBtn.setText("REMOVE DOUBLE COUNT (−" + it.taggedBefore
@@ -6719,6 +6741,130 @@ public class MainActivity extends Activity {
                 });
             } catch (Exception e) {
                 ui.post(() -> editMsg.setText(e.getMessage()));
+            }
+        }).start();
+    }
+
+    /** "Box of multiple products" (Nick, 2026-09-16): units per box +
+     *  how many boxes, declared as sealed cases by hand - one label and
+     *  one tag per box, each worth N units, label reading "N x SKU".
+     *  Boxes already scanned counted 1 loose unit each; the server
+     *  converts up to that many loose scans so nothing double-counts. */
+    private void showDeclareCaseDialog() {
+        if (editEntry == null) return;
+        final BItem it = editEntry.item;
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(16), dp(8), dp(16), 0);
+        TextView l1 = new TextView(this);
+        l1.setText("Units inside each box:");
+        l1.setTextSize(12);
+        l1.setTextColor(C_MUTED);
+        box.addView(l1);
+        final EditText units = themedEdit();
+        units.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        units.setHint("e.g. 6");
+        box.addView(units);
+        TextView l2 = new TextView(this);
+        l2.setText("How many of these boxes?");
+        l2.setTextSize(12);
+        l2.setTextColor(C_MUTED);
+        box.addView(l2);
+        final EditText boxes = themedEdit();
+        boxes.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        boxes.setText("1");
+        boxes.setSelectAllOnFocus(true);
+        box.addView(boxes);
+        TextView note = new TextView(this);
+        note.setText("One label + one tag per box; the label reads "
+                + "\"N x " + (it.sku == null ? "SKU" : it.sku)
+                + "\" and each tag counts N units. Boxes you already "
+                + "scanned counted 1 each - they convert, no double "
+                + "count.");
+        note.setTextSize(11);
+        note.setTextColor(C_MUTED);
+        box.addView(note);
+        dlg()
+                .setTitle("Box of multiple products")
+                .setView(box)
+                .setPositiveButton("Declare", (d, w) -> {
+                    int u, n;
+                    try {
+                        u = Integer.parseInt(
+                                units.getText().toString().trim());
+                        n = Integer.parseInt(
+                                boxes.getText().toString().trim());
+                    } catch (NumberFormatException e) {
+                        editMsg.setText("Type the unit count first.");
+                        return;
+                    }
+                    if (u < 2) {
+                        editMsg.setText("A box of 1 is just a loose "
+                                + "box - scan it normally.");
+                        return;
+                    }
+                    if (n < 1) n = 1;
+                    postItemCase(u, n, false);
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    /** Cases already declared: add another identical box, or open them
+     *  all back into loose scans (1 each - the box count). */
+    private void showCaseManageDialog() {
+        if (editEntry == null) return;
+        final BItem it = editEntry.item;
+        dlg()
+                .setTitle(it.caseCount + " sealed case(s) of "
+                        + it.caseUnits)
+                .setMessage("Each box prints ONE label (\"" + it.caseUnits
+                        + " x " + (it.sku == null ? "?" : it.sku)
+                        + "\") and its tag counts " + it.caseUnits
+                        + " units.")
+                .setPositiveButton("Add 1 more box", (d, w) ->
+                        postItemCase(it.caseUnits, 1, false))
+                .setNegativeButton("Undo - they're loose", (d, w) ->
+                        postItemCase(0, 1, true))
+                .setNeutralButton("Cancel", null)
+                .show();
+    }
+
+    private void postItemCase(int units, int boxes, boolean undo) {
+        if (editEntry == null) return;
+        final BItem it = editEntry.item;
+        new Thread(() -> {
+            try {
+                JSONObject body = new JSONObject()
+                        .put("undo", undo)
+                        .put("boxes", boxes)
+                        .put("changed_by",
+                                prefs.getString("device", "C72"));
+                if (!undo) body.put("units", units);
+                JSONObject resp = api("POST", "/api/batches/" + batchId
+                        + "/items/" + it.id + "/case", body);
+                final BItem updated =
+                        BItem.from(resp.getJSONObject("item"));
+                final String msg = resp.optString("message", "Done.");
+                ui.post(() -> {
+                    if (editEntry != null) editEntry.item = updated;
+                    BItem inList = itemById(updated.id);
+                    if (inList != null) {
+                        bItems.set(bItems.indexOf(inList), updated);
+                        if (previewItem == inList) previewItem = updated;
+                        if (pairActive == inList) pairActive = updated;
+                    }
+                    beep(SOUND_OK);
+                    editMsg.setText(msg);
+                    renderItemEditor();
+                    refreshBatchList();
+                    updateBatchCard();
+                });
+            } catch (Exception e) {
+                ui.post(() -> {
+                    beep(SOUND_ERR);
+                    editMsg.setText(e.getMessage());
+                });
             }
         }).start();
     }
@@ -12924,13 +13070,36 @@ public class MainActivity extends Activity {
                         JSONObject resp = api("POST", "/api/batches/"
                                 + batchId + "/queue-labels", body);
                         final int queued = resp.optInt("count");
+                        // Whole-strip printing: labels HELD by earlier
+                        // side trips ride the tail of this strip.
+                        final int sideLabels = resp.optInt("side_labels");
+                        StringBuilder sb = new StringBuilder();
+                        JSONArray st = resp.optJSONArray("side_trips");
+                        if (st != null) {
+                            for (int i = 0; i < st.length(); i++) {
+                                JSONObject t = st.optJSONObject(i);
+                                if (t == null) continue;
+                                if (sb.length() > 0) sb.append(", ");
+                                sb.append(t.optString("bin"))
+                                  .append(" (")
+                                  .append(t.optInt("labels"))
+                                  .append(")");
+                            }
+                        }
+                        final String sideNote = sideLabels > 0
+                                ? " The strip's tail has " + sideLabels
+                                  + " more for " + sb + " - resume those "
+                                  + "trips from the batch list to pair "
+                                  + "them."
+                                : "";
                         ui.post(() -> {
                             beep(SOUND_OK);
                             step = STEP_PAIR;
                             applyBatchUi();
                             status.setText(queued + " label(s) queued ✓ — "
                                     + "printing at the warehouse laptop. "
-                                    + "Stick them on, then pair.");
+                                    + "Stick them on, then pair."
+                                    + sideNote);
                         });
                     } catch (Exception e) {
                         final boolean already = String.valueOf(
@@ -14557,10 +14726,14 @@ public class MainActivity extends Activity {
         final int id;
         final String bin;
         final int labels;
-        PendingTrip(int id, String bin, int labels) {
+        // Whole-strip printing: labels the server HELD to print with the
+        // parent bin's strip at PRINT. A held trip isn't walked now.
+        final int held;
+        PendingTrip(int id, String bin, int labels, int held) {
             this.id = id;
             this.bin = bin;
             this.labels = labels;
+            this.held = held;
         }
     }
 
@@ -14585,7 +14758,8 @@ public class MainActivity extends Activity {
                     JSONObject side = resp.getJSONObject("batch");
                     made.add(new PendingTrip(side.optInt("id"),
                             side.optString("bin_name", bin),
-                            resp.optInt("labels")));
+                            resp.optInt("labels"),
+                            resp.optInt("labels_held")));
                 } catch (Exception e) {
                     errs.append("\n").append(bin).append(": ")
                             .append(e.getMessage());
@@ -14601,18 +14775,52 @@ public class MainActivity extends Activity {
                     Toast.makeText(this, "Some trips failed:" + errs,
                             Toast.LENGTH_LONG).show();
                 }
+                // Whole-strip printing: HELD trips aren't walked now -
+                // their labels ride this bin's strip at PRINT, and the
+                // trips are resumed from the batch list afterwards.
+                // Carry-only trips (already-tagged boxes, no labels)
+                // are still walked for their carry confirm.
+                List<PendingTrip> walkNow = new ArrayList<>();
+                int heldLabels = 0;
+                StringBuilder heldBins = new StringBuilder();
+                for (PendingTrip t : made) {
+                    if (t.held > 0) {
+                        heldLabels += t.held;
+                        if (heldBins.length() > 0) heldBins.append(", ");
+                        heldBins.append(t.bin);
+                    } else {
+                        walkNow.add(t);
+                    }
+                }
+                if (walkNow.isEmpty()) {
+                    beep(SOUND_OK);
+                    status.setText(made.size() + " side trip(s) set up ("
+                            + heldBins + ") - " + heldLabels
+                            + " label(s) will print WITH " + batchBin
+                            + "'s strip at PRINT. Keep working this bin; "
+                            + "after printing, resume the trip(s) from "
+                            + "the batch list to pair them.");
+                    reloadBatchAndReview();
+                    return;
+                }
+                if (heldLabels > 0) {
+                    Toast.makeText(this, heldLabels + " label(s) for "
+                            + heldBins + " print with " + batchBin
+                            + "'s strip at PRINT",
+                            Toast.LENGTH_LONG).show();
+                }
                 pendingTrips.clear();
-                for (int i = 1; i < made.size(); i++) {
-                    pendingTrips.add(made.get(i));
+                for (int i = 1; i < walkNow.size(); i++) {
+                    pendingTrips.add(walkNow.get(i));
                 }
                 int totalLabels = 0;
-                for (PendingTrip t : made) totalLabels += t.labels;
-                if (made.size() > 1) {
-                    Toast.makeText(this, made.size() + " trips set up - "
+                for (PendingTrip t : walkNow) totalLabels += t.labels;
+                if (walkNow.size() > 1) {
+                    Toast.makeText(this, walkNow.size() + " trips set up - "
                             + totalLabels + " label(s) printing together",
                             Toast.LENGTH_LONG).show();
                 }
-                enterSideTrip(made.get(0), fromId, fromBin);
+                enterSideTrip(walkNow.get(0), fromId, fromBin);
             });
         }).start();
     }

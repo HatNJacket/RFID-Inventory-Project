@@ -2099,7 +2099,7 @@ def claim_printer_commands(
 
 
 @app.get("/api/print-agent/status", dependencies=[Depends(require_user)])
-def print_agent_status():
+def print_agent_status(session: Session = Depends(get_session)):
     seen = _agent_last_seen
     cmd_seen = max(_commands_last_polled.values(), default=None)
     version = (
@@ -2141,6 +2141,10 @@ def print_agent_status():
             win_fresh and win["jobs"] > 0
             and win["oldest_s"] > PRINTER_WEDGE_SECONDS
         ),
+        # Whole-strip printing (the Queue tab's toggle): ON holds side-
+        # trip labels until the main bin's PRINT so one strip covers
+        # the whole batch. Defined below with its own endpoints.
+        "strip_at_once": _strip_at_once(session),
     }
 
 
@@ -2454,6 +2458,67 @@ def resume_printing(
             f"{len(rows)} stopped label(s) are back in the queue in "
             f"their original order - the printer picks them up on its "
             f"next pass."
+        ),
+    }
+
+
+# --- Whole-strip printing ---------------------------------------------------
+# One strip per batch (Nick, 2026-09-16). OFF (the default) is the old
+# behavior: a side trip's labels print the moment the trip is created,
+# so a batch with strays tears off as one print burst per bin - side
+# bin(s) first, the main bin later at the PRINT step. ON holds a side
+# trip's labels and queues them WITH the main bin's labels at PRINT, so
+# the whole batch comes out as ONE strip: main bin first, then each
+# side trip's labels grouped after it. Server-stored so the gun and
+# every terminal agree instantly.
+
+STRIP_AT_ONCE_KEY = "print_strip_at_once"
+
+
+def _strip_at_once(session: Session) -> bool:
+    row = session.get(AppSetting, STRIP_AT_ONCE_KEY)
+    return bool(row and row.value == "on")
+
+
+class StripModeIn(BaseModel):
+    all_at_once: bool
+    worker: str | None = Field(default=None, max_length=100)
+
+
+@app.post("/api/print-strip-mode", dependencies=[Depends(require_user)])
+def set_print_strip_mode(
+    payload: StripModeIn, session: Session = Depends(get_session)
+):
+    """Flip whole-strip printing. Labels a trip already HELD still print
+    with their parent's strip whichever way the switch points later -
+    the flush at PRINT runs unconditionally, so nothing strands."""
+    row = session.get(AppSetting, STRIP_AT_ONCE_KEY)
+    value = "on" if payload.all_at_once else "off"
+    if row is None:
+        row = AppSetting(key=STRIP_AT_ONCE_KEY, value=value)
+        session.add(row)
+    else:
+        row.value = value
+    row.updated_by = (payload.worker or "").strip()[:100] or None
+    _log_change(
+        session,
+        title="Print queue",
+        field="print-strip",
+        old="one print burst per bin" if payload.all_at_once
+            else "whole strip at once",
+        new="whole strip at once" if payload.all_at_once
+            else "one print burst per bin",
+        by=payload.worker,
+    )
+    session.commit()
+    return {
+        "all_at_once": payload.all_at_once,
+        "message": (
+            "Whole-strip printing is ON: side-trip labels now wait and "
+            "print with the main bin's labels at the PRINT step."
+            if payload.all_at_once else
+            "Whole-strip printing is OFF: side-trip labels print the "
+            "moment a trip is created, one print burst per bin."
         ),
     }
 
@@ -10219,6 +10284,148 @@ def batch_scan(
     }
 
 
+class ItemCaseIn(BaseModel):
+    # Units inside each sealed box. None only makes sense with undo.
+    units: int | None = Field(default=None, ge=2, le=500)
+    boxes: int = Field(default=1, ge=1, le=200)
+    # Open every declared case back into loose boxes (1 scan each).
+    undo: bool = False
+    changed_by: str | None = Field(default=None, max_length=100)
+
+
+@app.post(
+    "/api/batches/{batch_id}/items/{item_id}/case",
+    dependencies=[Depends(require_user)],
+)
+def batch_item_case(
+    batch_id: int,
+    item_id: int,
+    payload: ItemCaseIn,
+    session: Session = Depends(get_session),
+):
+    """Box of multiple products (Nick, 2026-09-16): a shelf's boxes each
+    hold several units of ONE product, and labelling the boxes beats
+    unpacking them. Declares this item's boxes as sealed cases BY HAND -
+    no registered case barcode needed: one label and one tag per box,
+    each worth `units` of stock, the label reading "6 x SKU" exactly
+    like a registered case left sealed. Boxes already scanned counted 1
+    loose unit each, so up to `boxes` loose scans convert instead of
+    double-counting. `undo` opens every declared case back into loose
+    scans (1 each - the box count, never the unit count). Refused once
+    this product's labels are queued: the printed strip would no longer
+    match the counts."""
+    batch = _get_batch(session, batch_id)
+    if batch.status in ("done", "abandoned"):
+        raise HTTPException(409, f"This batch is {batch.status}.")
+    item = _get_batch_item(session, batch_id, item_id)
+    if not item.resolved or not item.shopify_variant_id:
+        raise HTTPException(
+            422, "That row never resolved to a product - sort the barcode "
+             "out first."
+        )
+    if item.kind == "bundle":
+        raise HTTPException(
+            422,
+            "This is marked as a bundle - it has no boxes of its own. "
+            "Sealed cases belong on its component products.",
+        )
+    already_printed = session.scalar(
+        select(func.count()).select_from(PrintJob).where(
+            PrintJob.batch_id == batch.id,
+            PrintJob.shopify_variant_id == item.shopify_variant_id,
+            PrintJob.status.in_(("pending", "printing", "done")),
+        )
+    )
+    if already_printed:
+        raise HTTPException(
+            409,
+            "Labels are already queued or printed for this product in "
+            "this batch - changing the case split now would desync the "
+            "strip. Void/reprint its labels first.",
+        )
+    sku_label = item.sku or item.product_title or "unit"
+    if payload.undo:
+        if not item.case_count:
+            raise HTTPException(
+                422, "No sealed cases on this row to undo."
+            )
+        was = (
+            f"{item.case_count} case(s) of {item.case_units or '?'}"
+        )
+        item.qty_scanned += item.case_count
+        item.case_count = 0
+        item.case_units = None
+        _log_change(
+            session,
+            field="case-declared",
+            sku=item.sku,
+            title=item.product_title,
+            variant_id=item.shopify_variant_id,
+            old=was,
+            new="opened back to loose boxes",
+            by=payload.changed_by,
+        )
+        session.commit()
+        session.refresh(item)
+        return {
+            "item": item.as_dict(),
+            "message": (
+                f"Sealed cases undone - the boxes count loose again "
+                f"({item.qty_scanned} scan(s) on {sku_label})."
+            ),
+        }
+    if payload.units is None:
+        raise HTTPException(
+            422, "How many units are inside each box?"
+        )
+    if (
+        item.case_count
+        and item.case_units
+        and item.case_units != payload.units
+    ):
+        raise HTTPException(
+            409,
+            f"This row already counts {item.case_count} sealed case(s) "
+            f"of {item.case_units} - one row holds one case size. Undo "
+            f"those first, or keep the sizes uniform.",
+        )
+    # Each declared box was (usually) scanned once and counted 1 loose
+    # unit - converting keeps the physical box count honest.
+    converted = min(payload.boxes, item.qty_scanned)
+    item.qty_scanned -= converted
+    item.case_count += payload.boxes
+    item.case_units = payload.units
+    if item.first_scanned_at is None:
+        item.first_scanned_at = datetime.now(timezone.utc)
+    _log_change(
+        session,
+        field="case-declared",
+        sku=item.sku,
+        title=item.product_title,
+        variant_id=item.shopify_variant_id,
+        old=f"{converted} loose scan(s) converted",
+        new=f"{item.case_count} sealed case(s) of {payload.units}",
+        by=payload.changed_by,
+    )
+    session.commit()
+    session.refresh(item)
+    return {
+        "item": item.as_dict(),
+        "converted": converted,
+        "message": (
+            f"{payload.boxes} sealed box(es) of {payload.units} x "
+            f"{sku_label} declared"
+            + (
+                f" ({converted} loose scan(s) converted)"
+                if converted else ""
+            )
+            + f". Each prints ONE label reading "
+              f"\"{payload.units} x {sku_label}\" and its tag counts "
+              f"{payload.units} units."
+        ),
+    }
+
+
 def _mojibake(*vals: str | None) -> bool:
     """True when a SKU/barcode carries a literal '?' or any non-ASCII
     char. The database's VARCHAR columns store non-Latin chars AS '?', so
@@ -11478,7 +11685,13 @@ def batch_queue_labels(
     jobs, skipped_bundles = _build_label_jobs(
         session, batch, payload.requested_by
     )
-    if not jobs:
+    # Parent's labels FIRST on the strip (walk order), then any held
+    # side trips' labels grouped per trip (whole-strip printing).
+    session.add_all(jobs)
+    side_jobs, side_trips = _queue_held_side_trips(
+        session, batch, payload.requested_by
+    )
+    if not jobs and not side_jobs:
         if skipped_bundles:
             raise HTTPException(
                 422,
@@ -11487,7 +11700,6 @@ def batch_queue_labels(
                 "instead. Switch one to 'multi-box product' if that's wrong.",
             )
         raise HTTPException(422, "No resolved products with boxes to label.")
-    session.add_all(jobs)
     batch.status = "printing"
     session.commit()
     return {
@@ -11496,6 +11708,11 @@ def batch_queue_labels(
         # Named, not silently dropped: skipping a label is exactly the kind
         # of thing that should never be a surprise at the printer.
         "skipped_bundles": skipped_bundles,
+        # Held side trips whose labels ride this strip (after the main
+        # bin's run). The gun and the web both name them so the strip's
+        # tail end isn't a surprise at the printer.
+        "side_labels": len(side_jobs),
+        "side_trips": side_trips,
     }
 
 
@@ -11780,6 +11997,47 @@ def _build_label_jobs(
                 )
             )
     return _apply_label_notes(jobs), skipped_bundles
+
+
+def _queue_held_side_trips(
+    session: Session, batch: Batch, requested_by: str | None
+) -> tuple[list[PrintJob], list[dict]]:
+    """Flush this batch's HELD side trips (whole-strip printing): a trip
+    diverted while the parent was still collecting sits in "collecting"
+    with no print jobs of its own. Its labels queue right AFTER the
+    parent's run, grouped per trip, so the strip tears off as main bin
+    first, then each side bin in trip order. Runs unconditionally at
+    PRINT - labels held under the toggle must print even if the toggle
+    has flipped off since."""
+    all_jobs: list[PrintJob] = []
+    trips: list[dict] = []
+    for side in session.scalars(
+        select(Batch)
+        .where(
+            Batch.parent_batch_id == batch.id,
+            Batch.status == "collecting",
+        )
+        .order_by(Batch.id)
+    ).all():
+        # Belt and braces: never double-print a trip that somehow got
+        # its own labels already.
+        already = session.scalar(
+            select(func.count()).select_from(PrintJob).where(
+                PrintJob.batch_id == side.id,
+                PrintJob.status.in_(("pending", "printing", "done")),
+            )
+        )
+        if already:
+            continue
+        side_jobs, _ = _build_label_jobs(session, side, requested_by)
+        session.add_all(side_jobs)
+        side.status = "printing" if side_jobs else "pairing"
+        side.ui_step = "pair"
+        all_jobs.extend(side_jobs)
+        trips.append(
+            {"id": side.id, "bin": side.bin_name, "labels": len(side_jobs)}
+        )
+    return all_jobs, trips
 
 
 def _held_available(session: Session, skus: list[str]) -> dict[str, dict]:
@@ -15056,8 +15314,26 @@ def divert_to_bin(
             "Nothing there can be labelled — bundles carry no labels of "
             "their own.",
         )
-    session.add_all(jobs)
-    side.status = "printing" if jobs else "pairing"
+    # Whole-strip printing (Nick, 2026-09-16): while the parent is still
+    # collecting, HOLD the trip's labels - they queue with the parent's
+    # own labels at PRINT, so the batch tears off as one strip. The
+    # built jobs are discarded unqueued (their EPCs were never used);
+    # the trip stays "collecting" until the flush at PRINT flips it. A
+    # trip diverted AFTER the parent printed keeps the immediate print:
+    # the parent's strip already came out, there is nothing to join.
+    held = (
+        bool(jobs)
+        and parent.status == "collecting"
+        and _strip_at_once(session)
+    )
+    if held:
+        held_count = len(jobs)
+        jobs = []
+        side.status = "collecting"
+    else:
+        held_count = 0
+        session.add_all(jobs)
+        side.status = "printing" if jobs else "pairing"
     side.ui_step = "pair"
     session.commit()
     session.refresh(side)
@@ -15066,16 +15342,24 @@ def divert_to_bin(
         "parent": parent.as_dict(),
         "moved": len(movers),
         "labels": len(jobs),
+        "labels_held": held_count,
         "skipped_bundles": skipped,
         "message": (
             f"{len(movers)} product(s) moved to a side trip for {wanted} — "
             + (
-                f"{len(jobs)} label(s) queued. Pair them, then close it"
-                if jobs else
-                "already tagged, so no labels are needed. Carry the "
-                "box(es) over and close it"
+                f"{held_count} label(s) will print WITH "
+                f"{parent.bin_name}'s strip at the PRINT step. Keep "
+                f"working {parent.bin_name}; walk the trip once its "
+                f"labels are in hand."
+                if held else
+                (
+                    f"{len(jobs)} label(s) queued. Pair them, then close "
+                    if jobs else
+                    "already tagged, so no labels are needed. Carry the "
+                    "box(es) over and close "
+                )
+                + f"it to get back to {parent.bin_name}."
             )
-            + f" to get back to {parent.bin_name}."
         ),
     }
 
@@ -15091,6 +15375,17 @@ def close_divert(batch_id: int, session: Session = Depends(get_session)):
     side = _get_batch(session, batch_id)
     if side.parent_batch_id is None:
         raise HTTPException(422, "That batch isn't a side trip.")
+    if side.status == "collecting":
+        # A HELD trip (whole-strip printing): its labels haven't printed
+        # yet, so closing now would strand unlabelled boxes on a shelf.
+        parent = session.get(Batch, side.parent_batch_id)
+        pbin = parent.bin_name if parent else "the main bin"
+        raise HTTPException(
+            409,
+            f"This trip's labels haven't printed yet - they print with "
+            f"{pbin}'s strip at the PRINT step (or run PRINT on this "
+            f"trip alone for its own strip). Pair them, then close it.",
+        )
     items = _batch_items(session, batch_id)
     unpaired = [
         i for i in items
@@ -18958,6 +19253,8 @@ _CHANGE_TYPE_LABELS = {
     "batch-reprint": "batch-reprinted",
     "print-stop": "printing-stopped",
     "print-resume": "printing-resumed",
+    "print-strip": "strip-mode",
+    "case-declared": "case-declared",
     "on-hand": "on-hand-updated", "on-hand-undo": "on-hand-undone",
     "on-hand-lower": "on-hand-lowered",
     "on-hand-lower-undo": "on-hand-lower-undone",

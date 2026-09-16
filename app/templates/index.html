@@ -1165,6 +1165,10 @@
                 title="Puts every label a Stop press canceled back in the queue - same labels, same original order, printed ahead of anything queued since. Labels from batches that have since finished stay canceled.">▶ Resume printing</button>
         <button class="reset" id="printer-purge" type="button" disabled
                 title="Deletes every job sitting in the warehouse PC's WINDOWS print queue - the fix when the printer wedges and labels pile up behind a stuck head. Server-side those jobs already read done, so reprint anything that never came out from this tab. Needs print agent v4 on the warehouse PC.">🧹 Clear stuck jobs</button>
+        <label class="pill" id="strip-mode-wrap"
+               title="ON: a side trip's labels wait and print together with the main bin's labels at the PRINT step, so the whole batch tears off as ONE strip (main bin first, then each side bin). OFF: each side trip's labels print the moment the trip is created - one print burst per bin. Server-stored: the gun and every terminal follow it instantly.">
+          <input type="checkbox" id="strip-mode" /> Whole strip at once
+        </label>
       </div>
       <div class="inventory__scroll">
         <table class="inventory__table">

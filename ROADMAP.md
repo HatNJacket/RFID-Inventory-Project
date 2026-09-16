@@ -1,7 +1,51 @@
 # RFID Inventory System — Roadmap
 
 Source of truth for project status. Updated by Claude each working session.
-Last updated: 2026-09-15 (tenth round).
+Last updated: 2026-09-16 (eleventh round).
+
+## 🖨️ Whole-strip printing + hand-declared cases — ✅ DEPLOYED 2026-09-16 (C72 4.12)
+
+Two asks in one round (Nick, 2026-09-16):
+
+**Whole strip at once** — "toggle whether it prints the entire strip
+at once instead of one print job per bin (side bin and main bin)".
+- Server-stored toggle (AppSetting `print_strip_at_once`, default
+  OFF = old behavior). Flip it on the Queue tab ("Whole strip at
+  once", by the printer buttons); POST /api/print-strip-mode, state
+  rides /api/print-agent/status; History "Strip Mode" chip.
+- ON: a side trip diverted while the parent still collects HOLDS its
+  labels (trip stays "collecting", no jobs); the parent's PRINT
+  queues parent labels first, then each held trip's labels grouped
+  (_queue_held_side_trips - runs unconditionally, so held labels
+  print even if the toggle flipped off since). One strip: main bin,
+  then each side bin. Trips diverted AFTER the parent printed keep
+  the immediate print (nothing to join).
+- Guards: close-divert refuses a held trip (labels unprinted) with
+  the way out (PRINT the parent, or PRINT the trip alone for its own
+  strip). Carry-only trips (tagged_before) are never held.
+- C72 4.12 (code 130): a held divert does NOT enter the trip - stays
+  in the parent with the message; PRINT's status names the strip's
+  tail ("N more for G6-6 (3)..."); held trips are resumed from the
+  batch list after printing. Web divert likewise stays in the parent.
+
+**Box of multiple products** — boxes full of several units of ONE
+product, labelled per box instead of unpacked.
+- POST /api/batches/{id}/items/{id}/case declares sealed cases BY
+  HAND (no registered case barcode): units (2-500) + boxes; one label
+  + one tag per box, label reads "N x SKU", tag counts N units -
+  exactly a registered case left sealed. Already-scanned boxes
+  counted 1 loose each, so up to `boxes` loose scans convert (no
+  double count). `undo` opens them all back to loose scans. Refused:
+  bundles, mixed case sizes on one row (undo first), and once the
+  item's labels are queued (strip would desync). History
+  "case-declared" -> "Sealed Cases" chip.
+- C72 item editor gains "BOX OF MULTIPLE PRODUCTS…" (collect/check
+  steps): asks units per box + box count; once declared it reads
+  "✓ N SEALED CASE(S) OF U - CHANGE…" offering add-one / undo.
+  Pairing, audits and counts already understood cases - this only
+  adds the manual declaration path.
+Suites 79/79 (new test_stripmode.py, test_casedeclare.py). No schema
+change. Gun self-updates to 4.12.
 
 ## ↩️ Open-box return with the box IN HAND — ✅ DEPLOYED 2026-09-16
 
