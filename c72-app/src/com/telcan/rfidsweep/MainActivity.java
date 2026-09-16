@@ -103,17 +103,19 @@ public class MainActivity extends Activity {
     private static final int TAB_LOCATE = 4;
     private static final int TAB_LINK = 5;
     private static final int TAB_AUDIT = 6;
+    private static final int TAB_RETURNS = 7;
     private static final String[] TAB_NAMES =
             {"BATCH", "STATION", "SWEEP", "FIND BIN", "LOCATE", "LINK",
-             "AUDIT"};
+             "AUDIT", "RETURNS"};
     // ActionBar titles (title case) and the lowercase names the server's
     // presence endpoint receives (tuning-poll heartbeat).
     private static final String[] TAB_TITLES =
             {"Batch", "Station", "Sweep", "Find Bin", "Locate", "Link",
-             "Audit"};
+             "Audit", "Returns"};
     private static final String[] TAB_KEYS =
-            {"batch", "station", "sweep", "find", "locate", "link", "audit"};
-    private static final int TAB_COUNT = 7;
+            {"batch", "station", "sweep", "find", "locate", "link", "audit",
+             "returns"};
+    private static final int TAB_COUNT = 8;
 
     // ------------------------------------------------------------ colors ----
     // NOT constants any more: the whole palette is derived in
@@ -723,6 +725,7 @@ public class MainActivity extends Activity {
         tabViews[TAB_LOCATE] = buildLocateView();
         tabViews[TAB_LINK] = buildLinkView();
         tabViews[TAB_AUDIT] = buildAuditView();
+        tabViews[TAB_RETURNS] = buildReturnsView();
         for (View v : tabViews) content.addView(v);
         root.addView(content, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
@@ -6252,8 +6255,11 @@ public class MainActivity extends Activity {
                 : "ALREADY TAGGED…");
         // Only while counts still matter (labels not queued yet). The
         // server also refuses once this product's labels are queued.
-        editCaseBtn.setVisibility(it.resolved && !it.skipped
-                && step <= STEP_CHECK ? View.VISIBLE : View.GONE);
+        // UNRESOLVED rows included (Nick, 2026-09-16): unknown-barcode
+        // boxes are where this is needed most - the split rides along
+        // when the row resolves.
+        editCaseBtn.setVisibility(!it.skipped && step <= STEP_CHECK
+                ? View.VISIBLE : View.GONE);
         editCaseBtn.setText(it.caseCount > 0
                 ? "✓ " + it.caseCount + " SEALED CASE(S) OF "
                   + it.caseUnits + " — CHANGE…"
@@ -6963,7 +6969,7 @@ public class MainActivity extends Activity {
         }
         boolean needsInput = tab == TAB_BATCH || tab == TAB_STATION
                 || tab == TAB_FIND || tab == TAB_LOCATE || tab == TAB_LINK
-                || tab == TAB_AUDIT;
+                || tab == TAB_AUDIT || tab == TAB_RETURNS;
         btInput.setVisibility(needsInput ? View.VISIBLE : View.GONE);
         tabTitle.setVisibility(needsInput ? View.GONE : View.VISIBLE);
         tabTitle.setText(TAB_NAMES[tab]);
@@ -6983,6 +6989,12 @@ public class MainActivity extends Activity {
                     + "the web terminal (turn its C72 LINK toggle on).");
         } else if (tab == TAB_AUDIT) {
             auditEnterTab();
+        } else if (tab == TAB_RETURNS) {
+            status.setText(retData == null
+                    ? "RETURNS: trigger on the returned box's tag, or "
+                      + "scan its barcode."
+                    : "RETURNS: pick what happens to this box, or ✕ to "
+                      + "clear.");
         } else {
             status.setText(locProduct == null
                     ? "LOCATE: scan a product barcode, or LIST… for the "
@@ -7020,7 +7032,8 @@ public class MainActivity extends Activity {
         String key = tab == TAB_STATION ? "tab_station"
                 : tab == TAB_SWEEP ? "tab_sweep"
                 : tab == TAB_FIND ? "tab_find"
-                : tab == TAB_LINK ? "tab_link" : "tab_locate";
+                : tab == TAB_LINK ? "tab_link"
+                : tab == TAB_RETURNS ? "tab_returns" : "tab_locate";
         return prefs.getBoolean(key, true);
     }
 
@@ -7075,6 +7088,8 @@ public class MainActivity extends Activity {
             linkSend("barcode", code, null);
         } else if (activeTab == TAB_AUDIT) {
             auditBarcode(code);
+        } else if (activeTab == TAB_RETURNS) {
+            returnsBarcode(code);
         } else {
             status.setText("Scanned " + code + " — switch to BATCH, "
                     + "STATION or FIND BIN to use barcodes.");
@@ -7299,6 +7314,8 @@ public class MainActivity extends Activity {
             // style - the counters fill live as tags answer).
             if (auditPairMode) auditReadTag();
             else auditToggleScan();
+        } else if (activeTab == TAB_RETURNS) {
+            returnsReadTag();
         } else {
             status.setText("Nothing to trigger on this tab.");
         }
@@ -14993,6 +15010,557 @@ public class MainActivity extends Activity {
         }).start();
     }
 
+    // ------------------------------------------------------------ returns ---
+    // The Returns tab (Nick, preview approved 2026-09-16): trigger-read
+    // the returned box, the card fills with the tag's whole story (and
+    // any matching open return from the returns app), then one tap
+    // settles the RFID side. The money side stays in the returns app.
+
+    private JSONObject retData;      // last /api/returns/tag answer
+    private boolean retBarcodeOnly;  // card filled by barcode, no tag
+    private LinearLayout retEmpty;
+    private LinearLayout retCard;
+    private LinearLayout retMatchBox;
+    private ImageView retImg;
+    private TextView retTitle, retMeta, retState, retMatch, retNote;
+    private Button retAsNew, retObx, retUsed, retDead, retDisp,
+            retNotOurs, retClearBtn;
+
+    private View buildReturnsView() {
+        ScrollView scroll = new ScrollView(this);
+        scroll.setVerticalScrollBarEnabled(false);
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setPadding(dp(12), dp(10), dp(12), dp(16));
+        scroll.addView(root);
+
+        // Empty state: Station-familiar waiting card.
+        retEmpty = new LinearLayout(this);
+        retEmpty.setOrientation(LinearLayout.VERTICAL);
+        retEmpty.setBackground(rr(C_CARD, C_LINE, 12));
+        retEmpty.setPadding(dp(16), dp(34), dp(16), dp(34));
+        TextView et = new TextView(this);
+        et.setText("Pull the trigger on the returned box.\n\nThe tag "
+                + "tells us what it is and what it thinks happened to "
+                + "it.\n\nNo tag? Scan its barcode instead.");
+        et.setTextSize(13);
+        et.setTextColor(C_MUTED);
+        et.setGravity(Gravity.CENTER);
+        retEmpty.addView(et);
+        root.addView(retEmpty);
+
+        // Filled card: FULL product preview + state + match + actions,
+        // with the ✕ floating top-right to clear the page.
+        FrameLayout cardWrap = new FrameLayout(this);
+        retCard = new LinearLayout(this);
+        retCard.setOrientation(LinearLayout.VERTICAL);
+        retCard.setBackground(rr(C_CARD, C_LINE, 12));
+        retCard.setPadding(dp(12), dp(12), dp(12), dp(12));
+        retCard.setVisibility(View.GONE);
+        cardWrap.addView(retCard);
+
+        LinearLayout head = new LinearLayout(this);
+        head.setGravity(Gravity.TOP);
+        retImg = new ImageView(this);
+        retImg.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        retImg.setBackgroundColor(C_BG);
+        LinearLayout.LayoutParams il =
+                new LinearLayout.LayoutParams(dp(56), dp(56));
+        il.rightMargin = dp(10);
+        head.addView(retImg, il);
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        retTitle = new TextView(this);
+        retTitle.setTextSize(15);
+        retTitle.setTypeface(null, Typeface.BOLD);
+        retTitle.setTextColor(C_TEXT);
+        retTitle.setMaxLines(3);
+        // Room for the floating ✕.
+        retTitle.setPadding(0, 0, dp(26), 0);
+        col.addView(retTitle);
+        retMeta = new TextView(this);
+        retMeta.setTextSize(12);
+        retMeta.setTextColor(C_MUTED);
+        col.addView(retMeta);
+        head.addView(col, weight());
+        retCard.addView(head);
+
+        retState = new TextView(this);
+        retState.setTextSize(12);
+        retState.setTypeface(null, Typeface.BOLD);
+        retState.setPadding(dp(9), dp(7), dp(9), dp(7));
+        LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        sl.topMargin = dp(9);
+        retCard.addView(retState, sl);
+
+        retMatchBox = new LinearLayout(this);
+        retMatchBox.setOrientation(LinearLayout.VERTICAL);
+        retMatchBox.setBackground(rr(C_OK_BG, C_OK, 8));
+        retMatchBox.setPadding(dp(9), dp(7), dp(9), dp(7));
+        retMatch = new TextView(this);
+        retMatch.setTextSize(11.5f);
+        retMatch.setTextColor(C_OK);
+        retMatchBox.addView(retMatch);
+        LinearLayout.LayoutParams ml = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        ml.topMargin = dp(7);
+        retCard.addView(retMatchBox, ml);
+
+        retNote = new TextView(this);
+        retNote.setTextSize(11);
+        retNote.setTextColor(C_MUTED);
+        LinearLayout.LayoutParams nl = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        nl.topMargin = dp(6);
+        retCard.addView(retNote, nl);
+
+        retAsNew = retBtn("AS NEW\nback to live stock", C_OK);
+        retAsNew.setOnClickListener(v -> askReturnsAction("as-new"));
+        retObx = retBtn("OPEN BOX\n-O twin · 10% fee", C_BLUE);
+        retObx.setOnClickListener(v -> askReturnsOpenBox());
+        retUsed = retBtn("USED\nlive + marked used", C_WARN);
+        retUsed.setOnClickListener(v -> askReturnsAction("used"));
+        retDead = retBtn("UNSELLABLE\nretire · parts log", C_OVER);
+        retDead.setOnClickListener(v -> askReturnsAction("unsellable"));
+        retDisp = retBtn("DISPLAY ONLY\nshowroom, out of counts",
+                C_MUTED);
+        retDisp.setOnClickListener(v -> askReturnsAction("display"));
+        retNotOurs = retBtn("NOT OURS\nignore this tag forever",
+                C_MUTED);
+        retNotOurs.setOnClickListener(v -> {
+            if (retData != null) {
+                markTagNotOurs(retData.optString("epc"));
+            }
+        });
+
+        LinearLayout row1 = retBtnRow(retAsNew, retObx);
+        LinearLayout row2 = retBtnRow(retUsed, retDead);
+        retCard.addView(row1);
+        retCard.addView(row2);
+        LinearLayout.LayoutParams wl = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        wl.topMargin = dp(6);
+        retCard.addView(retDisp, wl);
+        LinearLayout.LayoutParams wl2 = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        wl2.topMargin = dp(6);
+        retCard.addView(retNotOurs, wl2);
+
+        Button clear = new Button(this);
+        clear.setText("✕");
+        clear.setTextSize(12);
+        clear.setTypeface(null, Typeface.BOLD);
+        clear.setTextColor(C_MUTED);
+        clear.setBackground(rr(C_CARD, C_LINE, 6));
+        clear.setPadding(0, 0, 0, 0);
+        clear.setMinWidth(0);
+        clear.setMinHeight(0);
+        clear.setMinimumWidth(0);
+        clear.setMinimumHeight(0);
+        clear.setOnClickListener(v -> clearReturnsCard());
+        FrameLayout.LayoutParams xl = new FrameLayout.LayoutParams(
+                dp(30), dp(30), Gravity.TOP | Gravity.END);
+        xl.topMargin = dp(8);
+        xl.rightMargin = dp(8);
+        cardWrap.addView(clear, xl);
+        // The ✕ shows only while the card does (renderReturnsCard).
+        retClearBtn = clear;
+        clear.setVisibility(View.GONE);
+
+        LinearLayout.LayoutParams cl = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        root.addView(cardWrap, cl);
+
+        TextView hint = new TextView(this);
+        hint.setText("Reads land here like Station: one box at a time, "
+                + "card per read. The money side (refund, fee, drafts) "
+                + "stays in the Returns app.");
+        hint.setTextSize(11);
+        hint.setTextColor(C_MUTED);
+        LinearLayout.LayoutParams hl = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        hl.topMargin = dp(10);
+        root.addView(hint, hl);
+        return scroll;
+    }
+
+    private Button retBtn(String twoLines, int color) {
+        Button b = new Button(this);
+        int nl = twoLines.indexOf('\n');
+        android.text.SpannableString sp =
+                new android.text.SpannableString(twoLines);
+        sp.setSpan(new android.text.style.RelativeSizeSpan(0.72f),
+                nl + 1, twoLines.length(), 0);
+        sp.setSpan(new android.text.style.ForegroundColorSpan(C_MUTED),
+                nl + 1, twoLines.length(), 0);
+        b.setText(sp);
+        b.setAllCaps(false);
+        b.setTextSize(13);
+        b.setTypeface(null, Typeface.BOLD);
+        b.setTextColor(color);
+        b.setBackground(rr(C_BG, C_LINE, 8));
+        b.setPadding(dp(6), dp(8), dp(6), dp(8));
+        return b;
+    }
+
+    private LinearLayout retBtnRow(Button a, Button b) {
+        LinearLayout row = new LinearLayout(this);
+        LinearLayout.LayoutParams la = new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.MATCH_PARENT, 1f);
+        la.rightMargin = dp(3);
+        LinearLayout.LayoutParams lb = new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.MATCH_PARENT, 1f);
+        lb.leftMargin = dp(3);
+        row.addView(a, la);
+        row.addView(b, lb);
+        LinearLayout.LayoutParams lr = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        lr.topMargin = dp(8);
+        row.setLayoutParams(lr);
+        return row;
+    }
+
+    private void clearReturnsCard() {
+        retData = null;
+        retBarcodeOnly = false;
+        renderReturnsCard();
+        status.setText("RETURNS: trigger on the returned box's tag, or "
+                + "scan its barcode.");
+        btInput.requestFocus();
+    }
+
+    private void renderReturnsCard() {
+        boolean has = retData != null;
+        retEmpty.setVisibility(has ? View.GONE : View.VISIBLE);
+        retCard.setVisibility(has ? View.VISIBLE : View.GONE);
+        retClearBtn.setVisibility(has ? View.VISIBLE : View.GONE);
+        if (!has) return;
+        JSONObject d = retData;
+        String state = retBarcodeOnly ? "no-tag"
+                : d.optString("state", "unknown");
+        retTitle.setText(d.isNull("title")
+                || d.optString("title").isEmpty()
+                ? "(unknown product)" : d.optString("title"));
+        String cond = d.isNull("condition") ? null
+                : d.optString("condition");
+        retMeta.setText("SKU: " + (d.isNull("sku") ? "—"
+                        : d.optString("sku"))
+                + "\nBarcode: " + (d.isNull("barcode") ? "—"
+                        : d.optString("barcode"))
+                + "\nBin: " + (d.isNull("bin") ? "—"
+                        : d.optString("bin"))
+                + (cond != null && !cond.isEmpty() && !"good".equals(cond)
+                        ? "\nCondition: "
+                          + d.optString("condition_label", cond)
+                        : ""));
+        loadImage(d.isNull("image_url") ? null
+                : d.optString("image_url"), retImg);
+
+        String epc = d.optString("epc", "");
+        String tail = epc.length() > 6
+                ? "…" + epc.substring(epc.length() - 6) : epc;
+        boolean live = "live".equals(state);
+        boolean retired = "retired".equals(state);
+        boolean unknown = "unknown".equals(state);
+        if (retBarcodeOnly) {
+            retState.setText("NO TAG READ - looked up by barcode. Only "
+                    + "the open-box watch flow works without a tag.");
+            retState.setBackground(rr(C_WARN_BG, C_WARN, 8));
+            retState.setTextColor(C_WARN);
+        } else {
+            retState.setText(d.optString("state_text", state)
+                    + (tail.isEmpty() ? "" : "   " + tail));
+            retState.setBackground(rr(
+                    live ? C_OK_BG : retired ? C_WARN_BG : C_OVER_BG,
+                    live ? C_OK : retired ? C_WARN : C_OVER, 8));
+            retState.setTextColor(live ? C_OK
+                    : retired ? C_WARN : C_OVER);
+        }
+
+        JSONArray m = d.optJSONArray("matches");
+        if (m != null && m.length() > 0) {
+            JSONObject r0 = m.optJSONObject(0);
+            String reason = r0.isNull("reason") ? ""
+                    : r0.optString("reason");
+            String note = r0.isNull("reason_note") ? ""
+                    : r0.optString("reason_note");
+            retMatch.setText("Active return matched\n"
+                    + r0.optString("order", "?") + " · "
+                    + (r0.isNull("customer") ? "?"
+                            : r0.optString("customer"))
+                    + (reason.isEmpty() ? "" : " · \"" + reason + "\"")
+                    + (note.isEmpty() ? "" : "\n" + note)
+                    + (m.length() > 1
+                            ? "\n+" + (m.length() - 1)
+                              + " more open return(s) for this SKU"
+                            : ""));
+            retMatchBox.setVisibility(View.VISIBLE);
+        } else {
+            retMatchBox.setVisibility(View.GONE);
+        }
+
+        String note2 = "";
+        if (!retBarcodeOnly && d.optBoolean("watch_open")) {
+            note2 = "An open-box watch is already filed for this SKU - "
+                    + "filing OPEN BOX with this tag settles it.";
+        }
+        if ("printed-only".equals(state)) {
+            note2 = "This label was printed but never paired - there is "
+                    + "no product record to settle. Pair it in a batch "
+                    + "or void the label.";
+        } else if ("companion".equals(state)) {
+            note2 = "Companion label (box 2+ of a multi-box unit) - "
+                    + "read the unit's box 1 tag instead.";
+        } else if (unknown) {
+            note2 = "Not in the system: a blank sticker or another "
+                    + "store's tag. NOT OURS silences it forever.";
+        }
+        retNote.setText(note2);
+        retNote.setVisibility(note2.isEmpty() ? View.GONE : View.VISIBLE);
+
+        boolean actionable = live || retired;
+        setRetBtn(retAsNew, actionable);
+        setRetBtn(retObx, actionable || retBarcodeOnly);
+        setRetBtn(retUsed, actionable);
+        setRetBtn(retDead, actionable);
+        setRetBtn(retDisp, actionable);
+        retNotOurs.setVisibility(unknown && !retBarcodeOnly
+                ? View.VISIBLE : View.GONE);
+    }
+
+    private void setRetBtn(Button b, boolean on) {
+        b.setEnabled(on);
+        b.setAlpha(on ? 1f : 0.35f);
+    }
+
+    /** Trigger on the Returns tab: strongest single read, then the
+     *  card fills with the tag's whole story. */
+    private void returnsReadTag() {
+        status.setText("Reading the box's tag…");
+        new Thread(() -> {
+            final TagRead read = readStrongestTag(600);
+            final String epc = read == null ? null : read.epc;
+            ui.post(() -> {
+                if (epc == null || epc.isEmpty()) {
+                    beep(SOUND_ERR);
+                    status.setText("No tag read - get the box closer "
+                            + "and trigger again, or scan its barcode.");
+                    return;
+                }
+                returnsLookup(epc.toUpperCase(java.util.Locale.ROOT));
+            });
+        }).start();
+    }
+
+    private void returnsLookup(final String epc) {
+        status.setText("Looking up …" + epc.substring(Math.max(0,
+                epc.length() - 6)) + "…");
+        new Thread(() -> {
+            try {
+                JSONObject resp = api("GET",
+                        "/api/returns/tag/" + encPath(epc), null);
+                ui.post(() -> {
+                    retData = resp;
+                    retBarcodeOnly = false;
+                    renderReturnsCard();
+                    String st = resp.optString("state", "unknown");
+                    beep("live".equals(st) || "retired".equals(st)
+                            ? SOUND_OK : SOUND_OTHER);
+                    status.setText("RETURNS: pick what happens to this "
+                            + "box, or ✕ to clear.");
+                });
+            } catch (Exception e) {
+                ui.post(() -> {
+                    beep(SOUND_ERR);
+                    status.setText("Lookup failed: " + e.getMessage());
+                });
+            }
+        }).start();
+    }
+
+    /** Barcode path (no readable tag): product card only - the tag
+     *  actions stay off, the open-box WATCH flow still works. */
+    private void returnsBarcode(final String code) {
+        status.setText("Looking up " + code + "…");
+        new Thread(() -> {
+            try {
+                JSONObject p = api("GET", "/api/products/by-barcode/"
+                        + encPath(code), null);
+                final JSONObject d = new JSONObject()
+                        .put("sku", p.isNull("sku")
+                                ? JSONObject.NULL : p.optString("sku"))
+                        .put("title", p.optString("product_title", code))
+                        .put("barcode", p.isNull("barcode")
+                                ? JSONObject.NULL
+                                : p.optString("barcode"))
+                        .put("bin", p.isNull("bin_location")
+                                ? JSONObject.NULL
+                                : p.optString("bin_location"))
+                        .put("image_url", p.isNull("image_url")
+                                ? JSONObject.NULL
+                                : p.optString("image_url"));
+                ui.post(() -> {
+                    retData = d;
+                    retBarcodeOnly = true;
+                    renderReturnsCard();
+                    beep(SOUND_OK);
+                    status.setText("Product looked up - no tag read. "
+                            + "OPEN BOX files the watch flow; trigger "
+                            + "on the tag for the rest.");
+                });
+            } catch (Exception e) {
+                ui.post(() -> {
+                    beep(SOUND_ERR);
+                    status.setText(code + " matches no product.");
+                });
+            }
+        }).start();
+    }
+
+    private static final java.util.Map<String, String> RET_ASK =
+            new java.util.HashMap<String, String>() {{
+        put("as-new", "Box goes back to live stock as new: the tag "
+                + "comes back live (its condition clears to Good) and "
+                + "the box shelves in its home bin. The refund and any "
+                + "Shopify stock re-add happen in the Returns app.");
+        put("used", "Box comes back USED: the tag comes back live "
+                + "with condition Used. Process the 20% fee and the "
+                + "used draft in the Returns app; relabel the box when "
+                + "it relists.");
+        put("unsellable", "Box is unsellable: the tag retires for "
+                + "good - out of every count, but sweeps still "
+                + "recognize it. Log it in the Returns app's Parts & "
+                + "Unsellable.");
+        put("display", "Box becomes a showroom display unit: the tag "
+                + "retires as display - out of every count, forever "
+                + "recognizable.");
+    }};
+
+    private void askReturnsAction(final String action) {
+        if (retData == null || retBarcodeOnly) return;
+        final String epc = retData.optString("epc", "");
+        dlg()
+                .setTitle(action.toUpperCase(java.util.Locale.ROOT)
+                        .replace("-", " ") + "?")
+                .setMessage(RET_ASK.get(action))
+                .setPositiveButton("Do it", (d, w) ->
+                        postReturnsAction(epc, action))
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void postReturnsAction(final String epc,
+                                   final String action) {
+        status.setText("Processing…");
+        new Thread(() -> {
+            try {
+                JSONObject resp = api("POST", "/api/returns/process",
+                        new JSONObject()
+                                .put("epc", epc)
+                                .put("action", action)
+                                .put("changed_by",
+                                        prefs.getString("device",
+                                                "C72")));
+                final String msg = resp.optString("message", "Done.");
+                ui.post(() -> {
+                    beep(SOUND_OK);
+                    status.setText("✓ " + msg);
+                    returnsLookup(epc);   // card reflects the new state
+                });
+            } catch (Exception e) {
+                ui.post(() -> {
+                    beep(SOUND_ERR);
+                    status.setText("Failed: " + e.getMessage());
+                });
+            }
+        }).start();
+    }
+
+    /** OPEN BOX: with the tag in hand it is the peel flow (old tag
+     *  unpaired now, no watch, -O label prints); by barcode only, it
+     *  files the classic watch. Both find or draft the -O twin. */
+    private void askReturnsOpenBox() {
+        if (retData == null) return;
+        if (retData.isNull("sku")
+                || retData.optString("sku").isEmpty()) {
+            beep(SOUND_ERR);
+            status.setText("No SKU on this product - open-box needs "
+                    + "one for the -O twin.");
+            return;
+        }
+        final boolean withTag = !retBarcodeOnly;
+        dlg()
+                .setTitle("OPEN BOX?")
+                .setMessage(withTag
+                        ? "The old tag unpairs NOW (peel the sticker "
+                          + "off), the -O twin listing is found or "
+                          + "drafted, and the -O label prints at the "
+                          + "warehouse printer - pair it to the box "
+                          + "there. 10% fee side happens in the "
+                          + "Returns app."
+                        : "No tag was read, so this files the open-box "
+                          + "WATCH: the -O twin is found or drafted "
+                          + "and the next sweep asks which box is the "
+                          + "returned unit.")
+                .setPositiveButton("Do it", (d, w) ->
+                        postReturnsOpenBox(withTag))
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void postReturnsOpenBox(final boolean withTag) {
+        final JSONObject d = retData;
+        if (d == null) return;
+        status.setText("Filing open-box return…");
+        new Thread(() -> {
+            try {
+                JSONObject body = new JSONObject()
+                        .put("sku", d.optString("sku"))
+                        .put("product_title",
+                                d.optString("title", ""))
+                        .put("create_draft", true)
+                        .put("created_by",
+                                prefs.getString("device", "C72"));
+                if (withTag) {
+                    body.put("peel_old", true)
+                            .put("epc", d.optString("epc"))
+                            .put("watch", false);
+                } else {
+                    body.put("watch", true);
+                }
+                JSONObject resp = api("POST", "/api/openbox-returns",
+                        body);
+                final String msg = (resp.isNull("old_tag") ? ""
+                        : resp.optString("old_tag") + " ")
+                        + resp.optString("message", "Filed.");
+                ui.post(() -> {
+                    beep(SOUND_OK);
+                    status.setText("✓ " + msg);
+                    if (withTag) {
+                        returnsLookup(d.optString("epc"));
+                    } else {
+                        clearReturnsCard();
+                        status.setText("✓ " + msg);
+                    }
+                });
+            } catch (Exception e) {
+                ui.post(() -> {
+                    beep(SOUND_ERR);
+                    status.setText("Open-box failed: " + e.getMessage());
+                });
+            }
+        }).start();
+    }
+
     // ------------------------------------------------------------ station ---
     /** The canonical shelf format: one letter, 1-99, dash, 1-99 (D1-3). */
     private static boolean looksLikeBin(String code) {
@@ -17635,6 +18203,9 @@ public class MainActivity extends Activity {
         box.addView(toggleRow("Locate", null, swLocate));
         final Switch swLink = mkToggle(prefs.getBoolean("tab_link", true));
         box.addView(toggleRow("Link (gun → web terminal)", null, swLink));
+        final Switch swReturns =
+                mkToggle(prefs.getBoolean("tab_returns", true));
+        box.addView(toggleRow("Returns", null, swReturns));
 
         dlg()
                 .setTitle("Settings")
@@ -17654,6 +18225,8 @@ public class MainActivity extends Activity {
                             .putBoolean("tab_find", swFind.isChecked())
                             .putBoolean("tab_locate", swLocate.isChecked())
                             .putBoolean("tab_link", swLink.isChecked())
+                            .putBoolean("tab_returns",
+                                    swReturns.isChecked())
                             .apply();
                     if (!tabVisible(activeTab)) activeTab = TAB_BATCH;
                     selectTab(activeTab);

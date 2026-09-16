@@ -84,6 +84,26 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
           and it["case_count"] == 0 and it["case_units"] is None,
           r.text[:250])
 
+    # ---- unresolved rows welcome (Nick: where it's needed most) --------
+    with Session(get_engine()) as s:
+        u = BatchItem(batch_id=bid, scanned_code="UNK-99",
+                      resolved=False,
+                      product_title="Unresolved: UNK-99",
+                      qty_scanned=2)
+        s.add(u)
+        s.commit()
+        uid = u.id
+    r = cl.post(f"/api/batches/{bid}/items/{uid}/case",
+                json={"units": 12, "boxes": 2})
+    body = r.json()
+    it = body.get("item") or {}
+    check("unresolved row declares cases too",
+          r.status_code == 200 and it["case_count"] == 2
+          and it["case_units"] == 12 and it["qty_scanned"] == 0
+          and body["converted"] == 2, r.text[:300])
+    check("message names the scanned code",
+          "UNK-99" in body["message"], body.get("message"))
+
     # ---- guards ---------------------------------------------------------
     r = cl.post(f"/api/batches/{bid}/items/{bunid}/case",
                 json={"units": 4})

@@ -3,6 +3,41 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-16 (eleventh round).
 
+## ↩️ C72 RETURNS tab — ✅ BUILT & DEPLOYED 2026-09-16 (C72 4.13)
+
+The approved preview (artifact "C72 Returns Bridge", Version 3),
+built. Scan the returned box on the new RETURNS tab; the card fills
+with the tag's whole story; one tap settles the RFID side. The money
+side (refunds, fees, their drafts) STAYS in the returns app.
+- **Bridge (config-only, their code untouched)**: an `RFIDSvc` token
+  now sits in tc-dashboard-proxy's TC_USER_TOKENS; our server reads
+  `open-returns` with it (RETURNS_API_URL/RETURNS_API_TOKEN app
+  settings, 90s cache, fail-soft). The gun card shows "Active return
+  matched: order · customer · reason" when the SKU has one. We never
+  write to their API.
+- **Server**: GET /api/returns/tag/{epc} (live / retired / printed-
+  only / companion / unknown + product, condition, bin-map enrich,
+  open watch, matches); POST /api/returns/process actions: as-new
+  (retired tag restored live + ledger handback, condition cleared),
+  used (live + condition used), unsellable / display (tombstoned -
+  NEW RetiredTag kinds, named by sweeps instead of ghost-prompted).
+  History "return-processed" chip + the underlying tag events.
+- **C72 4.13 (code 131)**: RETURNS tab (Settings toggle, default
+  on): trigger = strongest single read -> FULL-preview card (image,
+  title, SKU/Barcode/Bin, condition) + tinted tag-state line + match
+  panel + AS NEW / OPEN BOX / USED / UNSELLABLE / DISPLAY ONLY (and
+  NOT OURS on unknown tags); ✕ clears. OPEN BOX with the tag in hand
+  runs the peel flow (no watch, -O label prints); barcode-only scans
+  fall back to the classic watch flow. Confirm dialog per action.
+- Same round: "Box of multiple products" now works on UNRESOLVED
+  barcode rows too (Nick: that's where it's needed most) - gun
+  button no longer hides, server accepts, split rides along when the
+  row resolves.
+Suites 80/80 (new test_returnstab.py; test_casedeclare grew the
+unresolved check). NOT built yet, by design: writing process-return
+into the returns app from the gun (fees/refunds need their form),
+and the ROW/MINI preview refactor of older screens.
+
 ## 🔍 Check step opens the real Edit-product view — ✅ DEPLOYED 2026-09-16
 
 Nick: "clicking an item on check step produces the actual edit

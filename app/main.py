@@ -8997,6 +8997,11 @@ def _shelf_reconcile(
                 "message": (
                     "replaced sticker still on a box — peel it off"
                     if r.kind in ("replaced", "dead")
+                    else "unsellable return — parts/disposal stock, "
+                         "not counted"
+                    if r.kind == "unsellable"
+                    else "display unit — showroom stock, not counted"
+                    if r.kind == "display"
                     else "retired tag heard — possible return; check the box"
                 ),
             }
@@ -9272,6 +9277,334 @@ def unretire_tags(
         )
     session.commit()
     return {"restored": restored}
+
+
+# ------------------------------------------------------ C72 Returns tab ---
+# The gun's Returns tab (Nick, preview approved 2026-09-16): trigger-read
+# the returned box, see the tag's whole story plus any matching open
+# return in the returns app, then settle the RFID side in one tap. The
+# returns app (tc-dashboard-proxy) keeps the money side - refunds, fees,
+# its draft listings; we READ it with the RFIDSvc token
+# (RETURNS_API_URL / RETURNS_API_TOKEN app settings) and never write.
+
+_returns_app_cache: dict = {"at": 0.0, "orders": []}
+
+
+def _returns_app_orders() -> list[dict]:
+    """Open returns from tc-dashboard-proxy, cached ~90s per worker.
+    Unconfigured or unreachable = empty/stale list, never an error -
+    the match panel is a nicety on top of the RFID story."""
+    url = (os.getenv("RETURNS_API_URL") or "").rstrip("/")
+    token = os.getenv("RETURNS_API_TOKEN") or ""
+    if not url or not token:
+        return []
+    now = time.time()
+    if now - _returns_app_cache["at"] < 90:
+        return _returns_app_cache["orders"]
+    try:
+        import requests
+        r = requests.get(
+            url + "/open-returns",
+            headers={"Authorization": "Bearer " + token},
+            timeout=8,
+        )
+        r.raise_for_status()
+        orders = r.json().get("orders") or []
+    except Exception:  # noqa: BLE001 - stale beats an error here
+        return _returns_app_cache["orders"]
+    _returns_app_cache["at"] = now
+    _returns_app_cache["orders"] = orders
+    return orders
+
+
+def _returns_matches(sku: str | None) -> list[dict]:
+    """Active returns-app entries for this SKU, gun-card sized (order,
+    customer name, reason - no email/phone on the warehouse floor)."""
+    key = _up(sku)
+    if not key:
+        return []
+    out: list[dict] = []
+    for o in _returns_app_orders():
+        for it in (o.get("return_items") or []):
+            if _up(it.get("sku")) != key:
+                continue
+            out.append({
+                "order": o.get("order_name")
+                         or f"#{o.get('order_number') or '?'}",
+                "customer": o.get("customer"),
+                "reason": it.get("reason"),
+                "reason_note": it.get("reason_note"),
+                "status": it.get("return_status")
+                          or o.get("return_status"),
+                "qty": it.get("quantity"),
+            })
+    return out
+
+
+@app.get("/api/returns/tag/{epc}", dependencies=[Depends(require_user)])
+def returns_tag(epc: str, session: Session = Depends(get_session)):
+    """The returned box's whole story for the Returns card: tag state
+    (live / retired / printed-only / companion / unknown), the product
+    (image and live bin from the bin map), its box condition, any open
+    open-box watch, and matching open returns from the returns app."""
+    e = (epc or "").strip()
+    if not e:
+        raise HTTPException(422, "Which tag?")
+    live = session.scalar(
+        select(RfidAssignment).where(
+            func.upper(RfidAssignment.rfid_id) == e.upper()
+        )
+    )
+    retired = None if live is not None else session.scalar(
+        select(RetiredTag).where(
+            func.upper(RetiredTag.rfid_id) == e.upper()
+        )
+    )
+    src = live if live is not None else retired
+    state = "live" if live is not None else (
+        "retired" if retired is not None else None
+    )
+    sku = title = bin_loc = None
+    condition = None
+    if src is not None:
+        sku, title = src.sku, src.product_title
+        bin_loc = src.bin_location
+        condition = src.condition
+    elif state is None:
+        comp = session.scalar(
+            select(CompanionTag).where(
+                func.upper(CompanionTag.epc) == e.upper()
+            )
+        )
+        if comp is not None:
+            state = "companion"
+            sku, title = comp.sku, comp.product_title
+            bin_loc = comp.bin_location
+        else:
+            job = session.scalar(
+                select(PrintJob).where(
+                    func.upper(PrintJob.epc) == e.upper()
+                )
+            )
+            if job is not None:
+                state = "printed-only"
+                sku, title = job.sku, job.product_title
+                bin_loc = job.bin_location
+            else:
+                state = "unknown"
+    entry = session.scalar(
+        select(BinMapEntry).where(func.upper(BinMapEntry.sku) == _up(sku))
+    ) if sku else None
+    watch = session.scalar(
+        select(OpenboxReturn).where(
+            func.upper(OpenboxReturn.sku) == _up(sku),
+            OpenboxReturn.status == "open",
+        )
+    ) if sku else None
+    state_text = {
+        "live": "TAG: live on the shelf record"
+                + (f" · bin {bin_loc}" if bin_loc else ""),
+        "retired": (
+            f"TAG: retired · {retired.kind}"
+            + (
+                f" {_short_date(retired.retired_at.isoformat())}"
+                if retired.retired_at else ""
+            )
+            if retired is not None else ""
+        ),
+        "printed-only": "TAG: printed but never paired - no product "
+                        "record hangs on it",
+        "companion": "TAG: companion label (box 2+ of a multi-box "
+                     "unit) - counts nowhere by design",
+        "unknown": "TAG: not in the system - a blank sticker, or not "
+                   "our tag at all",
+    }[state]
+    return {
+        "state": state,
+        "epc": e.upper(),
+        "sku": sku,
+        "title": title,
+        "barcode": entry.barcode if entry else None,
+        "bin": (entry.bin if entry else None) or bin_loc,
+        "image_url": entry.image_url if entry else None,
+        "condition": condition,
+        "condition_label": _condition_label(condition),
+        "kind": retired.kind if retired is not None else None,
+        "note": retired.note if retired is not None else None,
+        "case_units": src.case_units if src is not None else None,
+        "state_text": state_text,
+        "watch_open": bool(watch),
+        "matches": _returns_matches(sku),
+    }
+
+
+class ReturnsProcessIn(BaseModel):
+    epc: str = Field(max_length=64)
+    # as-new: back to live stock, condition cleared. used: back to live
+    # with condition "used" (relist/relabel happens in the returns app
+    # flow). unsellable / display: tombstoned - out of every count but
+    # forever recognizable to sweeps. Open box is NOT here: the gun
+    # calls /api/openbox-returns (the -O twin flow) for that.
+    action: Literal["as-new", "used", "unsellable", "display"]
+    changed_by: str | None = Field(default=None, max_length=100)
+
+
+@app.post("/api/returns/process", dependencies=[Depends(require_user)])
+def returns_process(
+    payload: ReturnsProcessIn, session: Session = Depends(get_session)
+):
+    """Settle the RFID side of a return in one tap. Local records only -
+    Shopify counts and refunds stay in the returns app."""
+    e = payload.epc.strip()
+    if not e:
+        raise HTTPException(422, "Which tag?")
+    by = (payload.changed_by or "").strip()[:100] or None
+    live = session.scalar(
+        select(RfidAssignment).where(
+            func.upper(RfidAssignment.rfid_id) == e.upper()
+        )
+    )
+    retired = None if live is not None else session.scalar(
+        select(RetiredTag).where(
+            func.upper(RetiredTag.rfid_id) == e.upper()
+        )
+    )
+    if live is None and retired is None:
+        raise HTTPException(
+            404,
+            "That tag isn't in the system - there's nothing to settle. "
+            "Pair it in a batch, or mark it NOT OURS.",
+        )
+    steps: list[str] = []
+    if payload.action in ("as-new", "used"):
+        if retired is not None:
+            # Same restore unretire_tags does, for this one EPC: the
+            # box is physically back, so the record comes back too, and
+            # the sold-ledger units it consumed are handed back.
+            live = RfidAssignment(
+                rfid_id=retired.rfid_id,
+                shopify_variant_id=retired.shopify_variant_id or "",
+                product_title=retired.product_title
+                              or retired.sku or "(unknown)",
+                sku=retired.sku,
+                bin_location=retired.bin_location,
+                case_units=retired.case_units,
+                condition=retired.condition,
+                assigned_by=by,
+            )
+            session.add(live)
+            _log_change(
+                session,
+                sku=retired.sku,
+                title=retired.product_title,
+                variant_id=retired.shopify_variant_id,
+                field="tag-unretired",
+                old=retired.rfid_id,
+                new=retired.kind,
+                by=by,
+            )
+            if retired.sku and (retired.ledger_consumed or 0) > 0:
+                orders_sync.unretire_units(
+                    session, retired.sku, retired.ledger_consumed
+                )
+            session.delete(retired)
+            steps.append("tag restored to live")
+        else:
+            steps.append("tag was already live")
+        want = None if payload.action == "as-new" else "used"
+        if (live.condition or None) != want:
+            _log_change(
+                session,
+                sku=live.sku,
+                title=live.product_title,
+                variant_id=live.shopify_variant_id,
+                field="tag-condition",
+                old=live.rfid_id,
+                new=f"…{e[-6:]}: {_condition_label(live.condition)} → "
+                    f"{_condition_label(want)}",
+                by=by,
+            )
+            live.condition = want
+            steps.append(
+                "condition cleared to Good" if want is None
+                else "condition set to Used"
+            )
+        product = live
+    else:
+        kind = payload.action  # "unsellable" | "display"
+        note = (f"return processed as {payload.action}")[:255]
+        cond = "display" if kind == "display" else None
+        if live is not None:
+            rt = RetiredTag(
+                rfid_id=live.rfid_id,
+                sku=live.sku,
+                product_title=live.product_title,
+                shopify_variant_id=live.shopify_variant_id,
+                bin_location=live.bin_location,
+                case_units=live.case_units,
+                condition=cond or live.condition,
+                kind=kind,
+                retired_by=by,
+                note=note,
+            )
+            session.add(rt)
+            _log_change(
+                session,
+                sku=live.sku,
+                title=live.product_title,
+                variant_id=live.shopify_variant_id,
+                field="tag-retired",
+                old=live.rfid_id,
+                new=kind,
+                by=by,
+            )
+            session.delete(live)
+            product = rt
+            steps.append(f"tag retired as {kind}")
+        else:
+            _log_change(
+                session,
+                sku=retired.sku,
+                title=retired.product_title,
+                variant_id=retired.shopify_variant_id,
+                field="tag-retired",
+                old=retired.rfid_id,
+                new=kind,
+                by=by,
+            )
+            retired.kind = kind
+            retired.note = note
+            if cond:
+                retired.condition = cond
+            product = retired
+            steps.append(f"retired record re-marked {kind}")
+    _log_change(
+        session,
+        sku=product.sku,
+        title=product.product_title,
+        variant_id=product.shopify_variant_id,
+        field="return-processed",
+        old=e.upper(),
+        new=payload.action,
+        by=by,
+    )
+    session.commit()
+    tail = {
+        "as-new": "Shelve it in its home bin; the returns app handles "
+                  "the refund and any stock re-add.",
+        "used": "Log the return in the returns app (20% fee, used "
+                "draft); relabel when it relists.",
+        "unsellable": "Parts bin or disposal; log it in the returns "
+                      "app's Parts & Unsellable.",
+        "display": "Showroom it; it stays out of every count but "
+                   "sweeps still recognize the tag.",
+    }[payload.action]
+    return {
+        "action": payload.action,
+        "epc": e.upper(),
+        "sku": product.sku,
+        "message": f"{' + '.join(steps).capitalize()}. {tail}",
+    }
 
 
 # --------------------------------------------------- open-box returns ---
@@ -10318,18 +10651,17 @@ def batch_item_case(
     if batch.status in ("done", "abandoned"):
         raise HTTPException(409, f"This batch is {batch.status}.")
     item = _get_batch_item(session, batch_id, item_id)
-    if not item.resolved or not item.shopify_variant_id:
-        raise HTTPException(
-            422, "That row never resolved to a product - sort the barcode "
-             "out first."
-        )
+    # UNRESOLVED rows are welcome (Nick, 2026-09-16: unknown-barcode
+    # boxes are exactly where this is needed most) - the case split is
+    # plain batch bookkeeping, and it rides along when the row later
+    # resolves via link/draft/find.
     if item.kind == "bundle":
         raise HTTPException(
             422,
             "This is marked as a bundle - it has no boxes of its own. "
             "Sealed cases belong on its component products.",
         )
-    already_printed = session.scalar(
+    already_printed = item.shopify_variant_id and session.scalar(
         select(func.count()).select_from(PrintJob).where(
             PrintJob.batch_id == batch.id,
             PrintJob.shopify_variant_id == item.shopify_variant_id,
@@ -10343,7 +10675,8 @@ def batch_item_case(
             "this batch - changing the case split now would desync the "
             "strip. Void/reprint its labels first.",
         )
-    sku_label = item.sku or item.product_title or "unit"
+    sku_label = (item.sku or item.scanned_code
+                 or item.product_title or "unit")
     if payload.undo:
         if not item.case_count:
             raise HTTPException(
@@ -16148,6 +16481,12 @@ def batch_verify(
                     "message": (
                         "replaced sticker still on a box — peel it off"
                         if r.kind in ("replaced", "dead")
+                        else "unsellable return — parts/disposal "
+                             "stock, not counted"
+                        if r.kind == "unsellable"
+                        else "display unit — showroom stock, not "
+                             "counted"
+                        if r.kind == "display"
                         else "retired tag heard — possible return; "
                              "check the box"
                     ),
@@ -19255,6 +19594,7 @@ _CHANGE_TYPE_LABELS = {
     "print-resume": "printing-resumed",
     "print-strip": "strip-mode",
     "case-declared": "case-declared",
+    "return-processed": "return-processed",
     "on-hand": "on-hand-updated", "on-hand-undo": "on-hand-undone",
     "on-hand-lower": "on-hand-lowered",
     "on-hand-lower-undo": "on-hand-lower-undone",

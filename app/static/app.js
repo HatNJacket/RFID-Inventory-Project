@@ -378,6 +378,7 @@ const EVENT_META = {
   "printing-resumed": ["Resumed Printing", "#116329"],
   "strip-mode": ["Strip Mode", "#5b5b8a"],
   "case-declared": ["Sealed Cases", "#3f5b6d"],
+  "return-processed": ["Return Processed", "#2f5f6f"],
   "on-hand-updated": ["Raised On-hand", "#0c5132"],
   "on-hand-undone": ["Undid On-hand", "#6d7175"],
   "on-hand-lowered": ["Lowered On-hand", "#8a4b0e"],
