@@ -13434,7 +13434,7 @@ def receiving_unprinted(
     batch, tag = out["batch"], out["tag"]
     session.flush()
     # What a print pass WOULD queue right now = the labels outstanding.
-    would, would_no_bin, _would_held = _build_receiving_label_jobs(
+    would, would_no_bin, would_held = _build_receiving_label_jobs(
         session, batch, payload.requested_by or tag
     )
     pushed_units = sum(a["quantity"] for a in out["added"])
@@ -13445,12 +13445,20 @@ def receiving_unprinted(
             ReviewTask.batch_id == batch.id,
         )
     )
+    # Name the bin-less products OUTRIGHT (Nick, 2026-09-23, SO 968: a
+    # 33-unit push whose only product had no bin read "0 label(s) are
+    # waiting" - technically true, practically a riddle).
     detail = (
         f"{tag}: stock was updated in Shopify without printing labels. "
         f"{len(would)} label(s) are waiting on receiving batch "
         f"#{batch.id}"
-        + (f" (plus {len(would_no_bin)} product(s) held for a bin)"
+        + (f". {len(would_no_bin)} product(s) can't print until a bin "
+           f"is assigned: {', '.join(would_no_bin[:4])}"
+           + (" and more" if len(would_no_bin) > 4 else "")
+           + " - scan it at the Scan Station and click its bin chip"
            if would_no_bin else "")
+        + (f"; {len(would_held)} product(s) covered by held "
+           f"vendor-strip labels" if would_held else "")
         + (f"; {len(out['skipped_unknown'])} unknown SKU(s) flagged on "
            f"the batch" if out["skipped_unknown"] else "")
         + ". Resolve to queue them - the normal receiving print and "
@@ -13527,29 +13535,82 @@ def queue_missing_labels(
         session, batch, by or batch.created_by
     )
     session.add_all(jobs)
+    held_txt = "; ".join(held_notes)
+    if skipped_no_bin:
+        # Labels are still OWED, just blocked on missing bins - keep the
+        # task open. Resolving here used to close it with nothing
+        # printed and the debt silently forgiven (Nick, 2026-09-23,
+        # SO 968: 33 units, "0 labels waiting", resolve removed the
+        # task and printed nothing).
+        names = (", ".join(skipped_no_bin[:4])
+                 + (" and more" if len(skipped_no_bin) > 4 else ""))
+        task.detail = (
+            f"{task.product_title}: {len(skipped_no_bin)} product(s) "
+            f"can't print until a bin is assigned: {names} - scan it at "
+            "the Scan Station and click its bin chip, then resolve "
+            "again."
+            + (f" {len(jobs)} label(s) already queued this pass."
+               if jobs else "")
+            + (f" Held strips cover some boxes: {held_txt}."
+               if held_txt else "")
+        )[:500]
+        session.commit()
+        return {
+            "queued": len(jobs),
+            "skipped_no_bin": skipped_no_bin,
+            "batch_id": batch.id,
+            "resolved": False,
+            "detail": task.detail,
+            "message": (
+                f"{len(jobs)} label(s) queued, but {len(skipped_no_bin)} "
+                f"product(s) have NO BIN so their labels can't print: "
+                f"{names}. Assign the bin (scan the product at the Scan "
+                "Station, click its bin chip), then press this again. "
+                "The task stays open until every owed label queues."
+                + (f" Held strips cover some boxes: {held_txt}."
+                   if held_txt else "")
+            ),
+        }
     task.status = "resolved"
     task.resolved_by = by
     task.resolved_at = datetime.now(timezone.utc)
     task.resolution_note = (
-        f"{len(jobs)} label(s) queued to receiving batch #{batch.id}."
-        + (f" Held for a bin: {', '.join(skipped_no_bin)}."
-           if skipped_no_bin else "")
-        if jobs or skipped_no_bin
-        else "Labels were already queued from the receiving list."
+        (
+            f"{len(jobs)} label(s) queued to receiving batch #{batch.id}."
+            + (f" Held strips cover the rest: {held_txt}."
+               if held_txt else "")
+        )
+        if jobs
+        else (
+            f"No printing needed - held vendor-strip labels cover the "
+            f"boxes: {held_txt}."
+            if held_txt
+            else "Labels were already queued from the receiving list."
+        )
     )[:255]
     session.commit()
     return {
         "queued": len(jobs),
         "skipped_no_bin": skipped_no_bin,
         "batch_id": batch.id,
+        "resolved": True,
         "message": (
-            f"{len(jobs)} label(s) queued on receiving batch {batch.id}"
-            + (f"; held for a bin: {', '.join(skipped_no_bin)}"
-               if skipped_no_bin else "")
-            + ". The receiving list runs the normal print and pair flow."
-            if jobs or skipped_no_bin
-            else "Nothing was owed - labels were already queued; task "
-                 "resolved."
+            (
+                f"{len(jobs)} label(s) queued on receiving batch "
+                f"{batch.id}"
+                + (f". Held strips cover the rest: {held_txt}"
+                   if held_txt else "")
+                + ". The receiving list runs the normal print and pair "
+                "flow."
+            )
+            if jobs
+            else (
+                f"Nothing prints - the boxes are covered by held "
+                f"vendor-strip labels: {held_txt}. Task resolved."
+                if held_txt
+                else "Nothing was owed - labels were already queued; "
+                     "task resolved."
+            )
         ),
     }
 

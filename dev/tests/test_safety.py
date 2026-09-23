@@ -70,10 +70,12 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
         tasks = s.scalars(select(ReviewTask).where(
             ReviewTask.category == "labels-not-printed",
             ReviewTask.status == "open")).all()
-        check("one safety-net task tracks the batch",
+        check("one safety-net task tracks the batch and NAMES the "
+              "bin-less product",
               len(tasks) == 1 and tasks[0].batch_id == bid
               and "3 label(s)" in tasks[0].detail
-              and "held for a bin" in tasks[0].detail,
+              and "can't print until a bin is assigned" in tasks[0].detail
+              and "Binless Thing" in tasks[0].detail,
               [t.detail for t in tasks])
         task_id = tasks[0].id
 
@@ -103,18 +105,23 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
                       for n in notes),
               [n.note for n in notes])
 
-    # --- 3) resolution queues the labels like a print pass ------------
+    # --- 3) resolution queues what it CAN; a no-bin product keeps the
+    # task OPEN (Nick, 2026-09-23, SO 968: resolving a fully bin-blocked
+    # task closed it with nothing printed - the debt just vanished) -----
     r = cl.post("/api/review-tasks/9999/queue-labels",
                 json={"changed_by": "Nick"})
     check("a missing task 404s", r.status_code == 404, r.text[:100])
     r = cl.post(f"/api/review-tasks/{task_id}/queue-labels",
                 json={"changed_by": "Nick"})
-    check("resolving queues every owed label",
+    check("resolving queues every printable label",
           r.status_code == 200 and r.json()["queued"] == 5,
           r.text[:250])
-    check("no-bin products are held out and named",
-          r.json()["skipped_no_bin"] == ["Binless Thing"],
-          r.json()["skipped_no_bin"])
+    check("no-bin products are named and the task STAYS OPEN",
+          r.json()["resolved"] is False
+          and r.json()["skipped_no_bin"] == ["Binless Thing"]
+          and "NO BIN" in r.json()["message"]
+          and "Binless Thing" in r.json()["message"],
+          r.text[:300])
     with Session(get_engine()) as s:
         jobs = s.scalars(select(PrintJob).where(
             PrintJob.batch_id == bid)).all()
@@ -123,10 +130,39 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
                                      for j in jobs),
               [(j.sku, j.bin_location) for j in jobs])
         t = s.get(ReviewTask, task_id)
+        check("the open task's detail tells the operator what to do",
+              t.status == "open" and "Binless Thing" in t.detail
+              and "bin chip" in t.detail, (t.status, t.detail))
+    r = cl.post(f"/api/review-tasks/{task_id}/queue-labels",
+                json={"changed_by": "Nick"})
+    check("a second press double-queues nothing and stays open",
+          r.status_code == 200 and r.json()["queued"] == 0
+          and r.json()["resolved"] is False, r.text[:250])
+    # Assign the bin (exactly what /api/bin-updates propagates onto
+    # open batches' item snapshots), then resolve for real.
+    with Session(get_engine()) as s:
+        for it in s.scalars(select(BatchItem).where(
+                BatchItem.batch_id == bid)):
+            if it.sku == "NOBIN-2":
+                it.bin_location = "J9-9"
+        s.commit()
+    r = cl.post(f"/api/review-tasks/{task_id}/queue-labels",
+                json={"changed_by": "Nick"})
+    check("with the bin assigned, resolve queues the rest and closes",
+          r.status_code == 200 and r.json()["queued"] == 2
+          and r.json()["resolved"] is True, r.text[:250])
+    with Session(get_engine()) as s:
+        t = s.get(ReviewTask, task_id)
         check("the task resolved with the queue receipt",
               t.status == "resolved" and t.resolved_by == "Nick"
-              and "5 label(s) queued" in (t.resolution_note or ""),
+              and "2 label(s) queued" in (t.resolution_note or ""),
               (t.status, t.resolution_note))
+        jobs = s.scalars(select(PrintJob).where(
+            PrintJob.batch_id == bid)).all()
+        check("the once-binless labels queued to the new bin",
+              sorted(j.bin_location for j in jobs
+                     if j.sku == "NOBIN-2") == ["J9-9", "J9-9"],
+              [(j.sku, j.bin_location) for j in jobs])
     r = cl.post(f"/api/review-tasks/{task_id}/queue-labels",
                 json={"changed_by": "Nick"})
     check("a resolved task refuses a second queue",
@@ -181,10 +217,12 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
     r = cl.post(f"/api/review-tasks/{sold_task_id}/unprinted-sold",
                 json={"changed_by": "Nick"})
     d = r.json()
+    # NOBIN-2's boxes are covered by the labels queued in step 3, so
+    # only AG-KIT's one unlabelled unit is owed here.
     check("sold write-off answers with the write-off list",
           r.status_code == 200
           and sorted((w["sku"], w["units"]) for w in d["written_off"])
-          == [("AG-KIT", 1), ("NOBIN-2", 2)], r.text[:300])
+          == [("AG-KIT", 1)], r.text[:300])
     check("matching recorded sales consumed (AG-KIT only had one)",
           d["sales_consumed"] == 1
           and "1 recorded sale(s) consumed" in d["message"],
@@ -194,7 +232,7 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
             select(BatchItem).where(BatchItem.batch_id == bid))}
         check("counts drop to what was actually labelled",
               items["AG-KIT"].qty_scanned == 5
-              and items["NOBIN-2"].qty_scanned == 0,
+              and items["NOBIN-2"].qty_scanned == 2,
               [(k, v.qty_scanned) for k, v in items.items()])
         sr = s.scalars(select(SoldRecord).where(
             SoldRecord.sku == "AG-KIT")).first()
@@ -203,12 +241,12 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
         check("task resolved with the write-off story",
               t.status == "resolved"
               and "sold/set aside" in (t.resolution_note or "")
-              and "2x NOBIN-2" in t.resolution_note,
+              and "1x AG-KIT" in t.resolution_note,
               (t.status, t.resolution_note))
         evs = s.scalars(select(BarcodeChange).where(
             BarcodeChange.changed_field == "unprinted-sold")).all()
         check("History receipt per written-off SKU",
-              sorted(e.sku for e in evs) == ["AG-KIT", "NOBIN-2"]
+              sorted(e.sku for e in evs) == ["AG-KIT"]
               and all("unlabelled unit(s) sold" in e.new_barcode
                       for e in evs),
               [(e.sku, e.new_barcode) for e in evs])

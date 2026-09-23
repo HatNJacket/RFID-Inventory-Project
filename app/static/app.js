@@ -11389,7 +11389,7 @@ function openResolveWindow(t) {
     middle = `
       <button class="reset rvw-wide rvw-choice rvw-choice--amber" id="rvw-queuelabels" type="button">
         Queue the missing labels
-        <span class="rvw-choice__sub">Prints one label per unlabelled box on the receiving batch, each with its home bin - identical to the planner's Print labels. No-bin products are held out and named.</span>
+        <span class="rvw-choice__sub">Prints one label per unlabelled box on the receiving batch, each with its home bin - identical to the planner's Print labels. Products without a bin are named and the task stays open until they get one.</span>
       </button>
       <button class="reset rvw-wide rvw-choice" id="rvw-unprintedsold" type="button">
         The unlabelled units were sold or set aside
@@ -11730,6 +11730,16 @@ function openResolveWindow(t) {
           { changed_by: operator }
         );
         alert(res.message);
+        if (res.resolved === false) {
+          // Labels still owed (no-bin products): the task stays OPEN
+          // on the server, so it stays on the board here too, with
+          // the fresh detail naming what needs a bin.
+          if (res.detail) t.detail = res.detail;
+          queueLabelsBtn.disabled = false;
+          closeResolveWindow();
+          renderReview();
+          return;
+        }
         reviewTasks = reviewTasks.filter((x) => x.id !== t.id);
         closeResolveWindow();
         renderReview();

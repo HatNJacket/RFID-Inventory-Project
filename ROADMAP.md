@@ -72,6 +72,30 @@ label builders (which are field-calibrated and untouched) is new:
   not reach for remote desktop again. Loose F9177A jobs the ghost
   swallowed earlier remain falsely done; requeue on request.
 
+## 📥 Labels Not Printed can't forgive a bin-blocked debt — ✅ DEPLOYED 2026-09-23
+
+Nick (SO 968, 33x Seestar S50 Pro): the safety-net task read "0
+label(s) are waiting" while noting a 33-unit push, and resolving it
+removed the task without printing anything. Root cause: the product
+has NO BIN, so the label builder held every label out (skipped_no_bin)
+- and queue-labels resolved the task anyway, silently forgiving the
+owed labels. Fixes:
+- Resolve now queues what CAN print and, when any product is
+  bin-blocked, KEEPS THE TASK OPEN with a detail that names the
+  product and says exactly what to do (scan it at the Scan Station,
+  click its bin chip, resolve again). The web card stays on the board
+  (resolved:false + fresh detail in the response).
+- Task creation names the bin-less products outright instead of the
+  old "(plus N held for a bin)" riddle, and mentions held-strip
+  coverage (the third _build return value was silently discarded in
+  both places - held-strip notes now reach the resolve message and
+  resolution note too).
+- /api/bin-updates already propagates a new bin onto open batches'
+  item snapshots, so assign-then-resolve works with no extra step.
+Suites 81/81 (test_safety.py now walks blocked resolve -> second
+press no-op -> bin assigned -> clean close). Live-verified on task
+#9063: press queued 0, kept it open, named the S50 Pro.
+
 ## 🖨 Agent v7: burst printing with ordered confirms — ✅ LIVE 2026-09-23
 
 Nick, on v6's per-label handshake pauses: "Burst printing is the best
