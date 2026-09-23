@@ -8501,13 +8501,19 @@ async function pollBatchPrint() {
       apiJson("/api/print-agent/status"),
       apiJson(`/api/print-jobs?batch_id=${batch.id}&limit=200`),
     ]);
-    bEl.printAgent.textContent = agent.online
-      ? "Printer agent: online ✓ (warehouse PC)" +
-        (agent.realign_capable
-          ? ""
-          : " · running OLD code: the rip re-align fixes are inactive " +
-            "until print_agent.py is updated and its task restarted")
-      : "Printer agent: OFFLINE - is the warehouse PC on? Jobs stay queued.";
+    bEl.printAgent.textContent = agent.fault
+      ? `⚠ Printer FAULTED - ${agent.fault}. Labels wait (not lost) ` +
+        "until the printer is fixed."
+      : agent.online
+        ? "Printer agent: online ✓ (warehouse PC)" +
+          (agent.readback === "counter"
+            ? " · prints confirmed by printer"
+            : "") +
+          (agent.realign_capable
+            ? ""
+            : " · running OLD code: the rip re-align fixes are inactive " +
+              "until print_agent.py is updated and its task restarted")
+        : "Printer agent: OFFLINE - is the warehouse PC on? Jobs stay queued.";
     // Voided/canceled labels are HISTORY, not part of the run's math —
     // counting them used to render nonsense like "Printed 2/4" after a
     // reprint.
@@ -10667,10 +10673,20 @@ async function loadQueue() {
       apiJson("/api/print-agent/status"),
       apiJson("/api/print-jobs?limit=200"),
     ]);
-    // Wedged beats "online": the agent is fine but the PHYSICAL printer
-    // stopped taking data - labels pile up in the Windows queue while
-    // everything server-side reads done (Nick, 2026-09-01).
-    if (agent.wedged) {
+    // The printer's OWN fault report beats everything (v6 agents ask it
+    // over USB): media out / head open / paused means labels are HELD,
+    // not falsely done - the flawed-done era ends here (Nick, 2026-09-23).
+    if (agent.fault) {
+      pill.textContent =
+        `⚠ Printer FAULTED - ${agent.fault}` +
+        (agent.holding
+          ? ` - ${agent.holding} label(s) held until it clears`
+          : " - new labels will wait");
+      pill.className = "pill pill--bad";
+    } else if (agent.wedged) {
+      // Wedged beats "online": the agent is fine but the PHYSICAL
+      // printer stopped taking data - labels pile up in the Windows
+      // queue while everything server-side reads done (Nick, 2026-09-01).
       const mins = Math.round((agent.win_oldest_seconds || 0) / 60);
       pill.textContent =
         `⚠ Printer WEDGED - ${agent.win_jobs} label(s) stuck in the ` +
@@ -10678,12 +10694,19 @@ async function loadQueue() {
         `Clear stuck jobs and reprint.`;
       pill.className = "pill pill--bad";
     } else {
+      // readback "counter" = every done is confirmed by the printer's
+      // own odometer; say so, it's the whole point of v6.
+      const confirmed =
+        agent.readback === "counter"
+          ? " · prints confirmed by printer"
+          : agent.readback === "status"
+            ? " · printer status readback"
+            : "";
       pill.textContent = agent.online
         ? "Printer agent: online ✓" +
           (agent.realign_capable
-            ? agent.agent_version
-              ? ` · v${agent.agent_version}`
-              : ""
+            ? (agent.agent_version ? ` · v${agent.agent_version}` : "") +
+              confirmed
             : " · NEEDS UPDATE")
         : "Printer agent: offline";
       pill.className =

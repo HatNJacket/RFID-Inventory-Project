@@ -1,7 +1,56 @@
 # RFID Inventory System — Roadmap
 
 Source of truth for project status. Updated by Claude each working session.
-Last updated: 2026-09-16 (eleventh round).
+Last updated: 2026-09-23 (print agent v6).
+
+## 🖨 Print agent v6: direct USB + truthful dones + cloud control — ✅ DEPLOYED 2026-09-23
+
+Nick (09-23), after a week of labels vanishing between "spooler says
+printed" and the paper (9/24 on batch #301, 5/15 on the burst reprint,
+2/10 on paced singles, printer healthy every time) and one remote-
+desktop session too many: stop patching, interface with the agent via
+the cloud, and rewrite the print path properly. Everything below the
+label builders (which are field-calibrated and untouched) is new:
+
+- **Direct USB transport (the drop fix)**: the agent opens the Zebra's
+  usbprint.sys interface itself - ctypes, overlapped I/O with real
+  timeouts - and holds it EXCLUSIVELY. No Windows spooler, no driver
+  bidi polling, and ShipStation Connect physically cannot grab the
+  device while the agent runs. Spooler survives as the automatic
+  fallback (and reports "another program holds the printer" when the
+  USB open loses a race). A stalled USB write now raises loudly
+  instead of vanishing.
+- **Truthful printed-state (was TODO #10)**: with the read channel the
+  agent asks the PRINTER: ~HS status before/during every label and the
+  SGD odometer (total_label_count) around it. A job completes only
+  when the printer's own counter moved ("[printer-confirmed]" in the
+  log); a drained-but-uncounted label is retried up to 3x then FAILED
+  loudly ("printer swallowed this label"); media out / head open /
+  pause / buffer full HOLD the queue - the Queue tab pill says
+  "Printer FAULTED - media out - N label(s) held", and the run resumes
+  by itself when the fault clears. under-temp never holds (a cold
+  morning printhead heats as it prints).
+- **Cloud control plane (no more remote desktop)**: every poll is a
+  heartbeat (POST /api/print-agent/heartbeat: fault, transport,
+  readback level, counters, ~HS snapshot) answered with queued
+  commands + the server's agent version. Commands (station-key-gated
+  to queue, agent-key to claim/answer): shell (PowerShell on the
+  warehouse PC, output posted back), getlog, query (raw printer
+  query), zpl, testlabel, feed, purge, restart, update. Results land
+  at /api/print-agent/command-result/{id}. The agent SELF-UPDATES:
+  heartbeat says the server serves a newer AGENT_VERSION -> download
+  (script endpoint now accepts the agent key), py_compile verify,
+  atomic swap, clean exit; the new LOOPING run_agent.cmd relaunches
+  it. The agent also owns its log now (--log-file, 3MB rotation).
+- **Bootstrap**: GET /api/print-agent/bootstrap (unauthenticated ON
+  PURPOSE - remote keyboards mangle shifted chars, and it holds no
+  secrets; the agent key is read from the machine's own run_agent.cmd)
+  serves the one-time upgrade script: stop v5, download v6, write the
+  looping runner + Startup copy, evict ShipStation autostart / driver
+  bidi / USB selective suspend, relaunch.
+- Suites 81/81 incl. new test_agentv6.py (heartbeat/commands/results/
+  key handling on the server; ~HS parsing, fault gating and the
+  confirmed/vanished/drained verdicts on the agent).
 
 ## 🚨 Weekend outage: pool exhaustion + the watchdog — ✅ DEPLOYED 2026-09-23
 
@@ -3737,19 +3786,11 @@ bigger ones (receiving in particular needs interviews).
    2026-09-16). The category dropdown should be a multi-select
    checklist instead of a single pick: each type toggles on/off with
    a green checkmark, and the list shows/hides tasks per toggle.
-10. **Truthful printed-state from the printer itself** (captured
-   2026-09-23, Nick: "the way the system tells if something is
-   printed is flawed"). Today "done" = the Windows spooler accepted
-   the job; a faulted printer (blinking light: paused / media out /
-   head open / uncalibrated after a move - exactly the 09-23 case)
-   buffers everything silently and the queue still reads done. The
-   print agent should query the Zebra's own status (media-out, head
-   latch, pause are all reported by the printer) before/after each
-   burst and ride it along the command poll like the v4 wedge
-   report, so the Queue tab pill can say "printer FAULTED - N jobs
-   buffered on the printer" instead of a false done. The agent-side
-   diag script pattern from 09-23 (rfiddiag.ps1, left on the
-   warehouse PC desktop) covers the Windows half already.
+10. ~~**Truthful printed-state from the printer itself**~~ ✅ SHIPPED
+   2026-09-23 as part of print agent v6 (see the v6 section up top):
+   the agent queries ~HS + the odometer around every label, faults
+   hold the queue and show on the Queue tab pill, and "done" means
+   the printer's own counter moved.
 
 ## 📥 Steve's TODO list (captured 2026-07-28, not yet designed)
 

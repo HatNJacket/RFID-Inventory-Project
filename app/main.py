@@ -24,7 +24,7 @@ from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import AliasChoices, BaseModel, Field, field_validator
@@ -1775,6 +1775,21 @@ def require_agent_key(x_agent_key: str | None = Header(default=None)):
         raise HTTPException(401, "Missing or wrong X-Agent-Key header.")
 
 
+def require_user_or_agent(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    x_station_key: str | None = Header(default=None),
+    x_agent_key: str | None = Header(default=None),
+):
+    """Routes both humans and the agent may hit: the v6 SELF-UPDATE
+    downloads /api/print-agent/script with the AGENT key; operators keep
+    using the station link/browser."""
+    if (config.PRINT_AGENT_KEY and x_agent_key
+            and x_agent_key == config.PRINT_AGENT_KEY):
+        return
+    require_user(request, authorization, x_station_key)
+
+
 def _new_epc() -> str:
     """Random 96-bit EPC as 24 uppercase hex chars. Uniqueness is enforced
     by the DB; the collision odds on random 96 bits are negligible."""
@@ -2032,7 +2047,18 @@ class PrinterCommandIn(BaseModel):
     # job stuck in the warehouse PC's WINDOWS print queue (the wedge
     # remedy - server-side jobs are already done, reprints cover any
     # label that never came out).
-    kind: Literal["feed", "purge"] = "feed"
+    # v6 agents (2026-09-23) also execute the remote-ops kinds, which is
+    # how the warehouse PC is maintained WITHOUT remote desktop: shell
+    # (payload {cmd, timeout}), getlog (payload {lines}), query (raw
+    # printer query, payload {cmd}), zpl (payload {zpl}), testlabel,
+    # update (self-update from /api/print-agent/script), restart.
+    # Queueing stays station-key-gated; the agent posts each command's
+    # output back to /api/print-agent/command-result under its id.
+    kind: Literal[
+        "feed", "purge", "shell", "getlog", "query", "zpl",
+        "testlabel", "update", "restart",
+    ] = "feed"
+    payload: dict | None = None
     requested_by: str | None = Field(default=None, max_length=100)
 
 
@@ -2047,12 +2073,15 @@ def queue_printer_command(payload: PrinterCommandIn):
     pulled the liner forward, at the cost of the one already-disturbed
     label instead of two misprints plus a blank."""
     name = (payload.printer or DEFAULT_PRINTER).strip()
-    _printer_commands.setdefault(name, []).append({
+    entry = {
+        "id": secrets.token_hex(8),
         "kind": payload.kind,
+        "payload": payload.payload,
         "requested_by": payload.requested_by,
         "at": time.time(),
-    })
-    return {"queued": payload.kind, "printer": name}
+    }
+    _printer_commands.setdefault(name, []).append(entry)
+    return {"queued": payload.kind, "printer": name, "id": entry["id"]}
 
 
 # Only re-align-capable agents (print_agent v2+) poll the commands
@@ -2103,6 +2132,117 @@ def claim_printer_commands(
     return {"count": len(cmds), "commands": cmds}
 
 
+# --- v6 cloud control plane (2026-09-23) -------------------------------------
+# The agent's every poll doubles as a heartbeat carrying the PRINTER's own
+# story (~HS status, fault, transport, odometer-confirmed counters), and the
+# reply carries queued commands + the server's agent version - the
+# self-update signal. All in-memory like the rest of the printer state: one
+# container, repopulated within seconds of a restart.
+_agent_heartbeats: dict[str, dict] = {}
+_command_results: dict[str, dict] = {}
+
+
+@lru_cache(maxsize=1)
+def _agent_latest_version() -> str | None:
+    """AGENT_VERSION inside the print_agent.py THIS deployment serves.
+    Cached forever: the file is immutable per deployment."""
+    path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "print_agent.py",
+    )
+    try:
+        with open(path, encoding="utf-8") as f:
+            m = re.search(r'^AGENT_VERSION\s*=\s*"([^"]*)"', f.read(), re.M)
+        return m.group(1) if m else None
+    except OSError:
+        return None
+
+
+class AgentHeartbeatIn(BaseModel):
+    printer: str | None = Field(default=None, max_length=100)
+    version: str | None = Field(default=None, max_length=20)
+    transport: str | None = Field(default=None, max_length=200)
+    # counter = the printer's odometer confirms every label physically
+    # printed; status = ~HS faults/buffer visible; none = fire-and-hope.
+    readback: str | None = Field(default=None, max_length=20)
+    fault: str | None = Field(default=None, max_length=200)
+    holding: int = 0
+    status: dict | None = None
+    counters: dict | None = None
+    last_error: str | None = Field(default=None, max_length=500)
+    win_jobs: int | None = None
+    win_oldest_s: int | None = None
+
+
+@app.post(
+    "/api/print-agent/heartbeat", dependencies=[Depends(require_agent_key)]
+)
+def print_agent_heartbeat(payload: AgentHeartbeatIn):
+    name = (payload.printer or DEFAULT_PRINTER).strip()
+    now = time.time()
+    _commands_last_polled[name] = now
+    if payload.version:
+        _agent_versions[name] = payload.version.strip()[:20]
+    if payload.win_jobs is not None:
+        _printer_win_queue[name] = {
+            "jobs": max(0, payload.win_jobs),
+            "oldest_s": max(0, payload.win_oldest_s or 0),
+            "at": now,
+        }
+    _agent_heartbeats[name] = {
+        "at": now,
+        "transport": payload.transport,
+        "readback": payload.readback,
+        "fault": payload.fault,
+        "holding": max(0, payload.holding),
+        "status": payload.status,
+        "counters": payload.counters,
+        "last_error": payload.last_error,
+    }
+    cmds = [
+        c for c in _printer_commands.pop(name, [])
+        if now - c["at"] < 600
+    ]
+    return {
+        "count": len(cmds),
+        "commands": cmds,
+        "latest_version": _agent_latest_version(),
+    }
+
+
+class AgentCommandResultIn(BaseModel):
+    id: str = Field(max_length=40)
+    ok: bool = True
+    output: str = Field(default="", max_length=8000)
+
+
+@app.post(
+    "/api/print-agent/command-result",
+    dependencies=[Depends(require_agent_key)],
+)
+def post_agent_command_result(payload: AgentCommandResultIn):
+    _command_results[payload.id] = {
+        "id": payload.id,
+        "ok": payload.ok,
+        "output": payload.output,
+        "at": time.time(),
+    }
+    while len(_command_results) > 100:  # oldest-first eviction
+        _command_results.pop(next(iter(_command_results)))
+    return {"stored": True}
+
+
+@app.get(
+    "/api/print-agent/command-result/{command_id}",
+    dependencies=[Depends(require_user)],
+)
+def get_agent_command_result(command_id: str):
+    result = _command_results.get(command_id)
+    if result is None:
+        return {"pending": True}
+    return {"pending": False, **result}
+
+
 @app.get("/api/print-agent/status", dependencies=[Depends(require_user)])
 def print_agent_status(session: Session = Depends(get_session)):
     seen = _agent_last_seen
@@ -2117,7 +2257,29 @@ def print_agent_status(session: Session = Depends(get_session)):
         if win is None or w["at"] > win["at"]:
             win = w
     win_fresh = win is not None and time.time() - win["at"] < 35
+    # Freshest v6 heartbeat: the PRINTER's own story (fault flags, held
+    # labels, transport, confirmed-print counters).
+    hb = None
+    for h in _agent_heartbeats.values():
+        if hb is None or h["at"] > hb["at"]:
+            hb = h
+    hb_fresh = hb is not None and time.time() - hb["at"] < 90
+    latest = _agent_latest_version()
     return {
+        # v6 truthful-print facts (TODO #10): fault is the printer's own
+        # report (media out / head open / paused ...) - labels HOLD
+        # instead of falsely completing while it is set.
+        "fault": hb["fault"] if hb_fresh else None,
+        "holding": hb["holding"] if hb_fresh else 0,
+        "transport": hb["transport"] if hb_fresh else None,
+        "readback": hb["readback"] if hb_fresh else None,
+        "printer_status": hb["status"] if hb_fresh else None,
+        "agent_counters": hb["counters"] if hb_fresh else None,
+        "agent_last_error": hb["last_error"] if hb_fresh else None,
+        "latest_version": latest,
+        "update_available": bool(
+            version and latest and version != latest
+        ),
         "online": seen is not None and time.time() - seen < 35,
         "last_seen_seconds": (
             None if seen is None else int(time.time() - seen)
@@ -2153,12 +2315,14 @@ def print_agent_status(session: Session = Depends(get_session)):
     }
 
 
-@app.get("/api/print-agent/script", dependencies=[Depends(require_user)])
+@app.get(
+    "/api/print-agent/script", dependencies=[Depends(require_user_or_agent)]
+)
 def print_agent_script():
-    """The CURRENT print_agent.py, served by the app itself so updating
-    the warehouse PC never involves hunting for the repo: download this
-    (station link works in a browser), replace the file next to the
-    scheduled task, restart the task."""
+    """The CURRENT print_agent.py, served by the app itself. v6 agents
+    download it THEMSELVES (X-Agent-Key) when the heartbeat says the
+    server carries a newer version, verify it compiles, swap and
+    relaunch - nobody touches the warehouse PC for agent updates."""
     path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         "print_agent.py",
@@ -2167,6 +2331,143 @@ def print_agent_script():
         raise HTTPException(404, "print_agent.py isn't in this deployment.")
     return FileResponse(
         path, media_type="text/x-python", filename="print_agent.py"
+    )
+
+
+# One-time v6 bootstrap for the warehouse PC, run in a console there:
+# stops the old agent, downloads v6 with the key ALREADY on the machine,
+# writes the looping runner (a clean exit = restart/self-update), evicts
+# the label-eaters (ShipStation autostart, driver bidi, USB naps) and
+# relaunches. Unauthenticated ON PURPOSE: remote-desktop keyboards mangle
+# shifted characters so the fetch command must stay typable, and the
+# script holds no secrets - the agent key is read from the machine's own
+# run_agent.cmd and never printed. __APP__ is filled per request.
+AGENT_BOOTSTRAP_PS1 = r'''# RFID print agent v6 bootstrap (2026-09-23)
+$ErrorActionPreference = "Continue"
+$app = "__APP__"
+$rfid = "C:\rfid"
+$runner = Join-Path $rfid "run_agent.cmd"
+
+Write-Host "=== RFID print agent v6 bootstrap ===" -ForegroundColor Cyan
+if (-not (Test-Path $runner)) {
+    Write-Host "No $runner here - this bootstrap upgrades an existing install." -ForegroundColor Red
+    Read-Host "press Enter to close"; exit 1
+}
+$old = Get-Content $runner -Raw
+
+# Pull the pieces out of the existing runner. The key is NEVER printed.
+$key = $null
+if ($old -match '--agent-key\s+(\S+)') { $key = $Matches[1] }
+$python = $null
+if ($old -match '"([^"]*python[^"]*\.exe)"') { $python = $Matches[1] }
+if (-not $python) {
+    $cmd = Get-Command python -ErrorAction SilentlyContinue
+    if ($cmd) { $python = $cmd.Source }
+}
+$printer = "ZDesigner ZD220-203dpi ZPL"
+if ($old -match '--printer-name\s+"([^"]+)"') { $printer = $Matches[1] }
+Write-Host ("python:  " + $python)
+Write-Host ("printer: " + $printer)
+Write-Host ("agent key found in old runner: " + [bool]$key)
+if (-not $python) {
+    Write-Host "No python found - stopping." -ForegroundColor Red
+    Read-Host "press Enter to close"; exit 1
+}
+
+Write-Host "--- stopping the old agent ---" -ForegroundColor Cyan
+Get-CimInstance Win32_Process | Where-Object {
+    $_.Name -match "python" -and $_.CommandLine -match "print_agent"
+} | ForEach-Object {
+    Write-Host ("stopping old agent pid " + $_.ProcessId)
+    Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+}
+Start-Sleep -Seconds 2
+Get-PrintJob -PrinterName $printer -ErrorAction SilentlyContinue |
+    Remove-PrintJob -ErrorAction SilentlyContinue
+
+Write-Host "--- downloading print_agent.py v6 ---" -ForegroundColor Cyan
+$headers = @{}
+if ($key) { $headers["X-Agent-Key"] = $key }
+try {
+    Invoke-WebRequest -UseBasicParsing -Uri ($app + "/api/print-agent/script") `
+        -Headers $headers -OutFile (Join-Path $rfid "print_agent.py")
+    Write-Host ("downloaded, " + (Get-Item (Join-Path $rfid "print_agent.py")).Length + " bytes")
+} catch {
+    Write-Host ("DOWNLOAD FAILED: " + $_) -ForegroundColor Red
+    Read-Host "press Enter to close"; exit 1
+}
+
+Write-Host "--- writing the looping runner ---" -ForegroundColor Cyan
+$agentArgs = ' --app ' + $app + ' --printer-name "' + $printer + '"' +
+    ' --no-rfid --log-file C:\rfid\print_agent.log'
+if ($key) { $agentArgs = $agentArgs + ' --agent-key ' + $key }
+$lines = @(
+    "@echo off",
+    "title RFID print agent",
+    ":loop",
+    ('"' + $python + '" C:\rfid\print_agent.py' + $agentArgs),
+    "timeout /t 5 /nobreak >nul",
+    "goto loop"
+)
+Set-Content -Path $runner -Value $lines -Encoding ASCII
+$startup = [Environment]::GetFolderPath("Startup")
+Copy-Item $runner (Join-Path $startup "RFID Print Agent.cmd") -Force
+Write-Host "runner + Startup copy written"
+
+Write-Host "--- evicting the label-eaters ---" -ForegroundColor Cyan
+Get-Process | Where-Object { $_.ProcessName -match "shipstation" } |
+    ForEach-Object {
+        Write-Host ("stopping " + $_.ProcessName)
+        Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+    }
+$run = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+$props = Get-Item $run -ErrorAction SilentlyContinue
+if ($props) {
+    $props.Property | Where-Object { $_ -match "shipstation" } | ForEach-Object {
+        Write-Host ("disabling autostart: " + $_)
+        Remove-ItemProperty -Path $run -Name $_ -ErrorAction SilentlyContinue
+    }
+}
+& rundll32 printui.dll,PrintUIEntry /Xs /n $printer attributes -EnableBidi
+$plan = powercfg /query scheme_current | Out-String
+$m = [regex]::Match($plan, "Power Setting GUID: ([0-9a-f-]+)\s+\(USB selective suspend setting\)")
+if ($m.Success) {
+    $g = $m.Groups[1].Value
+    powercfg /setacvalueindex scheme_current 2a737441-1930-4402-8d77-b2bebba308a3 $g 0
+    powercfg /setdcvalueindex scheme_current 2a737441-1930-4402-8d77-b2bebba308a3 $g 0
+    powercfg /setactive scheme_current
+    Write-Host "USB selective suspend disabled"
+}
+Get-CimInstance -Namespace root\wmi -ClassName MSPower_DeviceEnable -ErrorAction SilentlyContinue |
+    Where-Object { $_.InstanceName -match "VID_0A5F|USB\\ROOT_HUB" } |
+    ForEach-Object {
+        if ($_.Enable) {
+            $_ | Set-CimInstance -Property @{Enable = $false} -ErrorAction SilentlyContinue
+        }
+    }
+
+Write-Host "--- launching the v6 agent ---" -ForegroundColor Cyan
+Start-Process cmd.exe -ArgumentList "/c", $runner -WindowStyle Minimized
+Write-Host "waiting 20s for its first heartbeat..."
+Start-Sleep -Seconds 20
+Get-Content C:\rfid\print_agent.log -Tail 12 -ErrorAction SilentlyContinue
+Write-Host ""
+Write-Host "Done. The agent now updates itself from the server (Queue tab shows transport + version)." -ForegroundColor Green
+Read-Host "press Enter to close"
+'''
+
+
+@app.get("/api/print-agent/bootstrap")
+def print_agent_bootstrap(request: Request):
+    """See AGENT_BOOTSTRAP_PS1: typable one-time upgrade fetch for the
+    warehouse PC. No auth, no secrets."""
+    url = str(request.base_url).rstrip("/")
+    host = url.split("://", 1)[1]
+    if not host.startswith(("localhost", "127.0.0.1")):
+        url = "https://" + host  # Azure terminates TLS ahead of us
+    return PlainTextResponse(
+        AGENT_BOOTSTRAP_PS1.replace("__APP__", url),
+        media_type="text/plain",
     )
 
 
