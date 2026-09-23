@@ -3737,6 +3737,19 @@ bigger ones (receiving in particular needs interviews).
    2026-09-16). The category dropdown should be a multi-select
    checklist instead of a single pick: each type toggles on/off with
    a green checkmark, and the list shows/hides tasks per toggle.
+10. **Truthful printed-state from the printer itself** (captured
+   2026-09-23, Nick: "the way the system tells if something is
+   printed is flawed"). Today "done" = the Windows spooler accepted
+   the job; a faulted printer (blinking light: paused / media out /
+   head open / uncalibrated after a move - exactly the 09-23 case)
+   buffers everything silently and the queue still reads done. The
+   print agent should query the Zebra's own status (media-out, head
+   latch, pause are all reported by the printer) before/after each
+   burst and ride it along the command poll like the v4 wedge
+   report, so the Queue tab pill can say "printer FAULTED - N jobs
+   buffered on the printer" instead of a false done. The agent-side
+   diag script pattern from 09-23 (rfiddiag.ps1, left on the
+   warehouse PC desktop) covers the Windows half already.
 
 ## 📥 Steve's TODO list (captured 2026-07-28, not yet designed)
 
