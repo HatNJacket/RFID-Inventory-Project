@@ -1085,6 +1085,27 @@ class SoldRecord(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    # --- ShipStation sourcing (2026-09-23) ---------------------------------
+    # Which feed proved this sale. NULL/'shopify' = the Shopify fulfilled-
+    # orders feed (the original source, kept as the fallback and the
+    # gap-filler for orders shipped outside ShipStation); 'shipstation' =
+    # a real label off the store's ShipStation account; 'ss-manual' = a
+    # manual (non-Shopify) ShipStation order - stock that leaves the shelf
+    # WITHOUT Shopify's on-hand moving, which the expected-count math then
+    # correctly surfaces as an on-hand that needs lowering.
+    # These columns are added to existing databases by init_db()'s
+    # idempotent column upgrade (database.py), sqlite and Azure SQL both.
+    source: Mapped[str | None] = mapped_column(String(16))
+    # ShipStation's numeric orderId, the merge key across parcels.
+    ss_order_id: Mapped[str | None] = mapped_column(String(32), index=True)
+    # JSON {shipmentId: units} - which labels this row's quantity stands
+    # on. Makes void handling exact and idempotent: a voided label's id
+    # is removed and the quantity recomputed, a re-ship adds a new id.
+    ss_shipments: Mapped[str | None] = mapped_column(String(2000))
+    # The order line's total units (fetched only when a second parcel
+    # shows up for the same order+SKU): the cap that stops overlapping
+    # parcel item lists from double-counting a reprinted label.
+    ss_line_qty: Mapped[int | None] = mapped_column(Integer)
 
     def as_dict(self) -> dict:
         return {
@@ -1094,6 +1115,7 @@ class SoldRecord(Base):
             "sku": self.sku,
             "quantity": self.quantity,
             "retired": self.retired,
+            "source": self.source or "shopify",
             "fulfilled_at": (
                 self.fulfilled_at.isoformat() if self.fulfilled_at else None
             ),

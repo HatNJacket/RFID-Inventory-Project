@@ -1,21 +1,38 @@
-"""Fulfilled-order sync: teaches the RFID system that stock has SOLD.
+"""Sold/shipped sync: teaches the RFID system that stock has LEFT.
 
 A shipped box leaves the building with its RFID tag still on file, so
-from the moment an order fulfills, "tags on file" legitimately exceeds
+from the moment it ships, "tags on file" legitimately exceeds
 Shopify's on-hand by the sold count. This module keeps that ledger
 (rfid_sold_ledger):
 
     expected tags for a SKU  =  live Shopify on-hand  +  sold-unretired
 
-READ-ONLY against Shopify, and it needs the read_orders access scope —
-until that's granted on the custom app, every run reports
-waiting_scope and touches nothing. Runs daily at 8 AM Toronto time
-plus on the Review tab's manual button. Each successful run also
-re-checks the ledger'd SKUs and keeps ONE open "tag-onhand-mismatch"
-review task per SKU whose numbers don't add up — and closes it again
-by itself when the world catches up (that's a local record, so
-auto-closing is safe). Audits remain the only thing that CONFIRMS a
-count; this module only moves expectations.
+TWO read-only feeds fill it (Nick, 2026-09-23 - "plan for
+inconsistencies between these two sources"):
+
+1. ShipStation shipments (PRIMARY when configured): a label created and
+   not voided is a box that physically left - the ground truth. Covers
+   manual (non-Shopify) orders too. Multi-parcel orders merge into one
+   row per (order, SKU) with the label ids recorded, capped at the
+   order line's units so overlapping parcel item lists (label reprints)
+   never double-count; voided labels are subtracted by id. Shopify
+   ON-HAND stays the stock source everywhere - ShipStation only ever
+   supplies the outflow term.
+2. The Shopify fulfilled-orders feed (the original source) stays on as
+   the FALLBACK and gap-filler: an order fulfilled without a
+   ShipStation label (pickup, outside carrier) still lands. It never
+   duplicates a line the ShipStation feed already recorded, and never
+   overrides a ShipStation quantity - disagreements are counted in the
+   run status instead (qty_conflicts).
+
+Both feeds are READ-ONLY against their sources. Runs HOURLY (the old
+once-daily pass left the ledger up to 24h behind the adjustment
+history, which mis-windowed sales; the 8 AM run additionally does the
+daily housekeeping) plus on the Review tab's manual button. Each run
+re-checks the ledger'd SKUs and keeps ONE open Inventory Check per SKU
+whose numbers don't add up - closing it again itself when the world
+catches up. Audits remain the only thing that CONFIRMS a count; this
+module only moves expectations.
 """
 from __future__ import annotations
 
@@ -31,7 +48,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import shopify
+from app import shipstation, shopify
 from app.models import (
     AppSetting,
     BackorderDebt,
@@ -57,8 +74,17 @@ CATEGORY = "inventory-check"
 STATUS_KEY = "orders_sync_status"
 CURSOR_KEY = "orders_sync_cursor"
 DAILY_KEY = "orders_sync_last_daily"
-SYNC_HOUR = 8                   # 8 AM, America/Toronto
+HOURLY_KEY = "orders_sync_last_hourly"
+SS_CURSOR_KEY = "shipstation_sync_cursor"
+SS_VOID_KEY = "shipstation_void_cursor"
+SYNC_HOUR = 8                   # daily housekeeping hour, America/Toronto
 FIRST_LOOKBACK_DAYS = 7
+# First ShipStation run backfills from the OLDEST live pairing (a
+# shipment can only explain a tag that existed) minus a pad, but never
+# further back than this - the ledger explains tag silence, not store
+# history.
+SS_BACKFILL_CAP_DAYS = 400
+SS_BACKFILL_PAD_DAYS = 7
 
 
 # ------------------------------------------------------------ settings io ---
@@ -380,6 +406,244 @@ def _sku_baselines(session: Session, skus) -> dict[str, object]:
     return out
 
 
+# ----------------------------------------------------- ShipStation feed -----
+def _norm_order_no(value: str | None) -> str:
+    """'#50930' and '50930' are the same order to both feeds."""
+    return (value or "").strip().lstrip("#").upper()
+
+
+def _ss_map(row: SoldRecord) -> dict:
+    try:
+        parsed = json.loads(row.ss_shipments or "{}")
+        return parsed if isinstance(parsed, dict) else {}
+    except ValueError:
+        return {}
+
+
+def _ss_recompute(row: SoldRecord, keep_floor: int | None = None) -> None:
+    """quantity = the labels' units, capped at the order line (when
+    known), never below what audits already retired. `keep_floor`
+    additionally holds a quantity another source proved (forward feed
+    only - the void path must be allowed to lower)."""
+    q = sum(int(v) for v in _ss_map(row).values())
+    if row.ss_line_qty is not None:
+        q = min(q, row.ss_line_qty)
+    if keep_floor is not None:
+        q = max(q, keep_floor)
+    row.quantity = max(q, row.retired or 0)
+
+
+def _ss_rows_for_order(session: Session, ss_order_id) -> dict[str, SoldRecord]:
+    return {
+        (r.sku or "").strip().upper(): r
+        for r in session.scalars(
+            select(SoldRecord).where(
+                SoldRecord.ss_order_id == str(ss_order_id)
+            )
+        )
+    }
+
+
+def sync_shipstation(session: Session) -> dict:
+    """Pull shipments (and voids) into the sold ledger. One row per
+    (order, SKU) whatever the parcel count; the Shopify feed's rows for
+    the same line are ADOPTED, keeping their retired count, so the two
+    sources can never double-record a sale. Fail-soft: unconfigured is
+    a state, and any API error leaves the ledger exactly as it was."""
+    if not shipstation.configured():
+        return {"shipstation": "not configured"}
+    shopify_ids, excluded_ids = shipstation.store_kinds()
+    raw_cursor = _get(session, SS_CURSOR_KEY)
+    first_run = raw_cursor is None
+    now_utc = datetime.now(timezone.utc)
+    if first_run:
+        # Backfill window: a shipment can only explain a tag that
+        # existed, so start at the oldest live pairing (padded).
+        oldest = _as_utc(session.scalar(
+            select(func.min(RfidAssignment.assigned_at))
+        ))
+        start = (
+            oldest - timedelta(days=SS_BACKFILL_PAD_DAYS)
+            if oldest is not None
+            else now_utc - timedelta(days=FIRST_LOOKBACK_DAYS)
+        )
+        start = max(start, now_utc - timedelta(days=SS_BACKFILL_CAP_DAYS))
+    else:
+        start = (
+            _parse_iso(raw_cursor) or (now_utc - timedelta(days=1))
+        ).replace(tzinfo=timezone.utc) - timedelta(hours=2)
+    # Coverage BEFORE this run: backfill rows older than what the
+    # ledger already knew arrive pre-settled (they explain nothing new;
+    # the audits of that era already retired their tags against
+    # whatever the ledger held then), and so do rows older than the
+    # SKU's tag-pool baseline. Only genuinely-new, tag-era sales land
+    # live. Computed up front so this run's own inserts don't count.
+    prior_covers: dict[str, object] = {}
+    if first_run:
+        for r in session.scalars(select(SoldRecord)):
+            f = _as_utc(r.fulfilled_at)
+            if f is None:
+                continue
+            k = (r.sku or "").strip().upper()
+            if k not in prior_covers or f < prior_covers[k]:
+                prior_covers[k] = f
+
+    shipments = shipstation.get_shipments_since(start)
+    stats = {
+        "ss_new": 0, "ss_updated": 0, "ss_adopted": 0,
+        "ss_voided_skipped": 0, "ss_no_sku_units": 0,
+        "ss_manual": 0, "ss_qty_conflicts": 0, "ss_voids_applied": 0,
+    }
+    order_lines_cache: dict = {}
+    new_rows: list[SoldRecord] = []
+    for sh in shipments:
+        if sh["voided"]:
+            stats["ss_voided_skipped"] += 1
+            continue
+        if sh["store_id"] in excluded_ids:
+            continue
+        manual = sh["store_id"] not in shopify_ids
+        num = _norm_order_no(sh["order_number"])
+        by_sku: dict[str, dict] = {}
+        for it in sh["items"]:
+            if not it["sku"]:
+                stats["ss_no_sku_units"] += it["qty"]
+                continue
+            g = by_sku.setdefault(
+                it["sku"].upper(), {"sku": it["sku"], "qty": 0}
+            )
+            g["qty"] += it["qty"]
+        if not by_sku:
+            continue
+        rows = _ss_rows_for_order(session, sh["ss_order_id"])
+        for key, g in by_sku.items():
+            row = rows.get(key)
+            adopted_qty = None
+            if row is None and not manual and num:
+                # A Shopify-feed row for the same order line: adopt it
+                # instead of double-recording the sale.
+                row = session.scalars(
+                    select(SoldRecord).where(
+                        SoldRecord.ss_order_id.is_(None),
+                        func.upper(SoldRecord.sku) == key,
+                        SoldRecord.order_name.in_((num, f"#{num}")),
+                    )
+                ).first()
+                if row is not None:
+                    adopted_qty = row.quantity
+                    row.ss_order_id = str(sh["ss_order_id"])
+                    row.source = "shipstation"
+                    rows[key] = row
+                    stats["ss_adopted"] += 1
+            if row is None:
+                row = SoldRecord(
+                    order_id=f"ss:{sh['ss_order_id']}"[:64],
+                    order_name=num[:32] if num else None,
+                    sku=g["sku"],
+                    quantity=0,
+                    retired=0,
+                    fulfilled_at=sh["created_at"],
+                    source="ss-manual" if manual else "shipstation",
+                    ss_order_id=str(sh["ss_order_id"]),
+                    ss_shipments="{}",
+                )
+                session.add(row)
+                rows[key] = row
+                new_rows.append(row)
+                stats["ss_new"] += 1
+                if manual:
+                    stats["ss_manual"] += 1
+            ship_map = _ss_map(row)
+            sid = str(sh["shipment_id"])
+            already = ship_map.get(sid) == g["qty"]
+            ship_map[sid] = g["qty"]
+            row.ss_shipments = json.dumps(ship_map)[:2000]
+            # Second parcel for the same line: fetch the order's line
+            # units ONCE and cap - overlapping item lists (a label
+            # reprinted with the full order on it) must not double.
+            if len(ship_map) > 1 and row.ss_line_qty is None:
+                oid = sh["ss_order_id"]
+                if oid not in order_lines_cache:
+                    try:
+                        order_lines_cache[oid] = (
+                            shipstation.get_order_line_quantities(oid)
+                        )
+                    except Exception as error:  # noqa: BLE001 — cap is best-effort
+                        logger.warning(
+                            "ss order %s line fetch failed: %s", oid, error
+                        )
+                        order_lines_cache[oid] = None
+                lines = order_lines_cache[oid]
+                if lines and key in lines:
+                    row.ss_line_qty = lines[key]
+            _ss_recompute(row, keep_floor=adopted_qty)
+            if adopted_qty is not None and row.quantity != adopted_qty:
+                stats["ss_qty_conflicts"] += 1
+            if not already and row not in new_rows:
+                stats["ss_updated"] += 1
+            f = sh["created_at"]
+            if f is not None:
+                cur = _as_utc(row.fulfilled_at)
+                if cur is None or f < cur:
+                    row.fulfilled_at = f
+        session.flush()
+
+    # Voided-after-recording labels: remove exactly those label ids and
+    # recompute (the void path may LOWER, unlike the forward feed).
+    raw_void = _get(session, SS_VOID_KEY)
+    void_since = (
+        start if first_run else
+        ((_parse_iso(raw_void) or (now_utc - timedelta(days=1)))
+         .replace(tzinfo=timezone.utc) - timedelta(hours=2))
+    )
+    for sh in shipstation.get_voids_since(void_since):
+        rows = _ss_rows_for_order(session, sh["ss_order_id"])
+        if not rows:
+            continue
+        sid = str(sh["shipment_id"])
+        touched = False
+        for it in sh["items"]:
+            row = rows.get((it["sku"] or "").strip().upper())
+            if row is None:
+                continue
+            ship_map = _ss_map(row)
+            if sid not in ship_map:
+                continue
+            del ship_map[sid]
+            row.ss_shipments = json.dumps(ship_map)[:2000]
+            _ss_recompute(row)
+            touched = True
+            if (row.quantity == 0 and (row.retired or 0) == 0
+                    and not ship_map):
+                session.delete(row)
+        if touched:
+            stats["ss_voids_applied"] += 1
+        session.flush()
+
+    # First-run backfill: settle what history already accounted for.
+    if first_run and new_rows:
+        uppers = {(r.sku or "").strip().upper() for r in new_rows}
+        baselines = _sku_baselines(session, uppers)
+        settled = 0
+        for r in new_rows:
+            k = (r.sku or "").strip().upper()
+            cut = baselines.get(k)
+            cov = prior_covers.get(k)
+            if cov is not None and (cut is None or cov > cut):
+                cut = cov
+            f = _as_utc(r.fulfilled_at)
+            if cut is not None and f is not None and f <= cut:
+                r.retired = r.quantity
+                settled += 1
+        stats["ss_backfilled_settled"] = settled
+
+    stamp = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    _set(session, SS_CURSOR_KEY, stamp)
+    _set(session, SS_VOID_KEY, stamp)
+    stats["ss_shipments_seen"] = len(shipments)
+    return stats
+
+
 # ------------------------------------------------------- mismatch tasks -----
 def _receiving_in_flight_skus(session: Session) -> set[str]:
     """Upper SKUs whose numbers are MOVING right now (Nick, 2026-09-02
@@ -625,8 +889,8 @@ def refresh_mismatch_tasks(session: Session) -> dict:
                 f"RFID tags stand for {tags} unit(s) but the expected count "
                 f"is {expected} (Shopify on-hand {oh}"
                 + (
-                    f" + {sold[sku]} sold since the tag pool began "
-                    f"({since})"
+                    f" + {sold[sku]} sold or shipped since the tag pool "
+                    f"began ({since})"
                     if sold.get(sku)
                     else ""
                 )
@@ -901,12 +1165,22 @@ def run(session: Session, source: str = "manual") -> dict:
         "at": datetime.utcnow().isoformat(timespec="seconds"),
         "source": source,
     }
-    # Duplicate-SKU detection rides every sync run and doesn't depend on
-    # the orders scope — it must work while read_orders is still pending.
+    # Duplicate-SKU detection rides the daily and manual passes; the
+    # hourly ledger pull skips it (it walks every assignment row, and
+    # nothing about duplicates changes hour to hour).
+    if source != "hourly":
+        try:
+            status.update(refresh_duplicate_tasks(session))
+        except Exception:  # noqa: BLE001 — never let the dup check kill a sync
+            logger.exception("duplicate check failed")
+    # ShipStation FIRST, so the Shopify feed's dedupe below sees fresh
+    # rows. Its failure never blocks the fallback feed.
     try:
-        status.update(refresh_duplicate_tasks(session))
-    except Exception:  # noqa: BLE001 — never let the dup check kill a sync
-        logger.exception("duplicate check failed")
+        status.update(sync_shipstation(session))
+        session.flush()
+    except Exception as error:  # noqa: BLE001 — fallback feed still runs
+        status["ss_error"] = str(error)[:300]
+        logger.exception("shipstation sync failed")
     try:
         cursor = _get(session, CURSOR_KEY) or (
             datetime.utcnow() - timedelta(days=FIRST_LOOKBACK_DAYS)
@@ -914,7 +1188,9 @@ def run(session: Session, source: str = "manual") -> dict:
         orders = shopify.get_fulfilled_orders(cursor)
         tracked = tracked_skus(session)
         recorded = 0
+        skipped_ss = qty_conflicts = 0
         for order in orders:
+            order_no = _norm_order_no(order.get("name"))
             for line in order["lines"]:
                 sku = (line["sku"] or "").strip()
                 if sku.upper() not in tracked:
@@ -925,6 +1201,25 @@ def run(session: Session, source: str = "manual") -> dict:
                         func.upper(SoldRecord.sku) == sku.upper(),
                     )
                 ).first()
+                if row is None and order_no:
+                    # The ShipStation feed already holds this line (its
+                    # rows key on ShipStation's order id, so the
+                    # order_id match above can't see them): the label
+                    # is the physical truth, don't double-record.
+                    ss_row = session.scalars(
+                        select(SoldRecord).where(
+                            SoldRecord.ss_order_id.is_not(None),
+                            func.upper(SoldRecord.sku) == sku.upper(),
+                            SoldRecord.order_name.in_(
+                                (order_no, f"#{order_no}")
+                            ),
+                        )
+                    ).first()
+                    if ss_row is not None:
+                        skipped_ss += 1
+                        if ss_row.quantity != line["qty"]:
+                            qty_conflicts += 1
+                        continue
                 if row is None:
                     session.add(SoldRecord(
                         order_id=order["order_id"],
@@ -932,8 +1227,14 @@ def run(session: Session, source: str = "manual") -> dict:
                         sku=sku,
                         quantity=line["qty"],
                         fulfilled_at=_parse_iso(order.get("fulfilled_at")),
+                        source="shopify",
                     ))
                     recorded += 1
+                elif row.ss_order_id is not None:
+                    # Adopted by ShipStation: the labels own the
+                    # quantity; a disagreement is surfaced, not applied.
+                    if row.quantity != line["qty"]:
+                        qty_conflicts += 1
                 elif row.quantity != line["qty"]:
                     row.quantity = line["qty"]  # order was edited
         session.flush()
@@ -943,7 +1244,10 @@ def run(session: Session, source: str = "manual") -> dict:
             datetime.utcnow() - timedelta(hours=1)
         ).strftime("%Y-%m-%dT%H:%M:%SZ"))
         status.update(ok=True, orders=len(orders), recorded=recorded)
-        status.update(refresh_mismatch_tasks(session))
+        if skipped_ss:
+            status["shopify_lines_covered_by_ss"] = skipped_ss
+        if qty_conflicts:
+            status["qty_conflicts"] = qty_conflicts
     except RuntimeError as error:
         if "ACCESS_DENIED" in str(error) or "Access denied" in str(error):
             status["waiting_scope"] = True
@@ -959,6 +1263,16 @@ def run(session: Session, source: str = "manual") -> dict:
         status["error"] = str(error)[:300]
         logger.exception("orders sync failed")
     finally:
+        # The mismatch re-check runs when EITHER feed moved the ledger:
+        # a working ShipStation pull with the Shopify orders scope
+        # missing is still a good run (the whole point of two sources).
+        if "ss_shipments_seen" in status and not status.get("ok"):
+            status["ok"] = True
+        if status.get("ok"):
+            try:
+                status.update(refresh_mismatch_tasks(session))
+            except Exception:  # noqa: BLE001 — the ledger pull still stands
+                logger.exception("mismatch refresh failed")
         _set(session, STATUS_KEY, json.dumps(status)[:2000])
         _clear_running(session, int((time.time() - t0) * 1000), source)
         session.commit()
@@ -983,43 +1297,56 @@ def current_status(session: Session) -> dict:
 _thread_started = False
 
 
-def _seconds_until_daily() -> float:
-    tz = ZoneInfo("America/Toronto")
-    now = datetime.now(tz)
-    target = now.replace(hour=SYNC_HOUR, minute=0, second=0, microsecond=0)
+def _seconds_until_hourly() -> float:
+    """Next :07 past the hour - off the top of the hour so the pull
+    never collides with other on-the-hour jobs."""
+    now = datetime.now(timezone.utc)
+    target = now.replace(minute=7, second=0, microsecond=0)
     if target <= now:
-        target += timedelta(days=1)
+        target += timedelta(hours=1)
     return max(60.0, (target - now).total_seconds())
 
 
-def _daily_loop() -> None:
+def _sync_loop() -> None:
+    """HOURLY ledger pull (Nick, 2026-09-23: the once-daily pass left
+    the ledger up to 24h behind the adjustment history, so sales kept
+    falling on the wrong side of freshly-moved baselines); the first
+    pass at/after SYNC_HOUR Toronto additionally runs the daily
+    housekeeping (duplicate detection)."""
     from app.database import get_engine
 
     while True:
         try:
-            time.sleep(_seconds_until_daily())
+            time.sleep(_seconds_until_hourly())
             with Session(get_engine()) as session:
-                # One run per (Toronto) day even with several workers.
-                today = datetime.now(
-                    ZoneInfo("America/Toronto")
-                ).strftime("%Y-%m-%d")
-                if _get(session, DAILY_KEY) == today:
+                # One run per hour even with several workers.
+                stamp = datetime.utcnow().strftime("%Y-%m-%dT%H")
+                if _get(session, HOURLY_KEY) == stamp:
                     continue
-                _set(session, DAILY_KEY, today)
+                _set(session, HOURLY_KEY, stamp)
                 session.commit()
-                run(session, source="auto")
+                tor = datetime.now(ZoneInfo("America/Toronto"))
+                daily = (
+                    tor.hour >= SYNC_HOUR
+                    and _get(session, DAILY_KEY) != tor.strftime("%Y-%m-%d")
+                )
+                if daily:
+                    _set(session, DAILY_KEY, tor.strftime("%Y-%m-%d"))
+                    session.commit()
+                run(session, source="auto" if daily else "hourly")
         except Exception:  # noqa: BLE001 — the loop must survive anything
-            logger.exception("orders sync daily loop")
+            logger.exception("orders sync loop")
             time.sleep(300)
 
 
 def start_daily_thread() -> None:
-    """Called once from app startup. No-op when disabled (tests set
-    ORDERS_SYNC_DISABLE=1) or already started."""
+    """Called once from app startup (name kept from the daily era).
+    No-op when disabled (tests set ORDERS_SYNC_DISABLE=1) or already
+    started."""
     global _thread_started
     if _thread_started or os.getenv("ORDERS_SYNC_DISABLE") == "1":
         return
     _thread_started = True
     threading.Thread(
-        target=_daily_loop, name="orders-sync-daily", daemon=True
+        target=_sync_loop, name="orders-sync-loop", daemon=True
     ).start()

@@ -1,7 +1,57 @@
 # RFID Inventory System — Roadmap
 
 Source of truth for project status. Updated by Claude each working session.
-Last updated: 2026-09-23 (print agent v6).
+Last updated: 2026-09-23 (ShipStation-fed sold ledger).
+
+## 🚚 Expected Count reworked onto ShipStation — ✅ BUILT + ON DEV 2026-09-23, ⏳ PROD WAITS FOR NICK'S UPDATE BUNDLE
+
+Nick (09-23): the adjustment-history-windowed sales math "relies
+heavily on hoping to read the adjustment history at the right time" -
+rework Expected Count to use ShipStation, keep Shopify on-hand, and
+plan for inconsistencies between the two sources.
+
+- **Identity unchanged**: expected tags = live Shopify ON-HAND (still
+  the only stock source) + sold-unretired + backorder debt. What
+  changed is where "sold" comes from and how often it updates.
+- **`app/shipstation.py`** (new): read-only V1 client (Basic auth,
+  creds in app settings on BOTH sites, same account as
+  shopify-automation-func). 40 req/min honored; V1's Pacific-local
+  timestamps converted to UTC. MUST stay read-only - the account can
+  buy real postage.
+- **Primary feed = shipments**: a label created and not voided is a box
+  that physically LEFT. One ledger row per (order, SKU) whatever the
+  parcel count: label ids + units ride `ss_shipments` (JSON on the
+  row), a second parcel triggers ONE order-line fetch whose quantity
+  caps the sum (reprinted labels list the whole order again - the cap
+  is what stops double-counting), voids subtract exactly their label id
+  and may lower (floored at the audit-retired count). Manual
+  (non-Shopify) store orders record as `source='ss-manual'`: Shopify's
+  on-hand never dropped for those, so the mismatch check now correctly
+  surfaces the stale count instead of never seeing the sale.
+- **Shopify orders feed KEPT** as fallback + gap-filler (pickup/no-label
+  fulfillments; runs even if ShipStation dies and vice versa). It never
+  inserts a line ShipStation already covered and never overrides a
+  ShipStation quantity - disagreements land in the run status as
+  `qty_conflicts` instead of silently picking a side.
+- **Backfill**: first run walks shipments back to the oldest live
+  pairing (pad 7d, cap 400d). Rows older than the SKU's baseline OR the
+  ledger's prior coverage arrive PRE-SETTLED (retired=quantity): they
+  extend sales-history coverage without re-blaming already-audited
+  gaps. The tracked-SKUs blind spot is gone for ShipStation rows (all
+  SKUs record; the Shopify feed still filters to tagged SKUs).
+- **Hourly sync** (:07 past the hour, worker-deduped) replaces once
+  daily - the ledger now lags a shipment by <=1h instead of <=24h, so
+  sales stop falling on the wrong side of freshly-moved adjustment
+  baselines. Duplicate detection stays daily (8 AM Toronto pass).
+- **Schema**: SoldRecord + source / ss_order_id / ss_shipments /
+  ss_line_qty, added by init_db()'s new idempotent column upgrade
+  (database.py `_COLUMN_UPGRADES`) on sqlite AND Azure SQL at boot - no
+  separate one-off ALTER script needed for these.
+- Suite: dev/tests/test_shipstation.py (24 checks). 83/83 pass.
+- **NOT on prod yet**: Nick is bundling several updates into one
+  deploy. Prod already holds the (inert) creds; `py dev/deploy.py`
+  ships it when the bundle is ready. First prod run does the backfill
+  automatically.
 
 ## 🖨 Print agent v6: direct USB + truthful dones + cloud control — ✅ DEPLOYED 2026-09-23
 

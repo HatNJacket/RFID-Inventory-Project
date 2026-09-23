@@ -110,6 +110,29 @@ ONELEFT_EVIDENCE_SINCE = os.getenv(
     "ONELEFT_EVIDENCE_SINCE", "2026-08-18T00:00:00"
 )
 
+# Read-only ShipStation API access (V1, Basic auth) - the sold ledger's
+# primary source since 2026-09-23: a label created there is a box that
+# physically left the building, which is closer to "a tag left the
+# shelf" than Shopify's fulfillment flag, and it also sees manual
+# (non-Shopify) orders. Unset = the ledger falls back to the Shopify
+# orders feed alone, exactly as before. NEVER used for writes.
+SHIPSTATION_API_KEY = os.getenv("SHIPSTATION_API_KEY")
+SHIPSTATION_API_SECRET = os.getenv("SHIPSTATION_API_SECRET")
+
+
+def check_shipstation_env() -> bool:
+    """True when ShipStation credentials are present."""
+    return bool(SHIPSTATION_API_KEY and SHIPSTATION_API_SECRET)
+
+
+# --- Dev-site plumbing (2026-09-23) -----------------------------------------
+# Set ONLY on telcan-rfid-dev: the PRODUCTION database's connection URL,
+# read-only by code. When present, the app mirrors every prod table into
+# its own sqlite on startup (when stale) and via POST /api/dev/sync -
+# that's how the dev terminal sees the real RFID inventory without ever
+# touching the prod database from user traffic. Never set on prod.
+DEV_SYNC_SOURCE_DB = os.getenv("DEV_SYNC_SOURCE_DB")
+
 # Who can be picked in the UI's operator dropdown, comma-separated.
 OPERATORS = [
     name.strip()

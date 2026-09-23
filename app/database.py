@@ -82,12 +82,53 @@ class DatabaseNotConfigured(RuntimeError):
     """Raised when a DB-backed route is hit before DATABASE_URL is set."""
 
 
+# Columns added to tables that ALREADY exist in a database (create_all
+# only creates missing TABLES). Each entry: (table, column, DDL type) -
+# nullable only, so old rows and old code both stay valid. Applied
+# idempotently at startup on every engine (Azure SQL prod, the dev
+# twin's sqlite, test sqlite) - this replaces the one-off ALTER scripts
+# for these columns.
+_COLUMN_UPGRADES = [
+    ("rfid_sold_ledger", "source", "VARCHAR(16) NULL"),
+    ("rfid_sold_ledger", "ss_order_id", "VARCHAR(32) NULL"),
+    ("rfid_sold_ledger", "ss_shipments", "VARCHAR(2000) NULL"),
+    ("rfid_sold_ledger", "ss_line_qty", "INTEGER NULL"),
+]
+
+
+def _apply_column_upgrades(engine) -> None:
+    from sqlalchemy import inspect, text
+
+    try:
+        inspector = inspect(engine)
+        for table, column, ddl in _COLUMN_UPGRADES:
+            if table not in inspector.get_table_names():
+                continue  # create_all just made it, columns included
+            existing = {c["name"] for c in inspector.get_columns(table)}
+            if column in existing:
+                continue
+            # Two gunicorn workers can race this ALTER; the loser's
+            # duplicate-column error is harmless.
+            try:
+                with engine.begin() as conn:
+                    conn.execute(text(
+                        f"ALTER TABLE {table} ADD {column} {ddl}"
+                    ))
+            except Exception:  # noqa: BLE001 — lost the race, column exists
+                pass
+    except Exception:  # noqa: BLE001 — never block startup on an upgrade
+        import logging
+        logging.getLogger("rfid.db").exception("column upgrade failed")
+
+
 def init_db() -> None:
-    """Create tables if they don't exist. Fine for now; move to Alembic
-    migrations once the schema starts changing in production."""
+    """Create tables if they don't exist, then add any new columns this
+    build expects on pre-existing tables. Fine for now; move to Alembic
+    migrations once the schema churns harder."""
     from app import models  # noqa: F401  (register models on Base)
 
     Base.metadata.create_all(bind=get_engine())
+    _apply_column_upgrades(get_engine())
 
 
 def database_configured() -> bool:
