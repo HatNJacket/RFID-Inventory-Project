@@ -72,6 +72,29 @@ label builders (which are field-calibrated and untouched) is new:
   not reach for remote desktop again. Loose F9177A jobs the ghost
   swallowed earlier remain falsely done; requeue on request.
 
+## 🧪 Private dev site — ✅ LIVE 2026-09-23
+
+Nick: other workers now use the terminal on their own computers, so
+new features get tested on a PRIVATE copy first.
+https://telcan-rfid-dev.azurewebsites.net - a second web app on the
+SAME B1 plan ($0/month extra), zero code changes:
+- Own sqlite at /home/dev.db (persists across deploys; wipe = delete
+  the file). Never touches the prod Azure SQL or its 5 DTUs.
+- Own STATION_KEY - the workers' saved prod keys don't open it. The
+  station link lives in Desktop\dev-terminal-link.txt on Nick's
+  laptop (kept out of the repo and the chat).
+- Real Shopify READ creds so lookups/bin map are realistic, but
+  SHOPIFY_WRITE_MODE=disabled (server-enforced: no store writes,
+  period). 1-left bridge off (default), planner bridge off (no
+  token), orders sync off, no PRINT_AGENT_KEY (the real printer
+  never claims from it).
+- Deploy: `py dev/mkdeploy.py` then the usual az command with
+  `-n telcan-rfid-dev`. 1 gunicorn worker (RAM-light; it shares the
+  B1 instance with prod - `az webapp stop -n telcan-rfid-dev -g
+  shopify-automation-rg` parks it when unused).
+- Bare URL serves the empty page shell like prod; all data behind
+  the key.
+
 ## 🚨 Weekend outage: pool exhaustion + the watchdog — ✅ DEPLOYED 2026-09-23
 
 Nick (09-21/23): "web terminal can't access the database / doesn't
