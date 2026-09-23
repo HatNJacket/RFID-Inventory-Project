@@ -41,6 +41,7 @@ from app.database import (
     get_engine,
     get_session,
     init_db,
+    start_pool_watchdog,
 )
 from app.models import (
     AppSetting,
@@ -203,6 +204,10 @@ async def lifespan(app: FastAPI):
     # before you provision PostgreSQL, the app still boots and does lookups.
     if database_configured():
         init_db()
+        # Pool watchdog (2026-09-23, after the 09-19 weekend outage):
+        # sustained full-pool exhaustion dumps thread stacks and
+        # restarts the worker instead of serving 500s for days.
+        start_pool_watchdog(logger)
         # Warm the bin map (Shopify metafield walk) in the background; the
         # persisted table keeps answering while a refresh runs.
         if not config.check_shopify_env():

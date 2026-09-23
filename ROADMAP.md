@@ -3,6 +3,36 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-16 (eleventh round).
 
+## 🚨 Weekend outage: pool exhaustion + the watchdog — ✅ DEPLOYED 2026-09-23
+
+Nick (09-21/23): "web terminal can't access the database / doesn't
+load inventory." Postmortem + fix:
+- **What happened**: from Fri 2026-09-19 14:39 UTC every DB-backed
+  endpoint failed with SQLAlchemy "QueuePool limit of size 10
+  overflow 20 reached" - all 30 connections checked out and never
+  returned - while the DATABASE sat idle (0 DTU) and Online. Static
+  pages still served, so the site "looked up". It stayed dead all
+  weekend because nothing inside a worker can reclaim a connection a
+  thread still holds. An app RESTART (09-23) recovered it instantly.
+- **What it wasn't**: no login/firewall errors, no Shopify hangs
+  (every outbound call has a timeout), no unclosed sessions (all
+  context-managed, get_session has finally-close). Prime suspect:
+  a convoy - the 3h bin-map rebuild's whole-table delete+reinsert
+  transaction on the Basic (5 DTU) tier blocking every bin-map
+  reader, each blocked reader holding a pool slot - but the logs
+  that would prove it rotated away.
+- **The fix is self-healing + evidence**: pool_timeout 10 (fail
+  fast, was 30) + pool_use_lifo; and a POOL WATCHDOG daemon
+  (database.py start_pool_watchdog, started in lifespan): if all 30
+  connections stay checked out for 4 minutes straight, it dumps
+  EVERY thread's stack to the docker log (the who-held-what evidence
+  this outage never left) and hard-exits the worker; gunicorn
+  respawns it in seconds with a fresh pool. Worst case is now a
+  ~5-minute blip that leaves a full diagnosis in the log, not a dead
+  weekend. Inert on sqlite (tests/dev).
+- If the watchdog ever fires, pull the docker log for "POOL
+  WATCHDOG" + the stack dump and fix the true culprit.
+
 ## 🏷 Sealed cases count in every label tally — ✅ DEPLOYED 2026-09-16 (C72 4.17)
 
 Nick's 2-labels-instead-of-11 report: the SERVER always queued case

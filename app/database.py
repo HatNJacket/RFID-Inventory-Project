@@ -18,6 +18,9 @@ class Base(DeclarativeBase):
 
 _engine = None
 _SessionLocal = None
+# Set for real (pooled) databases only; the watchdog stays inert on the
+# sqlite test/dev engines, which have no pool to exhaust.
+_pool_capacity = None
 
 
 def _normalize_url(url: str) -> str:
@@ -44,8 +47,15 @@ def get_engine():
             # timeout kills them (pre_ping catches the corpse, but only
             # after a failed round trip), and give the pool enough headroom
             # for FastAPI's sync-endpoint threadpool so bursts queue on
-            # the DB, not on checkout.
-            kwargs.update(pool_recycle=1500, pool_size=10, max_overflow=20)
+            # the DB, not on checkout. pool_timeout 10 (was the default
+            # 30): when the pool IS exhausted - the 2026-09-19 outage -
+            # a fast failure beats 30s hangs that pile more threads on.
+            kwargs.update(
+                pool_recycle=1500, pool_size=10, max_overflow=20,
+                pool_timeout=10, pool_use_lifo=True,
+            )
+            global _pool_capacity
+            _pool_capacity = 10 + 20
         _engine = create_engine(url, **kwargs)
         _SessionLocal = sessionmaker(
             bind=_engine, autoflush=False, autocommit=False
@@ -82,3 +92,54 @@ def init_db() -> None:
 
 def database_configured() -> bool:
     return bool(config.DATABASE_URL)
+
+
+def start_pool_watchdog(logger) -> None:
+    """Self-heal for the failure that killed the site 2026-09-19 -> 23:
+    every pooled connection was checked out and never returned (the
+    database itself sat idle), so each request waited out pool_timeout
+    and died - for DAYS, because nothing inside a worker can reclaim a
+    connection some thread still holds. This daemon watches checkout
+    saturation; if the pool stays completely maxed for four minutes
+    straight, it dumps EVERY thread's stack to the log (the who-held-
+    what evidence the outage never left behind) and hard-exits the
+    worker. Gunicorn respawns it in seconds with a fresh pool - a blip
+    instead of a dead weekend. Inert on sqlite (no pool to watch)."""
+    import faulthandler
+    import os
+    import sys
+    import threading
+    import time
+
+    def _run():
+        bad_since = None
+        while True:
+            time.sleep(15)
+            try:
+                if _engine is None or _pool_capacity is None:
+                    continue
+                maxed = _engine.pool.checkedout() >= _pool_capacity
+            except Exception:  # noqa: BLE001 - the watchdog never dies
+                continue
+            if not maxed:
+                bad_since = None
+                continue
+            if bad_since is None:
+                bad_since = time.time()
+                continue
+            held = time.time() - bad_since
+            if held < 240:
+                continue
+            try:
+                logger.error(
+                    "POOL WATCHDOG: all %d connections checked out for "
+                    "%.0fs straight - dumping thread stacks, then "
+                    "restarting this worker for a fresh pool.",
+                    _pool_capacity, held,
+                )
+                faulthandler.dump_traceback(file=sys.stderr)
+                sys.stderr.flush()
+            finally:
+                os._exit(3)
+
+    threading.Thread(target=_run, daemon=True).start()
