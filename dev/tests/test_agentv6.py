@@ -39,9 +39,9 @@ with patch("app.main._maybe_refresh_bin_map", return_value=False):
     check("server parses its own agent version",
           latest == print_agent.AGENT_VERSION, latest)
 
-    # v6 heartbeat: stores state, stamps the v4/v5 books too.
+    # v6+ heartbeat: stores state, stamps the v4/v5 books too.
     r = cl.post("/api/print-agent/heartbeat", json={
-        "printer": "warehouse-zebra", "version": "6",
+        "printer": "warehouse-zebra", "version": print_agent.AGENT_VERSION,
         "transport": "usb-direct (vid_0a5f&pid_0164)",
         "readback": "counter", "fault": None, "holding": 0,
         "status": {"formats": 0, "paused": False},
@@ -199,7 +199,11 @@ class FakeClient:
     def complete(self, job_id, create_assignment): self.completed.append(job_id)
     def fail(self, job_id, why): self.failed.append((job_id, why))
     def post_result(self, cid, ok, output): self.results.append((cid, ok, output))
-    def download_script(self): return 'AGENT_VERSION = "6"\n'
+    # Track the CURRENT version dynamically: a hardcoded old version here
+    # once made _self_update run FOR REAL and clobber the repo's
+    # print_agent.py with this one-liner (2026-09-23). Never again.
+    def download_script(self):
+        return f'AGENT_VERSION = "{print_agent.AGENT_VERSION}"\n'
 
 def mk_agent(tr):
     args = print_agent.build_parser().parse_args(
@@ -208,37 +212,57 @@ def mk_agent(tr):
 
 print_agent.LABEL_SETTLE_TIMEOUT = 6  # keep the tests quick
 
-# Confirmed: busy then drained, odometer moved.
-ag = mk_agent(FakeTr([HS_BUSY, HS_OK], [100, 101]))
-check("confirm loop: odometer moved -> confirmed",
-      ag._deliver_confirmed("^XA^XZ") == "confirmed", "")
-# Vanished: buffer drained but the odometer NEVER moved (the 2026-09 bug).
-ag = mk_agent(FakeTr([HS_OK], [100, 100]))
-check("confirm loop: odometer flat -> vanished",
-      ag._deliver_confirmed("^XA^XZ") == "vanished", "")
-# No odometer on this printer: drained is the best truth available.
-ag = mk_agent(FakeTr([HS_BUSY, HS_OK], []))
-check("confirm loop without a counter -> drained",
-      ag._deliver_confirmed("^XA^XZ") == "drained", "")
-# Fault mid-label holds, then recovers and confirms.
-ag = mk_agent(FakeTr([HS_PAPER_OUT, HS_OK], [100, 101]))
-check("fault mid-label recovers to confirmed",
-      ag._deliver_confirmed("^XA^XZ") == "confirmed"
-      and ag.fault is None, ag.fault)
+def mk_job(n):
+    return {"id": n, "epc": f"A{n:023d}", "sku": f"SKU-{n}",
+            "product_title": "T", "shopify_variant_id": "v1"}
 
-# _print_job wiring: vanished 3x fails the job with a loud reason.
-ag = mk_agent(FakeTr([HS_OK], [100, 100]))
-job = {"id": 77, "epc": "AA", "sku": "TEST-SKU",
-       "product_title": "T", "shopify_variant_id": "v1"}
-ag._print_job(job)
-check("3x vanished -> job failed, not falsely done",
-      ag.client.failed and ag.client.failed[0][0] == 77
-      and "swallowed" in ag.client.failed[0][1]
-      and not ag.client.completed, str(ag.client.failed)[:200])
-ag = mk_agent(FakeTr([HS_BUSY, HS_OK], [100, 101]))
-ag._print_job(job)
-check("confirmed print completes the job",
-      ag.client.completed == [77] and not ag.client.failed,
+# v7 burst: one continuous run, every label confirmed IN ORDER from the
+# odometer. statuses: ready-check, busy, then drained; counts: base 100,
+# then the polls watch it climb to 102.
+ag = mk_agent(FakeTr([HS_OK, HS_BUSY, HS_OK], [100, 101, 102]))
+ag._print_burst([mk_job(1), mk_job(2)])
+check("burst: both labels odometer-confirmed in order",
+      ag.client.completed == [1, 2] and not ag.client.failed
+      and ag.counters["done"] == 2 and ag.counters["vanished"] == 0,
+      str(ag.client.__dict__)[:250])
+check("burst sent both formats down the wire",
+      len(ag.tr.sent) == 2, len(ag.tr.sent))
+
+# Eaten tail: buffer drains but the odometer stops at base+1 forever ->
+# label 1 confirmed, label 2 retried as its own burst 3x, then failed.
+ag = mk_agent(FakeTr([HS_OK], [100, 101]))
+ag._print_burst([mk_job(1), mk_job(2)])
+check("burst: eaten tail confirmed-head kept, tail failed loudly",
+      ag.client.completed == [1] and len(ag.client.failed) == 1
+      and ag.client.failed[0][0] == 2
+      and "swallowed" in ag.client.failed[0][1],
+      str(ag.client.failed)[:250])
+check("burst: the eaten label was re-sent before failing (3 tries)",
+      len(ag.tr.sent) == 4 and ag.counters["retried"] == 2,
+      str((len(ag.tr.sent), ag.counters))[:200])
+
+# No odometer on this printer: drained is the best truth available.
+ag = mk_agent(FakeTr([HS_OK, HS_BUSY, HS_OK], []))
+ag._print_burst([mk_job(1), mk_job(2)])
+check("burst without a counter -> both drained-done",
+      ag.client.completed == [1, 2] and not ag.client.failed,
+      str(ag.client.__dict__)[:200])
+
+# Fault mid-burst holds (rest stays buffered), then recovers + confirms.
+ag = mk_agent(FakeTr([HS_OK, HS_PAPER_OUT, HS_OK], [100, 101, 102]))
+ag._print_burst([mk_job(1), mk_job(2)])
+check("fault mid-burst recovers to confirmed",
+      ag.client.completed == [1, 2] and not ag.client.failed
+      and ag.fault is None, str((ag.fault, ag.client.failed))[:200])
+
+# Stalled: a format sits in the buffer with no fault flag and no
+# progress -> the deadline runs out (it must NOT extend forever on
+# formats>0 alone) and the unconfirmed jobs fail loudly.
+ag = mk_agent(FakeTr([HS_OK, HS_BUSY], [100, 100]))
+ag._print_burst([mk_job(1)])
+check("burst: no progress + no fault -> stalled, job failed",
+      not ag.client.completed and len(ag.client.failed) == 1
+      and "stalled" in ag.client.failed[0][1],
       str(ag.client.failed)[:200])
 
 # Command handling posts results under the command id.
@@ -251,13 +275,20 @@ check("unknown kind reports not-ok",
       ag.client.results[-1][0] == "c2" and ag.client.results[-1][1] is False,
       str(ag.client.results)[:150])
 
-# Self-update: same version served -> no exit, no swap.
+# Self-update: same version served -> no exit, no swap. os.replace is
+# stubbed for the duration as a belt: whatever a future regression does
+# here, the real print_agent.py must never be touched by a test.
 ag = mk_agent(FakeTr([HS_OK], [100, 101]))
+_real_replace = print_agent.os.replace
+print_agent.os.replace = lambda a, b: (_ for _ in ()).throw(
+    AssertionError("self-update tried to swap the real file"))
 try:
     ag._self_update(force=False)
     check("self-update no-ops on same version", True)
-except SystemExit:
-    check("self-update no-ops on same version", False, "exited")
+except (SystemExit, AssertionError) as e:
+    check("self-update no-ops on same version", False, repr(e))
+finally:
+    print_agent.os.replace = _real_replace
 
 print()
 print(f"{'FAIL' if fails else 'OK'}  {len(fails)} failing")

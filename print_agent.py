@@ -19,6 +19,11 @@ spooler and the paper:
   a job only once the printer's own counter moved. Media out / head
   open / pause HOLD the queue and show on the web terminal's Queue tab
   instead of masquerading as printed; a swallowed label is retried.
+  v7 (Nick, 2026-09-23: "burst printing is the best way") sends each
+  claim as ONE continuous run - the printer never pauses between
+  labels - and still confirms every label individually: a Zebra prints
+  formats strictly in arrival order, so odometer position base+i IS
+  label i's receipt. Only the eaten tail of a run is retried.
 - CLOUD CONTROL: every poll doubles as a heartbeat carrying printer
   status; the server can queue commands (shell, get-log, raw ZPL,
   printer query, test label, restart, self-update) whose output is
@@ -66,9 +71,11 @@ import time
 import requests
 
 # v6: direct-USB transport + printer-confirmed dones + heartbeat/command
-# cloud control + self-update. Bump on behavior changes - the server
-# compares this against its own copy to drive auto-update.
-AGENT_VERSION = "6"
+# cloud control + self-update. v7: bursts print as one continuous run,
+# confirmed label-by-label from the odometer's order (no more per-label
+# pauses). Bump on behavior changes - the server compares this against
+# its own copy to drive auto-update.
+AGENT_VERSION = "7"
 
 # ---------------------------------------------------------------------------
 # Label geometry. Defaults match the warehouse RFID stickers (measured
@@ -1206,15 +1213,57 @@ class Agent:
             self._pulse(status=st)
             time.sleep(3)
 
-    def _deliver_confirmed(self, zpl: str) -> str:
-        """Send one label and watch the printer take it. Returns
-        'confirmed' (odometer moved), 'drained' (buffer emptied, no
-        counter on this printer), 'vanished' (buffer empty but the
-        counter never moved - the label was eaten), or 'stalled'."""
+    @staticmethod
+    def _desc(job: dict) -> str:
+        return f"job {job['id']} ({job.get('sku') or job.get('barcode')})"
+
+    def _zpl(self, job: dict) -> str:
+        return build_zpl(
+            job, self.encode_rfid, self.args.label_width,
+            self.args.label_height, self.args.shift_down,
+            self.args.shift_right,
+        )
+
+    def _advance_confirms(self, jobs: list[dict], base: int,
+                          confirmed: int) -> int:
+        """Complete every job the odometer has passed. The printer
+        prints formats strictly in arrival order, so odometer position
+        base+i IS jobs[i]'s receipt - each label confirms individually
+        even though the whole burst went down the wire at once."""
+        count = self.tr.label_count()
+        if count is None:
+            return confirmed
+        delta = min(count - base, len(jobs))
+        while confirmed < delta:
+            job = jobs[confirmed]
+            confirmed += 1
+            try:
+                self.client.complete(job["id"],
+                                     create_assignment=self.encode_rfid)
+                self._mark_done(self._desc(job), "confirmed")
+            except requests.RequestException as error:
+                # The label IS on paper; only the report was lost. Keep
+                # the confirm (never reprint it) and leave the row
+                # claimed for the operator.
+                self.last_error = str(error)
+                log(f"! {self._desc(job)}: printed but couldn't report "
+                    f"back: {error}")
+        return confirmed
+
+    def _deliver_burst(self, jobs: list[dict]) -> tuple[int, str]:
+        """Send every job as ONE continuous run (v7: no per-label
+        pauses - Nick, 2026-09-23) and watch the printer work through
+        it, completing each label as the odometer passes it. Returns
+        (confirmed, outcome): 'ok' when the buffer drained (any
+        unconfirmed tail was eaten and belongs to the caller's retry),
+        'stalled' when nothing progressed for LABEL_SETTLE_TIMEOUT with
+        no fault flag raised."""
         base = self.tr.label_count() if self.tr.supports_count else None
-        self.tr.send(zpl)
+        for job in jobs:
+            self.tr.send(self._zpl(job))
+        confirmed = 0
         deadline = time.time() + LABEL_SETTLE_TIMEOUT
-        saw_format = False
+        prev_formats = None
         misses = 0
         while time.time() < deadline:
             time.sleep(0.4)
@@ -1222,17 +1271,17 @@ class Agent:
             if st is None:
                 misses += 1
                 if misses >= 6:
-                    raise OSError("printer stopped answering ~HS mid-print")
+                    raise OSError("printer stopped answering ~HS mid-burst")
                 continue
             misses = 0
             faults = active_faults(st)
             if faults:
-                # Faulted mid-label (media ran out under the burst):
-                # hold right here - the format is still buffered and
-                # prints the moment the fault clears.
+                # Faulted mid-run (media ran out under the burst): hold
+                # right here - the rest is still buffered and resumes
+                # the moment the fault clears.
                 fault = ", ".join(faults)
                 if fault != self.fault:
-                    log(f"! printer FAULTED mid-label: {fault} - waiting")
+                    log(f"! printer FAULTED mid-burst: {fault} - waiting")
                     self.fault = fault
                 self._pulse(status=st)
                 deadline = time.time() + LABEL_SETTLE_TIMEOUT
@@ -1241,84 +1290,112 @@ class Agent:
             if self.fault:
                 log(f"  printer recovered ({self.fault} cleared)")
                 self.fault = None
-            if (st.get("formats") or 0) > 0:
-                saw_format = True
+            was = confirmed
+            if base is not None:
+                confirmed = self._advance_confirms(jobs, base, confirmed)
+            formats = st.get("formats") or 0
+            # The deadline only extends on PROGRESS (formats moving or
+            # labels counted) - a format wedged in the buffer with no
+            # fault flag must eventually read stalled, not spin forever
+            # (the v6 watcher extended on formats>0 alone and could).
+            if formats != prev_formats or confirmed > was:
                 deadline = time.time() + LABEL_SETTLE_TIMEOUT
+            prev_formats = formats
+            if formats > 0:
                 continue
-            # Buffer drained. On a counter printer, believe the counter.
+            # Buffer drained: everything left either printed-uncounted
+            # (no odometer on this printer) or got eaten.
             if base is None:
-                return "drained"
-            count = self.tr.label_count()
-            if count is not None and count > base:
-                return "confirmed"
-            # Give a just-finished label a beat to hit the odometer
-            # before calling it eaten.
+                for job in jobs[confirmed:]:
+                    try:
+                        self.client.complete(
+                            job["id"], create_assignment=self.encode_rfid)
+                        self._mark_done(self._desc(job), "drained")
+                    except requests.RequestException as error:
+                        self.last_error = str(error)
+                        log(f"! {self._desc(job)}: printed but couldn't "
+                            f"report back: {error}")
+                return len(jobs), "ok"
+            if confirmed >= len(jobs):
+                return confirmed, "ok"
+            # Give the last label a beat to hit the odometer before
+            # calling the tail eaten.
             time.sleep(1.2)
-            count = self.tr.label_count()
-            if count is not None and count > base:
-                return "confirmed"
-            if count is None:
-                return "drained"
-            return "vanished"
-        return "stalled" if saw_format else "vanished"
+            confirmed = self._advance_confirms(jobs, base, confirmed)
+            return confirmed, "ok"
+        return confirmed, "stalled"
 
-    def _print_job(self, job: dict) -> None:
-        desc = f"job {job['id']} ({job.get('sku') or job.get('barcode')})"
-        zpl = build_zpl(
-            job, self.encode_rfid, self.args.label_width,
-            self.args.label_height, self.args.shift_down,
-            self.args.shift_right,
-        )
-        try:
-            if self.tr.readback == "none":
-                # v5 semantics: done = the transport took the bytes.
-                self.tr.send(zpl)
-                self.client.complete(job["id"],
-                                     create_assignment=self.encode_rfid)
-                self._mark_done(desc)
-                return
-            for attempt in range(1, 4):
-                self._wait_ready()
-                outcome = self._deliver_confirmed(zpl)
-                if outcome in ("confirmed", "drained"):
+    def _print_burst(self, jobs: list[dict]) -> None:
+        if not jobs:
+            return
+        if self.tr.readback == "none":
+            # v5 semantics: done = the transport took the bytes. The
+            # sends are already back-to-back, so this bursts naturally.
+            for i, job in enumerate(jobs):
+                self.holding = len(jobs) - i
+                try:
+                    self.tr.send(self._zpl(job))
                     self.client.complete(job["id"],
                                          create_assignment=self.encode_rfid)
-                    self._mark_done(desc, outcome)
-                    return
-                if outcome == "vanished":
-                    self.counters["vanished"] += 1
-                    self.counters["retried"] += 1
-                    log(f"! {desc}: the printer swallowed the label "
-                        f"(buffer drained, odometer never moved) - "
-                        f"attempt {attempt} of 3")
-                    continue
-                # stalled: a format sat in the buffer past the timeout
-                # with no fault flag. Don't blind-retry (it may still
-                # print) - fail loud so the queue shows it.
-                self._mark_failed(job, desc,
-                                  "printer stalled mid-label (format stuck "
-                                  "in buffer, no fault reported) - check "
-                                  "the printer, then reprint")
-                return
-            self._mark_failed(job, desc,
-                              "printer swallowed this label 3 times "
-                              "(status healthy, odometer never moved) - "
-                              "recalibrate media, then reprint")
-        except OSError as error:
-            self.last_error = str(error)
-            log(f"! {desc}: {error}")
-            self._transport_trouble()
+                    self._mark_done(self._desc(job))
+                except OSError as error:
+                    self.last_error = str(error)
+                    log(f"! {self._desc(job)}: {error}")
+                    self._transport_trouble()
+                    try:
+                        self.client.fail(job["id"], str(error))
+                    except requests.RequestException:
+                        pass
+                    self.counters["failed"] += 1
+                except requests.RequestException as error:
+                    self.last_error = str(error)
+                    log(f"! {self._desc(job)}: printed but couldn't "
+                        f"report back: {error}")
+            return
+        attempts: dict = {}
+        pending = list(jobs)
+        while pending:
+            self.holding = len(pending)
             try:
-                self.client.fail(job["id"], str(error))
-            except requests.RequestException:
-                pass
-            self.counters["failed"] += 1
-        except requests.RequestException as error:
-            # The label may be on paper but the app unreachable - do NOT
-            # fail the job (that voids a printed label); leave it
-            # claimed, the operator reprints if it truly vanished.
-            self.last_error = str(error)
-            log(f"! {desc}: printed but couldn't report back: {error}")
+                self._wait_ready()
+                confirmed, outcome = self._deliver_burst(pending)
+            except OSError as error:
+                # Unknown state mid-burst: fail what we can't vouch for
+                # (worst case a duplicate label, never a silent loss)
+                # and let the transport heal itself.
+                self.last_error = str(error)
+                log(f"! burst failed: {error}")
+                self._transport_trouble()
+                for job in pending:
+                    self._mark_failed(job, self._desc(job), str(error))
+                return
+            rest = pending[confirmed:]
+            if outcome == "stalled":
+                for job in rest:
+                    self._mark_failed(
+                        job, self._desc(job),
+                        "printer stalled mid-burst (format stuck in "
+                        "buffer, no fault reported) - check the printer, "
+                        "then reprint")
+                return
+            # The eaten tail re-runs as its own (smaller) burst.
+            pending = []
+            for job in rest:
+                tries = attempts.get(job["id"], 0) + 1
+                attempts[job["id"]] = tries
+                self.counters["vanished"] += 1
+                if tries >= 3:
+                    self._mark_failed(
+                        job, self._desc(job),
+                        "printer swallowed this label 3 times (status "
+                        "healthy, odometer never moved) - recalibrate "
+                        "media, then reprint")
+                else:
+                    self.counters["retried"] += 1
+                    log(f"! {self._desc(job)}: the printer swallowed the "
+                        f"label (buffer drained, odometer never moved) - "
+                        f"attempt {tries} of 3")
+                    pending.append(job)
 
     def _mark_done(self, desc: str, outcome: str = "sent") -> None:
         self.counters["done"] += 1
@@ -1565,9 +1642,7 @@ class Agent:
                     except Exception as error:  # noqa: BLE001
                         log(f"! idle re-align failed: {error}")
 
-            for i, job in enumerate(jobs):
-                self.holding = len(jobs) - i
-                self._print_job(job)
+            self._print_burst(jobs)
             self.holding = 0
 
             if self.args.once:

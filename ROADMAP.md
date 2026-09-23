@@ -72,6 +72,28 @@ label builders (which are field-calibrated and untouched) is new:
   not reach for remote desktop again. Loose F9177A jobs the ghost
   swallowed earlier remain falsely done; requeue on request.
 
+## 🖨 Agent v7: burst printing with ordered confirms — ✅ LIVE 2026-09-23
+
+Nick, on v6's per-label handshake pauses: "Burst printing is the best
+way... I'd rather work with burst printing until it has no digital
+problems." v7 sends each claim as ONE continuous run (no pauses
+between labels) and keeps every v6 guarantee by exploiting order: a
+Zebra prints formats strictly in arrival order, so odometer position
+base+i is label i's receipt. Each job completes the moment the
+counter passes it; only the EATEN TAIL of a run retries (3x then a
+loud fail); faults mid-run still hold with the rest buffered; and the
+stall watchdog now demands PROGRESS (formats moving or count
+climbing) instead of extending forever on a wedged buffer. Deployed
+to prod + dev; the warehouse agent SELF-UPDATED 6->7 within seconds
+of the deploy (first real use of the update channel - no remote
+desktop, no hands). Remaining known label risk is physical only
+(uneven tearing), handled by the existing re-align tools.
+Test-suite scar (worth remembering): the agent-side suite once let
+_self_update run for real against a hardcoded old version string and
+it clobbered the repo's print_agent.py with the fake download; the
+suite now derives the served version from AGENT_VERSION and stubs
+os.replace during that test. Suites 81/81.
+
 ## 🧪 Private dev site — ✅ LIVE 2026-09-23
 
 Nick: other workers now use the terminal on their own computers, so
