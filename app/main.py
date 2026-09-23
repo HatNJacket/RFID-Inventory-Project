@@ -28,6 +28,7 @@ from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import AliasChoices, BaseModel, Field, field_validator
+from sqlalchemy import DateTime as SA_DateTime
 from sqlalchemy import delete, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -2470,6 +2471,104 @@ def print_agent_bootstrap(request: Request):
         media_type="text/plain",
     )
 
+
+# --- dev-mirror snapshot (Nick, 2026-09-23) ----------------------------------
+# The dev site (telcan-rfid-dev, own sqlite) must DUPLICATE prod's data
+# so testing sees the real inventory. dev/deploy.py (and dev/sync_dev.py
+# standalone) walks these endpoints: export every table from PROD,
+# import into DEV. Export is read-only and station-key gated like any
+# other read. Import is DOUBLE-guarded so it can never touch prod: it
+# refuses unless the environment sets ALLOW_SNAPSHOT_IMPORT=1 (only the
+# dev app does) AND the database engine is sqlite (prod is mssql).
+
+# History/telemetry tables are huge and dev only needs a taste - capped
+# exports take the NEWEST rows (primary key desc).
+_SNAPSHOT_CAPS = {
+    "rfid_barcode_changes": 4000,
+    "rfid_epc_captures": 150,
+    "link_scans": 500,
+    "rfid_c72_debug": 200,
+    "rfid_onhand_log": 1000,
+    "rfid_refresh_log": 200,
+    "rfid_oneleft_checks": 500,
+    "rfid_sold_ledger": 5000,
+}
+
+
+def _snapshot_table(name: str):
+    from app.models import Base
+    table = Base.metadata.tables.get(name)
+    if table is None:
+        raise HTTPException(404, f"No table named {name}.")
+    return table
+
+
+@app.get("/api/admin/snapshot/tables", dependencies=[Depends(require_user)])
+def snapshot_tables():
+    from app.models import Base
+    return {"tables": [t.name for t in Base.metadata.sorted_tables]}
+
+
+@app.get("/api/admin/snapshot/export", dependencies=[Depends(require_user)])
+def snapshot_export(table: str, session: Session = Depends(get_session)):
+    t = _snapshot_table(table)
+    stmt = select(t)
+    cap = _SNAPSHOT_CAPS.get(t.name)
+    if cap:
+        pk = list(t.primary_key.columns)
+        if pk:
+            stmt = stmt.order_by(pk[0].desc())
+        stmt = stmt.limit(cap)
+    rows = []
+    for row in session.execute(stmt).mappings():
+        rows.append({
+            key: (value.isoformat() if isinstance(value, datetime)
+                  else value)
+            for key, value in row.items()
+        })
+    return {"table": t.name, "count": len(rows), "rows": rows}
+
+
+class SnapshotImportIn(BaseModel):
+    table: str = Field(max_length=100)
+    rows: list[dict]
+
+
+@app.post("/api/admin/snapshot/import", dependencies=[Depends(require_user)])
+def snapshot_import(
+    payload: SnapshotImportIn, session: Session = Depends(get_session)
+):
+    """Replace one table's rows with a prod export. DEV ONLY - see the
+    section comment for the two guards."""
+    if os.getenv("ALLOW_SNAPSHOT_IMPORT") != "1":
+        raise HTTPException(
+            403, "Snapshot import is not enabled on this site."
+        )
+    if get_engine().dialect.name != "sqlite":
+        raise HTTPException(
+            403, "Snapshot import only ever runs on a sqlite (dev) "
+                 "database - never on prod."
+        )
+    t = _snapshot_table(payload.table)
+    dt_cols = {
+        c.name for c in t.columns if isinstance(c.type, SA_DateTime)
+    }
+    rows = []
+    for raw in payload.rows:
+        row = {}
+        for key, value in raw.items():
+            if key in dt_cols and isinstance(value, str):
+                try:
+                    value = datetime.fromisoformat(value)
+                except ValueError:
+                    value = None
+            row[key] = value
+        rows.append(row)
+    session.execute(delete(t))
+    for start in range(0, len(rows), 500):
+        session.execute(t.insert(), rows[start:start + 500])
+    session.commit()
+    return {"table": t.name, "imported": len(rows)}
 
 @app.get("/api/printers", dependencies=[Depends(require_user)])
 def list_printers(session: Session = Depends(get_session)):

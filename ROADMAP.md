@@ -72,6 +72,38 @@ label builders (which are field-calibrated and untouched) is new:
   not reach for remote desktop again. Loose F9177A jobs the ghost
   swallowed earlier remain falsely done; requeue on request.
 
+## 🔁 Dev site mirrors prod automatically — ✅ DEPLOYED 2026-09-23
+
+Nick: "make sure the dev version duplicates the production version
+automatically, make sure it can read the inventory." The dev sqlite
+was empty, so the terminal showed no RFID inventory. Now:
+- **Snapshot endpoints** (app/main.py): GET /api/admin/snapshot/tables
+  + /export?table= on any site (station-key reads, capped exports for
+  the big history tables); POST /api/admin/snapshot/import DOUBLE-
+  guarded (needs ALLOW_SNAPSHOT_IMPORT=1 - only the dev app sets it -
+  AND a sqlite engine) so it can never wipe prod.
+- **`py dev/deploy.py` is THE deploy command now**: mkdeploy -> prod
+  -> dev -> mirror prod data into dev (dev/sync_dev.py, also runnable
+  standalone). ~34k rows / all 50 tables in one pass; dev shows the
+  real batches, tags, bin map and queue. Flags: --prod-only,
+  --dev-only, --no-sync.
+- COORDINATION NOTE: a parallel session drafted an app-side mirror
+  (app/devsync.py + DEV_SYNC_SOURCE_DB, dev pulls straight from the
+  prod DB on a timer) - uncommitted, unwired. Only ONE mechanism
+  should land; the deploy-script mirror above is live and keeps the
+  prod DB URL off the dev app (CLAUDE.md: never point dev at the prod
+  database). Nick to pick; until then don't wire devsync.py.
+
+## 🚫 Standing decision: NO Claude chat window in the terminal (Nick, 2026-09-23)
+
+Built on the dev site, then SCRAPPED the same day at Nick's call, all
+code removed before it ever committed: "it would be a bad idea to give
+unfiltered claude access to any user who accesses the site." The
+station key is shared, so a chat endpoint means anyone with the link
+can spend API money and interrogate the model without accountability.
+Do not rebuild without Nick explicitly re-opening the decision (and
+then only with per-user auth + spend caps).
+
 ## 📦 Receiving batches are one-per-STOCK-ORDER — ✅ DEPLOYED 2026-09-23
 
 Nick: a brand-new order merged into an old open receiving batch.
