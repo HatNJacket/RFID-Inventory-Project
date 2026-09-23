@@ -72,6 +72,34 @@ label builders (which are field-calibrated and untouched) is new:
   not reach for remote desktop again. Loose F9177A jobs the ghost
   swallowed earlier remain falsely done; requeue on request.
 
+## 📦 Receiving batches are one-per-STOCK-ORDER — ✅ DEPLOYED 2026-09-23
+
+Nick: a brand-new order merged into an old open receiving batch.
+"I assume it bundles based on the vendor... which is wrong. Tasks
+should always be based on the stock order number." This REPLACES the
+2026-08-31 per-vendor merge (standing decision reversed by Nick):
+- _receiving_intake now matches open receiving batches by SO number
+  (any SO listed in the tag, so vendor-merge-era multi-SO batches
+  still catch their own repeat pushes). merge_vendor param renamed
+  merge_order; full-shipment exact-tag behavior unchanged.
+- The SO leads everywhere the batch shows: resume list reads
+  "📦 Receiving · SO 968 - 1 product(s), ..." and the open-batch chip
+  reads "📦 Receiving · SO 968" (receivingSoOf in app.js).
+- Repeat pushes of the SAME order still fold into its batch, and the
+  receiving list now draws dated dividers between push days ("order
+  pushed Sep 21" / "order pushed Sep 23") - derived from
+  first_scanned_at, drawn only when the batch spans multiple days
+  (recvAppendWithPushDividers). A same-SKU top-up folds into its
+  original row, so it stays under its first push's divider.
+- Prod note: batch 230 ("SO 943, SO 965 · Svbony") is the merged
+  victim and stays merged - splitting would mean reassigning
+  items/jobs/pairings; the dividers make it readable. Batch 302
+  (SO 968) shows 66 boxes for the 33-unit S50 Pro push - the planner
+  push appears doubled; Update count fixes the row before resolving
+  its labels-not-printed task.
+Suites 81/81 (test_recvbridge rewritten for per-SO); browser-verified
+resume label, chip and dividers on the seeded server.
+
 ## 📥 Labels Not Printed can't forgive a bin-blocked debt — ✅ DEPLOYED 2026-09-23
 
 Nick (SO 968, 33x Seestar S50 Pro): the safety-net task read "0

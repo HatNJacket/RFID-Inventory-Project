@@ -4658,9 +4658,10 @@ function renderResumeList() {
     rows = rows.filter((b) => (b.unpaired_labels || 0) > 0);
   rows.forEach((b) => {
     const li = document.createElement("li");
+    const so = b.kind === "receiving" ? receivingSoOf(b.created_by) : "";
     const label =
       b.kind === "receiving"
-        ? "📦 Receiving"
+        ? "📦 Receiving" + (so ? ` · ${escapeHtml(so)}` : "")
         : `Bin ${escapeHtml(b.bin_name)}`;
     li.innerHTML =
       `<b>${label}</b> - ${b.products} product(s), ` +
@@ -5460,12 +5461,25 @@ function isReceivingBatch() {
   return !!(batch && batch.kind === "receiving");
 }
 
+// The stock order number out of a receiving batch's tag
+// ("TC-Planner · SO 968 · ZWO" -> "SO 968"). Batches are one-per-SO
+// now (Nick, 2026-09-23), so the SO is the batch's NAME and leads
+// everywhere the batch shows; vendor-merge-era batches may still list
+// several ("SO 42, SO 43").
+function receivingSoOf(createdBy) {
+  const parts = String(createdBy || "")
+    .split("·")
+    .map((s) => s.trim());
+  return parts.length > 1 && /^SO\b/i.test(parts[1]) ? parts[1] : "";
+}
+
 function openBatchView(stage) {
   bEl.start.hidden = true;
   bEl.active.hidden = false;
   document.querySelector(".binboard").hidden = true;
+  const so = isReceivingBatch() ? receivingSoOf(batch.created_by) : "";
   bEl.binChip.textContent = isReceivingBatch()
-    ? "📦 Receiving"
+    ? "📦 Receiving" + (so ? ` · ${so}` : "")
     : `Bin ${batch.bin_name}`;
   // Receiving has no steps at all — the chip bar goes away entirely.
   bEl.stages.style.display = isReceivingBatch() ? "none" : "";
@@ -6220,11 +6234,12 @@ function renderReceivingList() {
     divider.className = "recvdivider";
     divider.textContent = "products to scan";
     list.append(divider);
-    shown
-      .filter((i) => i.id !== focusedItem.id)
-      .forEach((item) => list.append(recvCard(item)));
+    recvAppendWithPushDividers(
+      list,
+      shown.filter((i) => i.id !== focusedItem.id)
+    );
   } else {
-    shown.forEach((item) => list.append(recvCard(item)));
+    recvAppendWithPushDividers(list, shown);
   }
   syncRecvSweepPoll(
     !!focusedItem && !recvProblemText(focusedItem) && batch && !batch.completed_at
@@ -6235,6 +6250,42 @@ function renderReceivingList() {
 document
   .getElementById("recv-undo")
   .addEventListener("click", recvUndoLastPair);
+
+// A repeat planner push for the SAME stock order folds into this batch
+// (batches are one-per-SO since 2026-09-23), so dated dividers mark
+// where each push's products start - "order pushed Sep 21" over the
+// first wave, "order pushed Sep 23" over the top-up (Nick,
+// 2026-09-23). Rows are in creation order already, so a divider is
+// just a date change between neighbours; drawn only when the batch
+// really spans more than one push day.
+function recvPushDay(item) {
+  return item.first_scanned_at ? item.first_scanned_at.slice(0, 10) : null;
+}
+
+function recvAppendWithPushDividers(list, cards) {
+  const days = new Set(cards.map(recvPushDay).filter(Boolean));
+  if (days.size < 2) {
+    cards.forEach((item) => list.append(recvCard(item)));
+    return;
+  }
+  let prev = null;
+  cards.forEach((item) => {
+    const day = recvPushDay(item);
+    if (day && day !== prev) {
+      const divider = document.createElement("li");
+      divider.className = "recvdivider";
+      divider.textContent =
+        "order pushed " +
+        new Date(item.first_scanned_at).toLocaleDateString(undefined, {
+          month: "short",
+          day: "numeric",
+        });
+      list.append(divider);
+      prev = day;
+    }
+    list.append(recvCard(item));
+  });
+}
 
 function recvCard(item) {
   const li = document.createElement("li");

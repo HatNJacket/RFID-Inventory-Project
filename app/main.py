@@ -13119,7 +13119,7 @@ def _normalize_so_reference(ref: str) -> str:
 
 def _receiving_intake(
     session: Session, payload: ReceivingPrintsIn, queue_labels: bool,
-    tag_prefix: str = "TC-Planner", merge_vendor: bool = True,
+    tag_prefix: str = "TC-Planner", merge_order: bool = True,
 ) -> dict:
     """Shared body of the planner bridge: create/reuse the stock order's
     receiving batch, add the received quantities to its rows (problem
@@ -13129,10 +13129,10 @@ def _receiving_intake(
     the boxes are never lost; their labels queue later from the Review
     task. Caller commits.
 
-    Full-shipment receives pass their own tag_prefix and merge_vendor
+    Full-shipment receives pass their own tag_prefix and merge_order
     False (Nick, 2026-09-01): their settle step reads the WHOLE batch as
-    one order's story, so folding them into a same-vendor planner batch
-    would count that batch's unpaired boxes as never-shipped."""
+    one order's story, so folding them into another batch would count
+    that batch's unpaired boxes as never-shipped."""
     ref = (payload.reference or "").strip()
     # Intake belt: whatever the planner sent, the label stores the REAL
     # SO number (Nick, 2026-09-09 - internal ids kept leaking in).
@@ -13141,14 +13141,18 @@ def _receiving_intake(
     except Exception:  # noqa: BLE001 - decoration, never blocks intake
         pass
     parts = [p.strip() for p in ref.split("·")] if ref else []
-    vendor = parts[1] if len(parts) > 1 and parts[1] else None
     so_part = parts[0] if parts else ""
     batch = None
-    if vendor and merge_vendor:
-        # One receiving batch per VENDOR (Nick, 2026-08-31): same-vendor
-        # stock orders arrive on one pallet, so their labels and pairing
-        # belong together. The batch name keeps EVERY stock order it
-        # covers - "TC-Planner · SO 1254, SO 1266 · ZWO".
+    if merge_order and so_part:
+        # One receiving batch per STOCK ORDER (Nick, 2026-09-23 - this
+        # REPLACES the 2026-08-31 per-vendor merge: a brand-new order
+        # kept landing on an old open same-vendor batch, burying it.
+        # The SO number is the unit of work; the SAME order's repeat
+        # pushes still fold in, and the web list draws a dated divider
+        # per push day). Batches from the vendor-merge era carry
+        # several SOs in their name - match any of them so a repeat
+        # push of one still finds its batch.
+        so_key = so_part.upper()
         for cand in session.scalars(
             select(Batch).where(
                 Batch.kind == "receiving",
@@ -13157,17 +13161,12 @@ def _receiving_intake(
             ).order_by(Batch.id.desc())
         ):
             cparts = [p.strip() for p in (cand.created_by or "").split("·")]
-            if (len(cparts) >= 3
-                    and cparts[-1].upper() == vendor.upper()):
+            if len(cparts) < 2:
+                continue
+            sos = {s.strip().upper() for s in cparts[1].split(",")
+                   if s.strip()}
+            if so_key in sos:
                 batch = cand
-                sos = [s.strip() for s in cparts[1].split(",")
-                       if s.strip()]
-                if so_part and so_part not in sos:
-                    sos.append(so_part)
-                    cand.created_by = (
-                        f"{tag_prefix} · " + ", ".join(sos)
-                        + " · " + cparts[-1]
-                    )[:100]
                 break
         tag = (batch.created_by if batch is not None
                else f"{tag_prefix} · " + ref)[:100]
@@ -13953,7 +13952,7 @@ def receiving_full_shipment(
         requested_by=payload.requested_by,
         reference=f"{ref} · {order.get('vendor') or ''}".strip(" ·"),
     ), queue_labels=True, tag_prefix="Full shipment",
-        merge_vendor=False)
+        merge_order=False)
     batch = intake["batch"]
     session.add(OrderReceipt(
         stock_order_id=order["order_id"],

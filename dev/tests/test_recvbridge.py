@@ -98,27 +98,37 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
     check("only the newly received boxes queue", r.json()["queued"] == 2,
           r.json())
 
-    # Same-VENDOR stock orders merge into one batch (Nick, 2026-08-31):
-    # one pallet, one pairing session - and the batch name keeps every
-    # stock order it covers.
+    # One batch per STOCK ORDER (Nick, 2026-09-23 - replaces the
+    # 2026-08-31 per-vendor merge that buried new orders inside old
+    # open batches): a same-vendor but DIFFERENT order gets its own
+    # batch wearing its own SO number.
     r = cl.post("/api/receiving/prints", json={
         "items": [{"sku": "ZWO EAF-5V", "quantity": 1}],
         "requested_by": "Nick",
         "reference": "SO 43 · ZWO",
     })
-    check("a same-vendor order lands on the SAME batch",
-          r.json()["batch"]["id"] == bid, r.json()["batch"])
-    check("the batch name lists every stock order it covers",
-          r.json()["batch"]["created_by"]
-          == "TC-Planner · SO 42, SO 43 · ZWO", r.json()["batch"])
-    # A different VENDOR still gets its own batch.
+    so43 = r.json()["batch"]
+    check("a same-vendor NEW stock order gets its OWN batch",
+          so43["id"] != bid, so43)
+    check("the new batch wears its own SO number",
+          so43["created_by"] == "TC-Planner · SO 43 · ZWO", so43)
+    # A repeat push of SO 43 finds the SO 43 batch, not SO 42's.
+    r = cl.post("/api/receiving/prints", json={
+        "items": [{"sku": "ZWO EAF-5V", "quantity": 1}],
+        "requested_by": "Nick",
+        "reference": "SO 43 · ZWO",
+    })
+    check("a repeat push of the same SO folds into ITS batch",
+          r.json()["batch"]["id"] == so43["id"], r.json()["batch"])
+    # A different vendor obviously still gets its own batch.
     r = cl.post("/api/receiving/prints", json={
         "items": [{"sku": "ZWO EAF-5V", "quantity": 1}],
         "requested_by": "Nick",
         "reference": "SO 90 · Askar",
     })
     check("a different vendor gets its own batch",
-          r.json()["batch"]["id"] != bid, r.json()["batch"])
+          r.json()["batch"]["id"] not in (bid, so43["id"]),
+          r.json()["batch"])
 
     listing = cl.get("/api/print-jobs?limit=200").json()
     binfo = listing.get("batches", {}).get(str(bid)) \
