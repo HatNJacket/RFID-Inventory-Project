@@ -51,6 +51,26 @@ label builders (which are field-calibrated and untouched) is new:
 - Suites 81/81 incl. new test_agentv6.py (heartbeat/commands/results/
   key handling on the server; ~HS parsing, fault gating and the
   confirmed/vanished/drained verdicts on the agent).
+- **Rollout + the REAL drop culprit (same afternoon)**: bootstrap ran
+  on the warehouse PC over one last remote-desktop session (fetched
+  with an all-typable `curl.exe --location` line - no file upload
+  needed); v6 came up transport usb-direct, readback counter (the
+  ZD220's odometer answers). Then the cloud status showed a v5 STILL
+  polling: Nick's laptop's old agent had resurrected - its
+  print_agent_loop.cmd wrapper survived both the task disable
+  (disabling a task never kills the running instance from that
+  morning's logon) and the earlier process kills (the loop relaunches
+  python 10s later). It had been stealing claims into its ghost
+  printer entry all day, which is most of what looked like USB drops
+  (2/10 paced singles). Killed the LOOP cmd + children this time;
+  task stays disabled so it cannot return at next logon. Acceptance:
+  batch #301's 8 missing labels (3 PHOBASE, 3 PHOAST, 2 OCTWHP)
+  re-queued from the cloud and printed 8/8 [printer-confirmed], zero
+  vanished. Ops note: the warehouse PC is now managed ENTIRELY via
+  POST /api/printer-commands (kind shell/getlog/query/zpl/testlabel/
+  restart/update) + GET /api/print-agent/command-result/{id} - do
+  not reach for remote desktop again. Loose F9177A jobs the ghost
+  swallowed earlier remain falsely done; requeue on request.
 
 ## 🚨 Weekend outage: pool exhaustion + the watchdog — ✅ DEPLOYED 2026-09-23
 
