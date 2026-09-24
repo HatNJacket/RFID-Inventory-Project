@@ -3882,7 +3882,7 @@ body.embedded .tabs { display: none !important; }
   font-weight: 600; padding: 8px 16px;
 }
 .labedit__save:disabled { opacity: 0.4; cursor: default; }
-.labedit__preview { flex: 0 0 300px; display: flex; flex-direction: column; gap: 6px; }
+.labedit__preview { flex: 0 0 var(--lab-prev-w); display: flex; flex-direction: column; gap: var(--lab-print-mt); }
 .labedit__preview .cap { font-size: 12px; color: var(--ink-dim); }
 .labedit__svgwrap {
   border: 1px solid var(--line); border-radius: 8px; background: #fff;
@@ -3976,9 +3976,9 @@ button.ph-order:hover { border-color: var(--accent); }
 .pchip--btn:hover { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 /* label editor, compact */
-.labedit__form { flex: 1 1 250px; min-width: 230px; max-width: 320px; gap: 8px; }
+.labedit__form { flex: 1 1 250px; min-width: 230px; max-width: 320px; gap: var(--lab-row-gap); margin-top: var(--lab-form-top); }
 .labedit__box input, .labedit__box textarea {
-  font-size: 13px; padding: 5px 8px;
+  font-size: 13px; padding: var(--lab-box-pady) 8px;
 }
 .labedit__box textarea {
   flex: 1; border: 1px solid var(--line); border-radius: 8px;
@@ -4032,8 +4032,19 @@ button.ph-order:hover { border-color: var(--accent); }
 .evcolor-vis.on { background: var(--accent); border-color: var(--accent); }
 
 /* label editor v4 (Nick): form LEFT, label preview MIDDLE with the
-   print control right under the sticker, product options RIGHT */
-.labedit { justify-content: flex-start; gap: 24px; }
+   print control right under the sticker, product options RIGHT.
+   Spacing rides CSS variables so the TEMPORARY dev tuner can move
+   everything live (2026-09-24). */
+:root {
+  --lab-gap: 24px;
+  --lab-form-top: 0px;
+  --lab-row-gap: 8px;
+  --lab-box-pady: 5px;
+  --lab-prev-w: 300px;
+  --lab-save-mt: 8px;
+  --lab-print-mt: 6px;
+}
+.labedit { justify-content: flex-start; gap: var(--lab-gap); }
 .labedit__form { margin-left: 0; }
 .labedit__options { flex: 1 1 180px; min-width: 170px; }
 .labedit__options h4 { margin: 0 0 6px; font-size: 13px; }
@@ -4041,7 +4052,7 @@ button.ph-order:hover { border-color: var(--accent); }
 .labedit__svgwrap svg [data-part]:hover text { fill: #005bd3; }
 .labedit__preview .labedit__printgrp { display: flex; }
 .labedit__preview .labedit__print { flex: 1; }
-.labedit__row { position: relative; margin-top: 8px; }
+.labedit__row { position: relative; margin-top: 0; }
 .labedit__row > label {
   position: absolute;
   top: -8px;
@@ -4168,3 +4179,31 @@ button.ph-order:hover { border-color: var(--accent); }
 
 /* the barcode row's X hugs the INPUT's edge, not the toggle after it */
 .labedit__box:has(#lab-mode) .labedit__reset { right: 88px; }
+
+
+/* save-button spacing joins the tuner */
+.labedit__form .labedit__save { margin-top: var(--lab-save-mt); }
+
+/* TEMPORARY layout tuner (dev only, removed once Nick signs off) */
+.labtuner {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  z-index: 20;
+  background: var(--card);
+  border: 1px dashed var(--accent);
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.2);
+  max-width: 230px;
+}
+.labtuner b { font-size: 11px; }
+.labtuner label { display: flex; align-items: center; gap: 6px; }
+.labtuner label span { flex: 0 0 74px; color: var(--ink-dim); }
+.labtuner input[type="range"] { flex: 1; }
+.labtuner .val { flex: 0 0 34px; text-align: right; font-family: var(--mono); }
+.labtuner .out { font-family: var(--mono); font-size: 10px; color: var(--ink-dim); user-select: all; }

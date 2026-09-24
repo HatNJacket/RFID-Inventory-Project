@@ -13922,7 +13922,12 @@ function binAuditRowHtml({ r, flags, untagged }) {
     // that Shopify already had.
     const debt = r.backorder_debt || 0;
     const unav = r.unavailable || 0;
-    const expTotal = r.expected_qty + debt + unav;
+    // Sold-but-unretired units EXPLAIN tag records whose boxes already
+    // shipped (Nick, 2026-09-24, F9152B: 3 records, 2 known sales -
+    // the row must expect 1 more record than stock, not 3). They fold
+    // into the record-side expectation exactly like backorder debt.
+    const soldN = r.sold_unretired || 0;
+    const expTotal = r.expected_qty + debt + unav + soldN;
     const diff = r.units_here - expTotal;
     expCell =
       `${expTotal}` +
@@ -13932,14 +13937,22 @@ function binAuditRowHtml({ r, flags, untagged }) {
       (unav
         ? ` <span class="bexp--note">(incl. ${unav} unavailable)</span>`
         : "") +
+      (soldN
+        ? ` <span class="bexp--note">(incl. ${soldN} sold)</span>`
+        : "") +
       (diff
-        ? ` <span class="bexp--off">(${diff > 0 ? "+" : "−"}${Math.abs(diff)})</span>`
+        ? ` <span class="bexp--off" title="${diff > 0 ? "Tag records stock cannot explain - a box may have left without a sale on record (a Shopify-side correction?), or a lost sticker was replaced without retiring the old tag" : "Fewer tag records than stock expects"}">(${diff > 0 ? "+" : "−"}${Math.abs(diff)})</span>`
         : "");
-    if (diff > 0 && r.sku) {
+    // A raise needs PHYSICAL evidence: the sweep actually HEARING more
+    // boxes than Shopify counts. Tag records alone are paper - F9152B
+    // carried 3 records for boxes long gone, and the old
+    // records-based button offered "Set to 3" on a shelf holding 0.
+    const heardOver = r.detected_units - (r.expected_qty + unav);
+    if (heardOver > 0 && r.sku) {
       expCell += `<div><button class="reset binaudit-fix" type="button"
-        data-sku="${escapeHtml(r.sku)}" data-qty="${r.units_here}"
+        data-sku="${escapeHtml(r.sku)}" data-qty="${r.detected_units}"
         data-exp="${expTotal}"
-        title="Write the tagged count to Shopify on-hand - confirmed, logged, undoable from History">Set to ${r.units_here}</button></div>`;
+        title="The sweep physically heard ${r.detected_units} box(es) - write that count to Shopify on-hand. Confirmed, logged, undoable from History">Set to ${r.detected_units}</button></div>`;
     } else if (
       r.can_lower &&
       binAudit &&
@@ -20499,7 +20512,58 @@ async function pcardEnsureLabelEditor() {
       els.print.disabled = false;
     }
   });
+  renderLabTuner(pane);
   refresh();
+}
+
+// TEMPORARY layout tuner (Nick, 2026-09-24): sliders that drive the
+// label editor's spacing variables live, on dev/localhost only, so the
+// final numbers can be dialled in on the real page and then baked in.
+const LAB_TUNER_VARS = [
+  ["--lab-gap", "Column gap", 0, 80],
+  ["--lab-form-top", "Form top", -30, 60],
+  ["--lab-row-gap", "Row gap", 0, 30],
+  ["--lab-box-pady", "Box pad", 2, 16],
+  ["--lab-prev-w", "Preview w", 220, 430],
+  ["--lab-save-mt", "Save top", 0, 60],
+  ["--lab-print-mt", "Print top", 0, 40],
+];
+
+function renderLabTuner(pane) {
+  const host = location.hostname;
+  if (!(host.includes("localhost") || host.includes("-dev"))) return;
+  const box = document.createElement("div");
+  box.className = "labtuner";
+  const out = document.createElement("div");
+  out.className = "out";
+  const readAll = () => LAB_TUNER_VARS.map(([v]) =>
+    `${v}: ${getComputedStyle(document.documentElement).getPropertyValue(v).trim()};`
+  ).join(" ");
+  box.innerHTML = "<b>Layout tuner (temp)</b>";
+  LAB_TUNER_VARS.forEach(([varName, label, min, max]) => {
+    const cur = parseInt(
+      getComputedStyle(document.documentElement).getPropertyValue(varName)
+    ) || 0;
+    const row = document.createElement("label");
+    row.innerHTML =
+      `<span>${label}</span>` +
+      `<input type="range" min="${min}" max="${max}" value="${cur}" />` +
+      `<span class="val">${cur}px</span>`;
+    const slider = row.querySelector("input");
+    const val = row.querySelector(".val");
+    slider.addEventListener("input", () => {
+      document.documentElement.style.setProperty(
+        varName, slider.value + "px"
+      );
+      val.textContent = slider.value + "px";
+      out.textContent = readAll();
+    });
+    box.append(row);
+  });
+  out.textContent = readAll();
+  box.append(out);
+  pane.style.position = "relative";
+  pane.append(box);
 }
 
 // ---------- the lookup itself ----------
