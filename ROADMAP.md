@@ -173,7 +173,10 @@ events, filter box one line.
    live deploy-script mirror.
 8. Remove the layout tuner once the label editor is signed off.
 
-**Audit expected-count fix (Nick, 2026-09-24, the F9152B I1 audit):**
+**Audit expected-count fix (Nick, 2026-09-24, the F9152B I1 audit) -
+HOTFIXED TO PROD 2026-09-24** (branch hotfix/audit-expected = prod's
+7f4209b + this fix alone, built and deployed from a separate worktree;
+the rest of the bundle stays dev-only):**
 the bin-audit row's Expected now folds SOLD-UNRETIRED into the
 record-side expectation (expected + backorder + unavailable + sold,
 each with its own "incl." note) - F9152B's 3 records vs 0 on-hand and
