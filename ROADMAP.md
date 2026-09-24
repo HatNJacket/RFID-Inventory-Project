@@ -122,6 +122,20 @@ claim override; the SKU/Barcode button just fills the box), everything
 live-updates the true preview, and a qty + "Print N labels" button
 queues jobs that pick up the SAVED settings at claim.
 
+**Round 5 (Nick's list, 2026-09-24):** the Settings checklist merged
+back into EVENT COLOURS - the full hex + colour-gamut editor (search,
+pager, per-row reset, reset-all) moved out of its modal into the RIGHT
+half of the Settings page, each row now leading with the
+shown-in-history-by-default tick; the sidebar toggle left the header
+for the TOP of the sidebar itself ("Sidebar Toggle" when expanded, the
+hamburger alone on the rail); the rail keeps the exact paddings of the
+open sidebar so collapsing shifts no icon (rail is 62px now, margins
+recalibrated); the resume card always says something - the open batch,
+"Nothing to resume" with waiting check/task counts, or a green
+"All clear" tick; the label editor packed to the RIGHT of its pane
+with centred legend-style field labels, a fixed-width SKU/Barcode
+toggle (no input jumping), and Print-N-labels stacked under Save.
+
 **Feature redesign notes (later passes, per Nick - each feature gets
 reworked to fit the streamlined menu, one at a time):**
 - Receiving: per-SO view inside tile 1; stable /#receive/so-NNN URLs;

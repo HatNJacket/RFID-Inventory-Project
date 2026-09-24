@@ -29,8 +29,6 @@
   {% endif %}
   <div class="station">
     <header class="station__head">
-      <button class="reset side-toggle" id="side-toggle" type="button"
-              title="Show or hide the navigation labels">&#9776;</button>
       <div class="head__rows">
       <div class="brand">
         <span class="brand__mark" aria-hidden="true"></span>
@@ -68,6 +66,8 @@
 
     <div class="layout" id="layout">
     <nav class="tabs" role="tablist">
+      <button class="tabs__toggle" id="side-toggle" type="button" title="Sidebar Toggle"><span class="tabs__ico" aria-hidden="true">&#9776;</span><span class="tabs__lbl">Sidebar Toggle</span></button>
+      <hr class="tabs__rule" />
       <button class="tabs__tab tabs__tab--active" data-tab="home" role="tab"><span class="tabs__ico" aria-hidden="true">&#127968;</span><span class="tabs__lbl">Home</span></button>
       <button class="tabs__tab" data-tab="scan" role="tab"><span class="tabs__ico" aria-hidden="true">&#128247;</span><span class="tabs__lbl">Scan station</span></button>
       <button class="tabs__tab" data-tab="batch" role="tab"><span class="tabs__ico" aria-hidden="true">&#127991;</span><span class="tabs__lbl">Batch tagging</span></button>
@@ -1597,19 +1597,6 @@
 
     <!-- Event colour editor: per-event chip colour, saved in this browser;
          edits repaint every chip on the page live. -->
-    <div class="phist-overlay" id="evcolor-overlay" hidden>
-      <section class="linkbox serialbox phist-modal evcolor-modal">
-        <div class="linkbox__title">Event colours</div>
-        <p class="linkbox__text">Pick a colour or type a hex value - the preview chip and every matching tag on the site update as you type. An ✕ beside a customized colour puts that one back to its default. Saved on this device.</p>
-        <input id="evcolor-search" class="linkbox__input" type="search" placeholder="Filter events (like batch, sold, audit)…" autocomplete="off" />
-        <div id="evcolor-list"></div>
-        <div id="evcolor-pager"></div>
-        <div class="linkbox__actions">
-          <button class="reset" id="evcolor-reset" type="button">Reset all to defaults</button>
-          <button class="reset" id="evcolor-close" type="button">Close</button>
-        </div>
-      </section>
-    </div>
 
     <!-- Unresolved printed labels (Nick, 2026-09-09): receiving labels
          never RFID-paired, per product per batch; Dismiss retires ONE
@@ -1927,6 +1914,7 @@
     <section class="inventory settingspage" id="tab-settings" hidden>
       <h2>Settings</h2>
       <p class="settingspage__hint">Per-device preferences - each browser keeps its own.</p>
+      <div class="settingspage__cols">
       <div class="settingspage__panel">
 
             <!-- Auto-reset moved into the Scan RFID cell (next to BULK). -->
@@ -1966,15 +1954,20 @@
                 <span class="settings__hint">Adds a checkbox to every product in the batch list - tick several, then set all their bins in one go (writes to Shopify and moves the local records, logged per product with undo).</span>
               </span>
             </label>
-            <button class="reset u-mt8" id="evcolor-open" type="button">🎨 Event colours…</button>
-        <div class="settingspage__hist">
-          <h3>History events shown by default</h3>
-          <p class="settingspage__hint">Unchecked event types stay hidden in
-          product history until someone picks them in its filter. Applies to
-          this device.</p>
-          <div id="hist-defaults" class="histdefaults"></div>
-        </div>
                 </div>
+
+      <div class="settingspage__colors">
+        <h3>Event colours</h3>
+        <p class="settingspage__hint">The tick = shown in product history by
+        default. Pick a colour or type a hex value - every matching chip on
+        the site updates as you type; ✕ puts a customized colour back.
+        Saved on this device.</p>
+        <input id="evcolor-search" class="linkbox__input" type="search" placeholder="Filter events (like batch, sold, audit)…" autocomplete="off" />
+        <div id="evcolor-list"></div>
+        <div id="evcolor-pager"></div>
+        <button class="reset settingspage__resetall" id="evcolor-reset" type="button">Reset all colours to defaults</button>
+      </div>
+      </div><!-- /settingspage__cols -->
     </section>
 
     </div><!-- /content -->

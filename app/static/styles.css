@@ -103,8 +103,8 @@ body {
     padding-left: max(0px, calc(15vw - 206px));
   }
   .layout--rail .content {
-    /* rail is 56px wide: 74px = 56 + 18 */
-    padding-left: max(0px, calc(15vw - 74px));
+    /* rail is 62px wide: 80px = 62 + 18 */
+    padding-left: max(0px, calc(15vw - 80px));
   }
 }
 
@@ -783,27 +783,26 @@ body {
 .tabs__tab:hover { color: var(--ink); background: var(--card-2); }
 .tabs__tab--active { color: var(--ink); background: var(--accent-soft); }
 .tabs__tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-/* icon rail: labels gone, icons stay clickable */
-.layout--rail .tabs { flex-basis: 56px; padding: 8px 6px; }
+/* icon rail: SAME paddings as the open sidebar, only the labels
+   vanish - the icons cannot shift a pixel (Nick, 2026-09-24) */
+.layout--rail .tabs { flex-basis: 62px; }
 .layout--rail .tabs__lbl { display: none; }
-.layout--rail .tabs__tab { justify-content: center; padding: 9px 0; }
-.side-toggle {
-  /* sits at the BOTTOM of the header band, on the sidebar's column -
-     visually connected to the sidebar without touching it */
-  position: absolute;
-  left: 10px;
-  bottom: 10px;
-  z-index: 15;
-  font-size: 16px;
-  border: 1px solid var(--line);
+.tabs__toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink-dim);
+  background: transparent;
+  border: none;
   border-radius: 8px;
-  background: var(--card);
-  color: var(--ink);
-  padding: 5px 10px;
+  padding: 9px 11px;
   cursor: pointer;
-  box-shadow: var(--shadow);
+  white-space: nowrap;
 }
-.side-toggle:hover { border-color: var(--accent); }
+.tabs__toggle:hover { color: var(--ink); background: var(--card-2); }
 @media (max-width: 700px) {
   .layout { flex-direction: column; }
   .tabs {
@@ -3769,8 +3768,7 @@ tr.binaudit-untagged td { opacity: 0.72; }
 /* Embedded in Shopify admin: OUR sidebar and hamburger hide (the App
    Bridge nav menu takes over, EasyScan-style) and the wide-screen
    margins collapse - admin's content pane is already narrow. */
-body.embedded .tabs,
-body.embedded .side-toggle { display: none !important; }
+body.embedded .tabs { display: none !important; }
 @media (min-width: 701px) {
   body.embedded .station .station__head { padding-inline: 4px; }
   body.embedded .content { padding-inline: 0 !important; }
@@ -4009,3 +4007,53 @@ button.ph-order:hover { border-color: var(--accent); }
   display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
   gap: 2px 12px;
 }
+
+
+/* ================= round 5 (2026-09-24) ================= */
+
+/* resume card's all-clear state */
+.resume__what--ok { color: var(--ok-ink); }
+
+/* settings: two columns, event colours on the right */
+.settingspage__cols { display: flex; gap: 30px; align-items: flex-start; flex-wrap: wrap; }
+.settingspage__colors {
+  flex: 1 1 360px; max-width: 500px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.settingspage__colors h3 { margin: 0; font-size: 14px; }
+.settingspage__colors #evcolor-list { display: flex; flex-direction: column; gap: 4px; }
+.settingspage__resetall { align-self: flex-start; }
+.evcolor-vis {
+  width: 17px; height: 17px; flex: none; border: 1px solid var(--line);
+  border-radius: 4px; display: inline-flex; align-items: center;
+  justify-content: center; font-size: 10px; color: #fff;
+  background: var(--card); cursor: pointer; padding: 0;
+}
+.evcolor-vis.on { background: var(--accent); border-color: var(--accent); }
+
+/* label editor v3: everything rides the right side, legend-style
+   centred labels, no jumping toggle, print under save */
+.labedit { justify-content: flex-end; gap: 24px; }
+.labedit__form { margin-left: auto; }
+.labedit__row { position: relative; margin-top: 8px; }
+.labedit__row > label {
+  position: absolute;
+  top: -8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2;
+  background: var(--card);
+  padding: 0 8px;
+  border-radius: 4px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  white-space: nowrap;
+}
+.labedit__toggle { width: 76px; text-align: center; }
+.labedit__printrow { flex-direction: column; align-items: stretch; }
+.labedit__printrow .labedit__save { align-self: stretch; text-align: center; }
+.labedit__printgrp { display: flex; }
+.labedit__printgrp .labedit__print { flex: 1; }

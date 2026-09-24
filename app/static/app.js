@@ -564,7 +564,10 @@ function renderEvColorList() {
       const custom = !!overrides[type];
       const row = document.createElement("div");
       row.className = "evcolor-row";
+      const shownByDefault = !histHiddenDefaults().has(type);
       row.innerHTML = `
+        <button class="reset evcolor-vis${shownByDefault ? " on" : ""}" type="button"
+          title="Shown in product history by default - click to hide it there">${shownByDefault ? "\u2713" : ""}</button>
         <span class="evcolor-preview">${evChip(type)}</span>
         <button class="reset evcolor-clear" type="button"
           title="Reset this colour to its default" ${custom ? "" : "hidden"}>✕</button>
@@ -605,6 +608,12 @@ function renderEvColorList() {
         hex.value = EVENT_META[type][1];
         clear.hidden = true;
       });
+      row.querySelector(".evcolor-vis").addEventListener("click", () => {
+        const h = histHiddenDefaults();
+        if (h.has(type)) h.delete(type); else h.add(type);
+        localStorage.setItem(HIST_HIDDEN_KEY, JSON.stringify([...h]));
+        renderEvColorList();
+      });
       wrap.append(row);
     });
   pager.innerHTML = `
@@ -628,14 +637,6 @@ document.getElementById("evcolor-search").addEventListener("input", () => {
   renderEvColorList();
 });
 
-document.getElementById("evcolor-open").addEventListener("click", () => {
-  document.getElementById("settings-menu").open = false;
-  renderEvColorList();
-  document.getElementById("evcolor-overlay").hidden = false;
-});
-document.getElementById("evcolor-close").addEventListener("click", () => {
-  document.getElementById("evcolor-overlay").hidden = true;
-});
 document.getElementById("evcolor-reset").addEventListener("click", () => {
   const n = Object.keys(eventColorOverrides()).length;
   if (!n) return;
@@ -650,12 +651,6 @@ document.getElementById("evcolor-reset").addEventListener("click", () => {
   applyEventColors();
   renderEvColorList();
 });
-document
-  .getElementById("evcolor-overlay")
-  .addEventListener("click", (e) => {
-    if (e.target.id === "evcolor-overlay")
-      document.getElementById("evcolor-overlay").hidden = true;
-  });
 
 // Server timestamps are UTC but arrive with no timezone suffix, which
 // new Date() reads as LOCAL — every fresh event then sits "in the future"
@@ -696,6 +691,7 @@ const tabSections = {
 };
 const tabLoaders = {
   home: () => loadHome(),
+  settings: () => renderEvColorList(),
   batch: () => enterBatchTab(),
   inventory: () => loadInventory(),
   queue: () => loadQueue(),
@@ -19334,54 +19330,57 @@ refreshAgentChip();
 async function loadHome() {
   homeLoadSuggest();
   refreshAgentChip();
-  // Open batches: the resume card takes the newest, the Receive tile
-  // badge counts the open receiving batches.
-  apiFetch("/api/batches?status=open&limit=10")
-    .then((r) => (r.ok ? r.json() : null))
-    .then((body) => {
-      const rows = (body && body.batches) || [];
-      const recv = rows.filter((b) => b.kind === "receiving");
-      homeEls.badgeReceive.hidden = recv.length === 0;
-      homeEls.badgeReceive.textContent =
-        recv.length === 1 ? "1 open" : `${recv.length} open`;
-      const b = rows[0];
-      if (!b) {
-        homeEls.resume.hidden = true;
-        return;
-      }
-      homeEls.resumeWhat.textContent =
-        b.kind === "receiving"
-          ? `Receiving batch #${b.id}`
-          : `Bin ${b.bin_name} (batch #${b.id})`;
-      const bits = [];
-      if (b.boxes) bits.push(`${b.paired || 0} of ${b.boxes} paired`);
-      else if (b.products) bits.push(`${b.products} product(s)`);
-      if (b.created_by) bits.push(b.created_by);
-      homeEls.resumeMeta.textContent = bits.join(" · ");
-      homeEls.resumeGo.dataset.batchId = String(b.id);
-      homeEls.resume.hidden = false;
-    })
-    .catch(() => { homeEls.resume.hidden = true; });
-  // RFID Inventory tile: every open review task.
-  apiFetch("/api/review-tasks?status=open&limit=500")
-    .then((r) => (r.ok ? r.json() : null))
-    .then((body) => {
-      const n = Array.isArray(body) ? body.length
-        : ((body && (body.tasks || body.items)) || []).length;
-      homeEls.badgeRfid.hidden = !n;
-      homeEls.badgeRfid.textContent = n === 1 ? "1 task" : `${n} tasks`;
-    })
-    .catch(() => { homeEls.badgeRfid.hidden = true; });
-  // Inventory checks tile: the 1-left dashboard's pending queue.
-  apiFetch("/api/oneleft/board")
-    .then((r) => (r.ok ? r.json() : null))
-    .then((body) => {
-      const n = (body && body.ok && body.count) || 0;
-      homeEls.badgeChecks.hidden = !n;
-      homeEls.badgeChecks.textContent = n === 1 ? "1 check" : `${n} checks`;
-    })
-    .catch(() => { homeEls.badgeChecks.hidden = true; });
-  // The wedge needs somewhere to land the moment Home shows.
+  const [batches, tasks, board] = await Promise.all([
+    apiFetch("/api/batches?status=open&limit=10")
+      .then((r) => (r.ok ? r.json() : null)).catch(() => null),
+    apiFetch("/api/review-tasks?status=open&limit=500")
+      .then((r) => (r.ok ? r.json() : null)).catch(() => null),
+    apiFetch("/api/oneleft/board")
+      .then((r) => (r.ok ? r.json() : null)).catch(() => null),
+  ]);
+  const rows = (batches && batches.batches) || [];
+  const recv = rows.filter((b) => b.kind === "receiving");
+  homeEls.badgeReceive.hidden = recv.length === 0;
+  homeEls.badgeReceive.textContent =
+    recv.length === 1 ? "1 open" : `${recv.length} open`;
+  const taskN = Array.isArray(tasks) ? tasks.length
+    : ((tasks && (tasks.tasks || tasks.items)) || []).length;
+  homeEls.badgeRfid.hidden = !taskN;
+  homeEls.badgeRfid.textContent = taskN === 1 ? "1 task" : `${taskN} tasks`;
+  const checkN = (board && board.ok && board.count) || 0;
+  homeEls.badgeChecks.hidden = !checkN;
+  homeEls.badgeChecks.textContent =
+    checkN === 1 ? "1 check" : `${checkN} checks`;
+  // The resume card always says SOMETHING: the open task, the waiting
+  // work, or an honest all-clear (Nick, 2026-09-24).
+  const b = rows[0];
+  homeEls.resume.hidden = false;
+  homeEls.resumeWhat.classList.remove("resume__what--ok");
+  if (b) {
+    homeEls.resumeWhat.textContent =
+      b.kind === "receiving"
+        ? `Receiving batch #${b.id}`
+        : `Bin ${b.bin_name} (batch #${b.id})`;
+    const bits = [];
+    if (b.boxes) bits.push(`${b.paired || 0} of ${b.boxes} paired`);
+    else if (b.products) bits.push(`${b.products} product(s)`);
+    if (b.created_by) bits.push(b.created_by);
+    homeEls.resumeMeta.textContent = bits.join(" \u00b7 ");
+    homeEls.resumeGo.dataset.batchId = String(b.id);
+    homeEls.resumeGo.hidden = false;
+  } else if (taskN + checkN > 0) {
+    homeEls.resumeWhat.textContent = "Nothing to resume";
+    homeEls.resumeMeta.textContent = [
+      checkN ? `${checkN} inventory check${checkN === 1 ? "" : "s"} waiting` : "",
+      taskN ? `${taskN} review task${taskN === 1 ? "" : "s"} open` : "",
+    ].filter(Boolean).join(" \u00b7 ");
+    homeEls.resumeGo.hidden = true;
+  } else {
+    homeEls.resumeWhat.textContent = "\u2713 All clear - nothing to pick up";
+    homeEls.resumeWhat.classList.add("resume__what--ok");
+    homeEls.resumeMeta.textContent = "";
+    homeEls.resumeGo.hidden = true;
+  }
   if (homeEls.pcard.hidden) homeEls.lookup.focus();
 }
 
@@ -20250,19 +20249,19 @@ async function pcardEnsureLabelEditor() {
             <input id="lab-header" maxlength="76" value="${escapeHtml(eff.header)}" />
             <button class="labedit__reset" data-reset="header" title="Back to the default">✕</button>
           </div></div>
-        <div class="labedit__row"><label>Description (centre line - a | forces the line break)</label>
+        <div class="labedit__row"><label>Description</label>
           <div class="labedit__box">
-            <textarea id="lab-desc" maxlength="56" rows="3">${escapeHtml(eff.desc)}</textarea>
+            <textarea id="lab-desc" maxlength="56" rows="3" title="The centre line - a | forces the line break">${escapeHtml(eff.desc)}</textarea>
             <button class="labedit__reset" data-reset="desc" title="Back to the default">✕</button>
           </div></div>
-        <div class="labedit__row"><label>Barcode encodes</label>
+        <div class="labedit__row"><label>Barcode</label>
           <div class="labedit__box">
             <input id="lab-barcode" maxlength="64" value="${escapeHtml(eff.barcode)}" />
             <button class="labedit__toggle" id="lab-mode" type="button"
                     title="Fill with the product barcode or the SKU">SKU</button>
             <button class="labedit__reset" data-reset="barcode" title="Back to the default">✕</button>
           </div></div>
-        <div class="labedit__row"><label>Bin line</label>
+        <div class="labedit__row"><label>Bin</label>
           <div class="labedit__box">
             <span class="prefix">Bin:</span>
             <input id="lab-bin" maxlength="100" value="${escapeHtml(eff.bin)}" />
@@ -20560,36 +20559,6 @@ document
         "Could not queue the restart: " + err.message;
     }
   });
-
-
-// --- Settings: which history events show by default (Nick, 2026-09-24) ------
-function renderHistDefaults() {
-  const wrap = document.getElementById("hist-defaults");
-  if (!wrap) return;
-  const hidden = histHiddenDefaults();
-  wrap.innerHTML = Object.keys(EVENT_META)
-    .sort((a, b) => EVENT_META[a][0].localeCompare(EVENT_META[b][0]))
-    .map((t) => {
-      const m = EVENT_META[t];
-      const on = !hidden.has(t);
-      return (
-        `<label class="pfilter__row histdef${on ? " on" : ""}" data-t="${escapeHtml(t)}">` +
-        `<span class="cb">${on ? "\u2713" : ""}</span>` +
-        `<span class="pfilter__dot" style="background:${m[1]}"></span>` +
-        `<span style="color:${m[1]}">${escapeHtml(m[0])}</span></label>`
-      );
-    }).join("");
-  wrap.querySelectorAll(".histdef").forEach((l) =>
-    l.addEventListener("click", (e) => {
-      e.preventDefault();
-      const t = l.dataset.t;
-      const h = histHiddenDefaults();
-      if (h.has(t)) h.delete(t); else h.add(t);
-      localStorage.setItem(HIST_HIDDEN_KEY, JSON.stringify([...h]));
-      renderHistDefaults();
-    }));
-}
-renderHistDefaults();
 
 // Bin chip on the product card: one tap re-bins the product through the
 // same confirmed Shopify write the Scan station uses (logged with undo).
