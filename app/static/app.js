@@ -20090,8 +20090,14 @@ function pcardChangeDay(iso) {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-// What a change row's left column says. Orders and stock orders spell
-// themselves out (Nick, 2026-09-24: the cause reads first, then units).
+// Each change row reads kind first ("Sold"), then the cause ("Order
+// #50950"), then units near the middle (Nick, 2026-09-24).
+const PSHIP_KINDS = {
+  sold: "Sold",
+  received: "Received",
+  manual: "Manually adjusted",
+};
+
 function pshipCause(ch) {
   const who = String(ch.who || "").trim();
   if (ch.kind === "sold") {
@@ -20102,8 +20108,8 @@ function pshipCause(ch) {
     const n = who.replace(/^SO\s*/i, "").split("·")[0].trim();
     return `Stock Order ${n || "?"}`;
   }
-  if (ch.kind === "manual") return `Adjusted by ${who || "operator"}`;
-  return who || ch.kind;
+  if (ch.kind === "manual") return who || "operator";
+  return who || "";
 }
 
 let pshipChart = null; // the one live Chart.js instance for the pane
@@ -20278,6 +20284,7 @@ async function pcardEnsureShopify() {
       const units = ch.units > 0 ? `+${ch.units}` : String(ch.units);
       left +=
         `<div class="pship__row pship__row--${TINTS[ch.kind] || ""}" data-chg="${i}">` +
+        `<span class="pship__kind">${escapeHtml(PSHIP_KINDS[ch.kind] || ch.kind)}</span>` +
         `<span class="pship__cause">${escapeHtml(pshipCause(ch))}</span>` +
         `<span class="pship__units">${escapeHtml(units)}</span>` +
         `<span class="pship__time">${d ? escapeHtml(pcardClock(d)) : ""}</span>` +
