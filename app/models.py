@@ -1407,6 +1407,10 @@ class LabelName(Base):
     # the SKU. Applied when the agent CLAIMS a job, so edits reach even
     # already-queued labels.
     barcode_mode: Mapped[str | None] = mapped_column(String(10))
+    # Free-text override for WHAT the barcode encodes (2026-09-24 round
+    # 4: the box became editable, not just a toggle). NULL = barcode_mode
+    # decides (product barcode, or the SKU).
+    barcode_text: Mapped[str | None] = mapped_column(String(64))
     # Custom bin-line VALUE (the "BIN: " prefix stays the printer's);
     # NULL = the product's real bin, as always.
     bin_text: Mapped[str | None] = mapped_column(String(100))

@@ -2887,7 +2887,9 @@ def claim_print_jobs(
                     d["label_sku"] = custom.sku_text
                 elif custom.label_name:
                     d["label_sku"] = None
-                if (custom.barcode_mode or "") == "sku":
+                if custom.barcode_text:
+                    d["barcode"] = custom.barcode_text
+                elif (custom.barcode_mode or "") == "sku":
                     d["barcode"] = job.sku
                 if custom.bin_text:
                     d["bin_location"] = custom.bin_text
@@ -19609,6 +19611,9 @@ class LabelNameIn(BaseModel):
         default=None, pattern="^(auto|sku|)$"
     )
     bin_text: str | None = Field(default=None, max_length=100)
+    # Free-text barcode override (round 4): what the bars encode when
+    # neither the product barcode nor the plain SKU is wanted.
+    barcode_text: str | None = Field(default=None, max_length=64)
 
 
 @app.get("/api/label-names/{sku}", dependencies=[Depends(require_user)])
@@ -19623,6 +19628,7 @@ def get_label_name(sku: str, session: Session = Depends(get_session)):
             "placement": "header",
             "sku_text": None,
             "barcode_mode": "auto",
+            "barcode_text": None,
             "bin_text": None,
         }
     return {
@@ -19631,6 +19637,7 @@ def get_label_name(sku: str, session: Session = Depends(get_session)):
         "placement": row.placement or "header",
         "sku_text": row.sku_text,
         "barcode_mode": row.barcode_mode or "auto",
+        "barcode_text": row.barcode_text,
         "bin_text": row.bin_text,
     }
 
@@ -19650,7 +19657,8 @@ def set_label_name(
         # barcode_mode / bin_text ride ANY save (the four-box editor).
         # Creating a row just for them is fine: an empty label_name is
         # falsy everywhere the header/centre overrides are read.
-        if payload.barcode_mode is None and payload.bin_text is None:
+        if (payload.barcode_mode is None and payload.bin_text is None
+                and payload.barcode_text is None):
             return
         row = session.get(LabelName, sku)
         if row is None:
@@ -19663,6 +19671,8 @@ def set_label_name(
             )
         if payload.bin_text is not None:
             row.bin_text = payload.bin_text.strip()[:100] or None
+        if payload.barcode_text is not None:
+            row.barcode_text = payload.barcode_text.strip()[:64] or None
         row.updated_by = payload.updated_by
 
     # Two-box style from the shared label editor.
@@ -19683,9 +19693,11 @@ def set_label_name(
             "placement": row.placement if row else "header",
             "sku_text": row.sku_text if row else None,
             "barcode_mode": (row.barcode_mode or "auto") if row else "auto",
+            "barcode_text": row.barcode_text if row else None,
             "bin_text": row.bin_text if row else None,
         }
-    if payload.barcode_mode is not None or payload.bin_text is not None:
+    if (payload.barcode_mode is not None or payload.bin_text is not None
+            or payload.barcode_text is not None):
         # Extras-only save (no line text touched).
         _apply_extras()
         session.commit()
@@ -19696,6 +19708,7 @@ def set_label_name(
             "placement": (row.placement or "header") if row else "header",
             "sku_text": row.sku_text if row else None,
             "barcode_mode": (row.barcode_mode or "auto") if row else "auto",
+            "barcode_text": row.barcode_text if row else None,
             "bin_text": row.bin_text if row else None,
         }
     name = payload.label_name.strip()

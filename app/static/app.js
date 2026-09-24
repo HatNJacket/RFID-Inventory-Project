@@ -19452,6 +19452,8 @@ function homeRenderDrop(hits) {
 }
 
 homeEls.lookup.addEventListener("input", () => {
+  homeLookBrowsing = false;
+  homeLookHistIdx = -1;
   const q = homeEls.lookup.value.trim();
   // A wedge scan is a burst of digits that ends in Enter - digits never
   // open the list, they resolve on the Enter.
@@ -19469,29 +19471,91 @@ homeEls.lookup.addEventListener("input", () => {
   homeRenderDrop(hits);
 });
 
+// Recent-lookup history in the search box (Nick, 2026-09-24): Up
+// walks earlier lookups exactly like the Scan station box, Down walks
+// back toward the draft, and each entry previews its product in the
+// dropdown when the catalog knows it.
+let homeLookHist = [];
+try {
+  homeLookHist = JSON.parse(localStorage.getItem("homeLookupHist")) || [];
+} catch (err) { homeLookHist = []; }
+let homeLookHistIdx = -1;
+let homeLookDraft = "";
+let homeLookBrowsing = false;
+
+function homeRememberLookup(term) {
+  const t = (term || "").trim();
+  if (!t) return;
+  homeLookHist = [t, ...homeLookHist.filter((x) => x !== t)].slice(0, 10);
+  localStorage.setItem("homeLookupHist", JSON.stringify(homeLookHist));
+  homeLookHistIdx = -1;
+  homeLookBrowsing = false;
+}
+
+function homeShowHistPreview(term) {
+  const tl = term.toUpperCase();
+  const hit = (homeSuggest || []).find(
+    (x) => (x[0] || "").toUpperCase() === tl
+        || (x[2] || "").toUpperCase() === tl
+  );
+  if (hit) homeRenderDrop([hit]);
+  else homeHideDrop();
+}
+
 homeEls.lookup.addEventListener("keydown", (event) => {
   const opts = Array.from(homeEls.drop.querySelectorAll(".lookup__opt"));
-  if (event.key === "ArrowDown" && opts.length) {
+  if (event.key === "ArrowUp") {
     event.preventDefault();
-    homeDropHot = Math.min(homeDropHot + 1, opts.length - 1);
-    opts.forEach((o, i) =>
-      o.classList.toggle("lookup__opt--hot", i === homeDropHot));
+    if (!homeLookBrowsing && opts.length > 1 && homeDropHot < opts.length - 1
+        && homeEls.lookup.value.trim() && homeDropHot >= 0) {
+      homeDropHot = Math.max(homeDropHot - 1, 0);
+      opts.forEach((o, i) =>
+        o.classList.toggle("lookup__opt--hot", i === homeDropHot));
+      return;
+    }
+    if (!homeLookHist.length) return;
+    if (!homeLookBrowsing) {
+      homeLookDraft = homeEls.lookup.value;
+      homeLookBrowsing = true;
+      homeLookHistIdx = -1;
+    }
+    homeLookHistIdx = Math.min(homeLookHistIdx + 1, homeLookHist.length - 1);
+    homeEls.lookup.value = homeLookHist[homeLookHistIdx];
+    homeEls.lookup.select();
+    homeShowHistPreview(homeEls.lookup.value);
     return;
   }
-  if (event.key === "ArrowUp" && opts.length) {
+  if (event.key === "ArrowDown") {
     event.preventDefault();
-    homeDropHot = Math.max(homeDropHot - 1, 0);
-    opts.forEach((o, i) =>
-      o.classList.toggle("lookup__opt--hot", i === homeDropHot));
+    if (homeLookBrowsing) {
+      homeLookHistIdx -= 1;
+      if (homeLookHistIdx < 0) {
+        homeLookBrowsing = false;
+        homeEls.lookup.value = homeLookDraft;
+        homeHideDrop();
+        return;
+      }
+      homeEls.lookup.value = homeLookHist[homeLookHistIdx];
+      homeEls.lookup.select();
+      homeShowHistPreview(homeEls.lookup.value);
+      return;
+    }
+    if (opts.length) {
+      homeDropHot = Math.min(homeDropHot + 1, opts.length - 1);
+      opts.forEach((o, i) =>
+        o.classList.toggle("lookup__opt--hot", i === homeDropHot));
+    }
     return;
   }
   if (event.key === "Escape") {
     homeHideDrop();
+    homeLookBrowsing = false;
+    homeLookHistIdx = -1;
     return;
   }
   if (event.key !== "Enter") return;
   event.preventDefault();
-  if (homeDropHot >= 0 && opts[homeDropHot]) {
+  if (!homeLookBrowsing && homeDropHot >= 0 && opts[homeDropHot]) {
     opts[homeDropHot].click();
     return;
   }
@@ -19499,6 +19563,7 @@ homeEls.lookup.addEventListener("keydown", (event) => {
   if (!term) return;
   homeHideDrop();
   homeEls.lookup.value = "";
+  homeLookBrowsing = false;
   openProductCard(term);
 });
 document.addEventListener("click", (event) => {
@@ -19529,6 +19594,8 @@ function pcardShowTab(name) {
   ["history", "tags", "shopify", "rfid"].forEach((n) => {
     document.getElementById(`pcard-pane-${n}`).hidden = n !== name;
   });
+  const fslot = document.getElementById("pcard-filter-slot");
+  if (fslot) fslot.style.display = name === "history" ? "" : "none";
   if (name === "shopify") pcardEnsureShopify();
   if (name === "rfid") pcardEnsureLabelEditor();
 }
@@ -19584,12 +19651,14 @@ function pcardRenderIdentity() {
   }
   rows.push(
     `<div class="coderow"><label>Bin</label>` +
-    (p.bin_location
-      ? `<span class="pchip">${escapeHtml(p.bin_location)}</span>`
-      : `<span class="dim">none assigned</span>`) +
+    `<button class="reset pchip pchip--btn" id="pcard-bin-chip" type="button" ` +
+    `title="Change this product\u2019s bin (writes to Shopify)">` +
+    `${p.bin_location ? escapeHtml(p.bin_location) : "set a bin"}</button>` +
     `</div>`
   );
   homeEls.pcardCodes.innerHTML = rows.join("");
+  document.getElementById("pcard-bin-chip")
+    .addEventListener("click", pcardEditBin);
   // stat cells fill as their numbers arrive
   document.getElementById("pcard-onhand").hidden = true;
   document.getElementById("pcard-tagcount").hidden = true;
@@ -19619,20 +19688,28 @@ document.getElementById("pcard-onhand").addEventListener("click", () => {
   if (url) window.open(url, "_blank", "noopener");
 });
 document.getElementById("pcard-tagcount").addEventListener("click", () =>
-  pcardShowTab("rfid"));
+  pcardShowTab("tags"));
 
-// ---------- history pane: style B (Nick, 2026-09-24) ----------
-// Day-grouped rows with a FIXED-width family chip (global width, so
-// every product's history lines up identically), plain description,
-// time right-justified. Same-type events CHAIN when each is within
-// PCARD_CHAIN_MS of the previous event of that type (interleaved other
-// types never break a chain); a chain anchors at its EARLIEST event,
-// and within a day rows run chronologically by anchor - so a 2:30
-// single sits after a 1:20-2:45 chain. Clicking a chained row drops
-// down its members; chained sales preview their orders and click
-// through to Shopify admin.
+// ---------- history pane: style B (Nick, 2026-09-24, round 4) ----------
+// Day groups; fixed-width COLOURED family chips; fixed-width right
+// column showing who + the chain's EARLIEST time only; stock-order
+// numbers move off the right column into the description; per-type
+// chains (gap <= 60 min, interleaving never breaks, anchored at the
+// earliest event, chronological within a day); the filter lives in the
+// card's tab strip with a Show-all row, styled fully-clickable
+// checkbox rows, and per-device DEFAULT visibility set in Settings.
 let pcardHistFilters = new Set();
 const PCARD_CHAIN_MS = 60 * 60 * 1000;
+const HIST_HIDDEN_KEY = "histHiddenTypes";
+const HIST_HIDDEN_FACTORY = ["shopify-bin-read"];
+
+function histHiddenDefaults() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(HIST_HIDDEN_KEY));
+    if (Array.isArray(raw)) return new Set(raw);
+  } catch (err) { /* fall through to factory */ }
+  return new Set(HIST_HIDDEN_FACTORY);
+}
 
 function pcardFamily(type) {
   const t = (type || "").toLowerCase();
@@ -19643,7 +19720,8 @@ function pcardFamily(type) {
     return "SOLD";
   if (t.includes("on-hand") || t.includes("count") || t.includes("recount")
       || t.includes("backorder") || t.includes("ledger")) return "STOCK";
-  if (t.startsWith("bin") || t.includes("rebinned")) return "BIN";
+  if (t.startsWith("bin") || t.includes("rebinned")
+      || t === "shopify-bin-read") return "BIN";
   if (t.startsWith("review")) return "REVIEW";
   if (t.includes("barcode") || t.includes("sku") || t.includes("draft")
       || t.includes("vendor") || t.includes("alias")) return "PRODUCT";
@@ -19694,7 +19772,7 @@ function pcardChainText(c) {
   const meta = EVENT_META[c.type] || [c.type, "var(--ink-dim)"];
   if (c.items.length === 1) {
     const ev = c.items[0].ev;
-    return { title: meta[0], desc: ev.detail || "", n: 1 };
+    return { title: meta[0], desc: ev.detail || "" };
   }
   if (c.type === "order-sold") {
     const qty = c.items.reduce((s, x) => s + (x.ev.qty || 1), 0);
@@ -19702,23 +19780,75 @@ function pcardChainText(c) {
       title: `Sold ${qty}`,
       desc: `${c.items.length} orders, ` +
         `${pcardClock(c.firstT)} to ${pcardClock(c.lastT)}`,
-      n: c.items.length,
     };
   }
   return {
     title: `${meta[0]} ×${c.items.length}`,
     desc: `${pcardClock(c.firstT)} to ${pcardClock(c.lastT)}`,
-    n: c.items.length,
   };
+}
+
+// "TC-Planner · SO 968" in the worker slot: the SO number belongs in
+// the description, the planner's name stays beside the date.
+function pcardSplitWorker(worker) {
+  const w = (worker || "").trim();
+  const m = w.match(/SO[\s#-]*\d+/i);
+  if (!m) return { who: w, so: "" };
+  const who = w.replace(m[0], "").replace(/^[\s·.,-]+|[\s·.,-]+$/g, "");
+  return { who, so: m[0].replace(/\s+/g, " ") };
+}
+
+function pcardVisibleTypes(allTypes) {
+  if (pcardHistFilters.size) return new Set(pcardHistFilters);
+  const hidden = histHiddenDefaults();
+  return new Set(allTypes.filter((t) => !hidden.has(t)));
+}
+
+function pcardRenderHistFilter(types) {
+  const slot = document.getElementById("pcard-filter-slot");
+  const active = pcardHistFilters;
+  const allRow =
+    `<label class="pfilter__row pfilter__row--all${active.size ? "" : " on"}">` +
+    `<span class="cb">${active.size ? "" : "✓"}</span>` +
+    "<b>Show all</b></label>";
+  const rows = types.map((tp) => {
+    const meta = EVENT_META[tp] || [tp, "var(--ink-dim)"];
+    const on = active.has(tp);
+    return (
+      `<label class="pfilter__row${on ? " on" : ""}" data-ftype="${escapeHtml(tp)}">` +
+      `<span class="cb">${on ? "✓" : ""}</span>` +
+      `<span class="pfilter__dot" style="background:${meta[1]}"></span>` +
+      `<span style="color:${meta[1]}">${escapeHtml(meta[0])}</span></label>`
+    );
+  });
+  slot.innerHTML =
+    `<details class="pfilter"><summary>Filter${active.size ? ` (${active.size})` : ""} ▾</summary>` +
+    `<div class="pfilter__panel">${allRow}${rows.join("")}</div></details>`;
+  const det = slot.querySelector(".pfilter");
+  slot.querySelectorAll(".pfilter__row").forEach((row) => {
+    row.addEventListener("click", (e) => {
+      e.preventDefault();
+      const tp = row.dataset.ftype;
+      if (!tp) pcardHistFilters.clear();
+      else if (pcardHistFilters.has(tp)) pcardHistFilters.delete(tp);
+      else pcardHistFilters.add(tp);
+      pcardRenderHistory();
+      document.getElementById("pcard-filter-slot")
+        .querySelector(".pfilter").open = true;
+    });
+  });
+  det.open = false;
 }
 
 function pcardRenderHistory() {
   const st = pcardState;
   const pane = pcardPane("history");
   const events = (st.hist && st.hist.events) || [];
+  const slot = document.getElementById("pcard-filter-slot");
   if (!events.length) {
     pane.innerHTML =
       '<div class="pcard__note">No recorded events yet.</div>';
+    slot.innerHTML = "";
     return;
   }
   const types = [];
@@ -19726,12 +19856,9 @@ function pcardRenderHistory() {
   events.forEach((ev) => {
     if (!seenT.has(ev.type)) { seenT.add(ev.type); types.push(ev.type); }
   });
-  const active = pcardHistFilters;
-  const shown = events.filter(
-    (ev) => active.size === 0 || active.has(ev.type)
-  );
+  const visible = pcardVisibleTypes(types);
+  const shown = events.filter((ev) => visible.has(ev.type));
   const chains = pcardBuildChains(shown);
-  // day groups: newest DAY first, chains inside a day chronological
   const days = new Map();
   chains.forEach((c) => {
     const k = pcardDayKey(c.firstT);
@@ -19748,47 +19875,29 @@ function pcardRenderHistory() {
     for (const c of day.chains) {
       const meta = EVENT_META[c.type] || [c.type, "var(--ink-dim)"];
       const t = pcardChainText(c);
-      const time = c.items.length === 1
-        ? pcardClock(c.firstT)
-        : `${pcardClock(c.firstT)} - ${pcardClock(c.lastT)}`;
-      const who = c.items.length === 1 ? (c.items[0].ev.worker || "") : "";
+      const time = pcardClock(c.firstT);
+      const wk = c.items.length === 1
+        ? pcardSplitWorker(c.items[0].ev.worker) : { who: "", so: "" };
+      let desc = t.desc || "";
+      if (wk.so) desc = desc ? `${desc} · ${wk.so}` : wk.so;
       const expandable = c.items.length > 1;
       chainRefs[idx] = c;
       html +=
         `<div class="ph-row${expandable ? " ph-row--x" : ""}" data-chain="${idx}" style="border-left-color:${meta[1]}">` +
-        `<span class="ph-tag">${escapeHtml(pcardFamily(c.type))}</span>` +
+        `<span class="ph-tag" style="background:${meta[1]}26;color:${meta[1]};border-color:transparent">${escapeHtml(pcardFamily(c.type))}</span>` +
         `<span class="ph-txt"><b>${escapeHtml(t.title)}</b>` +
-        (t.desc ? ` <span class="ph-desc">${escapeHtml(t.desc)}</span>` : "") +
+        (desc ? ` <span class="ph-desc">${escapeHtml(desc)}</span>` : "") +
         "</span>" +
-        `<span class="ph-right">${escapeHtml([who, time].filter(Boolean).join(" · "))}` +
+        `<span class="ph-right">${escapeHtml([wk.who, time].filter(Boolean).join(" · "))}` +
         (expandable ? ' <span class="ph-caret">▾</span>' : "") +
         "</span></div>" +
         (expandable ? `<div class="ph-sub" data-sub="${idx}" hidden></div>` : "");
       idx++;
     }
   }
-  const filterRows = types.map((tp) => {
-    const meta = EVENT_META[tp] || [tp, "var(--ink-dim)"];
-    return (
-      `<label><input type="checkbox" data-ftype="${escapeHtml(tp)}"` +
-      `${active.has(tp) ? " checked" : ""} />` +
-      `<span class="pfilter__dot" style="background:${meta[1]}"></span>` +
-      `${escapeHtml(meta[0])}</label>`
-    );
-  });
   pane.innerHTML =
-    `<details class="pfilter"><summary>Filter${active.size ? ` (${active.size})` : ""} ▾</summary>` +
-    `<div class="pfilter__panel">${filterRows.join("")}</div></details>` +
-    (html || '<div class="pcard__note">No events match the filter.</div>');
-  pane.querySelectorAll(".pfilter input").forEach((cb) => {
-    cb.addEventListener("change", () => {
-      if (cb.checked) pcardHistFilters.add(cb.dataset.ftype);
-      else pcardHistFilters.delete(cb.dataset.ftype);
-      const open = pane.querySelector(".pfilter").open;
-      pcardRenderHistory();
-      pane.querySelector(".pfilter").open = open;
-    });
-  });
+    html || '<div class="pcard__note">Nothing to show - the filter (or the Settings defaults) hides every event here.</div>';
+  pcardRenderHistFilter(types);
   pane.querySelectorAll(".ph-row--x").forEach((row) => {
     row.addEventListener("click", () => {
       const c = chainRefs[parseInt(row.dataset.chain, 10)];
@@ -20110,12 +20219,13 @@ async function pcardEnsureLabelEditor() {
   if (pcardState !== st) return;
   st.label = saved || {
     label_name: null, placement: "header", sku_text: null,
-    barcode_mode: "auto", bin_text: null,
+    barcode_mode: "auto", barcode_text: null, bin_text: null,
   };
   const p = st.product;
   const defaults = {
     header: STORE_HEADER,
     desc: p.product_title || st.sku || "",
+    barcode: st.barcode || st.sku || "",
     bin: p.bin_location || "",
   };
   const eff = {
@@ -20126,10 +20236,12 @@ async function pcardEnsureLabelEditor() {
       st.label.sku_text ||
       (st.label.label_name && st.label.placement !== "header"
         ? st.label.label_name : "") || defaults.desc,
-    mode: st.barcode ? (st.label.barcode_mode || "auto") : "sku",
+    barcode:
+      st.label.barcode_text ||
+      ((st.label.barcode_mode || "auto") === "sku"
+        ? (st.sku || "") : defaults.barcode),
     bin: st.label.bin_text || defaults.bin,
   };
-  const modeLabel = (m) => (m === "sku" ? "SKU" : "Barcode");
   pane.innerHTML = `
     <div class="labedit">
       <div class="labedit__form">
@@ -20140,14 +20252,15 @@ async function pcardEnsureLabelEditor() {
           </div></div>
         <div class="labedit__row"><label>Description (centre line - a | forces the line break)</label>
           <div class="labedit__box">
-            <input id="lab-desc" maxlength="56" value="${escapeHtml(eff.desc)}" />
+            <textarea id="lab-desc" maxlength="56" rows="3">${escapeHtml(eff.desc)}</textarea>
             <button class="labedit__reset" data-reset="desc" title="Back to the default">✕</button>
           </div></div>
         <div class="labedit__row"><label>Barcode encodes</label>
           <div class="labedit__box">
-            <button class="labedit__toggle" id="lab-mode" type="button"${st.barcode ? "" : " disabled title='No barcode on file - the SKU always prints'"}>${modeLabel(eff.mode)}</button>
-            <span class="dim" id="lab-mode-val"></span>
-            <button class="labedit__reset" data-reset="mode" title="Back to the default">✕</button>
+            <input id="lab-barcode" maxlength="64" value="${escapeHtml(eff.barcode)}" />
+            <button class="labedit__toggle" id="lab-mode" type="button"
+                    title="Fill with the product barcode or the SKU">SKU</button>
+            <button class="labedit__reset" data-reset="barcode" title="Back to the default">✕</button>
           </div></div>
         <div class="labedit__row"><label>Bin line</label>
           <div class="labedit__box">
@@ -20155,9 +20268,16 @@ async function pcardEnsureLabelEditor() {
             <input id="lab-bin" maxlength="100" value="${escapeHtml(eff.bin)}" />
             <button class="labedit__reset" data-reset="bin" title="Back to the product's bin">✕</button>
           </div></div>
-        <button class="labedit__save" id="lab-save" disabled>Save label</button>
-        <div class="pcard__note">Saves apply immediately - even labels already
-        waiting in the print queue pick the new text up when they print.</div>
+        <div class="labedit__printrow">
+          <button class="labedit__save" id="lab-save" disabled>Save label</button>
+          <span class="labedit__printgrp">
+            <input id="lab-qty" type="number" min="1" max="200" value="1" />
+            <button class="labedit__print" id="lab-print" type="button">Print 1 label</button>
+          </span>
+        </div>
+        <div class="pcard__note" id="lab-msg">Saves apply immediately - even
+        labels already waiting in the print queue pick the new text up when
+        they print.</div>
       </div>
       <div class="labedit__preview">
         <span class="cap">Exactly what prints (2.125 x 1.25 in)</span>
@@ -20171,24 +20291,25 @@ async function pcardEnsureLabelEditor() {
   const els = {
     header: document.getElementById("lab-header"),
     desc: document.getElementById("lab-desc"),
+    barcode: document.getElementById("lab-barcode"),
     mode: document.getElementById("lab-mode"),
     bin: document.getElementById("lab-bin"),
     save: document.getElementById("lab-save"),
+    qty: document.getElementById("lab-qty"),
+    print: document.getElementById("lab-print"),
+    msg: document.getElementById("lab-msg"),
     svg: document.getElementById("lab-svg"),
     warn: document.getElementById("lab-warn"),
   };
-  let mode = eff.mode;
   const savedEff = { ...eff };
 
-  function barcodeValue() {
-    return mode === "sku" ? (st.sku || "") : (st.barcode || st.sku || "");
-  }
   function refresh() {
-    els.mode.textContent = modeLabel(mode);
-    els.mode.classList.toggle("labedit__toggle--on", mode === "sku");
-    document.getElementById("lab-mode-val").textContent = barcodeValue();
+    // toggle offers whichever of barcode/SKU the box does NOT hold
+    const onSku = els.barcode.value.trim() === (st.sku || "");
+    els.mode.textContent = onSku && st.barcode ? "Barcode" : "SKU";
+    els.mode.disabled = !st.sku && !st.barcode;
     const { svg, warns } = labelSvg(
-      els.header.value, els.desc.value, barcodeValue(),
+      els.header.value, els.desc.value, els.barcode.value.trim(),
       els.bin.value, st.label.bin_text ? "" : (p.other_bins || "")
     );
     els.svg.innerHTML = svg;
@@ -20197,14 +20318,18 @@ async function pcardEnsureLabelEditor() {
     const dirty =
       els.header.value.trim() !== savedEff.header ||
       els.desc.value.trim() !== savedEff.desc ||
-      mode !== savedEff.mode ||
+      els.barcode.value.trim() !== savedEff.barcode ||
       els.bin.value.trim() !== savedEff.bin;
     els.save.disabled = !dirty;
+    const n = Math.max(1, parseInt(els.qty.value, 10) || 1);
+    els.print.textContent = `Print ${n} label${n === 1 ? "" : "s"}`;
   }
-  ["header", "desc", "bin"].forEach((k) =>
+  ["header", "desc", "barcode", "bin"].forEach((k) =>
     els[k].addEventListener("input", refresh));
+  els.qty.addEventListener("input", refresh);
   els.mode.addEventListener("click", () => {
-    mode = mode === "sku" ? "auto" : "sku";
+    const onSku = els.barcode.value.trim() === (st.sku || "");
+    els.barcode.value = onSku && st.barcode ? st.barcode : (st.sku || "");
     refresh();
   });
   pane.querySelectorAll(".labedit__reset").forEach((btn) => {
@@ -20212,8 +20337,8 @@ async function pcardEnsureLabelEditor() {
       const k = btn.dataset.reset;
       if (k === "header") els.header.value = defaults.header;
       else if (k === "desc") els.desc.value = defaults.desc;
+      else if (k === "barcode") els.barcode.value = defaults.barcode;
       else if (k === "bin") els.bin.value = defaults.bin;
-      else if (k === "mode") mode = st.barcode ? "auto" : "sku";
       refresh();
     });
   });
@@ -20223,11 +20348,16 @@ async function pcardEnsureLabelEditor() {
     try {
       const top = els.header.value.trim();
       const centre = els.desc.value.trim();
+      const code = els.barcode.value.trim();
       const bin = els.bin.value.trim();
       const body = {
         top_text: top,
         sku_line: centre,
-        barcode_mode: mode,
+        barcode_mode:
+          code === (st.sku || "") && st.barcode ? "sku" : "auto",
+        barcode_text:
+          code === defaults.barcode || code === (st.sku || "")
+            ? "" : code,
         bin_text: bin === defaults.bin ? "" : bin,
         updated_by: operatorEl.value || null,
       };
@@ -20243,13 +20373,40 @@ async function pcardEnsureLabelEditor() {
       st.label = await res.json();
       savedEff.header = top || defaults.header;
       savedEff.desc = centre || defaults.desc;
-      savedEff.mode = mode;
+      savedEff.barcode = code || defaults.barcode;
       savedEff.bin = bin || defaults.bin;
       els.save.textContent = "Saved ✓";
       setTimeout(() => { els.save.textContent = "Save label"; refresh(); }, 1200);
     } catch (err) {
       els.save.textContent = "Save failed - try again";
       els.save.disabled = false;
+    }
+  });
+  els.print.addEventListener("click", async () => {
+    const n = Math.max(1, Math.min(200, parseInt(els.qty.value, 10) || 1));
+    els.print.disabled = true;
+    try {
+      await postJson("/api/print-jobs", {
+        quantity: n,
+        sku: st.sku || null,
+        barcode: st.barcode || null,
+        product_title: p.product_title || st.sku || "",
+        variant_title: p.variant_title || null,
+        bin_location: p.bin_location || null,
+        other_bins: p.other_bins || null,
+        shopify_variant_id: p.shopify_variant_id || "",
+        shopify_product_id: p.shopify_product_id || null,
+        printer: (typeof selectedPrinter !== "undefined" && selectedPrinter) || null,
+        requested_by: operatorEl.value || null,
+      });
+      els.msg.textContent =
+        `${n} label${n === 1 ? "" : "s"} queued ✓ - they print with ` +
+        "the SAVED settings above (save first if the preview shows " +
+        "unsaved changes).";
+    } catch (err) {
+      els.msg.textContent = "Could not queue the labels: " + err.message;
+    } finally {
+      els.print.disabled = false;
     }
   });
   document.getElementById("pcard-label-scan").addEventListener("click", () =>
@@ -20271,6 +20428,7 @@ async function openProductCard(term) {
   ["history", "tags", "shopify", "rfid"].forEach((n) =>
     (pcardPane(n).innerHTML = ""));
   pcardShowTab("history");
+  homeRememberLookup(term);
   let product = null;
   try {
     const res = await apiFetch(
@@ -20402,3 +20560,61 @@ document
         "Could not queue the restart: " + err.message;
     }
   });
+
+
+// --- Settings: which history events show by default (Nick, 2026-09-24) ------
+function renderHistDefaults() {
+  const wrap = document.getElementById("hist-defaults");
+  if (!wrap) return;
+  const hidden = histHiddenDefaults();
+  wrap.innerHTML = Object.keys(EVENT_META)
+    .sort((a, b) => EVENT_META[a][0].localeCompare(EVENT_META[b][0]))
+    .map((t) => {
+      const m = EVENT_META[t];
+      const on = !hidden.has(t);
+      return (
+        `<label class="pfilter__row histdef${on ? " on" : ""}" data-t="${escapeHtml(t)}">` +
+        `<span class="cb">${on ? "\u2713" : ""}</span>` +
+        `<span class="pfilter__dot" style="background:${m[1]}"></span>` +
+        `<span style="color:${m[1]}">${escapeHtml(m[0])}</span></label>`
+      );
+    }).join("");
+  wrap.querySelectorAll(".histdef").forEach((l) =>
+    l.addEventListener("click", (e) => {
+      e.preventDefault();
+      const t = l.dataset.t;
+      const h = histHiddenDefaults();
+      if (h.has(t)) h.delete(t); else h.add(t);
+      localStorage.setItem(HIST_HIDDEN_KEY, JSON.stringify([...h]));
+      renderHistDefaults();
+    }));
+}
+renderHistDefaults();
+
+// Bin chip on the product card: one tap re-bins the product through the
+// same confirmed Shopify write the Scan station uses (logged with undo).
+async function pcardEditBin() {
+  const st = pcardState;
+  if (!st || !(st.sku || st.barcode)) return;
+  const current = st.product.bin_location || "";
+  const bin = prompt(
+    "New bin for " + (st.sku || st.barcode) +
+    " (writes the bin to Shopify and moves the local records):",
+    current
+  );
+  if (bin == null) return;
+  const clean = bin.trim();
+  if (!clean || clean === current) return;
+  try {
+    await postJson("/api/bin-updates", {
+      target: st.sku || st.barcode,
+      bin: clean,
+      changed_by: operatorEl.value || null,
+    });
+    st.product.bin_location = clean;
+    pcardRenderIdentity();
+    pcardRenderStats();
+  } catch (err) {
+    alert("Could not set the bin: " + err.message);
+  }
+}

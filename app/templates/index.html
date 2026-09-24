@@ -117,7 +117,7 @@
               <span class="pstat__lbl">On hand</span>
             </button>
             <button class="pstat" id="pcard-tagcount" type="button"
-                    title="Open the RFID &amp; labels tab" hidden>
+                    title="Open the Boxes &amp; tags tab" hidden>
               <span class="pstat__num" id="pcard-tagcount-num"></span>
               <span class="pstat__lbl">Tags</span>
             </button>
@@ -130,6 +130,7 @@
             <button class="pcard__tabbtn" data-ptab="tags" type="button">Boxes &amp; tags</button>
             <button class="pcard__tabbtn" data-ptab="shopify" type="button">Shopify info</button>
             <button class="pcard__tabbtn" data-ptab="rfid" type="button">RFID &amp; labels</button>
+            <span class="pcard__filterslot" id="pcard-filter-slot"></span>
           </div>
           <div class="pcard__pane" id="pcard-pane-history"></div>
           <div class="pcard__pane" id="pcard-pane-tags" hidden></div>
@@ -1966,6 +1967,13 @@
               </span>
             </label>
             <button class="reset u-mt8" id="evcolor-open" type="button">🎨 Event colours…</button>
+        <div class="settingspage__hist">
+          <h3>History events shown by default</h3>
+          <p class="settingspage__hint">Unchecked event types stay hidden in
+          product history until someone picks them in its filter. Applies to
+          this device.</p>
+          <div id="hist-defaults" class="histdefaults"></div>
+        </div>
                 </div>
     </section>
 

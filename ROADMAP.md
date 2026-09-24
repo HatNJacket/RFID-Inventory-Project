@@ -99,6 +99,29 @@ specimen of each kept. NOTE for a later call: the editor's
 untouched products still PRINT the SKU centre line - flipping the
 store-wide default is a one-liner when Nick says so.
 
+**Round 4 (Nick's list, 2026-09-24):** header is a full-width BLUE
+BAND (--head-bg token both themes, more space below, title left /
+interactables right, hamburger docked at the band's BOTTOM-left over
+the sidebar's column); search box gained Up/Down recent-lookup history
+(localStorage, scan-station semantics, each entry previews its product
+in the dropdown when the catalog knows it); history chips are now
+COLOURED (event colour at low alpha), the right column is fixed-width
+and shows only the chain's EARLIEST time, SO numbers move from the
+who-slot into the description (planner name stays by the date),
+shopify-bin-read ("Read From Shopify") is hidden BY DEFAULT via the
+new per-device default-visibility set (Settings grew a "History events
+shown by default" checklist; the card filter starts from those
+defaults, has a Show-all row auto-checked when nothing else is, styled
+fully-clickable rows, and lives in the card's tab strip next to the
+X); Tags stat now opens Boxes & tags; the bin chip is a BUTTON that
+re-bins the product through /api/bin-updates (confirmed Shopify write,
+logged with undo - errors surface, e.g. dev's writes-disabled 403).
+RFID & labels: compact inputs, 3-line description textarea, the
+barcode box is EDITABLE free text (LabelName.barcode_text column +
+claim override; the SKU/Barcode button just fills the box), everything
+live-updates the true preview, and a qty + "Print N labels" button
+queues jobs that pick up the SAVED settings at claim.
+
 **Feature redesign notes (later passes, per Nick - each feature gets
 reworked to fit the streamlined menu, one at a time):**
 - Receiving: per-SO view inside tile 1; stable /#receive/so-NNN URLs;
