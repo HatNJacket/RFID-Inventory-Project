@@ -171,23 +171,29 @@ Boxes & tags rows each grew a Locate button (merges that EPC into the
 existing C72 locate queue entry); card-history batch-counted rows show
 just who + date (SO/vendor junk scrubbed from the worker slot).
 
+**BUNDLE SHIPPED TO PROD (Nick's call, 2026-09-24 late): "Push this to
+main with a WIP tag next to the RFID Inventory page header."** The
+full `py dev/deploy.py` run took everything since 2026-09-23 live -
+ShipStation-fed sold ledger, Home landing page + sidebar, product
+card rounds 1-8, snapshots + Chart.js graphs - with a WIP badge on
+the header while the redesign settles. Remove the badge when he says
+the new UI is settled.
+
 **OPEN DECISIONS WAITING ON NICK (as of 2026-09-24 late evening):**
-1. Prod bundle deploy - everything since 2026-09-23 is dev-only;
-   `py dev/deploy.py` ships it all when he calls it.
-2. Product-options column layout: previews sent (A grouped switches /
+1. Product-options column layout: previews sent (A grouped switches /
    B chip toggles + detail panel / C accordion bundles) - pick or mix,
    then build v1 (flags + scan note first).
-3. History event styles: style B chosen and built; Undo buttons in the
+2. History event styles: style B chosen and built; Undo buttons in the
    card's history rows still missing (events lack undo handles) -
    build if wanted.
-4. Shopify-info graphs: more kinds (lead-time from receipt to sale
+3. Shopify-info graphs: more kinds (lead-time from receipt to sale
    etc.) on request - the round-8 dropdown has room for them.
-5. Embedded-in-admin nav (ui-nav-menu) needs one check inside real
+4. Embedded-in-admin nav (ui-nav-menu) needs one check inside real
    Shopify admin.
-6. app/devsync.py + config DEV_SYNC_SOURCE_DB (parallel session's
+5. app/devsync.py + config DEV_SYNC_SOURCE_DB (parallel session's
    uncommitted/inert dev-mirror draft) still await his pick vs the
    live deploy-script mirror.
-7. Remove the layout tuner once the label editor is signed off.
+6. Remove the layout tuner once the label editor is signed off.
 
 **Audit expected-count fix (Nick, 2026-09-24, the F9152B I1 audit) -
 HOTFIXED TO PROD 2026-09-24** (branch hotfix/audit-expected = prod's
