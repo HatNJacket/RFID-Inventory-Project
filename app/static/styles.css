@@ -77,13 +77,33 @@ body {
 }
 
 /* Full-bleed since 2026-09-24 (Nick): the old centered 1240px column
-   wasted most of a wide screen. The sidebar additionally breaks out of
-   the remaining gutter (negative margin below) to sit flush against
-   the screen's left edge. */
+   wasted most of a wide screen. The sidebar breaks out of the base
+   gutter (negative margin below) to sit flush against the screen's
+   left edge; everything else breathes inside a 10%-per-side margin on
+   wide screens (the content's LEFT inset only grows past the sidebar
+   once 10vw clears it, so the sidebar never pushes content around). */
 .station {
   max-width: none;
   margin: 0;
   padding: 10px 12px 48px;
+}
+@media (min-width: 701px) {
+  /* .station prefix: .station__head's own padding rule sits later in
+     the file and would win a plain single-class tie */
+  .station .station__head,
+  .station .toprow {
+    padding-inline: calc(10vw - 12px);
+  }
+  .content {
+    padding-right: calc(10vw - 12px);
+    /* the sidebar's -12px breakout already ate the gutter, so content
+       starts at sidebar width + the 18px layout gap */
+    padding-left: max(0px, calc(10vw - 206px));
+  }
+  .layout--rail .content {
+    /* rail is 56px wide: 74px = 56 + 18 */
+    padding-left: max(0px, calc(10vw - 74px));
+  }
 }
 
 /* header */
