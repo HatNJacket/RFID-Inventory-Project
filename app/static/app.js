@@ -684,6 +684,7 @@ function fmtAgo(iso) {
 // --- Tabs -------------------------------------------------------------------
 // Same tabs on PC and iPad; each tab loads (or refreshes) its data on entry.
 const tabSections = {
+  home: [document.getElementById("tab-home")],
   scan: [document.getElementById("tab-scan"), document.getElementById("scan-footer")],
   batch: [document.getElementById("tab-batch")],
   inventory: [document.getElementById("tab-inventory")],
@@ -693,6 +694,7 @@ const tabSections = {
   history: [document.getElementById("tab-history")],
 };
 const tabLoaders = {
+  home: () => loadHome(),
   batch: () => enterBatchTab(),
   inventory: () => loadInventory(),
   queue: () => loadQueue(),
@@ -19233,3 +19235,463 @@ async function sortShipUnbundle(defKey) {
     `${def.setSku} unbundled - ${members.length} product(s) re-sorted.`
   );
 }
+
+// ======================= Home landing page (2026-09-24) =======================
+// Navigation layer only: the tiles route to the features exactly as they
+// are, the sidebar wears the same .tabs__tab/data-tab contract the old
+// top bar did, and the product card is read-and-jump (edits keep living
+// in Scan station until each feature's own redesign pass).
+
+const homeEls = {
+  layout: document.getElementById("layout"),
+  sideToggle: document.getElementById("side-toggle"),
+  agentChip: document.getElementById("agent-chip"),
+  resume: document.getElementById("resume-card"),
+  resumeWhat: document.getElementById("resume-what"),
+  resumeMeta: document.getElementById("resume-meta"),
+  resumeGo: document.getElementById("resume-go"),
+  lookup: document.getElementById("home-lookup"),
+  drop: document.getElementById("home-drop"),
+  pcard: document.getElementById("pcard"),
+  pcardImg: document.getElementById("pcard-img"),
+  pcardName: document.getElementById("pcard-name"),
+  pcardCodes: document.getElementById("pcard-codes"),
+  pcardChips: document.getElementById("pcard-chips"),
+  badgeReceive: document.getElementById("tile-badge-receive"),
+  badgeChecks: document.getElementById("tile-badge-checks"),
+  badgeRfid: document.getElementById("tile-badge-rfid"),
+};
+
+function goTab(name) {
+  const btn = document.querySelector(`.tabs__tab[data-tab="${name}"]`);
+  if (btn) btn.click();
+}
+
+// --- sidebar: collapsed = icon rail, remembered per device -----------------
+if (localStorage.getItem("sideRail") === "1") {
+  homeEls.layout.classList.add("layout--rail");
+}
+homeEls.sideToggle.addEventListener("click", () => {
+  const rail = homeEls.layout.classList.toggle("layout--rail");
+  localStorage.setItem("sideRail", rail ? "1" : "0");
+});
+
+// --- printer chip: agent heartbeat + the Zebra's own status register --------
+function homeAgo(seconds) {
+  if (seconds == null) return "";
+  if (seconds < 90) return "just now";
+  if (seconds < 5400) return `${Math.round(seconds / 60)}m ago`;
+  return `${Math.round(seconds / 3600)}h ago`;
+}
+
+async function refreshAgentChip() {
+  try {
+    const res = await apiFetch("/api/print-agent/status");
+    if (!res.ok) throw new Error("status " + res.status);
+    const s = await res.json();
+    let cls = "reset pill agent-chip";
+    let text;
+    if (!s.online) {
+      cls += " pill--bad";
+      const seen = homeAgo(s.last_seen_seconds);
+      text = "Print agent offline" + (seen ? ` - last seen ${seen}` : "");
+    } else if (s.fault) {
+      cls += " pill--bad";
+      text = `Printer fault: ${s.fault}`;
+    } else if (s.wedged) {
+      cls += " pill--bad";
+      text = "Printer wedged - labels stuck in its queue";
+    } else if ((s.holding || 0) > 0) {
+      cls += " pill--warn";
+      text = `${s.holding} label(s) held - printer busy`;
+    } else if ((s.win_jobs || 0) > 0) {
+      cls += " pill--warn";
+      text = `Printing - ${s.win_jobs} in queue`;
+    } else {
+      cls += " pill--ok";
+      text = "Printer ready";
+    }
+    homeEls.agentChip.className = cls;
+    homeEls.agentChip.textContent = text;
+    homeEls.agentChip.title = "Open the print queue";
+    homeEls.agentChip.hidden = false;
+  } catch (err) {
+    homeEls.agentChip.hidden = true;
+  }
+}
+homeEls.agentChip.addEventListener("click", () => goTab("queue"));
+setInterval(refreshAgentChip, 60000);
+refreshAgentChip();
+
+// --- home data: resume card + tile badges -----------------------------------
+async function loadHome() {
+  homeLoadSuggest();
+  refreshAgentChip();
+  // Open batches: the resume card takes the newest, the Receive tile
+  // badge counts the open receiving batches.
+  apiFetch("/api/batches?status=open&limit=10")
+    .then((r) => (r.ok ? r.json() : null))
+    .then((body) => {
+      const rows = (body && body.batches) || [];
+      const recv = rows.filter((b) => b.kind === "receiving");
+      homeEls.badgeReceive.hidden = recv.length === 0;
+      homeEls.badgeReceive.textContent =
+        recv.length === 1 ? "1 open" : `${recv.length} open`;
+      const b = rows[0];
+      if (!b) {
+        homeEls.resume.hidden = true;
+        return;
+      }
+      homeEls.resumeWhat.textContent =
+        b.kind === "receiving"
+          ? `Receiving batch #${b.id}`
+          : `Bin ${b.bin_name} (batch #${b.id})`;
+      const bits = [];
+      if (b.boxes) bits.push(`${b.paired || 0} of ${b.boxes} paired`);
+      else if (b.products) bits.push(`${b.products} product(s)`);
+      if (b.created_by) bits.push(b.created_by);
+      homeEls.resumeMeta.textContent = bits.join(" · ");
+      homeEls.resume.hidden = false;
+    })
+    .catch(() => { homeEls.resume.hidden = true; });
+  // RFID Inventory tile: every open review task.
+  apiFetch("/api/review-tasks?status=open&limit=500")
+    .then((r) => (r.ok ? r.json() : null))
+    .then((body) => {
+      const n = Array.isArray(body) ? body.length
+        : ((body && (body.tasks || body.items)) || []).length;
+      homeEls.badgeRfid.hidden = !n;
+      homeEls.badgeRfid.textContent = n === 1 ? "1 task" : `${n} tasks`;
+    })
+    .catch(() => { homeEls.badgeRfid.hidden = true; });
+  // Inventory checks tile: the 1-left dashboard's pending queue.
+  apiFetch("/api/oneleft/board")
+    .then((r) => (r.ok ? r.json() : null))
+    .then((body) => {
+      const n = (body && body.ok && body.count) || 0;
+      homeEls.badgeChecks.hidden = !n;
+      homeEls.badgeChecks.textContent = n === 1 ? "1 check" : `${n} checks`;
+    })
+    .catch(() => { homeEls.badgeChecks.hidden = true; });
+  // The wedge needs somewhere to land the moment Home shows.
+  if (homeEls.pcard.hidden) homeEls.lookup.focus();
+}
+
+homeEls.resumeGo.addEventListener("click", () => goTab("batch"));
+
+// --- tiles route to today's features ---------------------------------------
+document.querySelectorAll("#tab-home [data-go]").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const go = btn.dataset.go;
+    if (go === "find") {
+      homeEls.lookup.focus();
+      return;
+    }
+    goTab(go);
+  });
+});
+
+// --- typeahead: catalog cached once per session; digits = a wedge -----------
+let homeSuggest = null;
+let homeSuggestLoading = false;
+let homeDropHot = -1;
+
+async function homeLoadSuggest() {
+  if (homeSuggest || homeSuggestLoading) return;
+  homeSuggestLoading = true;
+  try {
+    const res = await apiFetch("/api/products/suggest");
+    if (res.ok) homeSuggest = (await res.json()).products || [];
+  } catch (err) {
+    // suggestions are a nicety - lookups still work without them
+  } finally {
+    homeSuggestLoading = false;
+  }
+}
+
+function homeHideDrop() {
+  homeEls.drop.hidden = true;
+  homeEls.drop.innerHTML = "";
+  homeDropHot = -1;
+}
+
+function homeRenderDrop(hits) {
+  homeEls.drop.innerHTML = "";
+  hits.forEach((p) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "lookup__opt";
+    b.innerHTML =
+      `<span class="t"><b>${escapeHtml(p[1] || p[0])}</b>` +
+      `<span>${escapeHtml(p[0])}</span></span>`;
+    b.addEventListener("click", () => {
+      homeHideDrop();
+      homeEls.lookup.value = "";
+      openProductCard(p[0]);
+    });
+    homeEls.drop.appendChild(b);
+  });
+  homeEls.drop.hidden = hits.length === 0;
+  homeDropHot = -1;
+}
+
+homeEls.lookup.addEventListener("input", () => {
+  const q = homeEls.lookup.value.trim();
+  // A wedge scan is a burst of digits that ends in Enter - digits never
+  // open the list, they resolve on the Enter.
+  if (q.length < 2 || /^\d+$/.test(q) || !homeSuggest) {
+    homeHideDrop();
+    return;
+  }
+  const ql = q.toUpperCase();
+  const hits = homeSuggest
+    .filter((p) =>
+      (p[0] || "").toUpperCase().includes(ql) ||
+      (p[1] || "").toUpperCase().includes(ql)
+    )
+    .slice(0, 8);
+  homeRenderDrop(hits);
+});
+
+homeEls.lookup.addEventListener("keydown", (event) => {
+  const opts = Array.from(homeEls.drop.querySelectorAll(".lookup__opt"));
+  if (event.key === "ArrowDown" && opts.length) {
+    event.preventDefault();
+    homeDropHot = Math.min(homeDropHot + 1, opts.length - 1);
+    opts.forEach((o, i) =>
+      o.classList.toggle("lookup__opt--hot", i === homeDropHot));
+    return;
+  }
+  if (event.key === "ArrowUp" && opts.length) {
+    event.preventDefault();
+    homeDropHot = Math.max(homeDropHot - 1, 0);
+    opts.forEach((o, i) =>
+      o.classList.toggle("lookup__opt--hot", i === homeDropHot));
+    return;
+  }
+  if (event.key === "Escape") {
+    homeHideDrop();
+    return;
+  }
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  if (homeDropHot >= 0 && opts[homeDropHot]) {
+    opts[homeDropHot].click();
+    return;
+  }
+  const term = homeEls.lookup.value.trim();
+  if (!term) return;
+  homeHideDrop();
+  homeEls.lookup.value = "";
+  openProductCard(term);
+});
+document.addEventListener("click", (event) => {
+  if (!homeEls.drop.hidden && !homeEls.drop.contains(event.target)
+      && event.target !== homeEls.lookup) {
+    homeHideDrop();
+  }
+});
+
+// --- the product preview card ----------------------------------------------
+let pcardProduct = null;
+
+document.getElementById("pcard-close").addEventListener("click", () => {
+  homeEls.pcard.hidden = true;
+  pcardProduct = null;
+  homeEls.lookup.focus();
+});
+
+document.querySelectorAll(".pcard__tabbtn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".pcard__tabbtn").forEach((b) =>
+      b.classList.toggle("pcard__tabbtn--active", b === btn));
+    ["history", "tags", "shopify", "rfid"].forEach((name) => {
+      document.getElementById(`pcard-pane-${name}`).hidden =
+        name !== btn.dataset.ptab;
+    });
+  });
+});
+
+function pcardPane(name) {
+  return document.getElementById(`pcard-pane-${name}`);
+}
+
+function pcardWhen(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString([], {
+    month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+  });
+}
+
+function pcardOpenInScan(term) {
+  goTab("scan");
+  stationBarcodeScan(term);
+}
+
+async function openProductCard(term) {
+  goTab("home");
+  homeEls.pcard.hidden = false;
+  homeEls.pcardImg.innerHTML = "";
+  homeEls.pcardName.textContent = "Looking up " + term + "…";
+  homeEls.pcardCodes.innerHTML = "";
+  homeEls.pcardChips.innerHTML = "";
+  ["history", "tags", "shopify", "rfid"].forEach((n) =>
+    (pcardPane(n).innerHTML = ""));
+  let product = null;
+  try {
+    const res = await apiFetch(
+      `/api/products/by-barcode/${encodeURIComponent(term)}`
+    );
+    if (res.ok) product = await res.json();
+    else if (res.status !== 404) throw new Error("lookup " + res.status);
+  } catch (err) {
+    homeEls.pcardName.textContent =
+      "Lookup failed - is the network okay? " + (err.message || "");
+    return;
+  }
+  if (!product) {
+    homeEls.pcardName.textContent = `No product found for "${term}"`;
+    pcardPane("history").innerHTML =
+      '<div class="pcard__note">Not a known barcode, SKU, or label ' +
+      "alias. If it should be, Scan station can link it.</div>";
+    return;
+  }
+  pcardProduct = product;
+  const sku = (product.sku || "").trim();
+  const barcode = (product.barcode || "").trim();
+
+  // identity column
+  homeEls.pcardName.textContent =
+    (product.product_title || sku || term) +
+    (product.variant_title && product.variant_title !== "Default Title"
+      ? ` - ${product.variant_title}` : "");
+  if (product.image_url) {
+    const img = document.createElement("img");
+    img.src = product.image_url;
+    img.alt = "";
+    homeEls.pcardImg.appendChild(img);
+  } else {
+    homeEls.pcardImg.textContent = "\u{1F4E6}";
+  }
+  homeEls.pcardCodes.innerHTML =
+    (sku ? `<span>SKU&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;${escapeHtml(sku)}</span>` : "") +
+    (barcode ? `<span>Barcode&nbsp;${escapeHtml(barcode)}</span>` : "");
+  const chips = [];
+  if (product.bin_location) {
+    chips.push(`<span class="pchip">Bin ${escapeHtml(product.bin_location)}</span>`);
+  }
+  homeEls.pcardChips.innerHTML = chips.join("");
+
+  // tags + history ride together
+  const [tagsBody, histBody] = await Promise.all([
+    apiFetch(
+      `/api/products/tags?${sku ? "sku=" + encodeURIComponent(sku) : "barcode=" + encodeURIComponent(barcode || term)}`
+    ).then((r) => (r.ok ? r.json() : null)).catch(() => null),
+    apiFetch(
+      `/api/product-history?term=${encodeURIComponent(sku || term)}`
+    ).then((r) => (r.ok ? r.json() : null)).catch(() => null),
+  ]);
+  if (pcardProduct !== product) return; // another lookup took over
+
+  const onHand = tagsBody ? tagsBody.on_hand : null;
+  const tagRows = (tagsBody && tagsBody.assignments) || [];
+  if (onHand != null) {
+    chips.push(`<span class="pchip pchip--ok">On hand ${onHand}</span>`);
+  }
+  chips.push(
+    `<span class="pchip">${tagRows.length} tag${tagRows.length === 1 ? "" : "s"}</span>`
+  );
+  if (tagsBody && tagsBody.rfid_incompatible) {
+    chips.push('<span class="pchip pchip--warn">Won’t RFID scan</span>');
+  }
+  homeEls.pcardChips.innerHTML = chips.join("");
+
+  // History pane: the same events as the History tab, worn as a feed.
+  const events = (histBody && histBody.events) || [];
+  const feed = events.slice(0, 40).map((ev) => {
+    const meta = EVENT_META[ev.type] || [ev.type, "var(--ink-dim)"];
+    const bits = [pcardWhen(ev.at), ev.worker].filter(Boolean);
+    if (ev.detail) bits.push(ev.detail);
+    return (
+      '<div class="pfeed__ev">' +
+      `<span class="pfeed__dot" style="background:${meta[1]}"></span>` +
+      `<div><div class="pfeed__t"><b>${escapeHtml(meta[0])}</b></div>` +
+      `<div class="pfeed__meta">${escapeHtml(bits.join(" · "))}</div></div>` +
+      "</div>"
+    );
+  });
+  pcardPane("history").innerHTML = feed.length
+    ? `<div class="pfeed">${feed.join("")}</div>`
+    : '<div class="pcard__note">No recorded events yet.</div>';
+
+  // Boxes & tags pane
+  pcardPane("tags").innerHTML = tagRows.length
+    ? tagRows.map((t) => {
+        const cond = (t.condition || "new").toLowerCase();
+        const condChip = cond === "new"
+          ? '<span class="pchip pchip--ok">New</span>'
+          : `<span class="pchip pchip--warn">${escapeHtml(t.condition)}</span>`;
+        const extra = [];
+        if (t.case_units && t.case_units > 1) extra.push(`case of ${t.case_units}`);
+        if (t.bin_location) extra.push(t.bin_location);
+        if (t.assigned_at) extra.push("paired " + pcardWhen(t.assigned_at));
+        return (
+          '<div class="prow">' +
+          `<span class="epc">${escapeHtml(t.rfid_id)}</span>` + condChip +
+          `<span class="dim">${escapeHtml(extra.join(" · "))}</span>` +
+          "</div>"
+        );
+      }).join("")
+    : '<div class="pcard__note">No live tags on file for this product.</div>';
+
+  // Shopify info pane (read here, edit in Scan station for now)
+  const adminUrl = histBody && histBody.product && histBody.product.admin_url;
+  pcardPane("shopify").innerHTML =
+    `<div class="pinfo"><label>Product</label><span>${escapeHtml(product.product_title || "")}</span></div>` +
+    (sku ? `<div class="pinfo"><label>SKU</label><span>${escapeHtml(sku)}</span></div>` : "") +
+    (barcode ? `<div class="pinfo"><label>Barcode</label><span>${escapeHtml(barcode)}</span></div>` : "") +
+    `<div class="pinfo"><label>Bin</label><span>${escapeHtml(product.bin_location || "No bin assigned")}</span></div>` +
+    (onHand != null ? `<div class="pinfo"><label>On hand</label><span>${onHand}</span></div>` : "") +
+    '<div class="pcard__actions">' +
+    '<button class="reset" type="button" id="pcard-edit-scan">Edit in Scan station</button>' +
+    (adminUrl ? '<button class="reset" type="button" id="pcard-admin">Open in Shopify admin</button>' : "") +
+    "</div>" +
+    '<div class="pcard__note">Barcode, bin, and on-hand changes run through ' +
+    "Scan station's confirmed flows (logged with undo) until this card " +
+    "gets its own edit pass.</div>";
+  document.getElementById("pcard-edit-scan").addEventListener("click", () =>
+    pcardOpenInScan(barcode || sku || term));
+  const adminBtn = document.getElementById("pcard-admin");
+  if (adminBtn) {
+    adminBtn.addEventListener("click", () =>
+      window.open(adminUrl, "_blank", "noopener"));
+  }
+
+  // RFID & labels pane
+  const labelName = tagsBody ? tagsBody.label_name : null;
+  const labelPlacement = (tagsBody && tagsBody.label_placement) || "header";
+  const labelSku = tagsBody ? tagsBody.label_sku_text : null;
+  pcardPane("rfid").innerHTML =
+    `<div class="pinfo"><label>Label name</label><span>${escapeHtml(labelName || product.product_title || "")}${labelName ? "" : " (store name)"}</span></div>` +
+    `<div class="pinfo"><label>SKU line</label><span>${escapeHtml(labelSku || sku || "")}</span></div>` +
+    `<div class="pinfo"><label>Placement</label><span>${escapeHtml(labelPlacement)}</span></div>` +
+    `<div class="pinfo"><label>RFID scanning</label><span>${tagsBody && tagsBody.rfid_incompatible ? "Won't scan (marked incompatible)" : "Normal"}</span></div>` +
+    (product.scan_note ? `<div class="pinfo"><label>Scan note</label><span>${escapeHtml(product.scan_note)}</span></div>` : "") +
+    '<div class="pcard__actions">' +
+    '<button class="reset" type="button" id="pcard-label-scan">Labels &amp; printing in Scan station</button>' +
+    "</div>" +
+    '<div class="pcard__note">These are this system’s records only - ' +
+    "nothing here touches Shopify.</div>";
+  document.getElementById("pcard-label-scan").addEventListener("click", () =>
+    pcardOpenInScan(barcode || sku || term));
+}
+
+// --- boot: Home is the front door (hash still deep-links any tab) -----------
+(function homeBoot() {
+  const want = (location.hash || "").replace("#", "").toLowerCase();
+  const target = Object.prototype.hasOwnProperty.call(tabSections, want)
+    ? want : "home";
+  goTab(target);
+})();

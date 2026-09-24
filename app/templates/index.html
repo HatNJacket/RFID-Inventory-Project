@@ -13,11 +13,17 @@
 <body data-remote-print="{{ 'on' if allow_remote_print else 'off' }}" data-shop="{{ shop_handle or '' }}">
   <div class="station">
     <header class="station__head">
+      <button class="reset side-toggle" id="side-toggle" type="button"
+              title="Show or hide the navigation labels">&#9776;</button>
       <div class="brand">
         <span class="brand__mark" aria-hidden="true"></span>
         <span class="brand__name">RFID Inventory</span>
       </div>
       <div class="status" id="status-strip">
+        <!-- Printer health, from the print agent's cloud heartbeat + the
+             Zebra's own status register. Filled by JS; click opens the
+             Print queue. -->
+        <button class="reset pill agent-chip" id="agent-chip" type="button" hidden></button>
         {% if not shopify_ready %}
         <span class="pill pill--bad">Shopify not configured: {{ missing_env|join(', ') }}</span>
         {% else %}
@@ -84,17 +90,109 @@
       </div>
     </header>
 
+    <!-- Global scan/search + resume row: visible on every view, above the
+         sidebar (Nick, 2026-09-24). A lookup from anywhere opens the Home
+         product card. -->
+    <div class="toprow">
+      <div class="resume" id="resume-card" hidden>
+        <span class="resume__label">Pick up where you left off</span>
+        <span class="resume__what" id="resume-what"></span>
+        <span class="resume__meta" id="resume-meta"></span>
+        <button id="resume-go" type="button">Resume</button>
+      </div>
+      <div class="lookup">
+        <span class="lookup__icon" aria-hidden="true">&#128269;</span>
+        <input id="home-lookup" type="text" autocomplete="off" spellcheck="false"
+               placeholder="Scan a barcode or search a product" />
+        <div class="lookup__drop" id="home-drop" hidden></div>
+      </div>
+    </div>
+
+    <div class="layout" id="layout">
     <nav class="tabs" role="tablist">
-      <button class="tabs__tab tabs__tab--active" data-tab="scan" role="tab">Scan station</button>
-      <button class="tabs__tab" data-tab="batch" role="tab">Batch tagging</button>
-      <button class="tabs__tab" data-tab="inventory" role="tab">Inventory</button>
-      <button class="tabs__tab" data-tab="queue" role="tab">Print queue</button>
-      <button class="tabs__tab" data-tab="review" role="tab">Review <span class="wip">WIP</span></button>
-      <button class="tabs__tab" data-tab="audits" role="tab">Audits</button>
-      <button class="tabs__tab" data-tab="history" role="tab">History</button>
+      <button class="tabs__tab tabs__tab--active" data-tab="home" role="tab"><span class="tabs__ico" aria-hidden="true">&#127968;</span><span class="tabs__lbl">Home</span></button>
+      <button class="tabs__tab" data-tab="scan" role="tab"><span class="tabs__ico" aria-hidden="true">&#128247;</span><span class="tabs__lbl">Scan station</span></button>
+      <button class="tabs__tab" data-tab="batch" role="tab"><span class="tabs__ico" aria-hidden="true">&#127991;</span><span class="tabs__lbl">Batch tagging</span></button>
+      <button class="tabs__tab" data-tab="inventory" role="tab"><span class="tabs__ico" aria-hidden="true">&#128451;</span><span class="tabs__lbl">Inventory</span></button>
+      <button class="tabs__tab" data-tab="queue" role="tab"><span class="tabs__ico" aria-hidden="true">&#128424;</span><span class="tabs__lbl">Print queue</span></button>
+      <button class="tabs__tab" data-tab="review" role="tab"><span class="tabs__ico" aria-hidden="true">&#128203;</span><span class="tabs__lbl">Review <span class="wip">WIP</span></span></button>
+      <button class="tabs__tab" data-tab="audits" role="tab"><span class="tabs__ico" aria-hidden="true">&#9989;</span><span class="tabs__lbl">Audits</span></button>
+      <button class="tabs__tab" data-tab="history" role="tab"><span class="tabs__ico" aria-hidden="true">&#128337;</span><span class="tabs__lbl">History</span></button>
     </nav>
 
-    <main class="flow" id="tab-scan">
+    <div class="content">
+
+    <!-- ------------------------------- HOME ------------------------------ -->
+    <section class="home" id="tab-home">
+      <!-- Product preview card: filled by JS after a lookup from the
+           global search box. Hidden = the tiles lead. -->
+      <section class="pcard" id="pcard" hidden>
+        <button class="reset pcard__close" id="pcard-close" type="button"
+                title="Close and return to the menu">&#10005;</button>
+        <div class="pcard__id">
+          <div class="pcard__img" id="pcard-img"></div>
+          <div class="pcard__name" id="pcard-name"></div>
+          <div class="pcard__codes" id="pcard-codes"></div>
+          <div class="pcard__chips" id="pcard-chips"></div>
+        </div>
+        <div class="pcard__body">
+          <div class="pcard__tabs" id="pcard-tabs">
+            <button class="pcard__tabbtn pcard__tabbtn--active" data-ptab="history" type="button">History</button>
+            <button class="pcard__tabbtn" data-ptab="tags" type="button">Boxes &amp; tags</button>
+            <button class="pcard__tabbtn" data-ptab="shopify" type="button">Shopify info</button>
+            <button class="pcard__tabbtn" data-ptab="rfid" type="button">RFID &amp; labels</button>
+          </div>
+          <div class="pcard__pane" id="pcard-pane-history"></div>
+          <div class="pcard__pane" id="pcard-pane-tags" hidden></div>
+          <div class="pcard__pane" id="pcard-pane-shopify" hidden></div>
+          <div class="pcard__pane" id="pcard-pane-rfid" hidden></div>
+        </div>
+      </section>
+
+      <div class="tiles">
+        <button class="tile" type="button" data-go="batch">
+          <span class="tile__badge tile__badge--warn" id="tile-badge-receive" hidden></span>
+          <span class="tile__icon" aria-hidden="true">&#128230;</span>
+          <span class="tile__name">Receive a shipment</span>
+          <span class="tile__sub">Work a stock order: print labels, pair boxes off the pallet, resume an open receiving batch.</span>
+        </button>
+        <button class="tile" type="button" data-go="scan">
+          <span class="tile__icon" aria-hidden="true">&#8617;&#65039;</span>
+          <span class="tile__name">Process a return</span>
+          <span class="tile__sub">RFID scan the returned box in Scan station, then sort it: sellable, open box, damaged, or parts.</span>
+        </button>
+        <button class="tile" type="button" data-go="find">
+          <span class="tile__icon" aria-hidden="true">&#128269;</span>
+          <span class="tile__name">Find a product</span>
+          <span class="tile__sub">Misplaced or maybe not in the store: look it up to see where it lives, its tags, and its history.</span>
+        </button>
+        <button class="tile" type="button" data-go="audits">
+          <span class="tile__badge tile__badge--info" id="tile-badge-checks" hidden></span>
+          <span class="tile__icon" aria-hidden="true">&#9989;</span>
+          <span class="tile__name">Inventory checks</span>
+          <span class="tile__sub">1-left and 0-left checks. Count the shelf, confirm the number. No tags involved.</span>
+        </button>
+        <button class="tile" type="button" data-go="review">
+          <span class="tile__badge tile__badge--info" id="tile-badge-rfid" hidden></span>
+          <span class="tile__icon" aria-hidden="true">&#128225;</span>
+          <span class="tile__name">RFID Inventory</span>
+          <span class="tile__sub">Tags vs stock: count disputes, bin audits and sweeps, differences, ghosts, mark-sold offers.</span>
+        </button>
+        <button class="tile" type="button" data-go="scan">
+          <span class="tile__icon" aria-hidden="true">&#127991;&#65039;</span>
+          <span class="tile__name">Product &amp; label tools</span>
+          <span class="tile__sub">Label names and reprints, barcode and bin fixes, duplicates, and other occasional jobs.</span>
+        </button>
+      </div>
+
+      <div class="home__minor">
+        <button class="reset home__minorlink" type="button" data-go="batch">&#127991; Tag a shelf (batch tagging)</button>
+        <button class="reset home__minorlink" type="button" data-go="inventory">&#128451; Browse inventory</button>
+        <button class="reset home__minorlink" type="button" data-go="history">&#128337; History</button>
+      </div>
+    </section>
+
+    <main class="flow" id="tab-scan" hidden>
       <!-- C72 LINK: the gun forwards its scans here instead of acting
            locally — no Bluetooth pairing to the PC, ever. -->
       <div class="linkbar">
@@ -515,7 +613,7 @@
       <button class="reset" id="reset" type="button">Reset / new package (Esc)</button>
     </main>
 
-    <footer class="recent" id="scan-footer">
+    <footer class="recent" id="scan-footer" hidden>
       <div class="recent__head">
         <h2>Recent assignments <span class="recent__note">(last 10 - full history in Inventory)</span></h2>
         <input id="search" class="recent__search" type="search" placeholder="Search EPC, SKU, product…" autocomplete="off" />
@@ -1826,6 +1924,9 @@
         </table>
       </div>
     </section>
+
+    </div><!-- /content -->
+    </div><!-- /layout -->
   </div>
 
   <script src="/static/app.js?v={{ asset_version }}"></script>

@@ -971,6 +971,41 @@ def product_candidates(barcode: str):
     return {"count": len(items), "candidates": items}
 
 
+# Home-page typeahead: the whole catalog's (sku, title, barcode) triples
+# in one compact payload the browser caches for the session. Sourced from
+# the bin-map snapshot (rebuilt every 3h), so it costs no Shopify calls
+# and no per-keystroke queries; products without a bin don't suggest yet.
+_suggest_cache: dict = {"at": 0.0, "body": None}
+_SUGGEST_TTL = 300
+
+
+@app.get("/api/products/suggest", dependencies=[Depends(require_user)])
+def product_suggest(session: Session = Depends(get_session)):
+    now = time.time()
+    if (_suggest_cache["body"] is not None
+            and now - _suggest_cache["at"] < _SUGGEST_TTL):
+        return _suggest_cache["body"]
+    seen: set = set()
+    out: list = []
+    for r in session.execute(
+        select(
+            BinMapEntry.sku, BinMapEntry.product_title,
+            BinMapEntry.variant_title, BinMapEntry.barcode,
+        ).order_by(BinMapEntry.product_title)
+    ):
+        sku = (r.sku or "").strip()
+        if not sku or sku.upper() in seen:
+            continue
+        seen.add(sku.upper())
+        title = (r.product_title or "").strip()
+        if r.variant_title:
+            title = f"{title} - {r.variant_title}".strip(" -")
+        out.append([sku, title[:120], (r.barcode or "").strip()])
+    body = {"products": out}
+    _suggest_cache.update(at=now, body=body)
+    return body
+
+
 @app.get("/api/products/tags", dependencies=[Depends(require_user)])
 def tags_for_product(
     sku: str | None = None,

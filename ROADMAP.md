@@ -3,6 +3,71 @@
 Source of truth for project status. Updated by Claude each working session.
 Last updated: 2026-09-23 (ShipStation-fed sold ledger).
 
+## 🏠 Home landing page + sidebar navigation — ✅ BUILT + ON DEV 2026-09-24, ⏳ PROD WAITS FOR NICK'S UPDATE BUNDLE
+
+Nick (09-24): the terminal is finicky to learn - it should open to a
+menu of use cases (EasyScan-style), ordered by what average workers
+actually do, not by how the system is built. Iterated over five
+preview mockups, then built. NAVIGATION LAYER ONLY by his call: every
+tile routes to the feature as it exists today; the features themselves
+get redesigned later, one at a time (notes below).
+
+- **Sidebar replaces the top tab bar**: same `.tabs__tab`/`data-tab`
+  buttons (every programmatic `.click()` still works), now a sticky
+  card below the resume/search row, in line with the tiles. Hamburger
+  in the header collapses it to an ICON RAIL (never fully hidden);
+  state per device in localStorage `sideRail`. Home is a new first tab
+  and the default view; `#<tabname>` in the URL deep-links any tab.
+- **Header**: Who's Scanning stays; new PRINTER CHIP reads
+  /api/print-agent/status every 60s - green "Printer ready", amber
+  held/queued counts, red with the actual fault ("Printer fault: media
+  out", "Print agent offline - last seen 2h ago", wedged queue). Click
+  opens Print queue. No more remote-desktopping to see printer health.
+- **Global row above everything**: "Pick up where you left off" card
+  (newest open batch, from /api/batches?status=open) + the scan/search
+  box. Typing 2+ chars with letters = typeahead over the catalog
+  (/api/products/suggest, new: (sku,title,barcode) triples from the
+  bin-map snapshot, 5-min server cache, session browser cache);
+  digits-only never opens the list (that's a wedge burst ending in
+  Enter). Enter or a pick opens the PRODUCT CARD.
+- **Product preview card** (Home): image/name/SKU/barcode/chips (bin,
+  on-hand, tag count, won't-scan) + four tabs. History = the event
+  feed re-dressed (EVENT_META colours, timeline dots, plain-English) -
+  Nick wants this LOOK to replace the computerized History table
+  eventually. Boxes & tags = live EPCs with condition chips. Shopify
+  info and RFID & labels are READ-ONLY v1 with "Edit in Scan station"
+  jumps (runs stationBarcodeScan, the real flow) + Shopify admin link.
+- **Tiles, Nick's priority order**: 1 Receive a shipment (badge: open
+  receiving batches) → 2 Process a return → 3 Find a product (focuses
+  the search) → 4 Inventory checks (1-left/0-left ONLY, no tag math;
+  badge: oneleft board count) → 5 RFID Inventory (all tag-vs-stock
+  machinery; badge: open review tasks) → 6 Product & label tools.
+  Small row: Tag a shelf, Browse inventory, History.
+- Suite: dev/tests/test_home.py (13 checks). 83/84 (test_link = the
+  known cp1252 console noise). Browser-verified on the seeded local
+  server: typeahead, card tabs, scan-station jump, rail toggle, mobile
+  wrap, zero console errors.
+
+**Feature redesign notes (later passes, per Nick - each feature gets
+reworked to fit the streamlined menu, one at a time):**
+- Receiving: per-SO view inside tile 1; stable /#receive/so-NNN URLs;
+  TC-Planner stock orders link straight in; labels-not-printed tasks
+  pinned to their SO. Eventually receiving may live inside TC-Planner.
+- Returns: desk flow with the SCAN-FIRST empty card (fills on RFID
+  read; barcode secondary with a "scan the sticker" nudge when the
+  product is tagged); triage sellable/open-box/damaged/parts. C72
+  stays the main use point.
+- Find a product: evolve the card into the evidence page (last sweep
+  heard, sales explaining absence, honest verdict, locate-on-gun).
+- Review tab dissolves: receiving tasks → tile 1, count disputes +
+  audit machinery → tile 5, duplicates/misc → tile 6.
+- History tab restyle: adopt the card's feed look (colour dots,
+  plain-English titles, inline undo).
+- Product card v2: in-place edits (barcode/bin/on-hand/labels) using
+  the existing guarded endpoints, replacing the jump buttons.
+- Type scale going forward: 12px meta / 14px body / 16px headings,
+  mono only for machine strings - stop minting one-off sizes.
+
 ## 🚚 Expected Count reworked onto ShipStation — ✅ BUILT + ON DEV 2026-09-23, ⏳ PROD WAITS FOR NICK'S UPDATE BUNDLE
 
 Nick (09-23): the adjustment-history-windowed sales math "relies
