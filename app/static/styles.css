@@ -4057,3 +4057,30 @@ button.ph-order:hover { border-color: var(--accent); }
 .labedit__printrow .labedit__save { align-self: stretch; text-align: center; }
 .labedit__printgrp { display: flex; }
 .labedit__printgrp .labedit__print { flex: 1; }
+
+
+/* event colours expander row + captions (round 5b) */
+.settingspage__expander {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+  padding: 9px 12px;
+  font-size: 13px;
+  font-weight: 550;
+  cursor: pointer;
+  box-shadow: var(--shadow);
+}
+.settingspage__expander:hover { border-color: var(--accent); }
+.settingspage__chev { margin-left: auto; transition: transform 0.12s; }
+.settingspage__expander.open .settingspage__chev { transform: rotate(90deg); }
+.evcolor-cap {
+  color: var(--ink-dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 2px 0 4px;
+}

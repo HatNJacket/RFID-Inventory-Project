@@ -538,14 +538,22 @@ function renderEvColorList() {
     .trim()
     .toLowerCase();
   const overrides = eventColorOverrides();
-  const types = Object.keys(EVENT_META)
-    .sort((a, b) => evLabel(a).localeCompare(evLabel(b)))
-    .filter(
-      (t) =>
-        !q ||
-        evLabel(t).toLowerCase().includes(q) ||
-        t.toLowerCase().includes(q)
-    );
+  // Page 1 = the ten most-used events, in importance order (Nick,
+  // 2026-09-24); everything else follows alphabetically.
+  const COMMON = [
+    "order-sold", "batch-counted", "review-opened", "review-resolved",
+    "label-printed", "tag-assigned", "condition-set", "bin-updated",
+    "on-hand-updated", "on-hand-lowered",
+  ];
+  const rest = Object.keys(EVENT_META)
+    .filter((t) => !COMMON.includes(t))
+    .sort((a, b) => evLabel(a).localeCompare(evLabel(b)));
+  const types = COMMON.concat(rest).filter(
+    (t) =>
+      !q ||
+      evLabel(t).toLowerCase().includes(q) ||
+      t.toLowerCase().includes(q)
+  );
   const pages = Math.max(1, Math.ceil(types.length / EVCOLOR_PAGE_SIZE));
   if (evColorPage >= pages) evColorPage = pages - 1;
   if (evColorPage < 0) evColorPage = 0;
@@ -553,6 +561,12 @@ function renderEvColorList() {
   if (!types.length) {
     wrap.innerHTML =
       '<p class="linkbox__text">No event names match that.</p>';
+  } else if (!q) {
+    const cap = document.createElement("div");
+    cap.className = "evcolor-cap";
+    cap.textContent = evColorPage === 0
+      ? "Most used" : "Everything else, A to Z";
+    wrap.append(cap);
   }
   types
     .slice(
@@ -691,7 +705,10 @@ const tabSections = {
 };
 const tabLoaders = {
   home: () => loadHome(),
-  settings: () => renderEvColorList(),
+  settings: () => {
+    const panel = document.querySelector(".settingspage__colors");
+    if (panel && !panel.hidden) renderEvColorList();
+  },
   batch: () => enterBatchTab(),
   inventory: () => loadInventory(),
   queue: () => loadQueue(),
@@ -20587,3 +20604,15 @@ async function pcardEditBin() {
     alert("Could not set the bin: " + err.message);
   }
 }
+
+
+// Event colours expander (Nick, 2026-09-24): the right half of the
+// Settings page is reserved for large windows like this one - the
+// list only appears when its row is opened.
+document.getElementById("evcolor-expand").addEventListener("click", () => {
+  const panel = document.querySelector(".settingspage__colors");
+  const btn = document.getElementById("evcolor-expand");
+  panel.hidden = !panel.hidden;
+  btn.classList.toggle("open", !panel.hidden);
+  if (!panel.hidden) renderEvColorList();
+});
