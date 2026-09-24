@@ -6986,10 +6986,19 @@ def bin_check(
     noscan = _noscan_skus(session)
     unlab = _unlabelable_skus(session)
     # Sold-but-unretired units per SKU: the audit's licence to explain a
-    # silent tag as "that box shipped" and offer MARK SOLD.
-    sold_map = orders_sync.sold_unretired_map(
-        session, sorted(wanted | extra)
+    # silent tag as "that box shipped" and offer MARK SOLD. WINDOWED to
+    # each SKU's tag-pool baseline like every other consumer (Nick,
+    # 2026-09-24, the F9152B I1 audit) - the unwindowed sum both
+    # over-explained and drifted the row arithmetic.
+    _audit_keys = sorted(wanted | extra)
+    sold_map = orders_sync.sold_unretired_since_map(
+        session, _audit_keys,
+        orders_sync._sku_baselines(session, _audit_keys),
     )
+    # The fully-confirmed-shelf auto-clear below needs the UNWINDOWED
+    # total: its whole job is consuming stale pre-baseline sales that a
+    # perfect sweep just proved tag-free.
+    sold_all_map = orders_sync.sold_unretired_map(session, _audit_keys)
     # Uncleared backorder debt RAISES what the shelf should hold: those
     # boxes arrived and stand here, but Shopify's on-hand ran behind.
     debt_map: dict[str, int] = {}
@@ -7261,16 +7270,17 @@ def bin_check(
         # audit that was just done.
         for r in report:
             sku_r = (r.get("sku") or "").strip()
+            sold_total = sold_all_map.get(sku_r.upper(), 0)
             if (not sku_r
                     or r.get("expected_qty") is None
-                    or r.get("sold_unretired", 0) <= 0
+                    or sold_total <= 0
                     or r.get("silent_epcs")
                     or r["tags_on_file"] != r["tags_here"]
                     or r["detected"] != r["tags_here"]
                     or r["detected_units"] != r["expected_qty"]):
                 continue
             cleared = orders_sync.retire_units(
-                session, sku_r, r["sold_unretired"]
+                session, sku_r, sold_total
             )
             if not cleared:
                 continue

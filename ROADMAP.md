@@ -173,6 +173,22 @@ events, filter box one line.
    live deploy-script mirror.
 8. Remove the layout tuner once the label editor is signed off.
 
+**Audit expected-count fix (Nick, 2026-09-24, the F9152B I1 audit):**
+the bin-audit row's Expected now folds SOLD-UNRETIRED into the
+record-side expectation (expected + backorder + unavailable + sold,
+each with its own "incl." note) - F9152B's 3 records vs 0 on-hand and
+2 known sales reads "+1 unexplained" instead of "+3". The "Set to N"
+raise now requires PHYSICAL evidence: it only appears when the sweep
+actually HEARD more boxes than Shopify counts, and targets the heard
+count - tag records alone are paper (F9152B's old button offered
+"Set to 3" on an empty shelf). bin_check's sold map is windowed like
+every other consumer; the fully-confirmed-shelf auto-clear keeps the
+unwindowed total (its job is consuming stale pre-baseline sales).
+Residual drift (+N with no sale on record) carries a tooltip naming
+the likely causes: an admin-side correction, or a replaced sticker
+whose old tag was never retired - those tags need retiring by hand.
+Regression check rides test_home.
+
 **Feature redesign notes (later passes, per Nick - each feature gets
 reworked to fit the streamlined menu, one at a time):**
 - Receiving: per-SO view inside tile 1; stable /#receive/so-NNN URLs;

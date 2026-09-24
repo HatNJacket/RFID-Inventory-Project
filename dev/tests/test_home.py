@@ -187,6 +187,33 @@ with patch("app.main._maybe_refresh_bin_map", return_value=False), \
           len(body.get("sales", {}).get("weekly", [])) == 12
           and body["sales"]["total_units"] == 2, body.get("sales"))
 
+    # ---- F9152B regression (Nick, 2026-09-24): audit sold is WINDOWED --
+    from app.models import RfidAssignment as RA, BinMapEntry as BME
+    with Session(get_engine()) as s:
+        s.add(BME(sku="EYEP-9", product_title="Eyepiece 9mm", bin="I9-1",
+                  qty=0, shopify_variant_id="t:e9"))
+        for i, e in enumerate(("E1A", "E1B", "E1C")):
+            s.add(RA(rfid_id=e, shopify_variant_id="t:e9",
+                     product_title="Eyepiece 9mm", sku="EYEP-9",
+                     bin_location="I9-1",
+                     assigned_at=datetime(2026, 8, 6, tzinfo=timezone.utc)))
+        # one sale BEFORE the pool existed (must not count), two after
+        s.add(SoldRecord(order_id="gid://shopify/Order/70", sku="EYEP-9",
+                         quantity=1,
+                         fulfilled_at=datetime(2026, 7, 1, tzinfo=timezone.utc)))
+        s.add(SoldRecord(order_id="gid://shopify/Order/71", sku="EYEP-9",
+                         quantity=1,
+                         fulfilled_at=datetime(2026, 8, 12, tzinfo=timezone.utc)))
+        s.add(SoldRecord(order_id="gid://shopify/Order/72", sku="EYEP-9",
+                         quantity=1,
+                         fulfilled_at=datetime(2026, 9, 2, tzinfo=timezone.utc)))
+        s.commit()
+    r = cl.post("/api/bins/I9-1/check", json={"epcs": [], "skus": []})
+    row = next(x for x in r.json()["items"] if x["sku"] == "EYEP-9")
+    check("audit row: snapshot 0 on-hand, 3 records, WINDOWED sold of 2",
+          row["expected_qty"] == 0 and row["units_here"] == 3
+          and row["sold_unretired"] == 2, row)
+
 print()
 if fails:
     print(f"{len(fails)} FAILED"); sys.exit(1)
