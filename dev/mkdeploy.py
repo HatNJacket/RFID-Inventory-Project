@@ -59,6 +59,17 @@ if os.path.isdir(_help_dir):
         if name.lower().endswith((".svg", ".png", ".jpg", ".jpeg", ".gif"))
     )
 
+# Vendored browser libraries (app/static/vendor/ — Chart.js first,
+# 2026-09-24): discovered like the help images so a new library can't be
+# forgotten. The first deploy WAS forgotten (index.html referenced the
+# file, the zip didn't carry it, dev 404'd) — hence this block.
+_vendor_dir = os.path.join(ROOT, "app", "static", "vendor")
+if os.path.isdir(_vendor_dir):
+    FILES += sorted(
+        f"app/static/vendor/{name}" for name in os.listdir(_vendor_dir)
+        if name.lower().endswith((".js", ".css"))
+    )
+
 missing = [f for f in FILES if not os.path.isfile(os.path.join(ROOT, f))]
 if missing:
     raise SystemExit(f"missing source files: {missing}")
