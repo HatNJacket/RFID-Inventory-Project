@@ -19683,6 +19683,13 @@ function pcardRenderIdentity() {
 
 function pcardRenderStats() {
   const st = pcardState;
+  if (st.adminUrl) {
+    const nameText = homeEls.pcardName.textContent;
+    homeEls.pcardName.innerHTML =
+      `<a class="pcard__namelink" href="${escapeHtml(st.adminUrl)}" ` +
+      `target="_blank" rel="noopener" ` +
+      `title="Open this product in Shopify admin">${escapeHtml(nameText)}</a>`;
+  }
   const onhandBtn = document.getElementById("pcard-onhand");
   const tagsBtn = document.getElementById("pcard-tagcount");
   const onHand = st.tags ? st.tags.on_hand : null;
@@ -19986,81 +19993,117 @@ function pcardRenderTags() {
   pane.innerHTML = html;
 }
 
-// ---------- shopify info pane ----------
+// ---------- shopify info pane (v2: Inventory Changes + graphs) ----------
+function pcardChangeDay(iso) {
+  const d = new Date(iso || 0);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 async function pcardEnsureShopify() {
   const st = pcardState;
   if (!st || st.shopifyLoaded) return;
   st.shopifyLoaded = true;
   const pane = pcardPane("shopify");
   pane.innerHTML = '<div class="pcard__note">Loading live numbers…</div>';
-  const [bd, oo] = await Promise.all([
-    st.sku
-      ? apiFetch(`/api/products/${encodeURIComponent(st.sku)}/stock-breakdown`)
-          .then((r) => (r.ok ? r.json() : null)).catch(() => null)
-      : null,
-    st.sku
-      ? apiFetch(`/api/planner/on-order/${encodeURIComponent(st.sku)}`)
-          .then((r) => (r.ok ? r.json() : null)).catch(() => null)
-      : null,
-  ]);
+  const bd = st.sku
+    ? await apiFetch(`/api/products/${encodeURIComponent(st.sku)}/stock-breakdown`)
+        .then((r) => (r.ok ? r.json() : null)).catch(() => null)
+    : null;
   if (pcardState !== st) return;
   const b = (bd && bd.breakdown) || null;
   const stat = (label, val) =>
     `<div class="pstat"><span class="pstat__num">${val != null ? val : "-"}</span>` +
     `<span class="pstat__lbl">${label}</span></div>`;
-  let html = "";
+
+  // ----- left half: buckets, vendor, Inventory Changes -----
+  let left = "";
   if (b) {
-    html +=
+    left +=
       '<div class="pinforow">' +
       stat("Available", b.available) + stat("Committed", b.committed) +
       stat("On hand", b.on_hand) + stat("Unavailable", b.unavailable) +
       "</div>";
   } else {
-    html +=
+    left +=
       '<div class="pcard__note">Live stock buckets unavailable' +
       (bd && bd.breakdown_error ? ` (${escapeHtml(bd.breakdown_error)})` : "") +
       ".</div>";
   }
   if (bd && bd.vendor) {
-    html += `<div class="pinfo"><label>Vendor</label><span>${escapeHtml(bd.vendor)}</span></div>`;
+    left += `<div class="pship__vendor">Vendor · <b>${escapeHtml(bd.vendor)}</b></div>`;
   }
-  const lines = ((oo && oo.ok && oo.orders) || []).filter(
-    (l) => (l.remaining || 0) > 0
-  );
-  if (lines.length) {
-    html += '<div class="pinfo"><label>On order</label><span>' +
-      lines.slice(0, 3).map((l) =>
-        escapeHtml(
-          `${l.remaining} expected` +
-          (l.reference_number ? ` on SO ${l.reference_number}` : "") +
-          (l.vendor ? ` (${l.vendor})` : "")
-        )
-      ).join(" · ") + "</span></div>";
+  const KINDS = {
+    sold: ["Sold", "ok"],
+    received: ["Received", "ok"],
+    manual: ["Manually adjusted", "warn"],
+    unavailable: ["Set unavailable", "bad"],
+  };
+  const changes = (bd && bd.inventory_changes) || [];
+  left += '<div class="pdivider">Inventory changes</div>';
+  if (!changes.length) {
+    left += '<div class="pcard__note">No recorded stock movements yet ' +
+      "(direct Shopify-admin edits leave no trail here).</div>";
+  } else {
+    let lastDay = "";
+    left += '<div class="pship__list">';
+    for (const ch of changes.slice(0, 40)) {
+      const d = pcardChangeDay(ch.at);
+      const dayKey = d ? pcardDayKey(d) : "?";
+      if (dayKey !== lastDay) {
+        lastDay = dayKey;
+        left += `<div class="ph-day">${escapeHtml(d ? pcardDayTitle(d) : "Unknown date")}</div>`;
+      }
+      const meta = KINDS[ch.kind] || [ch.kind, ""];
+      const units = ch.units > 0 ? `+${ch.units}` : String(ch.units);
+      const kindNote = ch.kind === "unavailable" && ch.units > 0
+        ? "Back from unavailable" : meta[0];
+      left +=
+        `<div class="pship__row pship__row--${meta[1]}">` +
+        `<span class="pship__kind">${escapeHtml(kindNote)}</span>` +
+        `<span class="pship__units">${escapeHtml(units)}</span>` +
+        `<span class="pship__who">${escapeHtml(String(ch.who || ""))}` +
+        (ch.note ? ` <span class="dim">(${escapeHtml(ch.note)})</span>` : "") +
+        "</span>" +
+        `<span class="pship__time">${d ? escapeHtml(pcardClock(d)) : ""}</span>` +
+        "</div>";
+    }
+    left += "</div>";
   }
-  const sales = (bd && bd.recent_sales) || [];
-  if (sales.length) {
-    html += '<div class="pdivider">Recent shipments</div><div class="psales">' +
-      sales.map((sr) =>
-        `<div class="prow"><span>${escapeHtml(String(sr.order || ""))}</span>` +
-        `<span class="pchip">${sr.qty} unit${sr.qty === 1 ? "" : "s"}</span>` +
-        `<span class="dim">${escapeHtml([pcardWhen(sr.at), sr.source].filter(Boolean).join(" · "))}</span></div>`
-      ).join("") + "</div>";
+
+  // ----- right half: sales graphs -----
+  const sales = (bd && bd.sales) || null;
+  let right = '<h4 class="pship__h">Sales</h4>';
+  if (!sales || !sales.total_units) {
+    right += '<div class="pcard__note">No recorded sales for this product yet.</div>';
+  } else {
+    right +=
+      '<div class="pinforow">' +
+      stat("All time", sales.total_units) +
+      stat("Per week", sales.per_week_90d) +
+      stat("Per month", sales.per_month_365d) +
+      "</div>";
+    const max = Math.max(1, ...sales.weekly);
+    const W = 260, H = 90, bw = W / 12;
+    let bars = "";
+    sales.weekly.forEach((v, i) => {
+      const h = Math.round((v / max) * (H - 18));
+      const x = Math.round(i * bw) + 2;
+      bars +=
+        `<rect x="${x}" y="${H - h - 14}" width="${Math.floor(bw) - 4}" height="${h}" rx="2" fill="var(--accent)" opacity="${v ? 0.9 : 0.25}"${v ? "" : ' height="2" y="' + (H - 16) + '"'}/>` +
+        (v ? `<text x="${x + (bw - 4) / 2}" y="${H - h - 18}" font-size="10" text-anchor="middle" fill="var(--ink-dim)">${v}</text>` : "");
+    });
+    right +=
+      '<div class="pship__chartcap">Units sold per week, last 12 weeks</div>' +
+      `<svg class="pship__chart" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">` +
+      `<line x1="0" y1="${H - 13}" x2="${W}" y2="${H - 13}" stroke="var(--line)" stroke-width="1"/>` +
+      bars +
+      `<text x="2" y="${H - 2}" font-size="9" fill="var(--ink-dim)">12w ago</text>` +
+      `<text x="${W - 2}" y="${H - 2}" font-size="9" text-anchor="end" fill="var(--ink-dim)">now</text>` +
+      "</svg>";
   }
-  html +=
-    '<div class="pcard__actions">' +
-    '<button class="reset" type="button" id="pcard-edit-scan">Edit in Scan station</button>' +
-    (st.adminUrl
-      ? '<button class="reset" type="button" id="pcard-admin">Open in Shopify admin</button>'
-      : "") +
-    "</div>";
-  pane.innerHTML = html;
-  document.getElementById("pcard-edit-scan").addEventListener("click", () =>
-    pcardOpenInScan(st.barcode || st.sku || st.term));
-  const adminBtn = document.getElementById("pcard-admin");
-  if (adminBtn) {
-    adminBtn.addEventListener("click", () =>
-      window.open(st.adminUrl, "_blank", "noopener"));
-  }
+  pane.innerHTML =
+    `<div class="pship"><div class="pship__left">${left}</div>` +
+    `<div class="pship__right">${right}</div></div>`;
 }
 
 // ---------- the four-box label editor + TRUE print preview ----------
@@ -20138,25 +20181,27 @@ const LABEL_LL = 253; // 1.25in x 203dpi, matching LABEL_PW = 431
 
 function labelSvg(header, centre, barcode, binText, otherBins) {
   // print_agent.build_zpl, ported: same fonts, same wrap decisions.
+  // Each section wraps in a <g data-part> so the editor can focus the
+  // matching input from a click on the label itself.
   const esc = escapeHtml;
   const T = (x, y, size, text, anchor = "middle") =>
     `<text x="${x}" y="${y + size * 0.78}" font-size="${size * 0.94}" ` +
     `font-family="'Arial Narrow','Roboto Condensed',Arial,sans-serif" ` +
     `text-anchor="${anchor}" fill="#111">${esc(text)}</text>`;
-  let parts = "";
+  const seg = { header: "", desc: "", barcode: "", bin: "" };
   const warns = [];
   // header
   const h = (header || "").trim();
   if (!h || h === STORE_HEADER) {
-    parts += T(LABEL_PW / 2, 10, 34, STORE_HEADER);
+    seg.header = T(LABEL_PW / 2, 10, 34, STORE_HEADER);
   } else {
     const size = h.length <= 26 ? 28 : h.length <= 56 ? 20 : 16;
     if (zplTextDots(h, size) * SKU_WIDTH_FUDGE <= LABEL_PW) {
-      parts += T(LABEL_PW / 2, 4 + (size > 20 ? 6 : 8), size, h);
+      seg.header = T(LABEL_PW / 2, 4 + (size > 20 ? 6 : 8), size, h);
     } else {
       const cut = skuSplit(h);
       const [l1, l2] = cut || [h.slice(0, Math.ceil(h.length / 2)), h.slice(Math.ceil(h.length / 2))];
-      parts += T(LABEL_PW / 2, 2, size, l1) + T(LABEL_PW / 2, 2 + size + 2, size, l2);
+      seg.header = T(LABEL_PW / 2, 2, size, l1) + T(LABEL_PW / 2, 2 + size + 2, size, l2);
       if (zplTextDots(l1, size) * SKU_WIDTH_FUDGE > LABEL_PW ||
           zplTextDots(l2, size) * SKU_WIDTH_FUDGE > LABEL_PW) {
         warns.push("The header is long - it may clip on the sticker.");
@@ -20169,19 +20214,19 @@ function labelSvg(header, centre, barcode, binText, otherBins) {
   const plain = c.replace(/\|/g, " ").split(/\s+/).join(" ");
   const wrapped = manualBreak || !skuFits(plain, 30, 1);
   if (!wrapped) {
-    parts += T(LABEL_PW / 2, 52, 30, plain);
+    seg.desc = T(LABEL_PW / 2, 52, 30, plain);
   } else {
     const split = skuSplit(c);
     let f = 30;
     if (split) {
       while (f > 20 && !(skuLineFits(split[0], f) && skuLineFits(split[1], f))) f -= 2;
-      parts += T(LABEL_PW / 2, 52, f, split[0]) +
-               T(LABEL_PW / 2, 52 + f + 2, f, split[1]);
+      seg.desc = T(LABEL_PW / 2, 52, f, split[0]) +
+                 T(LABEL_PW / 2, 52 + f + 2, f, split[1]);
     } else {
       while (f > 20 && !skuFits(plain, f, 2)) f -= 2;
       const mid = Math.ceil(plain.length / 2);
-      parts += T(LABEL_PW / 2, 52, f, plain.slice(0, mid)) +
-               T(LABEL_PW / 2, 52 + f + 2, f, plain.slice(mid));
+      seg.desc = T(LABEL_PW / 2, 52, f, plain.slice(0, mid)) +
+                 T(LABEL_PW / 2, 52 + f + 2, f, plain.slice(mid));
     }
     if (f <= 20 && !skuFits(plain, 20, 2)) {
       warns.push("The description is very long - the sticker may clip it.");
@@ -20203,21 +20248,25 @@ function labelSvg(header, centre, barcode, binText, otherBins) {
       ? { by: 118, bh: 56, cy: 178, cf: 18 }
       : { by: 88, bh: 72, cy: 164, cf: 20 };
     const bx = Math.max(2, Math.floor((LABEL_PW - width) / 2));
-    parts += code128Svg(code, module, bx, geo.by, geo.bh);
-    parts += T(LABEL_PW / 2, geo.cy, geo.cf, code);
+    seg.barcode = code128Svg(code, module, bx, geo.by, geo.bh) +
+                  T(LABEL_PW / 2, geo.cy, geo.cf, code);
   }
   // bin line
   const bt = (binText || "-").trim() || "-";
   const others = (otherBins || "").trim();
   if (others) {
-    parts += T(LABEL_PW / 2, LABEL_LL - 52, 22, `BIN: ${bt}. Other: ${others.slice(0, 60)}`);
+    seg.bin = T(LABEL_PW / 2, LABEL_LL - 52, 22, `BIN: ${bt}. Other: ${others.slice(0, 60)}`);
   } else {
-    parts += T(LABEL_PW / 2, LABEL_LL - 45, 30, `BIN: ${bt}`);
+    seg.bin = T(LABEL_PW / 2, LABEL_LL - 45, 30, `BIN: ${bt}`);
   }
   const svg =
     `<svg viewBox="0 0 ${LABEL_PW} ${LABEL_LL}" xmlns="http://www.w3.org/2000/svg">` +
     `<rect x="0" y="0" width="${LABEL_PW}" height="${LABEL_LL}" fill="#fff"/>` +
-    parts + "</svg>";
+    `<g data-part="header">${seg.header}</g>` +
+    `<g data-part="desc">${seg.desc}</g>` +
+    `<g data-part="barcode">${seg.barcode}</g>` +
+    `<g data-part="bin">${seg.bin}</g>` +
+    "</svg>";
   return { svg, warns };
 }
 
@@ -20268,7 +20317,7 @@ async function pcardEnsureLabelEditor() {
           </div></div>
         <div class="labedit__row"><label>Description</label>
           <div class="labedit__box">
-            <textarea id="lab-desc" maxlength="56" rows="3" title="The centre line - a | forces the line break">${escapeHtml(eff.desc)}</textarea>
+            <textarea id="lab-desc" maxlength="56" rows="2" title="The centre line - a | forces the line break">${escapeHtml(eff.desc)}</textarea>
             <button class="labedit__reset" data-reset="desc" title="Back to the default">✕</button>
           </div></div>
         <div class="labedit__row"><label>Barcode</label>
@@ -20284,25 +20333,28 @@ async function pcardEnsureLabelEditor() {
             <input id="lab-bin" maxlength="100" value="${escapeHtml(eff.bin)}" />
             <button class="labedit__reset" data-reset="bin" title="Back to the product's bin">✕</button>
           </div></div>
-        <div class="labedit__printrow">
-          <button class="labedit__save" id="lab-save" disabled>Save label</button>
-          <span class="labedit__printgrp">
-            <input id="lab-qty" type="number" min="1" max="200" value="1" />
-            <button class="labedit__print" id="lab-print" type="button">Print 1 label</button>
-          </span>
-        </div>
+        <button class="labedit__save" id="lab-save" disabled>Save label</button>
         <div class="pcard__note" id="lab-msg">Saves apply immediately - even
-        labels already waiting in the print queue pick the new text up when
-        they print.</div>
+        labels already in the print queue pick the new text up when they
+        print.</div>
       </div>
       <div class="labedit__preview">
-        <span class="cap">Exactly what prints (2.125 x 1.25 in)</span>
+        <span class="cap">Exactly what prints (2.125 x 1.25 in) - click a
+        line to edit it</span>
         <div class="labedit__svgwrap" id="lab-svg"></div>
+        <span class="labedit__printgrp">
+          <input id="lab-qty" type="number" min="1" max="200" value="1" />
+          <button class="labedit__print" id="lab-print" type="button">Print 1 label</button>
+        </span>
         <div class="labedit__warn" id="lab-warn" hidden></div>
       </div>
-    </div>
-    <div class="pcard__actions">
-      <button class="reset" type="button" id="pcard-label-scan">Open in Scan station</button>
+      <div class="labedit__options">
+        <h4>Product options</h4>
+        <div class="pcard__note">This column is where the Edit-product
+        options land next (see the plan) - flags like won't-RFID-scan and
+        non-taggable, scan notes, aliases, serial prefixes, and the
+        open-box and bundle tools.</div>
+      </div>
     </div>`;
   const els = {
     header: document.getElementById("lab-header"),
@@ -20320,7 +20372,6 @@ async function pcardEnsureLabelEditor() {
   const savedEff = { ...eff };
 
   function refresh() {
-    // toggle offers whichever of barcode/SKU the box does NOT hold
     const onSku = els.barcode.value.trim() === (st.sku || "");
     els.mode.textContent = onSku && st.barcode ? "Barcode" : "SKU";
     els.mode.disabled = !st.sku && !st.barcode;
@@ -20343,6 +20394,16 @@ async function pcardEnsureLabelEditor() {
   ["header", "desc", "barcode", "bin"].forEach((k) =>
     els[k].addEventListener("input", refresh));
   els.qty.addEventListener("input", refresh);
+  // click a line ON THE LABEL to focus its input
+  els.svg.addEventListener("click", (e) => {
+    const part = e.target.closest("[data-part]");
+    if (!part) return;
+    const target = {
+      header: els.header, desc: els.desc,
+      barcode: els.barcode, bin: els.bin,
+    }[part.dataset.part];
+    if (target) { target.focus(); target.select && target.select(); }
+  });
   els.mode.addEventListener("click", () => {
     const onSku = els.barcode.value.trim() === (st.sku || "");
     els.barcode.value = onSku && st.barcode ? st.barcode : (st.sku || "");
@@ -20417,16 +20478,14 @@ async function pcardEnsureLabelEditor() {
       });
       els.msg.textContent =
         `${n} label${n === 1 ? "" : "s"} queued ✓ - they print with ` +
-        "the SAVED settings above (save first if the preview shows " +
-        "unsaved changes).";
+        "the SAVED settings (save first if the preview shows unsaved " +
+        "changes).";
     } catch (err) {
       els.msg.textContent = "Could not queue the labels: " + err.message;
     } finally {
       els.print.disabled = false;
     }
   });
-  document.getElementById("pcard-label-scan").addEventListener("click", () =>
-    pcardOpenInScan(st.barcode || st.sku || st.term));
   refresh();
 }
 
@@ -20443,7 +20502,7 @@ async function openProductCard(term) {
   document.getElementById("pcard-tagcount").hidden = true;
   ["history", "tags", "shopify", "rfid"].forEach((n) =>
     (pcardPane(n).innerHTML = ""));
-  pcardShowTab("history");
+  pcardShowTab("rfid");
   homeRememberLookup(term);
   let product = null;
   try {
@@ -20495,6 +20554,12 @@ async function openProductCard(term) {
   pcardRenderStats();
   pcardRenderHistory();
   pcardRenderTags();
+  // The default tab was shown before the product existed - run its
+  // lazy loader now that the state is real.
+  const activeTab =
+    document.querySelector(".pcard__tabbtn--active")?.dataset.ptab;
+  if (activeTab === "rfid") pcardEnsureLabelEditor();
+  else if (activeTab === "shopify") pcardEnsureShopify();
 }
 
 // --- boot: Home is the front door (hash still deep-links any tab) -----------

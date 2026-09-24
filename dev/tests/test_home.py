@@ -160,6 +160,33 @@ with patch("app.main._maybe_refresh_bin_map", return_value=False), \
           j is not None and j["barcode"] == "697039"
           and j["bin_location"] == "G2-1", j)
 
+    # ---- round 6: stock-breakdown carries changes + sales stats ---------
+    from app.models import SoldRecord, BarcodeChange
+    from datetime import datetime, timezone
+    with Session(get_engine()) as s:
+        s.add(SoldRecord(order_id="gid://shopify/Order/9", order_name="7001",
+                         sku="ASK-M54-OAG", quantity=2,
+                         fulfilled_at=datetime.now(timezone.utc)))
+        s.add(BarcodeChange(sku="ASK-M54-OAG", changed_field="on-hand",
+                            old_barcode="3", new_barcode="5",
+                            changed_by="Nick"))
+        s.commit()
+    with patch("app.shopify.get_quantity_breakdown",
+               return_value={"available": 3, "committed": 1,
+                             "on_hand": 5, "unavailable": 1}):
+        r = cl.get("/api/products/ASK-M54-OAG/stock-breakdown")
+    body = r.json()
+    kinds = {c["kind"]: c for c in body.get("inventory_changes", [])}
+    check("inventory changes list sold and manual movements",
+          r.status_code == 200
+          and kinds.get("sold", {}).get("units") == -2
+          and kinds.get("sold", {}).get("who") == "#7001"
+          and kinds.get("manual", {}).get("units") == 2
+          and kinds.get("manual", {}).get("who") == "Nick", body)
+    check("sales stats ride along (12 weekly buckets, totals)",
+          len(body.get("sales", {}).get("weekly", [])) == 12
+          and body["sales"]["total_units"] == 2, body.get("sales"))
+
 print()
 if fails:
     print(f"{len(fails)} FAILED"); sys.exit(1)

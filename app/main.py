@@ -1035,22 +1035,108 @@ def product_stock_breakdown(
         out["breakdown"] = shopify.get_quantity_breakdown(key)
     except Exception as error:  # noqa: BLE001 — the tab degrades, not errors
         out["breakdown_error"] = str(error)[:200]
-    # Last shipments (ledger, any source) - the outflow story.
-    recent = session.scalars(
-        select(SoldRecord)
-        .where(func.upper(SoldRecord.sku) == key.upper())
-        .order_by(SoldRecord.fulfilled_at.desc())
-        .limit(8)
+    # --- Inventory Changes (Nick, 2026-09-24): every stock movement we
+    # can attribute, one signed line each - sold (ledger), received
+    # (planner-confirmed receipts), manual on-hand writes, and
+    # unavailable-bucket moves. Direct Shopify-admin edits leave no
+    # record here (nothing observes them per-unit yet).
+    changes: list[dict] = []
+    sold_rows = session.scalars(
+        select(SoldRecord).where(func.upper(SoldRecord.sku) == key.upper())
     ).all()
-    out["recent_sales"] = [
-        {
-            "order": r.order_name or r.order_id,
-            "qty": r.quantity,
-            "at": r.fulfilled_at.isoformat() if r.fulfilled_at else None,
-            "source": r.source or "shopify",
-        }
-        for r in recent
-    ]
+    for r in sold_rows:
+        name = str(r.order_name or r.order_id or "").strip()
+        if name and not name.startswith("#") and name.isdigit():
+            name = f"#{name}"
+        at = r.fulfilled_at or r.created_at
+        changes.append({
+            "at": at.isoformat() if at else None,
+            "kind": "sold",
+            "units": -(r.quantity or 0),
+            "who": name or "order",
+        })
+    for bc in session.scalars(
+        select(BarcodeChange).where(
+            func.upper(BarcodeChange.sku) == key.upper(),
+            BarcodeChange.changed_field.in_((
+                "on-hand", "on-hand-undo",
+                "on-hand-lower", "on-hand-lower-undo",
+                "unavailable-move",
+            )),
+        )
+    ):
+        at = bc.changed_at.isoformat() if bc.changed_at else None
+        if bc.changed_field == "unavailable-move":
+            m = re.match(r"(in|out):(\d+)", bc.old_barcode or "")
+            qty = int(m.group(2)) if m else 0
+            direction = m.group(1) if m else "in"
+            changes.append({
+                "at": at,
+                "kind": "unavailable",
+                "units": -qty if direction == "in" else qty,
+                "who": bc.changed_by or "operator",
+                "note": bc.new_barcode,
+            })
+            continue
+        try:
+            delta = int(bc.new_barcode or 0) - int(bc.old_barcode or 0)
+        except ValueError:
+            continue
+        changes.append({
+            "at": at,
+            "kind": "manual",
+            "units": delta,
+            "who": bc.changed_by or "operator",
+        })
+    # Planner-confirmed receipts: this SKU's line on any stock order
+    # whose Shopify update TC-Planner reported.
+    for receipt, item_qty in session.execute(
+        select(OrderReceipt, BatchItem.expected_qty)
+        .join(BatchItem, BatchItem.batch_id == OrderReceipt.batch_id)
+        .where(
+            OrderReceipt.stock_updated_at.is_not(None),
+            func.upper(BatchItem.sku) == key.upper(),
+        )
+    ):
+        if not item_qty:
+            continue
+        changes.append({
+            "at": receipt.stock_updated_at.isoformat(),
+            "kind": "received",
+            "units": item_qty,
+            "who": f"SO {receipt.reference or receipt.stock_order_id}",
+        })
+    changes.sort(key=lambda c: c["at"] or "", reverse=True)
+    out["inventory_changes"] = changes[:80]
+
+    # --- sales stats for the graphs column -------------------------------
+    now = datetime.now(timezone.utc)
+    weekly = [0] * 12
+    total = 0
+    units_90d = 0
+    units_365d = 0
+    for r in sold_rows:
+        q = r.quantity or 0
+        total += q
+        f = r.fulfilled_at
+        if f is None:
+            continue
+        if f.tzinfo is None:
+            f = f.replace(tzinfo=timezone.utc)
+        age = (now - f).days
+        if age < 90:
+            units_90d += q
+        if age < 365:
+            units_365d += q
+        wk = age // 7
+        if 0 <= wk < 12:
+            weekly[11 - wk] += q
+    out["sales"] = {
+        "weekly": weekly,
+        "total_units": total,
+        "per_week_90d": round(units_90d / (90 / 7), 1),
+        "per_month_365d": round(units_365d / 12, 1),
+    }
     return out
 
 
