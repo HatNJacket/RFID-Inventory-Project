@@ -13853,6 +13853,16 @@ function binAuditScoreRow(r) {
         `${silent} silent - ${r.sold_unretired} sold since last audit`,
         "chip--ok",
       ]);
+    } else if (silent - r.sold_unretired <= (r.pickup_pending || 0)) {
+      // Sales reconcile part of the silence and open pickup orders
+      // cover the rest (Nick, 2026-09-24, F9168A): "Ready for pickup"
+      // writes no fulfillment, so a staged box answers no sweep and
+      // sits in no ledger. Explained ONLY when the numbers close
+      // exactly - a loose pickup order never papers over shrinkage.
+      flags.push([
+        `${silent} silent - ${r.sold_unretired} sold + ${silent - r.sold_unretired} ready for pickup${binAuditPickupNote(r)}`,
+        "chip--ok",
+      ]);
     } else {
       flags.push([
         `${silent} silent vs ${r.sold_unretired} sold - count off`,
@@ -13865,6 +13875,17 @@ function binAuditScoreRow(r) {
     // the expected picture, not a warning (Nick, 2026-09-08).
     flags.push([
       `${silent} silent - likely the set-aside/unavailable unit${silent === 1 ? "" : "s"}`,
+      "chip--ok",
+    ]);
+  } else if (
+    silent > 0 &&
+    silent <= (r.unavailable || 0) + (r.pickup_pending || 0)
+  ) {
+    // Open local-pickup orders explain the silence (Nick, 2026-09-24,
+    // F9168A): the boxes are staged at the desk, invisible to a shelf
+    // sweep, and the ledger has no sale until "picked up" lands.
+    flags.push([
+      `${silent} silent - ready for pickup, not collected yet${binAuditPickupNote(r)}`,
       "chip--ok",
     ]);
   } else if (silent > 0) {
@@ -19830,7 +19851,13 @@ function pcardSplitWorker(worker) {
   const w = (worker || "").trim();
   const m = w.match(/SO[\s#-]*\d+/i);
   if (!m) return { who: w, so: "" };
-  const who = w.replace(m[0], "").replace(/^[\s·.,-]+|[\s·.,-]+$/g, "");
+  // Receiving batches pack "TC-Planner · SO 943, SO 965 · Svbony" into
+  // the worker slot. The SO lands in the description, so the right
+  // column keeps ONLY who did it (Nick, 2026-09-24): the part before
+  // the first separator, with any SO tokens scrubbed out of it.
+  const who = w.split("·")[0]
+    .replace(/SO[\s#-]*\d+[,\s]*/gi, "")
+    .replace(/^[\s·.,-]+|[\s·.,-]+$/g, "");
   return { who, so: m[0].replace(/\s+/g, " ") };
 }
 
@@ -19986,6 +20013,10 @@ function pcardTagRow(t, forceCond) {
     `<span class="epc">${escapeHtml(t.rfid_id)}</span>` +
     condChip + loc +
     `<span class="dim">${escapeHtml(extra.join(" · "))}</span>` +
+    `<button class="prow__locate" type="button" ` +
+    `data-epc="${escapeHtml(t.rfid_id || "")}" ` +
+    `data-lsku="${escapeHtml(t.sku || "")}" ` +
+    `title="Queue this sticker on the C72 locate list (open LOCATE on the gun and tap LIST)">Locate</button>` +
     "</div>"
   );
 }
@@ -20004,12 +20035,172 @@ function pcardRenderTags() {
       obRows.map((t) => pcardTagRow(t, t.condition || "Open box")).join("");
   }
   pane.innerHTML = html;
+  // Locate (Nick, 2026-09-24): each sticker rides the existing C72
+  // locate queue. Re-queuing a SKU replaces its specific-EPC list, so
+  // the click merges this EPC with whatever the queue already holds.
+  pane.querySelectorAll(".prow__locate").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const sku = btn.dataset.lsku || st.sku;
+      if (!sku) return;
+      btn.disabled = true;
+      try {
+        const q = await apiJson("/api/locate-queue").catch(() => null);
+        const mine = q && (q.entries || []).find(
+          (e) => (e.sku || "").toUpperCase() === sku.toUpperCase());
+        const epcs = new Set(mine ? mine.epcs || [] : []);
+        epcs.add(btn.dataset.epc);
+        await postJson("/api/locate-queue", {
+          sku,
+          label: (st.product && st.product.product_title) || sku,
+          worker: operatorEl.value || null,
+          epcs: Array.from(epcs),
+        });
+        btn.textContent = "Queued ✓";
+        btn.classList.add("prow__locate--on");
+        btn.title = "On the C72 locate list - open LOCATE on the gun and tap LIST.";
+      } catch (err) {
+        btn.textContent = "Failed";
+        btn.disabled = false;
+      }
+    });
+  });
 }
 
-// ---------- shopify info pane (v2: Inventory Changes + graphs) ----------
+// ---------- shopify info pane (v3: hover-diff tiles + Chart.js) ----------
 function pcardChangeDay(iso) {
   const d = new Date(iso || 0);
   return Number.isNaN(d.getTime()) ? null : d;
+}
+
+// What a change row's left column says. Orders and stock orders spell
+// themselves out (Nick, 2026-09-24: the cause reads first, then units).
+function pshipCause(ch) {
+  const who = String(ch.who || "").trim();
+  if (ch.kind === "sold") {
+    return who.startsWith("#") ? `Order ${who}` : `Order ${who || "?"}`;
+  }
+  if (ch.kind === "received") {
+    // who arrives as "SO 943" or "SO 943 · Svbony" - keep the number.
+    const n = who.replace(/^SO\s*/i, "").split("·")[0].trim();
+    return `Stock Order ${n || "?"}`;
+  }
+  if (ch.kind === "manual") return `Adjusted by ${who || "operator"}`;
+  return who || ch.kind;
+}
+
+let pshipChart = null; // the one live Chart.js instance for the pane
+
+function pshipDrawChart(st) {
+  const canvas = document.getElementById("pship-chart");
+  const note = document.getElementById("pship-chartnote");
+  if (!canvas) return;
+  const daily = (st.salesDaily || []);
+  const graph = (document.getElementById("pship-graph") || {}).value || "sold";
+  const bucket = (document.getElementById("pship-bucket") || {}).value || "week";
+  const dur = (document.getElementById("pship-duration") || {}).value || "3m";
+  if (pshipChart) { pshipChart.destroy(); pshipChart = null; }
+  if (typeof Chart === "undefined") {
+    if (note) note.textContent = "Graphs need /static/vendor/chart.umd.min.js (blocked or missing).";
+    return;
+  }
+  // ---- window ----
+  const now = new Date();
+  let from = null;
+  if (dur === "4w") from = new Date(now - 28 * 864e5);
+  else if (dur === "3m") from = new Date(now - 91 * 864e5);
+  else if (dur === "ytd") from = new Date(now.getFullYear(), 0, 1);
+  else if (dur === "1y") from = new Date(now - 365 * 864e5);
+  else if (dur === "5y") from = new Date(now - 5 * 365 * 864e5);
+  const rows = daily
+    .map(([d, u]) => [new Date(d + "T12:00:00"), u])
+    .filter(([d]) => !from || d >= from);
+  // ---- bucket keys (day / ISO week / month), zero-filled across the span
+  const keyOf = (d) => {
+    if (bucket === "day") return d.toISOString().slice(0, 10);
+    if (bucket === "month") return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    const w = new Date(d);
+    w.setDate(w.getDate() - ((w.getDay() + 6) % 7)); // back to Monday
+    return w.toISOString().slice(0, 10);
+  };
+  const stepFwd = (d) => {
+    const n = new Date(d);
+    if (bucket === "day") n.setDate(n.getDate() + 1);
+    else if (bucket === "month") n.setMonth(n.getMonth() + 1);
+    else n.setDate(n.getDate() + 7);
+    return n;
+  };
+  const sums = new Map();
+  rows.forEach(([d, u]) => {
+    const k = keyOf(d);
+    sums.set(k, (sums.get(k) || 0) + u);
+  });
+  const start = from || (rows.length ? rows[0][0] : new Date(now - 91 * 864e5));
+  const labels = [];
+  const data = [];
+  let cum = 0;
+  for (let d = new Date(start); d <= now && labels.length < 400; d = stepFwd(d)) {
+    const k = keyOf(d);
+    if (labels.length && labels[labels.length - 1].k === k) continue;
+    const v = sums.get(k) || 0;
+    cum += v;
+    labels.push({ k, d: new Date(d) });
+    data.push(graph === "cumulative" ? cum : v);
+  }
+  if (note) note.textContent = "";
+  const css = getComputedStyle(document.documentElement);
+  const accent = (css.getPropertyValue("--accent") || "#005bd3").trim();
+  const dim = (css.getPropertyValue("--ink-dim") || "#6d7175").trim();
+  const line = (css.getPropertyValue("--line") || "#e1e3e5").trim();
+  const fmt = (l) => {
+    const d = l.d;
+    if (bucket === "month") {
+      return d.toLocaleDateString(undefined, { month: "short", year: "2-digit" });
+    }
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  };
+  pshipChart = new Chart(canvas, {
+    type: graph === "cumulative" ? "line" : "bar",
+    data: {
+      labels: labels.map(fmt),
+      datasets: [{
+        data,
+        backgroundColor: graph === "cumulative" ? accent + "22" : accent,
+        borderColor: accent,
+        borderWidth: graph === "cumulative" ? 2 : 0,
+        fill: graph === "cumulative",
+        pointRadius: 0,
+        tension: 0.25,
+        borderRadius: 2,
+        maxBarThickness: 26,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: { duration: 200 },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: (c) => `${c.parsed.y} unit${c.parsed.y === 1 ? "" : "s"}` +
+              (graph === "cumulative" ? " total" : " sold"),
+          },
+        },
+      },
+      scales: {
+        x: {
+          grid: { display: false },
+          ticks: { color: dim, font: { size: 10 }, maxTicksLimit: 9,
+                   maxRotation: 0 },
+        },
+        y: {
+          beginAtZero: true,
+          grid: { color: line + "80" },
+          ticks: { color: dim, font: { size: 10 }, precision: 0 },
+        },
+      },
+    },
+  });
 }
 
 async function pcardEnsureShopify() {
@@ -20024,18 +20215,20 @@ async function pcardEnsureShopify() {
     : null;
   if (pcardState !== st) return;
   const b = (bd && bd.breakdown) || null;
-  const stat = (label, val) =>
-    `<div class="pstat"><span class="pstat__num">${val != null ? val : "-"}</span>` +
-    `<span class="pstat__lbl">${label}</span></div>`;
+  const BUCKETS = [
+    ["available", "Available"], ["committed", "Committed"],
+    ["on_hand", "On hand"], ["unavailable", "Unavailable"],
+  ];
 
-  // ----- left half: buckets, vendor, Inventory Changes -----
+  // ----- left column: bucket tiles, vendor, Inventory Changes -----
   let left = "";
   if (b) {
-    left +=
-      '<div class="pinforow">' +
-      stat("Available", b.available) + stat("Committed", b.committed) +
-      stat("On hand", b.on_hand) + stat("Unavailable", b.unavailable) +
-      "</div>";
+    left += '<div class="pinforow" id="pship-tiles">' + BUCKETS.map(
+      ([k, label]) =>
+        `<div class="pstat"><span class="pstat__num" data-bucket="${k}">` +
+        `${b[k] != null ? b[k] : "-"}</span>` +
+        `<span class="pstat__lbl">${label}</span></div>`
+    ).join("") + "</div>";
   } else {
     left +=
       '<div class="pcard__note">Live stock buckets unavailable' +
@@ -20045,78 +20238,110 @@ async function pcardEnsureShopify() {
   if (bd && bd.vendor) {
     left += `<div class="pship__vendor">Vendor · <b>${escapeHtml(bd.vendor)}</b></div>`;
   }
-  const KINDS = {
-    sold: ["Sold", "ok"],
-    received: ["Received", "ok"],
-    manual: ["Manually adjusted", "warn"],
-    unavailable: ["Set unavailable", "bad"],
-  };
-  const changes = (bd && bd.inventory_changes) || [];
+  const TINTS = { sold: "ok", received: "ok", manual: "warn" };
+  // Unavailable-bucket moves stay out of the table (Nick, 2026-09-24) -
+  // they still shape the hover estimates server-side.
+  const changes = ((bd && bd.inventory_changes) || [])
+    .filter((ch) => ch.kind !== "unavailable");
   left += '<div class="pdivider">Inventory changes</div>';
   if (!changes.length) {
     left += '<div class="pcard__note">No recorded stock movements yet ' +
       "(direct Shopify-admin edits leave no trail here).</div>";
   } else {
     let lastDay = "";
-    left += '<div class="pship__list">';
-    for (const ch of changes.slice(0, 40)) {
+    left += '<div class="pship__list" id="pship-list">';
+    changes.slice(0, 60).forEach((ch, i) => {
       const d = pcardChangeDay(ch.at);
       const dayKey = d ? pcardDayKey(d) : "?";
       if (dayKey !== lastDay) {
         lastDay = dayKey;
         left += `<div class="ph-day">${escapeHtml(d ? pcardDayTitle(d) : "Unknown date")}</div>`;
       }
-      const meta = KINDS[ch.kind] || [ch.kind, ""];
       const units = ch.units > 0 ? `+${ch.units}` : String(ch.units);
-      const kindNote = ch.kind === "unavailable" && ch.units > 0
-        ? "Back from unavailable" : meta[0];
       left +=
-        `<div class="pship__row pship__row--${meta[1]}">` +
-        `<span class="pship__kind">${escapeHtml(kindNote)}</span>` +
+        `<div class="pship__row pship__row--${TINTS[ch.kind] || ""}" data-chg="${i}">` +
+        `<span class="pship__cause">${escapeHtml(pshipCause(ch))}</span>` +
         `<span class="pship__units">${escapeHtml(units)}</span>` +
-        `<span class="pship__who">${escapeHtml(String(ch.who || ""))}` +
-        (ch.note ? ` <span class="dim">(${escapeHtml(ch.note)})</span>` : "") +
-        "</span>" +
         `<span class="pship__time">${d ? escapeHtml(pcardClock(d)) : ""}</span>` +
         "</div>";
-    }
+    });
     left += "</div>";
   }
 
-  // ----- right half: sales graphs -----
-  const sales = (bd && bd.sales) || null;
-  let right = '<h4 class="pship__h">Sales</h4>';
-  if (!sales || !sales.total_units) {
-    right += '<div class="pcard__note">No recorded sales for this product yet.</div>';
+  // ----- right column: the graph + its dropdowns (the "Sales" control
+  // row lives at the BOTTOM, under the chart) -----
+  const daily = (bd && bd.sales && bd.sales.daily) || [];
+  st.salesDaily = daily;
+  let right;
+  if (!daily.length) {
+    right = '<div class="pcard__note">No recorded sales for this product yet.</div>';
   } else {
-    right +=
-      '<div class="pinforow">' +
-      stat("All time", sales.total_units) +
-      stat("Per week", sales.per_week_90d) +
-      stat("Per month", sales.per_month_365d) +
+    right =
+      '<div class="pship__chartbox"><canvas id="pship-chart"></canvas></div>' +
+      '<div class="pcard__note" id="pship-chartnote"></div>' +
+      '<div class="pship__ctl">' +
+      '<select id="pship-graph" title="Which graph">' +
+      '<option value="sold">Units sold</option>' +
+      '<option value="cumulative">Cumulative sold</option>' +
+      "</select>" +
+      '<select id="pship-bucket" title="Bucket size">' +
+      '<option value="day">Per day</option>' +
+      '<option value="week" selected>Per week</option>' +
+      '<option value="month">Per month</option>' +
+      "</select>" +
+      '<select id="pship-duration" title="How far back">' +
+      '<option value="4w">4 weeks</option>' +
+      '<option value="3m" selected>3 months</option>' +
+      '<option value="ytd">Year to date</option>' +
+      '<option value="1y">1 year</option>' +
+      '<option value="5y">5 years</option>' +
+      '<option value="all">All time</option>' +
+      "</select>" +
       "</div>";
-    const max = Math.max(1, ...sales.weekly);
-    const W = 260, H = 90, bw = W / 12;
-    let bars = "";
-    sales.weekly.forEach((v, i) => {
-      const h = Math.round((v / max) * (H - 18));
-      const x = Math.round(i * bw) + 2;
-      bars +=
-        `<rect x="${x}" y="${H - h - 14}" width="${Math.floor(bw) - 4}" height="${h}" rx="2" fill="var(--accent)" opacity="${v ? 0.9 : 0.25}"${v ? "" : ' height="2" y="' + (H - 16) + '"'}/>` +
-        (v ? `<text x="${x + (bw - 4) / 2}" y="${H - h - 18}" font-size="10" text-anchor="middle" fill="var(--ink-dim)">${v}</text>` : "");
-    });
-    right +=
-      '<div class="pship__chartcap">Units sold per week, last 12 weeks</div>' +
-      `<svg class="pship__chart" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">` +
-      `<line x1="0" y1="${H - 13}" x2="${W}" y2="${H - 13}" stroke="var(--line)" stroke-width="1"/>` +
-      bars +
-      `<text x="2" y="${H - 2}" font-size="9" fill="var(--ink-dim)">12w ago</text>` +
-      `<text x="${W - 2}" y="${H - 2}" font-size="9" text-anchor="end" fill="var(--ink-dim)">now</text>` +
-      "</svg>";
   }
   pane.innerHTML =
     `<div class="pship"><div class="pship__left">${left}</div>` +
     `<div class="pship__right">${right}</div></div>`;
+
+  // Hovering a change re-paints the tiles as "before → after", red on a
+  // drop, green on a rise, plain when that bucket did not move.
+  const tiles = document.getElementById("pship-tiles");
+  if (tiles) {
+    const restore = () => {
+      tiles.querySelectorAll(".pstat__num").forEach((el) => {
+        el.classList.remove("pstat__num--diff", "pstat__num--down",
+                            "pstat__num--up");
+        const k = el.dataset.bucket;
+        el.textContent = b && b[k] != null ? b[k] : "-";
+      });
+    };
+    pane.querySelectorAll(".pship__row[data-chg]").forEach((row) => {
+      const ch = changes[parseInt(row.dataset.chg, 10)];
+      if (!ch || !ch.before || !ch.after) return;
+      row.addEventListener("mouseenter", () => {
+        tiles.querySelectorAll(".pstat__num").forEach((el) => {
+          const k = el.dataset.bucket;
+          const was = ch.before[k];
+          const is = ch.after[k];
+          el.classList.remove("pstat__num--diff", "pstat__num--down",
+                              "pstat__num--up");
+          if (was == null || is == null || was === is) {
+            el.textContent = is != null ? is : (b && b[k] != null ? b[k] : "-");
+            return;
+          }
+          el.textContent = `${was} → ${is}`;
+          el.classList.add("pstat__num--diff",
+                           is < was ? "pstat__num--down" : "pstat__num--up");
+        });
+      });
+      row.addEventListener("mouseleave", restore);
+    });
+  }
+  ["pship-graph", "pship-bucket", "pship-duration"].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener("change", () => pshipDrawChart(st));
+  });
+  pshipDrawChart(st);
 }
 
 // ---------- the four-box label editor + TRUE print preview ----------
@@ -20310,7 +20535,10 @@ async function pcardEnsureLabelEditor() {
   const p = st.product;
   const defaults = {
     header: STORE_HEADER,
-    desc: p.product_title || st.sku || "",
+    // The centre line prints the SKU when nothing is saved (Nick,
+    // 2026-09-24: the editor prefilled the name, which was never what
+    // an untouched sticker actually printed).
+    desc: st.sku || p.product_title || "",
     barcode: st.barcode || st.sku || "",
     bin: p.bin_location || "",
   };
@@ -20338,8 +20566,10 @@ async function pcardEnsureLabelEditor() {
           </div></div>
         <div class="labedit__row">
           <div class="labedit__box">
-            <textarea id="lab-desc" maxlength="56" rows="2" title="Description - a | forces the line break">${escapeHtml(eff.desc)}</textarea>
+            <textarea id="lab-desc" maxlength="56" rows="3" title="Description - a | forces the line break">${escapeHtml(eff.desc)}</textarea>
             <button class="labedit__reset labedit__reset--area" data-reset="desc" title="Back to the default">✕</button>
+            <button class="labedit__toggle labedit__toggle--area" id="lab-desc-mode" type="button"
+                    title="Fill with the product name or the SKU">Name</button>
           </div></div>
         <div class="labedit__row">
           <div class="labedit__box">
@@ -20378,6 +20608,7 @@ async function pcardEnsureLabelEditor() {
     desc: document.getElementById("lab-desc"),
     barcode: document.getElementById("lab-barcode"),
     mode: document.getElementById("lab-mode"),
+    descMode: document.getElementById("lab-desc-mode"),
     bin: document.getElementById("lab-bin"),
     save: document.getElementById("lab-save"),
     qty: document.getElementById("lab-qty"),
@@ -20392,6 +20623,10 @@ async function pcardEnsureLabelEditor() {
     const onSku = els.barcode.value.trim() === (st.sku || "");
     els.mode.textContent = onSku && st.barcode ? "Barcode" : "SKU";
     els.mode.disabled = !st.sku && !st.barcode;
+    const descOnSku = els.desc.value.trim() === (st.sku || "");
+    els.descMode.textContent =
+      descOnSku && p.product_title ? "Name" : "SKU";
+    els.descMode.disabled = !st.sku && !p.product_title;
     const dirtyParts = {
       header: els.header.value.trim() !== savedEff.header,
       desc: els.desc.value.trim() !== savedEff.desc,
@@ -20431,6 +20666,12 @@ async function pcardEnsureLabelEditor() {
   els.mode.addEventListener("click", () => {
     const onSku = els.barcode.value.trim() === (st.sku || "");
     els.barcode.value = onSku && st.barcode ? st.barcode : (st.sku || "");
+    refresh();
+  });
+  els.descMode.addEventListener("click", () => {
+    const onSku = els.desc.value.trim() === (st.sku || "");
+    els.desc.value =
+      onSku && p.product_title ? p.product_title : (st.sku || "");
     refresh();
   });
   pane.querySelectorAll(".labedit__reset").forEach((btn) => {

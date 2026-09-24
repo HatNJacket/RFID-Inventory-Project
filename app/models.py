@@ -12,8 +12,8 @@ authoritative and you can re-sync them later if a product is renamed.
 from datetime import datetime
 
 from sqlalchemy import (  # noqa: F401
-    Boolean, DateTime, Float, Integer, String, Text, UniqueConstraint,
-    func,
+    Boolean, DateTime, Float, Index, Integer, String, Text,
+    UniqueConstraint, func,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -1123,6 +1123,32 @@ class SoldRecord(Base):
                 self.created_at.isoformat() if self.created_at else None
             ),
         }
+
+
+class StockSnapshot(Base):
+    """One observed set of Shopify stock buckets for a SKU, kept forever.
+    Shopify's admin only shows ~6 months of adjustment history and no API
+    serves bucket values AT a past moment, so the app records its own:
+    every time it fetches a live breakdown and any bucket differs from the
+    SKU's newest stored row, one row lands here (identical reads store
+    nothing - that is the whole storage optimization). The Shopify-info
+    tab's hover-diffs anchor their estimates on these rows, and the
+    estimates sharpen as snapshots accumulate."""
+
+    __tablename__ = "rfid_stock_snapshots"
+    __table_args__ = (
+        Index("ix_stock_snap_sku_at", "sku", "taken_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sku: Mapped[str] = mapped_column(String(100), nullable=False)
+    taken_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    available: Mapped[int | None] = mapped_column(Integer)
+    committed: Mapped[int | None] = mapped_column(Integer)
+    on_hand: Mapped[int | None] = mapped_column(Integer)
+    unavailable: Mapped[int | None] = mapped_column(Integer)
 
 
 class Batch(Base):

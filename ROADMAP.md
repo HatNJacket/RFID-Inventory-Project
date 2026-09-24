@@ -152,7 +152,26 @@ bars); product name links to Shopify admin; Event colours expander
 opens in Settings' right half, page 1 = the curated ten most-used
 events, filter box one line.
 
-**OPEN DECISIONS WAITING ON NICK (as of 2026-09-24 evening):**
+**Round 8 (Nick, 2026-09-24 late, detail in the commit):** label
+editor centre box = SKU by default (matches what an untouched sticker
+actually prints - closed old open-decision 4) with a Name/SKU fill
+toggle and a 3-line box (row gap 14 → 8 to compensate); Shopify info
+v3 = weaker row tints, cause-first rows ("Order #50950" / "Stock Order
+943" / "Adjusted by Nick"), unavailable rows hidden, narrower list
+with its own scrollbar (graph column scrolls separately), HOVER a
+change row and the four bucket tiles show before → after (red down,
+green up) - estimates anchored on the new rfid_stock_snapshots table
+(a row lands only when a live breakdown read DIFFERS from the SKU's
+newest stored row; permanent history beyond Shopify's 6 months, and
+the estimates sharpen as rows accumulate); sales graphs now Chart.js
+(vendored, app/static/vendor/) with three dropdowns UNDER the chart -
+graph (units sold / cumulative), bucket (day/week/month), duration
+(4w/3m/YTD/1y/5y/all), fed by a per-day series in stock-breakdown;
+Boxes & tags rows each grew a Locate button (merges that EPC into the
+existing C72 locate queue entry); card-history batch-counted rows show
+just who + date (SO/vendor junk scrubbed from the worker slot).
+
+**OPEN DECISIONS WAITING ON NICK (as of 2026-09-24 late evening):**
 1. Prod bundle deploy - everything since 2026-09-23 is dev-only;
    `py dev/deploy.py` ships it all when he calls it.
 2. Product-options column layout: previews sent (A grouped switches /
@@ -161,17 +180,14 @@ events, filter box one line.
 3. History event styles: style B chosen and built; Undo buttons in the
    card's history rows still missing (events lack undo handles) -
    build if wanted.
-4. Label description DEFAULT: editor prefills product name per Nick's
-   spec, but untouched products still PRINT the SKU centre line -
-   one-liner to flip store-wide when he says.
-5. Shopify-info graphs: weekly bars + 3 stat tiles shipped; more
-   (lead-time from receipt to sale etc.) on request.
-6. Embedded-in-admin nav (ui-nav-menu) needs one check inside real
+4. Shopify-info graphs: more kinds (lead-time from receipt to sale
+   etc.) on request - the round-8 dropdown has room for them.
+5. Embedded-in-admin nav (ui-nav-menu) needs one check inside real
    Shopify admin.
-7. app/devsync.py + config DEV_SYNC_SOURCE_DB (parallel session's
+6. app/devsync.py + config DEV_SYNC_SOURCE_DB (parallel session's
    uncommitted/inert dev-mirror draft) still await his pick vs the
    live deploy-script mirror.
-8. Remove the layout tuner once the label editor is signed off.
+7. Remove the layout tuner once the label editor is signed off.
 
 **Audit expected-count fix (Nick, 2026-09-24, the F9152B I1 audit) -
 HOTFIXED TO PROD 2026-09-24** (branch hotfix/audit-expected = prod's

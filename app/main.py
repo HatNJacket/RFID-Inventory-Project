@@ -92,6 +92,7 @@ from app.models import (
     SerialPrefix,
     SoldRecord,
     SortHandoff,
+    StockSnapshot,
 )
 
 logger = logging.getLogger("rfid")
@@ -1010,6 +1011,45 @@ def product_suggest(session: Session = Depends(get_session)):
     return body
 
 
+_SNAP_BUCKETS = ("available", "committed", "on_hand", "unavailable")
+
+
+def _record_stock_snapshot(
+    session: Session, sku: str, bd: dict | None
+) -> None:
+    """Keep the observed buckets - but only when they DIFFER from the
+    SKU's newest stored row, so repeated reads of an unchanged product
+    store nothing (Nick, 2026-09-24: Shopify keeps ~6 months of history
+    and no API serves past bucket values; these rows are the app's own
+    permanent record). Called wherever a live breakdown is already in
+    hand - it never spends an extra Shopify call."""
+    if not bd:
+        return
+    vals = {k: bd.get(k) for k in _SNAP_BUCKETS}
+    if all(v is None for v in vals.values()):
+        return
+    last = session.scalar(
+        select(StockSnapshot)
+        .where(func.upper(StockSnapshot.sku) == sku.upper())
+        .order_by(StockSnapshot.taken_at.desc(), StockSnapshot.id.desc())
+        .limit(1)
+    )
+    if last is not None and all(
+        getattr(last, k) == vals[k] for k in _SNAP_BUCKETS
+    ):
+        return
+    session.add(StockSnapshot(
+        sku=sku, taken_at=datetime.now(timezone.utc), **vals
+    ))
+    session.commit()
+
+
+def _snap_utc(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
 @app.get(
     "/api/products/{sku}/stock-breakdown",
     dependencies=[Depends(require_user)],
@@ -1020,7 +1060,7 @@ def product_stock_breakdown(
     """The Shopify-info tab's numbers beyond the card basics: the
     available/committed/on-hand/unavailable buckets (live), the vendor
     (bin-map snapshot), and recent shipments from the sold ledger.
-    Read-only everywhere."""
+    Reads Shopify only; its one write is the app's own snapshot table."""
     key = (sku or "").strip()
     if not key:
         raise HTTPException(422, "SKU required.")
@@ -1035,6 +1075,7 @@ def product_stock_breakdown(
         out["breakdown"] = shopify.get_quantity_breakdown(key)
     except Exception as error:  # noqa: BLE001 — the tab degrades, not errors
         out["breakdown_error"] = str(error)[:200]
+    _record_stock_snapshot(session, key, out["breakdown"])
     # --- Inventory Changes (Nick, 2026-09-24): every stock movement we
     # can attribute, one signed line each - sold (ledger), received
     # (planner-confirmed receipts), manual on-hand writes, and
@@ -1107,7 +1148,69 @@ def product_stock_breakdown(
             "who": f"SO {receipt.reference or receipt.stock_order_id}",
         })
     changes.sort(key=lambda c: c["at"] or "", reverse=True)
-    out["inventory_changes"] = changes[:80]
+    changes = changes[:80]
+
+    # Hover-diffs (Nick, 2026-09-24): estimated bucket values around each
+    # change. Anchored on the live read (or the newest snapshot when
+    # Shopify is unreachable) and walked backwards one change at a time by
+    # each change's own bucket arithmetic - a fulfillment takes committed
+    # and on-hand down together, a receipt raises on-hand and available,
+    # an unavailable move trades available for unavailable. Whenever a
+    # stored snapshot sits after a change, the walk re-anchors on it, so
+    # the numbers converge on observed truth as snapshots accumulate.
+    # Order placements and direct admin edits are invisible between
+    # anchors, hence estimates.
+    snaps = session.scalars(
+        select(StockSnapshot)
+        .where(func.upper(StockSnapshot.sku) == key.upper())
+        .order_by(StockSnapshot.taken_at.desc(), StockSnapshot.id.desc())
+        .limit(400)
+    ).all()
+    state = out["breakdown"]
+    if not state and snaps:
+        state = {k: getattr(snaps[0], k) for k in _SNAP_BUCKETS}
+    if state and all(state.get(k) is not None for k in _SNAP_BUCKETS):
+        state = {k: int(state[k]) for k in _SNAP_BUCKETS}
+        snap_i = 0  # advances newest → oldest alongside the changes
+        for ch in changes:
+            t = None
+            if ch["at"]:
+                try:
+                    t = _snap_utc(datetime.fromisoformat(ch["at"]))
+                except ValueError:
+                    t = None
+            # Re-anchor on the OLDEST snapshot taken at or after this
+            # change - the observation closest to its moment. The walk
+            # advances past every newer snapshot to reach it, so each
+            # snapshot anchors at most once.
+            anchor = None
+            while snap_i < len(snaps) and t is not None:
+                s_at = _snap_utc(snaps[snap_i].taken_at)
+                if s_at is None or s_at < t:
+                    break
+                anchor = snaps[snap_i]
+                snap_i += 1
+            if anchor is not None and all(
+                getattr(anchor, k) is not None for k in _SNAP_BUCKETS
+            ):
+                state = {k: int(getattr(anchor, k)) for k in _SNAP_BUCKETS}
+            after = dict(state)
+            before = dict(after)
+            u = ch["units"] or 0
+            if ch["kind"] == "sold":
+                before["on_hand"] -= u  # u is negative: before was higher
+                before["committed"] -= u
+            elif ch["kind"] in ("received", "manual"):
+                before["on_hand"] -= u
+                before["available"] -= u
+            elif ch["kind"] == "unavailable":
+                before["available"] -= u
+                before["unavailable"] += u
+            before = {k: max(0, v) for k, v in before.items()}
+            ch["after"] = after
+            ch["before"] = before
+            state = before
+    out["inventory_changes"] = changes
 
     # --- sales stats for the graphs column -------------------------------
     now = datetime.now(timezone.utc)
@@ -1131,11 +1234,25 @@ def product_stock_breakdown(
         wk = age // 7
         if 0 <= wk < 12:
             weekly[11 - wk] += q
+    # Full per-day series for the graph dropdowns (client buckets it into
+    # weeks/months over whatever duration is picked). Capped at 5 years.
+    daily: dict[str, int] = {}
+    for r in sold_rows:
+        f = r.fulfilled_at or r.created_at
+        if f is None:
+            continue
+        if f.tzinfo is None:
+            f = f.replace(tzinfo=timezone.utc)
+        if (now - f).days > 5 * 366:
+            continue
+        k = f.date().isoformat()
+        daily[k] = daily.get(k, 0) + (r.quantity or 0)
     out["sales"] = {
         "weekly": weekly,
         "total_units": total,
         "per_week_90d": round(units_90d / (90 / 7), 1),
         "per_month_365d": round(units_365d / 12, 1),
+        "daily": sorted(daily.items()),
     }
     return out
 
@@ -6911,6 +7028,35 @@ def bin_odd_barcodes(
     }
 
 
+# Open local-pickup orders, store-wide, cached for the length of an
+# audit walk. AUDIT-ONLY context (Nick, 2026-09-24, F9168A): "Ready for
+# pickup" never writes a fulfillment, so staged boxes are invisible to
+# the sold ledger - but treating pickup as sold anywhere else would
+# double-count the drop when the customer finally collects. The audit
+# alone reads this, and only to EXPLAIN a heard shortfall the recorded
+# sales already reconcile.
+_pickup_cache: dict = {"at": 0.0, "map": None}
+_PICKUP_TTL = 180
+_PICKUP_FAIL_TTL = 60
+
+
+def _pickup_pending_map() -> dict[str, dict]:
+    now = time.time()
+    cached = _pickup_cache["map"]
+    ttl = _PICKUP_TTL if cached is not None else _PICKUP_FAIL_TTL
+    if now - _pickup_cache["at"] < ttl:
+        return cached or {}
+    try:
+        _pickup_cache["map"] = shopify.get_open_pickup_lines()
+    except Exception:
+        # No pickup info is never an outage: the audit just falls back
+        # to flagging the silence unexplained, exactly as before.
+        if cached is None:
+            _pickup_cache["map"] = None
+    _pickup_cache["at"] = now
+    return _pickup_cache["map"] or {}
+
+
 class BinCheckIn(BaseModel):
     epcs: list[str] = Field(default_factory=list, max_length=5000)
     # A sweep already on the server can be named instead of re-uploading
@@ -6999,6 +7145,10 @@ def bin_check(
     # total: its whole job is consuming stale pre-baseline sales that a
     # perfect sweep just proved tag-free.
     sold_all_map = orders_sync.sold_unretired_map(session, _audit_keys)
+    # Boxes staged for local pickup (F9168A): no fulfillment, no ledger
+    # row, tags silent - the audit's ONLY other licence to explain a
+    # silence. Store-wide per SKU, cached; empty on any Shopify hiccup.
+    pickup_map = _pickup_pending_map()
     # Uncleared backorder debt RAISES what the shelf should hold: those
     # boxes arrived and stand here, but Shopify's on-hand ran behind.
     debt_map: dict[str, int] = {}
@@ -7082,6 +7232,8 @@ def bin_check(
                 t.rfid_id for t in here if t.rfid_id.upper() not in swept
             ],
             "sold_unretired": sold_map.get(sku_upper, 0),
+            "pickup_pending": pickup_map.get(sku_upper, {}).get("qty", 0),
+            "pickup_orders": pickup_map.get(sku_upper, {}).get("orders", []),
             "backorder_debt": debt_map.get(sku_upper, 0),
             "finds_open": finds_map.get(sku_upper, {}).get("open", 0),
             "finds_printed": finds_map.get(sku_upper, {}).get("printed", 0),
@@ -7116,6 +7268,8 @@ def bin_check(
             # a count. No expected quantity means no unit math, no
             # silent mark-sold offers, no ledger clearing.
             counts["sold_unretired"] = 0
+            counts["pickup_pending"] = 0
+            counts["pickup_orders"] = []
         expected = None if key in unlab else g["qty"]
         report.append({
             "sku": e.sku,

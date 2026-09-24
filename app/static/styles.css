@@ -1929,6 +1929,13 @@ body {
 .prow:last-child { border-bottom: 0; }
 .prow .epc { font-family: var(--mono); font-size: 12px; }
 .prow .dim { color: var(--ink-dim); font-size: 12px; }
+.prow__locate {
+  margin-left: auto; flex: none;
+  border: 1px solid var(--line); border-radius: 7px; background: var(--card-2);
+  color: var(--ink-dim); padding: 4px 10px; cursor: pointer; font-size: 12px;
+}
+.prow__locate:hover { border-color: var(--accent); color: var(--ink); }
+.prow__locate--on { background: var(--accent-soft); color: var(--ink); border-color: transparent; cursor: default; }
 .pinfo { display: flex; align-items: baseline; gap: 10px; padding: 6px 0; font-size: 14px; }
 .pinfo label { flex: 0 0 120px; color: var(--ink-dim); }
 .pinfo span { overflow-wrap: anywhere; }
@@ -4041,7 +4048,7 @@ button.ph-order:hover { border-color: var(--accent); }
      Save/Print share a baseline */
   --lab-gap: 28px;
   --lab-form-top: 0px;
-  --lab-row-gap: 14px;
+  --lab-row-gap: 8px; /* was 14 - the 3-line description absorbed the rest */
   --lab-box-pady: 6px;
   --lab-prev-w: 300px;
   --lab-save-mt: 0px;
@@ -4116,34 +4123,45 @@ button.ph-order:hover { border-color: var(--accent); }
 }
 .pcard__namelink:hover { color: var(--accent); }
 
-/* shopify pane: changes left, graphs right */
+/* shopify pane v3 (Nick, 2026-09-24): a narrower changes column and the
+   graph column scroll on their own - zero, one or two scrollbars,
+   whichever the content needs - and the tiles stay put for hover-diffs */
 .pship { display: flex; gap: 26px; align-items: flex-start; flex-wrap: wrap; }
-.pship__left { flex: 1 1 320px; min-width: 280px; max-width: 50%; }
-.pship__right { flex: 1 1 260px; min-width: 240px; }
-@media (max-width: 900px) { .pship__left { max-width: none; } }
-.pship__h { margin: 0 0 8px; font-size: 13px; }
+.pship__left { flex: 0 1 340px; min-width: 280px; }
+.pship__right { flex: 1 1 300px; min-width: 260px; max-height: 440px; overflow-y: auto; }
 .pship__vendor { color: var(--ink-dim); font-size: 12px; margin-top: 6px; }
 .pship__vendor b { color: var(--ink); font-weight: 600; }
-.pship__list { display: flex; flex-direction: column; }
+.pship__list { display: flex; flex-direction: column; max-height: 330px; overflow-y: auto; padding-right: 4px; }
 .pship__row {
   display: flex;
   align-items: baseline;
   gap: 10px;
-  padding: 5px 8px;
-  border-left: 3px solid var(--line);
+  padding: 4px 8px;
+  border-left: 2px solid var(--line);
   border-radius: 2px;
-  margin-bottom: 3px;
+  margin-bottom: 2px;
   font-size: 13px;
 }
-.pship__row--ok { border-left-color: #2f9e6e; background: color-mix(in srgb, var(--ok-bg) 45%, transparent); }
-.pship__row--warn { border-left-color: #b98900; background: color-mix(in srgb, var(--warn-bg) 45%, transparent); }
-.pship__row--bad { border-left-color: #d72c0d; background: color-mix(in srgb, var(--bad-bg) 45%, transparent); }
-.pship__kind { flex: 0 0 128px; font-weight: 600; font-size: 12px; }
-.pship__units { flex: 0 0 38px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.pship__who { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pship__row--ok { border-left-color: #2f9e6e; background: color-mix(in srgb, var(--ok-bg) 18%, transparent); }
+.pship__row--warn { border-left-color: #b98900; background: color-mix(in srgb, var(--warn-bg) 18%, transparent); }
+.pship__row--bad { border-left-color: #d72c0d; background: color-mix(in srgb, var(--bad-bg) 18%, transparent); }
+.pship__cause { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; font-size: 12.5px; }
+.pship__units { flex: none; font-weight: 700; font-variant-numeric: tabular-nums; }
 .pship__time { flex: none; color: var(--ink-dim); font-size: 12px; font-variant-numeric: tabular-nums; }
-.pship__chartcap { color: var(--ink-dim); font-size: 12px; margin: 10px 0 4px; }
-.pship__chart { width: 100%; height: auto; }
+
+/* hover-diff tiles: before → after, red down, green up */
+.pstat__num--diff { font-size: 15px; }
+.pstat__num--down { color: #d72c0d; }
+.pstat__num--up { color: #2f9e6e; }
+
+/* the graph and its dropdown row (the "Sales" controls live BELOW it) */
+.pship__chartbox { position: relative; height: 230px; }
+.pship__ctl { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.pship__ctl select {
+  border: 1px solid var(--line); border-radius: 7px; background: var(--card-2);
+  color: var(--ink); font: inherit; font-size: 12.5px; padding: 5px 8px;
+  cursor: pointer;
+}
 
 
 /* event colours: one slim filter line, no explainer (Nick, 2026-09-24) */
@@ -4182,6 +4200,10 @@ button.ph-order:hover { border-color: var(--accent); }
 
 /* the barcode row's X hugs the INPUT's edge, not the toggle after it */
 .labedit__box:has(#lab-mode) .labedit__reset { right: 88px; }
+
+/* the description row grew the same Name/SKU toggle (Nick, 2026-09-24) */
+.labedit__box #lab-desc-mode { margin-left: 6px; align-self: flex-start; }
+.labedit__box:has(#lab-desc-mode) .labedit__reset--area { right: 88px; }
 
 
 /* save-button spacing joins the tuner; full form width to mirror the

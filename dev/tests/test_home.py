@@ -187,6 +187,67 @@ with patch("app.main._maybe_refresh_bin_map", return_value=False), \
           len(body.get("sales", {}).get("weekly", [])) == 12
           and body["sales"]["total_units"] == 2, body.get("sales"))
 
+    # ---- round 8 (2026-09-24): snapshots + hover-diffs + daily sales ----
+    from sqlalchemy import select as sa_select
+    from app.models import StockSnapshot
+    select_snaps = sa_select(StockSnapshot).where(
+        StockSnapshot.sku == "ASK-M54-OAG")
+    bd_a = {"available": 3, "committed": 1, "on_hand": 5, "unavailable": 1}
+    with patch("app.shopify.get_quantity_breakdown", return_value=bd_a):
+        cl.get("/api/products/ASK-M54-OAG/stock-breakdown")
+    with Session(get_engine()) as s:
+        n1 = len(s.scalars(select_snaps).all())
+    check("identical breakdown reads store ONE snapshot (deduped)",
+          n1 == 1, n1)
+    bd_b = {"available": 4, "committed": 1, "on_hand": 6, "unavailable": 1}
+    with patch("app.shopify.get_quantity_breakdown", return_value=bd_b):
+        r = cl.get("/api/products/ASK-M54-OAG/stock-breakdown")
+    with Session(get_engine()) as s:
+        n2 = len(s.scalars(select_snaps).all())
+    check("a changed breakdown stores a second snapshot", n2 == 2, n2)
+    body = r.json()
+    chs = body["inventory_changes"]
+    check("every change carries before/after bucket estimates",
+          chs and all(
+              set(c.get("before", {})) == set(c.get("after", {}))
+              == {"available", "committed", "on_hand", "unavailable"}
+              for c in chs), chs[:2])
+    by_kind = {c["kind"]: c for c in chs}
+    sold_c, man_c = by_kind.get("sold"), by_kind.get("manual")
+    check("sold hover-diff: committed and on-hand both step by the units",
+          sold_c
+          and sold_c["after"]["on_hand"] - sold_c["before"]["on_hand"] == -2
+          and sold_c["after"]["committed"] - sold_c["before"]["committed"] == -2
+          and sold_c["after"]["available"] == sold_c["before"]["available"],
+          sold_c)
+    check("manual hover-diff: on-hand and available step, committed holds",
+          man_c
+          and man_c["after"]["on_hand"] - man_c["before"]["on_hand"] == 2
+          and man_c["after"]["available"] - man_c["before"]["available"] == 2
+          and man_c["after"]["committed"] == man_c["before"]["committed"],
+          man_c)
+    daily = body["sales"].get("daily")
+    check("sales carry the per-day series for the graph dropdowns",
+          daily and sum(u for _, u in daily) == body["sales"]["total_units"],
+          daily)
+    appjs = open(os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__)))),
+        "app", "static", "app.js"), encoding="utf-8").read()
+    check("round-8 client surfaces are in app.js "
+          "(Locate button, Name/SKU toggle, Chart.js pane)",
+          "prow__locate" in appjs and "lab-desc-mode" in appjs
+          and "pship-chart" in appjs and "pship-duration" in appjs, "")
+    check("Chart.js is vendored and wired into the page",
+          "vendor/chart.umd.min.js" in open(os.path.join(
+              os.path.dirname(os.path.dirname(os.path.dirname(
+                  os.path.abspath(__file__)))),
+              "app", "templates", "index.html"), encoding="utf-8").read()
+          and os.path.getsize(os.path.join(
+              os.path.dirname(os.path.dirname(os.path.dirname(
+                  os.path.abspath(__file__)))),
+              "app", "static", "vendor", "chart.umd.min.js")) > 100000, "")
+
     # ---- F9152B regression (Nick, 2026-09-24): audit sold is WINDOWED --
     from app.models import RfidAssignment as RA, BinMapEntry as BME
     with Session(get_engine()) as s:
