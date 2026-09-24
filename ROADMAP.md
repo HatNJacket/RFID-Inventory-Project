@@ -136,6 +136,43 @@ recalibrated); the resume card always says something - the open batch,
 with centred legend-style field labels, a fixed-width SKU/Barcode
 toggle (no input jumping), and Print-N-labels stacked under Save.
 
+**Rounds 6-7 + layout tuning (2026-09-24, detail in commits):** card
+tabs reordered RFID & labels / Shopify info / Boxes & tags / History
+(opens on RFID); label editor = bare boxes with inline reset X's,
+click-a-label-line-to-focus-its-input, amber preview text for unsaved
+edits (black on save), form left / sticker middle / options column
+right, layout dialled in LIVE on dev via the TEMPORARY slider tuner
+(dev/localhost only - REMOVE once Nick signs off; baked: gap 28, row
+gap 14, box pad 6, print-mt 15, save-mt 0, Save stretched to form
+width); Shopify info = bucket row + vendor + day-grouped colour-coded
+INVENTORY CHANGES (sold/received/manual/unavailable, from ledger +
+on-hand History + planner receipts - direct admin edits leave no
+trail) + sales graphs (all-time / per-week / per-month + 12-week
+bars); product name links to Shopify admin; Event colours expander
+opens in Settings' right half, page 1 = the curated ten most-used
+events, filter box one line.
+
+**OPEN DECISIONS WAITING ON NICK (as of 2026-09-24 evening):**
+1. Prod bundle deploy - everything since 2026-09-23 is dev-only;
+   `py dev/deploy.py` ships it all when he calls it.
+2. Product-options column layout: previews sent (A grouped switches /
+   B chip toggles + detail panel / C accordion bundles) - pick or mix,
+   then build v1 (flags + scan note first).
+3. History event styles: style B chosen and built; Undo buttons in the
+   card's history rows still missing (events lack undo handles) -
+   build if wanted.
+4. Label description DEFAULT: editor prefills product name per Nick's
+   spec, but untouched products still PRINT the SKU centre line -
+   one-liner to flip store-wide when he says.
+5. Shopify-info graphs: weekly bars + 3 stat tiles shipped; more
+   (lead-time from receipt to sale etc.) on request.
+6. Embedded-in-admin nav (ui-nav-menu) needs one check inside real
+   Shopify admin.
+7. app/devsync.py + config DEV_SYNC_SOURCE_DB (parallel session's
+   uncommitted/inert dev-mirror draft) still await his pick vs the
+   live deploy-script mirror.
+8. Remove the layout tuner once the label editor is signed off.
+
 **Feature redesign notes (later passes, per Nick - each feature gets
 reworked to fit the streamlined menu, one at a time):**
 - Receiving: per-SO view inside tile 1; stable /#receive/so-NNN URLs;
