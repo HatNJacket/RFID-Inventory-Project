@@ -4036,13 +4036,16 @@ button.ph-order:hover { border-color: var(--accent); }
    Spacing rides CSS variables so the TEMPORARY dev tuner can move
    everything live (2026-09-24). */
 :root {
-  --lab-gap: 24px;
+  /* dialled in live on the dev page, 2026-09-24: the four boxes span
+     exactly the label's height (each row faces its printed line) and
+     Save/Print share a baseline */
+  --lab-gap: 28px;
   --lab-form-top: 0px;
-  --lab-row-gap: 8px;
-  --lab-box-pady: 5px;
+  --lab-row-gap: 14px;
+  --lab-box-pady: 6px;
   --lab-prev-w: 300px;
-  --lab-save-mt: 8px;
-  --lab-print-mt: 6px;
+  --lab-save-mt: 0px;
+  --lab-print-mt: 15px;
 }
 .labedit { justify-content: flex-start; gap: var(--lab-gap); }
 .labedit__form { margin-left: 0; }
@@ -4181,8 +4184,13 @@ button.ph-order:hover { border-color: var(--accent); }
 .labedit__box:has(#lab-mode) .labedit__reset { right: 88px; }
 
 
-/* save-button spacing joins the tuner */
-.labedit__form .labedit__save { margin-top: var(--lab-save-mt); }
+/* save-button spacing joins the tuner; full form width to mirror the
+   Print bar under the label */
+.labedit__form .labedit__save {
+  margin-top: var(--lab-save-mt);
+  align-self: stretch;
+  text-align: center;
+}
 
 /* TEMPORARY layout tuner (dev only, removed once Nick signs off) */
 .labtuner {
