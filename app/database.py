@@ -93,6 +93,8 @@ _COLUMN_UPGRADES = [
     ("rfid_sold_ledger", "ss_order_id", "VARCHAR(32) NULL"),
     ("rfid_sold_ledger", "ss_shipments", "VARCHAR(2000) NULL"),
     ("rfid_sold_ledger", "ss_line_qty", "INTEGER NULL"),
+    ("rfid_label_names", "barcode_mode", "VARCHAR(10) NULL"),
+    ("rfid_label_names", "bin_text", "VARCHAR(100) NULL"),
 ]
 
 

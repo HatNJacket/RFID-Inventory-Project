@@ -692,6 +692,7 @@ const tabSections = {
   review: [document.getElementById("tab-review")],
   audits: [document.getElementById("tab-audits")],
   history: [document.getElementById("tab-history")],
+  settings: [document.getElementById("tab-settings")],
 };
 const tabLoaders = {
   home: () => loadHome(),
@@ -19357,6 +19358,7 @@ async function loadHome() {
       else if (b.products) bits.push(`${b.products} product(s)`);
       if (b.created_by) bits.push(b.created_by);
       homeEls.resumeMeta.textContent = bits.join(" · ");
+      homeEls.resumeGo.dataset.batchId = String(b.id);
       homeEls.resume.hidden = false;
     })
     .catch(() => { homeEls.resume.hidden = true; });
@@ -19383,7 +19385,11 @@ async function loadHome() {
   if (homeEls.pcard.hidden) homeEls.lookup.focus();
 }
 
-homeEls.resumeGo.addEventListener("click", () => goTab("batch"));
+homeEls.resumeGo.addEventListener("click", () => {
+  const id = parseInt(homeEls.resumeGo.dataset.batchId || "", 10);
+  goTab("batch");
+  if (id) resumeBatch(id);
+});
 
 // --- tiles route to today's features ---------------------------------------
 document.querySelectorAll("#tab-home [data-go]").forEach((btn) => {
@@ -19427,7 +19433,11 @@ function homeRenderDrop(hits) {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "lookup__opt";
+    const thumb = p[3]
+      ? `<span class="thumb"><img src="${escapeHtml(p[3])}" alt="" loading="lazy" /></span>`
+      : '<span class="thumb">\u{1F4E6}</span>';
     b.innerHTML =
+      thumb +
       `<span class="t"><b>${escapeHtml(p[1] || p[0])}</b>` +
       `<span>${escapeHtml(p[0])}</span></span>`;
     b.addEventListener("click", () => {
@@ -19499,23 +19509,31 @@ document.addEventListener("click", (event) => {
 });
 
 // --- the product preview card ----------------------------------------------
-let pcardProduct = null;
+// Round 3 (Nick, 2026-09-24): structured identity column with On hand /
+// Tags stat cells, filterable history, open-box boxes folded in, a
+// leaner Shopify-info pane with live buckets, and the four-box label
+// editor with a TRUE print preview (real Code 128 bars, the agent's own
+// wrap arithmetic - print_agent.build_zpl ported line for line).
+
+let pcardState = null;
 
 document.getElementById("pcard-close").addEventListener("click", () => {
   homeEls.pcard.hidden = true;
-  pcardProduct = null;
+  pcardState = null;
   homeEls.lookup.focus();
 });
 
-document.querySelectorAll(".pcard__tabbtn").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    document.querySelectorAll(".pcard__tabbtn").forEach((b) =>
-      b.classList.toggle("pcard__tabbtn--active", b === btn));
-    ["history", "tags", "shopify", "rfid"].forEach((name) => {
-      document.getElementById(`pcard-pane-${name}`).hidden =
-        name !== btn.dataset.ptab;
-    });
+function pcardShowTab(name) {
+  document.querySelectorAll(".pcard__tabbtn").forEach((b) =>
+    b.classList.toggle("pcard__tabbtn--active", b.dataset.ptab === name));
+  ["history", "tags", "shopify", "rfid"].forEach((n) => {
+    document.getElementById(`pcard-pane-${n}`).hidden = n !== name;
   });
+  if (name === "shopify") pcardEnsureShopify();
+  if (name === "rfid") pcardEnsureLabelEditor();
+}
+document.querySelectorAll(".pcard__tabbtn").forEach((btn) => {
+  btn.addEventListener("click", () => pcardShowTab(btn.dataset.ptab));
 });
 
 function pcardPane(name) {
@@ -19536,15 +19554,723 @@ function pcardOpenInScan(term) {
   stationBarcodeScan(term);
 }
 
+// ---------- identity column ----------
+function pcardRenderIdentity() {
+  const st = pcardState;
+  const p = st.product;
+  homeEls.pcardName.textContent =
+    (p.product_title || st.sku || st.term) +
+    (p.variant_title && p.variant_title !== "Default Title"
+      ? ` - ${p.variant_title}` : "");
+  homeEls.pcardImg.innerHTML = "";
+  if (p.image_url) {
+    const img = document.createElement("img");
+    img.src = p.image_url;
+    img.alt = "";
+    homeEls.pcardImg.appendChild(img);
+  } else {
+    homeEls.pcardImg.textContent = "\u{1F4E6}";
+  }
+  const rows = [];
+  if (st.sku) {
+    rows.push(
+      `<div class="coderow"><label>SKU</label><span>${escapeHtml(st.sku)}</span></div>`
+    );
+  }
+  if (st.barcode) {
+    rows.push(
+      `<div class="coderow"><label>Barcode</label><span>${escapeHtml(st.barcode)}</span></div>`
+    );
+  }
+  rows.push(
+    `<div class="coderow"><label>Bin</label>` +
+    (p.bin_location
+      ? `<span class="pchip">${escapeHtml(p.bin_location)}</span>`
+      : `<span class="dim">none assigned</span>`) +
+    `</div>`
+  );
+  homeEls.pcardCodes.innerHTML = rows.join("");
+  // stat cells fill as their numbers arrive
+  document.getElementById("pcard-onhand").hidden = true;
+  document.getElementById("pcard-tagcount").hidden = true;
+  homeEls.pcardChips.innerHTML = "";
+}
+
+function pcardRenderStats() {
+  const st = pcardState;
+  const onhandBtn = document.getElementById("pcard-onhand");
+  const tagsBtn = document.getElementById("pcard-tagcount");
+  const onHand = st.tags ? st.tags.on_hand : null;
+  if (onHand != null) {
+    document.getElementById("pcard-onhand-num").textContent = onHand;
+    onhandBtn.hidden = false;
+  }
+  const tagRows = (st.tags && st.tags.assignments) || [];
+  document.getElementById("pcard-tagcount-num").textContent = tagRows.length;
+  tagsBtn.hidden = false;
+  const chips = [];
+  if (st.tags && st.tags.rfid_incompatible) {
+    chips.push('<span class="pchip pchip--warn">Won’t RFID scan</span>');
+  }
+  homeEls.pcardChips.innerHTML = chips.join("");
+}
+document.getElementById("pcard-onhand").addEventListener("click", () => {
+  const url = pcardState && pcardState.adminUrl;
+  if (url) window.open(url, "_blank", "noopener");
+});
+document.getElementById("pcard-tagcount").addEventListener("click", () =>
+  pcardShowTab("rfid"));
+
+// ---------- history pane: style B (Nick, 2026-09-24) ----------
+// Day-grouped rows with a FIXED-width family chip (global width, so
+// every product's history lines up identically), plain description,
+// time right-justified. Same-type events CHAIN when each is within
+// PCARD_CHAIN_MS of the previous event of that type (interleaved other
+// types never break a chain); a chain anchors at its EARLIEST event,
+// and within a day rows run chronologically by anchor - so a 2:30
+// single sits after a 1:20-2:45 chain. Clicking a chained row drops
+// down its members; chained sales preview their orders and click
+// through to Shopify admin.
+let pcardHistFilters = new Set();
+const PCARD_CHAIN_MS = 60 * 60 * 1000;
+
+function pcardFamily(type) {
+  const t = (type || "").toLowerCase();
+  if (t.startsWith("tag") || t.includes("-tag") || t === "not-our-tag")
+    return "TAGS";
+  if (t.includes("print") || t.includes("label")) return "LABELS";
+  if (t === "order-sold" || t.includes("sold") || t.includes("ship"))
+    return "SOLD";
+  if (t.includes("on-hand") || t.includes("count") || t.includes("recount")
+      || t.includes("backorder") || t.includes("ledger")) return "STOCK";
+  if (t.startsWith("bin") || t.includes("rebinned")) return "BIN";
+  if (t.startsWith("review")) return "REVIEW";
+  if (t.includes("barcode") || t.includes("sku") || t.includes("draft")
+      || t.includes("vendor") || t.includes("alias")) return "PRODUCT";
+  return "OTHER";
+}
+
+function pcardDayKey(d) {
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+}
+function pcardDayTitle(d) {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const that = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const diff = Math.round((today - that) / 86400000);
+  if (diff === 0) return "Today";
+  if (diff === 1) return "Yesterday";
+  return d.toLocaleDateString([], {
+    month: "short", day: "numeric",
+    year: d.getFullYear() === now.getFullYear() ? undefined : "numeric",
+  });
+}
+function pcardClock(d) {
+  return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+function pcardBuildChains(events) {
+  const evs = events
+    .map((ev) => ({ ev, t: new Date(ev.at || 0) }))
+    .filter((x) => !Number.isNaN(x.t.getTime()))
+    .sort((a, b) => a.t - b.t);
+  const lastByType = {};
+  const chains = [];
+  for (const x of evs) {
+    const prev = lastByType[x.ev.type];
+    if (prev && x.t - prev.lastT <= PCARD_CHAIN_MS) {
+      prev.items.push(x);
+      prev.lastT = x.t;
+    } else {
+      const c = { type: x.ev.type, items: [x], firstT: x.t, lastT: x.t };
+      chains.push(c);
+      lastByType[x.ev.type] = c;
+    }
+  }
+  return chains;
+}
+
+function pcardChainText(c) {
+  const meta = EVENT_META[c.type] || [c.type, "var(--ink-dim)"];
+  if (c.items.length === 1) {
+    const ev = c.items[0].ev;
+    return { title: meta[0], desc: ev.detail || "", n: 1 };
+  }
+  if (c.type === "order-sold") {
+    const qty = c.items.reduce((s, x) => s + (x.ev.qty || 1), 0);
+    return {
+      title: `Sold ${qty}`,
+      desc: `${c.items.length} orders, ` +
+        `${pcardClock(c.firstT)} to ${pcardClock(c.lastT)}`,
+      n: c.items.length,
+    };
+  }
+  return {
+    title: `${meta[0]} ×${c.items.length}`,
+    desc: `${pcardClock(c.firstT)} to ${pcardClock(c.lastT)}`,
+    n: c.items.length,
+  };
+}
+
+function pcardRenderHistory() {
+  const st = pcardState;
+  const pane = pcardPane("history");
+  const events = (st.hist && st.hist.events) || [];
+  if (!events.length) {
+    pane.innerHTML =
+      '<div class="pcard__note">No recorded events yet.</div>';
+    return;
+  }
+  const types = [];
+  const seenT = new Set();
+  events.forEach((ev) => {
+    if (!seenT.has(ev.type)) { seenT.add(ev.type); types.push(ev.type); }
+  });
+  const active = pcardHistFilters;
+  const shown = events.filter(
+    (ev) => active.size === 0 || active.has(ev.type)
+  );
+  const chains = pcardBuildChains(shown);
+  // day groups: newest DAY first, chains inside a day chronological
+  const days = new Map();
+  chains.forEach((c) => {
+    const k = pcardDayKey(c.firstT);
+    if (!days.has(k)) days.set(k, { d: c.firstT, chains: [] });
+    days.get(k).chains.push(c);
+  });
+  const dayList = Array.from(days.values()).sort((a, b) => b.d - a.d);
+  let html = "";
+  let idx = 0;
+  const chainRefs = [];
+  for (const day of dayList) {
+    html += `<div class="ph-day">${escapeHtml(pcardDayTitle(day.d))}</div>`;
+    day.chains.sort((a, b) => a.firstT - b.firstT);
+    for (const c of day.chains) {
+      const meta = EVENT_META[c.type] || [c.type, "var(--ink-dim)"];
+      const t = pcardChainText(c);
+      const time = c.items.length === 1
+        ? pcardClock(c.firstT)
+        : `${pcardClock(c.firstT)} - ${pcardClock(c.lastT)}`;
+      const who = c.items.length === 1 ? (c.items[0].ev.worker || "") : "";
+      const expandable = c.items.length > 1;
+      chainRefs[idx] = c;
+      html +=
+        `<div class="ph-row${expandable ? " ph-row--x" : ""}" data-chain="${idx}" style="border-left-color:${meta[1]}">` +
+        `<span class="ph-tag">${escapeHtml(pcardFamily(c.type))}</span>` +
+        `<span class="ph-txt"><b>${escapeHtml(t.title)}</b>` +
+        (t.desc ? ` <span class="ph-desc">${escapeHtml(t.desc)}</span>` : "") +
+        "</span>" +
+        `<span class="ph-right">${escapeHtml([who, time].filter(Boolean).join(" · "))}` +
+        (expandable ? ' <span class="ph-caret">▾</span>' : "") +
+        "</span></div>" +
+        (expandable ? `<div class="ph-sub" data-sub="${idx}" hidden></div>` : "");
+      idx++;
+    }
+  }
+  const filterRows = types.map((tp) => {
+    const meta = EVENT_META[tp] || [tp, "var(--ink-dim)"];
+    return (
+      `<label><input type="checkbox" data-ftype="${escapeHtml(tp)}"` +
+      `${active.has(tp) ? " checked" : ""} />` +
+      `<span class="pfilter__dot" style="background:${meta[1]}"></span>` +
+      `${escapeHtml(meta[0])}</label>`
+    );
+  });
+  pane.innerHTML =
+    `<details class="pfilter"><summary>Filter${active.size ? ` (${active.size})` : ""} ▾</summary>` +
+    `<div class="pfilter__panel">${filterRows.join("")}</div></details>` +
+    (html || '<div class="pcard__note">No events match the filter.</div>');
+  pane.querySelectorAll(".pfilter input").forEach((cb) => {
+    cb.addEventListener("change", () => {
+      if (cb.checked) pcardHistFilters.add(cb.dataset.ftype);
+      else pcardHistFilters.delete(cb.dataset.ftype);
+      const open = pane.querySelector(".pfilter").open;
+      pcardRenderHistory();
+      pane.querySelector(".pfilter").open = open;
+    });
+  });
+  pane.querySelectorAll(".ph-row--x").forEach((row) => {
+    row.addEventListener("click", () => {
+      const c = chainRefs[parseInt(row.dataset.chain, 10)];
+      const sub = pane.querySelector(`[data-sub="${row.dataset.chain}"]`);
+      if (!sub.hidden) { sub.hidden = true; return; }
+      if (!sub.innerHTML) {
+        sub.innerHTML = c.items.map((x) => {
+          const ev = x.ev;
+          if (ev.type === "order-sold") {
+            const link = ev.order_admin_url;
+            const inner =
+              `<b>Order ${escapeHtml(String(ev.order_name || "?"))}</b>` +
+              `<span class="pchip">${ev.qty || 1} unit${(ev.qty || 1) === 1 ? "" : "s"}</span>` +
+              `<span class="dim">${escapeHtml([pcardClock(x.t), ev.source].filter(Boolean).join(" · "))}</span>` +
+              (link ? '<span class="ph-go">Open in Shopify admin ↗</span>' : "");
+            return link
+              ? `<button class="ph-order" type="button" data-url="${escapeHtml(link)}">${inner}</button>`
+              : `<div class="ph-order">${inner}</div>`;
+          }
+          return `<div class="ph-order"><span class="dim">${escapeHtml(pcardClock(x.t))}</span>` +
+            `<span>${escapeHtml(ev.detail || "")}</span>` +
+            (ev.worker ? `<span class="dim">${escapeHtml(ev.worker)}</span>` : "") +
+            "</div>";
+        }).join("");
+        sub.querySelectorAll("button.ph-order").forEach((b) =>
+          b.addEventListener("click", (e) => {
+            e.stopPropagation();
+            window.open(b.dataset.url, "_blank", "noopener");
+          }));
+      }
+      sub.hidden = false;
+    });
+  });
+}
+
+// ---------- boxes & tags pane (open-box twin folded in) ----------
+function pcardTagRow(t, forceCond) {
+  const cond = (forceCond || t.condition || "New").trim();
+  const condChip = cond.toLowerCase() === "new"
+    ? '<span class="pchip pchip--ok">New</span>'
+    : `<span class="pchip pchip--warn">${escapeHtml(cond)}</span>`;
+  const loc = t.bin_location
+    ? `<span class="pchip">${escapeHtml(t.bin_location)}</span>`
+    : '<span class="dim">no bin</span>';
+  const extra = [];
+  if (t.case_units && t.case_units > 1) extra.push(`case of ${t.case_units}`);
+  if (t.assigned_at) extra.push("paired " + pcardWhen(t.assigned_at));
+  return (
+    '<div class="prow">' +
+    `<span class="epc">${escapeHtml(t.rfid_id)}</span>` +
+    condChip + loc +
+    `<span class="dim">${escapeHtml(extra.join(" · "))}</span>` +
+    "</div>"
+  );
+}
+
+function pcardRenderTags() {
+  const st = pcardState;
+  const pane = pcardPane("tags");
+  const rows = (st.tags && st.tags.assignments) || [];
+  const obRows = (st.ob && st.ob.assignments) || [];
+  let html = rows.length
+    ? rows.map((t) => pcardTagRow(t)).join("")
+    : '<div class="pcard__note">No live tags on file for this product.</div>';
+  if (obRows.length) {
+    html +=
+      `<div class="pdivider">Open box (${escapeHtml(st.obSku)})</div>` +
+      obRows.map((t) => pcardTagRow(t, t.condition || "Open box")).join("");
+  }
+  pane.innerHTML = html;
+}
+
+// ---------- shopify info pane ----------
+async function pcardEnsureShopify() {
+  const st = pcardState;
+  if (!st || st.shopifyLoaded) return;
+  st.shopifyLoaded = true;
+  const pane = pcardPane("shopify");
+  pane.innerHTML = '<div class="pcard__note">Loading live numbers…</div>';
+  const [bd, oo] = await Promise.all([
+    st.sku
+      ? apiFetch(`/api/products/${encodeURIComponent(st.sku)}/stock-breakdown`)
+          .then((r) => (r.ok ? r.json() : null)).catch(() => null)
+      : null,
+    st.sku
+      ? apiFetch(`/api/planner/on-order/${encodeURIComponent(st.sku)}`)
+          .then((r) => (r.ok ? r.json() : null)).catch(() => null)
+      : null,
+  ]);
+  if (pcardState !== st) return;
+  const b = (bd && bd.breakdown) || null;
+  const stat = (label, val) =>
+    `<div class="pstat"><span class="pstat__num">${val != null ? val : "-"}</span>` +
+    `<span class="pstat__lbl">${label}</span></div>`;
+  let html = "";
+  if (b) {
+    html +=
+      '<div class="pinforow">' +
+      stat("Available", b.available) + stat("Committed", b.committed) +
+      stat("On hand", b.on_hand) + stat("Unavailable", b.unavailable) +
+      "</div>";
+  } else {
+    html +=
+      '<div class="pcard__note">Live stock buckets unavailable' +
+      (bd && bd.breakdown_error ? ` (${escapeHtml(bd.breakdown_error)})` : "") +
+      ".</div>";
+  }
+  if (bd && bd.vendor) {
+    html += `<div class="pinfo"><label>Vendor</label><span>${escapeHtml(bd.vendor)}</span></div>`;
+  }
+  const lines = ((oo && oo.ok && oo.orders) || []).filter(
+    (l) => (l.remaining || 0) > 0
+  );
+  if (lines.length) {
+    html += '<div class="pinfo"><label>On order</label><span>' +
+      lines.slice(0, 3).map((l) =>
+        escapeHtml(
+          `${l.remaining} expected` +
+          (l.reference_number ? ` on SO ${l.reference_number}` : "") +
+          (l.vendor ? ` (${l.vendor})` : "")
+        )
+      ).join(" · ") + "</span></div>";
+  }
+  const sales = (bd && bd.recent_sales) || [];
+  if (sales.length) {
+    html += '<div class="pdivider">Recent shipments</div><div class="psales">' +
+      sales.map((sr) =>
+        `<div class="prow"><span>${escapeHtml(String(sr.order || ""))}</span>` +
+        `<span class="pchip">${sr.qty} unit${sr.qty === 1 ? "" : "s"}</span>` +
+        `<span class="dim">${escapeHtml([pcardWhen(sr.at), sr.source].filter(Boolean).join(" · "))}</span></div>`
+      ).join("") + "</div>";
+  }
+  html +=
+    '<div class="pcard__actions">' +
+    '<button class="reset" type="button" id="pcard-edit-scan">Edit in Scan station</button>' +
+    (st.adminUrl
+      ? '<button class="reset" type="button" id="pcard-admin">Open in Shopify admin</button>'
+      : "") +
+    "</div>";
+  pane.innerHTML = html;
+  document.getElementById("pcard-edit-scan").addEventListener("click", () =>
+    pcardOpenInScan(st.barcode || st.sku || st.term));
+  const adminBtn = document.getElementById("pcard-admin");
+  if (adminBtn) {
+    adminBtn.addEventListener("click", () =>
+      window.open(st.adminUrl, "_blank", "noopener"));
+  }
+}
+
+// ---------- the four-box label editor + TRUE print preview ----------
+// Real Code 128: pattern table (bar/space module widths per symbol).
+const C128 = ("212222 222122 222221 121223 121322 131222 122213 122312 132212 221213 " +
+  "221312 231212 112232 122132 122231 113222 123122 123221 223211 221132 " +
+  "221231 213212 223112 312131 311222 321122 321221 312212 322112 322211 " +
+  "212123 212321 232121 111323 131123 131321 112313 132113 132311 211313 " +
+  "231113 231311 112133 112331 132131 113123 113321 133121 313121 211331 " +
+  "231131 213113 213311 213131 311123 311321 331121 312113 312311 332111 " +
+  "314111 221411 431111 111224 111422 121124 121421 141122 141221 112214 " +
+  "112412 122114 122411 142112 142211 241211 221114 413111 241112 134111 " +
+  "111242 121142 121241 114212 124112 124211 411212 421112 421211 212141 " +
+  "214121 412121 111143 111341 131141 114113 114311 411113 411311 113141 " +
+  "114131 311141 411131 211412 211214 211232 2331112").split(" ");
+
+function code128Encode(data) {
+  // Same subset walk as code128Dots (the width model) so bars and the
+  // centering arithmetic can never disagree.
+  const vals = [];
+  let subset = null;
+  let i = 0;
+  const n = data.length;
+  while (i < n) {
+    let run = 0;
+    while (i + run < n && data[i + run] >= "0" && data[i + run] <= "9") run++;
+    const useC =
+      (subset === null && run >= 4) ||
+      (subset === "C" && run >= 2) ||
+      (subset === "B" && (run >= 6 || (run >= 4 && i + run === n)));
+    if (useC) {
+      if (subset === null) vals.push(105);
+      else if (subset === "B") vals.push(99);
+      subset = "C";
+      const pairs = Math.floor(run / 2);
+      for (let k = 0; k < pairs; k++) {
+        vals.push(parseInt(data.slice(i + k * 2, i + k * 2 + 2), 10));
+      }
+      i += pairs * 2;
+    } else {
+      if (subset === null) vals.push(104);
+      else if (subset === "C") vals.push(100);
+      subset = "B";
+      const code = data.charCodeAt(i) - 32;
+      vals.push(code >= 0 && code < 95 ? code : 0);
+      i++;
+    }
+  }
+  if (!vals.length) vals.push(104);
+  let ck = vals[0];
+  for (let k = 1; k < vals.length; k++) ck += vals[k] * k;
+  vals.push(ck % 103);
+  return vals;
+}
+
+function code128Svg(data, module, x, y, height) {
+  const vals = code128Encode(data);
+  let bars = "";
+  let cx = x;
+  const draw = (pattern) => {
+    for (let k = 0; k < pattern.length; k++) {
+      const w = parseInt(pattern[k], 10) * module;
+      if (k % 2 === 0) {
+        bars += `<rect x="${cx}" y="${y}" width="${w}" height="${height}" fill="#111"/>`;
+      }
+      cx += w;
+    }
+  };
+  vals.forEach((v) => draw(C128[v]));
+  draw(C128[106]); // stop
+  return bars;
+}
+
+const LABEL_LL = 253; // 1.25in x 203dpi, matching LABEL_PW = 431
+
+function labelSvg(header, centre, barcode, binText, otherBins) {
+  // print_agent.build_zpl, ported: same fonts, same wrap decisions.
+  const esc = escapeHtml;
+  const T = (x, y, size, text, anchor = "middle") =>
+    `<text x="${x}" y="${y + size * 0.78}" font-size="${size * 0.94}" ` +
+    `font-family="'Arial Narrow','Roboto Condensed',Arial,sans-serif" ` +
+    `text-anchor="${anchor}" fill="#111">${esc(text)}</text>`;
+  let parts = "";
+  const warns = [];
+  // header
+  const h = (header || "").trim();
+  if (!h || h === STORE_HEADER) {
+    parts += T(LABEL_PW / 2, 10, 34, STORE_HEADER);
+  } else {
+    const size = h.length <= 26 ? 28 : h.length <= 56 ? 20 : 16;
+    if (zplTextDots(h, size) * SKU_WIDTH_FUDGE <= LABEL_PW) {
+      parts += T(LABEL_PW / 2, 4 + (size > 20 ? 6 : 8), size, h);
+    } else {
+      const cut = skuSplit(h);
+      const [l1, l2] = cut || [h.slice(0, Math.ceil(h.length / 2)), h.slice(Math.ceil(h.length / 2))];
+      parts += T(LABEL_PW / 2, 2, size, l1) + T(LABEL_PW / 2, 2 + size + 2, size, l2);
+      if (zplTextDots(l1, size) * SKU_WIDTH_FUDGE > LABEL_PW ||
+          zplTextDots(l2, size) * SKU_WIDTH_FUDGE > LABEL_PW) {
+        warns.push("The header is long - it may clip on the sticker.");
+      }
+    }
+  }
+  // centre line (the agent's exact wrap ladder)
+  let c = (centre || "").slice(0, 56);
+  const manualBreak = c.includes("|");
+  const plain = c.replace(/\|/g, " ").split(/\s+/).join(" ");
+  const wrapped = manualBreak || !skuFits(plain, 30, 1);
+  if (!wrapped) {
+    parts += T(LABEL_PW / 2, 52, 30, plain);
+  } else {
+    const split = skuSplit(c);
+    let f = 30;
+    if (split) {
+      while (f > 20 && !(skuLineFits(split[0], f) && skuLineFits(split[1], f))) f -= 2;
+      parts += T(LABEL_PW / 2, 52, f, split[0]) +
+               T(LABEL_PW / 2, 52 + f + 2, f, split[1]);
+    } else {
+      while (f > 20 && !skuFits(plain, f, 2)) f -= 2;
+      const mid = Math.ceil(plain.length / 2);
+      parts += T(LABEL_PW / 2, 52, f, plain.slice(0, mid)) +
+               T(LABEL_PW / 2, 52 + f + 2, f, plain.slice(mid));
+    }
+    if (f <= 20 && !skuFits(plain, 20, 2)) {
+      warns.push("The description is very long - the sticker may clip it.");
+    }
+  }
+  // barcode block
+  const code = (barcode || "").trim();
+  if (code) {
+    let module = 2;
+    let width = code128Dots(code, module);
+    if (width > LABEL_PW - 24) {
+      module = 1;
+      width = code128Dots(code, module);
+    }
+    if (width > LABEL_PW - 24) {
+      warns.push("The barcode is too long for the sticker width (33 characters is the confirmed max).");
+    }
+    const geo = wrapped
+      ? { by: 118, bh: 56, cy: 178, cf: 18 }
+      : { by: 88, bh: 72, cy: 164, cf: 20 };
+    const bx = Math.max(2, Math.floor((LABEL_PW - width) / 2));
+    parts += code128Svg(code, module, bx, geo.by, geo.bh);
+    parts += T(LABEL_PW / 2, geo.cy, geo.cf, code);
+  }
+  // bin line
+  const bt = (binText || "-").trim() || "-";
+  const others = (otherBins || "").trim();
+  if (others) {
+    parts += T(LABEL_PW / 2, LABEL_LL - 52, 22, `BIN: ${bt}. Other: ${others.slice(0, 60)}`);
+  } else {
+    parts += T(LABEL_PW / 2, LABEL_LL - 45, 30, `BIN: ${bt}`);
+  }
+  const svg =
+    `<svg viewBox="0 0 ${LABEL_PW} ${LABEL_LL}" xmlns="http://www.w3.org/2000/svg">` +
+    `<rect x="0" y="0" width="${LABEL_PW}" height="${LABEL_LL}" fill="#fff"/>` +
+    parts + "</svg>";
+  return { svg, warns };
+}
+
+async function pcardEnsureLabelEditor() {
+  const st = pcardState;
+  if (!st || st.rfidLoaded) return;
+  st.rfidLoaded = true;
+  const pane = pcardPane("rfid");
+  pane.innerHTML = '<div class="pcard__note">Loading label settings…</div>';
+  let saved = null;
+  if (st.sku) {
+    saved = await apiFetch(`/api/label-names/${encodeURIComponent(st.sku)}`)
+      .then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  }
+  if (pcardState !== st) return;
+  st.label = saved || {
+    label_name: null, placement: "header", sku_text: null,
+    barcode_mode: "auto", bin_text: null,
+  };
+  const p = st.product;
+  const defaults = {
+    header: STORE_HEADER,
+    desc: p.product_title || st.sku || "",
+    bin: p.bin_location || "",
+  };
+  const eff = {
+    header:
+      st.label.label_name && st.label.placement !== "sku"
+        ? st.label.label_name : defaults.header,
+    desc:
+      st.label.sku_text ||
+      (st.label.label_name && st.label.placement !== "header"
+        ? st.label.label_name : "") || defaults.desc,
+    mode: st.barcode ? (st.label.barcode_mode || "auto") : "sku",
+    bin: st.label.bin_text || defaults.bin,
+  };
+  const modeLabel = (m) => (m === "sku" ? "SKU" : "Barcode");
+  pane.innerHTML = `
+    <div class="labedit">
+      <div class="labedit__form">
+        <div class="labedit__row"><label>Header</label>
+          <div class="labedit__box">
+            <input id="lab-header" maxlength="76" value="${escapeHtml(eff.header)}" />
+            <button class="labedit__reset" data-reset="header" title="Back to the default">✕</button>
+          </div></div>
+        <div class="labedit__row"><label>Description (centre line - a | forces the line break)</label>
+          <div class="labedit__box">
+            <input id="lab-desc" maxlength="56" value="${escapeHtml(eff.desc)}" />
+            <button class="labedit__reset" data-reset="desc" title="Back to the default">✕</button>
+          </div></div>
+        <div class="labedit__row"><label>Barcode encodes</label>
+          <div class="labedit__box">
+            <button class="labedit__toggle" id="lab-mode" type="button"${st.barcode ? "" : " disabled title='No barcode on file - the SKU always prints'"}>${modeLabel(eff.mode)}</button>
+            <span class="dim" id="lab-mode-val"></span>
+            <button class="labedit__reset" data-reset="mode" title="Back to the default">✕</button>
+          </div></div>
+        <div class="labedit__row"><label>Bin line</label>
+          <div class="labedit__box">
+            <span class="prefix">Bin:</span>
+            <input id="lab-bin" maxlength="100" value="${escapeHtml(eff.bin)}" />
+            <button class="labedit__reset" data-reset="bin" title="Back to the product's bin">✕</button>
+          </div></div>
+        <button class="labedit__save" id="lab-save" disabled>Save label</button>
+        <div class="pcard__note">Saves apply immediately - even labels already
+        waiting in the print queue pick the new text up when they print.</div>
+      </div>
+      <div class="labedit__preview">
+        <span class="cap">Exactly what prints (2.125 x 1.25 in)</span>
+        <div class="labedit__svgwrap" id="lab-svg"></div>
+        <div class="labedit__warn" id="lab-warn" hidden></div>
+      </div>
+    </div>
+    <div class="pcard__actions">
+      <button class="reset" type="button" id="pcard-label-scan">Open in Scan station</button>
+    </div>`;
+  const els = {
+    header: document.getElementById("lab-header"),
+    desc: document.getElementById("lab-desc"),
+    mode: document.getElementById("lab-mode"),
+    bin: document.getElementById("lab-bin"),
+    save: document.getElementById("lab-save"),
+    svg: document.getElementById("lab-svg"),
+    warn: document.getElementById("lab-warn"),
+  };
+  let mode = eff.mode;
+  const savedEff = { ...eff };
+
+  function barcodeValue() {
+    return mode === "sku" ? (st.sku || "") : (st.barcode || st.sku || "");
+  }
+  function refresh() {
+    els.mode.textContent = modeLabel(mode);
+    els.mode.classList.toggle("labedit__toggle--on", mode === "sku");
+    document.getElementById("lab-mode-val").textContent = barcodeValue();
+    const { svg, warns } = labelSvg(
+      els.header.value, els.desc.value, barcodeValue(),
+      els.bin.value, st.label.bin_text ? "" : (p.other_bins || "")
+    );
+    els.svg.innerHTML = svg;
+    els.warn.hidden = warns.length === 0;
+    els.warn.textContent = warns.join(" ");
+    const dirty =
+      els.header.value.trim() !== savedEff.header ||
+      els.desc.value.trim() !== savedEff.desc ||
+      mode !== savedEff.mode ||
+      els.bin.value.trim() !== savedEff.bin;
+    els.save.disabled = !dirty;
+  }
+  ["header", "desc", "bin"].forEach((k) =>
+    els[k].addEventListener("input", refresh));
+  els.mode.addEventListener("click", () => {
+    mode = mode === "sku" ? "auto" : "sku";
+    refresh();
+  });
+  pane.querySelectorAll(".labedit__reset").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const k = btn.dataset.reset;
+      if (k === "header") els.header.value = defaults.header;
+      else if (k === "desc") els.desc.value = defaults.desc;
+      else if (k === "bin") els.bin.value = defaults.bin;
+      else if (k === "mode") mode = st.barcode ? "auto" : "sku";
+      refresh();
+    });
+  });
+  els.save.addEventListener("click", async () => {
+    els.save.disabled = true;
+    els.save.textContent = "Saving…";
+    try {
+      const top = els.header.value.trim();
+      const centre = els.desc.value.trim();
+      const bin = els.bin.value.trim();
+      const body = {
+        top_text: top,
+        sku_line: centre,
+        barcode_mode: mode,
+        bin_text: bin === defaults.bin ? "" : bin,
+        updated_by: operatorEl.value || null,
+      };
+      const res = await apiFetch(
+        `/api/label-names/${encodeURIComponent(st.sku)}`,
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        }
+      );
+      if (!res.ok) throw new Error("save " + res.status);
+      st.label = await res.json();
+      savedEff.header = top || defaults.header;
+      savedEff.desc = centre || defaults.desc;
+      savedEff.mode = mode;
+      savedEff.bin = bin || defaults.bin;
+      els.save.textContent = "Saved ✓";
+      setTimeout(() => { els.save.textContent = "Save label"; refresh(); }, 1200);
+    } catch (err) {
+      els.save.textContent = "Save failed - try again";
+      els.save.disabled = false;
+    }
+  });
+  document.getElementById("pcard-label-scan").addEventListener("click", () =>
+    pcardOpenInScan(st.barcode || st.sku || st.term));
+  refresh();
+}
+
+// ---------- the lookup itself ----------
 async function openProductCard(term) {
   goTab("home");
   homeEls.pcard.hidden = false;
+  pcardHistFilters = new Set();
   homeEls.pcardImg.innerHTML = "";
   homeEls.pcardName.textContent = "Looking up " + term + "…";
   homeEls.pcardCodes.innerHTML = "";
   homeEls.pcardChips.innerHTML = "";
+  document.getElementById("pcard-onhand").hidden = true;
+  document.getElementById("pcard-tagcount").hidden = true;
   ["history", "tags", "shopify", "rfid"].forEach((n) =>
     (pcardPane(n).innerHTML = ""));
+  pcardShowTab("history");
   let product = null;
   try {
     const res = await apiFetch(
@@ -19564,152 +20290,51 @@ async function openProductCard(term) {
       "alias. If it should be, Scan station can link it.</div>";
     return;
   }
-  pcardProduct = product;
-  const sku = (product.sku || "").trim();
-  const barcode = (product.barcode || "").trim();
-
-  // identity column
-  homeEls.pcardName.textContent =
-    (product.product_title || sku || term) +
-    (product.variant_title && product.variant_title !== "Default Title"
-      ? ` - ${product.variant_title}` : "");
-  if (product.image_url) {
-    const img = document.createElement("img");
-    img.src = product.image_url;
-    img.alt = "";
-    homeEls.pcardImg.appendChild(img);
-  } else {
-    homeEls.pcardImg.textContent = "\u{1F4E6}";
-  }
-  homeEls.pcardCodes.innerHTML =
-    (sku ? `<span>SKU&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;${escapeHtml(sku)}</span>` : "") +
-    (barcode ? `<span>Barcode&nbsp;${escapeHtml(barcode)}</span>` : "");
-  const chips = [];
-  if (product.bin_location) {
-    chips.push(`<span class="pchip">Bin ${escapeHtml(product.bin_location)}</span>`);
-  }
-  homeEls.pcardChips.innerHTML = chips.join("");
-
-  // tags + history ride together
-  const [tagsBody, histBody] = await Promise.all([
+  const st = {
+    term,
+    product,
+    sku: (product.sku || "").trim(),
+    barcode: (product.barcode || "").trim(),
+    tags: null, hist: null, ob: null, adminUrl: null,
+    obSku: ((product.sku || "").trim() + "-O"),
+  };
+  pcardState = st;
+  pcardRenderIdentity();
+  const isOpenBox = st.sku.toUpperCase().endsWith("-O");
+  const [tagsBody, histBody, obBody] = await Promise.all([
     apiFetch(
-      `/api/products/tags?${sku ? "sku=" + encodeURIComponent(sku) : "barcode=" + encodeURIComponent(barcode || term)}`
+      `/api/products/tags?${st.sku ? "sku=" + encodeURIComponent(st.sku) : "barcode=" + encodeURIComponent(st.barcode || term)}`
     ).then((r) => (r.ok ? r.json() : null)).catch(() => null),
     apiFetch(
-      `/api/product-history?term=${encodeURIComponent(sku || term)}`
+      `/api/product-history?term=${encodeURIComponent(st.sku || term)}`
     ).then((r) => (r.ok ? r.json() : null)).catch(() => null),
+    st.sku && !isOpenBox
+      ? apiFetch(`/api/products/tags?sku=${encodeURIComponent(st.obSku)}`)
+          .then((r) => (r.ok ? r.json() : null)).catch(() => null)
+      : null,
   ]);
-  if (pcardProduct !== product) return; // another lookup took over
-
-  const onHand = tagsBody ? tagsBody.on_hand : null;
-  const tagRows = (tagsBody && tagsBody.assignments) || [];
-  if (onHand != null) {
-    chips.push(`<span class="pchip pchip--ok">On hand ${onHand}</span>`);
-  }
-  chips.push(
-    `<span class="pchip">${tagRows.length} tag${tagRows.length === 1 ? "" : "s"}</span>`
-  );
-  if (tagsBody && tagsBody.rfid_incompatible) {
-    chips.push('<span class="pchip pchip--warn">Won’t RFID scan</span>');
-  }
-  homeEls.pcardChips.innerHTML = chips.join("");
-
-  // History pane: the same events as the History tab, worn as a feed.
-  const events = (histBody && histBody.events) || [];
-  const feed = events.slice(0, 40).map((ev) => {
-    const meta = EVENT_META[ev.type] || [ev.type, "var(--ink-dim)"];
-    const bits = [pcardWhen(ev.at), ev.worker].filter(Boolean);
-    if (ev.detail) bits.push(ev.detail);
-    return (
-      '<div class="pfeed__ev">' +
-      `<span class="pfeed__dot" style="background:${meta[1]}"></span>` +
-      `<div><div class="pfeed__t"><b>${escapeHtml(meta[0])}</b></div>` +
-      `<div class="pfeed__meta">${escapeHtml(bits.join(" · "))}</div></div>` +
-      "</div>"
-    );
-  });
-  pcardPane("history").innerHTML = feed.length
-    ? `<div class="pfeed">${feed.join("")}</div>`
-    : '<div class="pcard__note">No recorded events yet.</div>';
-
-  // Boxes & tags pane
-  pcardPane("tags").innerHTML = tagRows.length
-    ? tagRows.map((t) => {
-        const cond = (t.condition || "new").toLowerCase();
-        const condChip = cond === "new"
-          ? '<span class="pchip pchip--ok">New</span>'
-          : `<span class="pchip pchip--warn">${escapeHtml(t.condition)}</span>`;
-        const extra = [];
-        if (t.case_units && t.case_units > 1) extra.push(`case of ${t.case_units}`);
-        if (t.bin_location) extra.push(t.bin_location);
-        if (t.assigned_at) extra.push("paired " + pcardWhen(t.assigned_at));
-        return (
-          '<div class="prow">' +
-          `<span class="epc">${escapeHtml(t.rfid_id)}</span>` + condChip +
-          `<span class="dim">${escapeHtml(extra.join(" · "))}</span>` +
-          "</div>"
-        );
-      }).join("")
-    : '<div class="pcard__note">No live tags on file for this product.</div>';
-
-  // Shopify info pane (read here, edit in Scan station for now)
-  const adminUrl = histBody && histBody.product && histBody.product.admin_url;
-  pcardPane("shopify").innerHTML =
-    `<div class="pinfo"><label>Product</label><span>${escapeHtml(product.product_title || "")}</span></div>` +
-    (sku ? `<div class="pinfo"><label>SKU</label><span>${escapeHtml(sku)}</span></div>` : "") +
-    (barcode ? `<div class="pinfo"><label>Barcode</label><span>${escapeHtml(barcode)}</span></div>` : "") +
-    `<div class="pinfo"><label>Bin</label><span>${escapeHtml(product.bin_location || "No bin assigned")}</span></div>` +
-    (onHand != null ? `<div class="pinfo"><label>On hand</label><span>${onHand}</span></div>` : "") +
-    '<div class="pcard__actions">' +
-    '<button class="reset" type="button" id="pcard-edit-scan">Edit in Scan station</button>' +
-    (adminUrl ? '<button class="reset" type="button" id="pcard-admin">Open in Shopify admin</button>' : "") +
-    "</div>" +
-    '<div class="pcard__note">Barcode, bin, and on-hand changes run through ' +
-    "Scan station's confirmed flows (logged with undo) until this card " +
-    "gets its own edit pass.</div>";
-  document.getElementById("pcard-edit-scan").addEventListener("click", () =>
-    pcardOpenInScan(barcode || sku || term));
-  const adminBtn = document.getElementById("pcard-admin");
-  if (adminBtn) {
-    adminBtn.addEventListener("click", () =>
-      window.open(adminUrl, "_blank", "noopener"));
-  }
-
-  // RFID & labels pane
-  const labelName = tagsBody ? tagsBody.label_name : null;
-  const labelPlacement = (tagsBody && tagsBody.label_placement) || "header";
-  const labelSku = tagsBody ? tagsBody.label_sku_text : null;
-  pcardPane("rfid").innerHTML =
-    `<div class="pinfo"><label>Label name</label><span>${escapeHtml(labelName || product.product_title || "")}${labelName ? "" : " (store name)"}</span></div>` +
-    `<div class="pinfo"><label>SKU line</label><span>${escapeHtml(labelSku || sku || "")}</span></div>` +
-    `<div class="pinfo"><label>Placement</label><span>${escapeHtml(labelPlacement)}</span></div>` +
-    `<div class="pinfo"><label>RFID scanning</label><span>${tagsBody && tagsBody.rfid_incompatible ? "Won't scan (marked incompatible)" : "Normal"}</span></div>` +
-    (product.scan_note ? `<div class="pinfo"><label>Scan note</label><span>${escapeHtml(product.scan_note)}</span></div>` : "") +
-    '<div class="pcard__actions">' +
-    '<button class="reset" type="button" id="pcard-label-scan">Labels &amp; printing in Scan station</button>' +
-    "</div>" +
-    '<div class="pcard__note">These are this system’s records only - ' +
-    "nothing here touches Shopify.</div>";
-  document.getElementById("pcard-label-scan").addEventListener("click", () =>
-    pcardOpenInScan(barcode || sku || term));
+  if (pcardState !== st) return;
+  st.tags = tagsBody;
+  st.hist = histBody;
+  st.ob = obBody && (obBody.assignments || []).length ? obBody : null;
+  st.adminUrl = histBody && histBody.product && histBody.product.admin_url;
+  pcardRenderStats();
+  pcardRenderHistory();
+  pcardRenderTags();
 }
 
 // --- boot: Home is the front door (hash still deep-links any tab) -----------
 (function homeBoot() {
-  const want = (location.hash || "").replace("#", "").toLowerCase();
+  const q = new URLSearchParams(location.search).get("tab") || "";
+  const want = (q || (location.hash || "").replace("#", "")).toLowerCase();
   const target = Object.prototype.hasOwnProperty.call(tabSections, want)
     ? want : "home";
   goTab(target);
 })();
 
 
-// --- toprow (resume + search) shows on Home only (Nick, 2026-09-24) ---------
-const homeToprow = document.querySelector(".toprow");
+// hover text carries each sidebar label while the rail is collapsed
 document.querySelectorAll(".tabs__tab").forEach((b) => {
-  b.addEventListener("click", () => {
-    homeToprow.hidden = b.dataset.tab !== "home";
-  });
-  // hover text carries the label while the sidebar is a rail
   const lbl = b.querySelector(".tabs__lbl");
   if (lbl) b.title = lbl.textContent.replace(/WIP/i, "").trim();
 });

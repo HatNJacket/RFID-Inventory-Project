@@ -65,6 +65,40 @@ sidebar bottom (panel opens to its right). Dev twin got
 ONELEFT_MODE=read (the "Bridge off" Nick saw was just the unset dev
 setting; prod stays "confirm", dev can never confirm their checks).
 
+**Round 3 (Nick's list, 2026-09-24):** toprow (resume + search) moved
+INSIDE Home so the sidebar never jumps between tabs; embedded-in-
+Shopify mode (body.embedded + App Bridge ui-nav-menu links with ?tab=
+deep links, our sidebar/hamburger hidden, EasyScan-style - NEEDS a
+check inside real admin); Settings became a sidebar TAB (#tab-settings,
+the dropdown is gone); search suggestions carry product thumbnails
+(suggest endpoint now ships image urls); page-title header with the
+status pills below it; Resume deep-links into the actual batch
+(resumeBatch id). Product card: labelled/indented SKU-Barcode-Bin rows
+(bin as a chip), On hand / Tags as clickable stat cells (admin /
+RFID tab), HISTORY STYLE B (Nick's pick): day groups, fixed-width
+family chips (global width), right-justified time, PER-TYPE CHAINS
+(gap <= 60 min to the previous event of the same type; interleaved
+types never break a chain; anchored at the chain's earliest event;
+within a day rows run chronologically by anchor) with a click-open
+dropdown - chained sales list each order and click through to Shopify
+admin (order-sold events now carry order_name/qty/order_admin_url).
+Boxes & tags folds the -O open-box twin in under a divider. Shopify
+info shows the live bucket row (available/committed/on-hand/
+unavailable via new /api/products/{sku}/stock-breakdown), vendor,
+planner on-order lines, recent ledger shipments; buttons pinned
+bottom. RFID & labels = the FOUR-BOX editor (header / description /
+barcode-encodes toggle / bin value) with per-box reset X, dirty-gated
+Save, and a TRUE print preview (real Code 128 bars + the agent's own
+wrap arithmetic, ported constants). LabelName grew
+barcode_mode/bin_text (startup column upgrade); saves apply AT CLAIM
+TIME so edits reach even already-queued labels. One-off
+dev/cleanup_aug18_reviews.py ran on PROD: 8,497 resolved Aug-18 flood
+tasks deleted (8,462 duplicate-product + 35 tag-onhand-mismatch), one
+specimen of each kept. NOTE for a later call: the editor's
+"description" box DEFAULTS to the product name per Nick's spec, but
+untouched products still PRINT the SKU centre line - flipping the
+store-wide default is a one-liner when Nick says so.
+
 **Feature redesign notes (later passes, per Nick - each feature gets
 reworked to fit the streamlined menu, one at a time):**
 - Receiving: per-SO view inside tile 1; stable /#receive/so-NNN URLs;

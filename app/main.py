@@ -991,6 +991,7 @@ def product_suggest(session: Session = Depends(get_session)):
         select(
             BinMapEntry.sku, BinMapEntry.product_title,
             BinMapEntry.variant_title, BinMapEntry.barcode,
+            BinMapEntry.image_url,
         ).order_by(BinMapEntry.product_title)
     ):
         sku = (r.sku or "").strip()
@@ -1000,10 +1001,57 @@ def product_suggest(session: Session = Depends(get_session)):
         title = (r.product_title or "").strip()
         if r.variant_title:
             title = f"{title} - {r.variant_title}".strip(" -")
-        out.append([sku, title[:120], (r.barcode or "").strip()])
+        out.append([
+            sku, title[:120], (r.barcode or "").strip(),
+            (r.image_url or "")[:500],
+        ])
     body = {"products": out}
     _suggest_cache.update(at=now, body=body)
     return body
+
+
+@app.get(
+    "/api/products/{sku}/stock-breakdown",
+    dependencies=[Depends(require_user)],
+)
+def product_stock_breakdown(
+    sku: str, session: Session = Depends(get_session)
+):
+    """The Shopify-info tab's numbers beyond the card basics: the
+    available/committed/on-hand/unavailable buckets (live), the vendor
+    (bin-map snapshot), and recent shipments from the sold ledger.
+    Read-only everywhere."""
+    key = (sku or "").strip()
+    if not key:
+        raise HTTPException(422, "SKU required.")
+    vendor = session.scalar(
+        select(BinMapEntry.vendor).where(
+            func.upper(BinMapEntry.sku) == key.upper(),
+            BinMapEntry.vendor.is_not(None),
+        )
+    )
+    out = {"sku": key, "vendor": vendor, "breakdown": None}
+    try:
+        out["breakdown"] = shopify.get_quantity_breakdown(key)
+    except Exception as error:  # noqa: BLE001 — the tab degrades, not errors
+        out["breakdown_error"] = str(error)[:200]
+    # Last shipments (ledger, any source) - the outflow story.
+    recent = session.scalars(
+        select(SoldRecord)
+        .where(func.upper(SoldRecord.sku) == key.upper())
+        .order_by(SoldRecord.fulfilled_at.desc())
+        .limit(8)
+    ).all()
+    out["recent_sales"] = [
+        {
+            "order": r.order_name or r.order_id,
+            "qty": r.quantity,
+            "at": r.fulfilled_at.isoformat() if r.fulfilled_at else None,
+            "source": r.source or "shopify",
+        }
+        for r in recent
+    ]
+    return out
 
 
 @app.get("/api/products/tags", dependencies=[Depends(require_user)])
@@ -2811,7 +2859,41 @@ def claim_print_jobs(
                 "openbox migration failed for job %s: %s", job.id, error
             )
     session.commit()
-    return {"count": len(rows), "jobs": [j.as_dict() for j in rows]}
+    # Label edits apply AT CLAIM TIME (Nick, 2026-09-24: "changes made
+    # go into effect immediately - we've had issues with this"): the
+    # job rows keep their queue-time snapshot, but what the agent
+    # receives is overlaid with the SKU's CURRENT saved label lines, so
+    # an edit made after queueing still prints. Explicit serial-flow
+    # names survive: the overlay only touches jobs whose SKU has a
+    # LabelName row, and only the fields that row actually sets.
+    out = []
+    label_rows: dict[str, LabelName | None] = {}
+    for job in rows:
+        d = job.as_dict()
+        key = (job.sku or "").strip()
+        if key:
+            if key not in label_rows:
+                label_rows[key] = session.get(LabelName, key) or (
+                    session.scalar(select(LabelName).where(
+                        func.upper(LabelName.sku) == key.upper()
+                    ))
+                )
+            custom = label_rows[key]
+            if custom is not None:
+                if custom.label_name:
+                    d["label_name"] = custom.label_name
+                    d["label_placement"] = custom.placement or "header"
+                if custom.sku_text:
+                    d["label_sku"] = custom.sku_text
+                elif custom.label_name:
+                    d["label_sku"] = None
+                if (custom.barcode_mode or "") == "sku":
+                    d["barcode"] = job.sku
+                if custom.bin_text:
+                    d["bin_location"] = custom.bin_text
+                    d["other_bins"] = None
+        out.append(d)
+    return {"count": len(rows), "jobs": out}
 
 
 class StopPrintingIn(BaseModel):
@@ -19521,6 +19603,12 @@ class LabelNameIn(BaseModel):
     # present, the top/centre pair wins over label_name+placement.
     top_text: str | None = Field(default=None, max_length=76)
     sku_line: str | None = Field(default=None, max_length=56)
+    # Four-box editor extras (Nick, 2026-09-24). None = leave as stored;
+    # "auto"/"" clears back to the default.
+    barcode_mode: str | None = Field(
+        default=None, pattern="^(auto|sku|)$"
+    )
+    bin_text: str | None = Field(default=None, max_length=100)
 
 
 @app.get("/api/label-names/{sku}", dependencies=[Depends(require_user)])
@@ -19534,12 +19622,16 @@ def get_label_name(sku: str, session: Session = Depends(get_session)):
             "label_name": None,
             "placement": "header",
             "sku_text": None,
+            "barcode_mode": "auto",
+            "bin_text": None,
         }
     return {
         "sku": row.sku,
         "label_name": row.label_name,
         "placement": row.placement or "header",
         "sku_text": row.sku_text,
+        "barcode_mode": row.barcode_mode or "auto",
+        "bin_text": row.bin_text,
     }
 
 
@@ -19553,12 +19645,36 @@ def set_label_name(
     sku = sku.strip()
     if not sku:
         raise HTTPException(422, "SKU required.")
+
+    def _apply_extras() -> None:
+        # barcode_mode / bin_text ride ANY save (the four-box editor).
+        # Creating a row just for them is fine: an empty label_name is
+        # falsy everywhere the header/centre overrides are read.
+        if payload.barcode_mode is None and payload.bin_text is None:
+            return
+        row = session.get(LabelName, sku)
+        if row is None:
+            row = LabelName(sku=sku, label_name="")
+            session.add(row)
+        if payload.barcode_mode is not None:
+            row.barcode_mode = (
+                payload.barcode_mode
+                if payload.barcode_mode == "sku" else None
+            )
+        if payload.bin_text is not None:
+            row.bin_text = payload.bin_text.strip()[:100] or None
+        row.updated_by = payload.updated_by
+
     # Two-box style from the shared label editor.
     if payload.top_text is not None or payload.sku_line is not None:
         _save_two_line_label(
             session, sku, payload.top_text, payload.sku_line,
             payload.updated_by,
         )
+        # flush so _apply_extras' session.get sees the row the save just
+        # created (a pending insert is invisible to get() pre-flush)
+        session.flush()
+        _apply_extras()
         session.commit()
         row = session.get(LabelName, sku)
         return {
@@ -19566,6 +19682,21 @@ def set_label_name(
             "label_name": row.label_name if row else None,
             "placement": row.placement if row else "header",
             "sku_text": row.sku_text if row else None,
+            "barcode_mode": (row.barcode_mode or "auto") if row else "auto",
+            "bin_text": row.bin_text if row else None,
+        }
+    if payload.barcode_mode is not None or payload.bin_text is not None:
+        # Extras-only save (no line text touched).
+        _apply_extras()
+        session.commit()
+        row = session.get(LabelName, sku)
+        return {
+            "sku": sku,
+            "label_name": (row.label_name or None) if row else None,
+            "placement": (row.placement or "header") if row else "header",
+            "sku_text": row.sku_text if row else None,
+            "barcode_mode": (row.barcode_mode or "auto") if row else "auto",
+            "bin_text": row.bin_text if row else None,
         }
     name = payload.label_name.strip()
     row = session.get(LabelName, sku)
@@ -20248,6 +20379,23 @@ def _admin_product_url(pid: str | None) -> str | None:
     )
 
 
+def _admin_order_url(order_id: str | None,
+                     order_name: str | None) -> str | None:
+    """The admin page for an order. Shopify-fed ledger rows carry the
+    order gid; ShipStation-fed rows only know the order NUMBER, which
+    still lands via admin's order search."""
+    store = (config.SHOPIFY_STORE or "").strip()
+    if not store:
+        return None
+    m = re.search(r"/Order/(\d+)$", order_id or "")
+    if m:
+        return f"https://{store}/admin/orders/{m.group(1)}"
+    name = (order_name or "").strip().lstrip("#")
+    if name:
+        return f"https://{store}/admin/orders?query={name}"
+    return None
+
+
 # BarcodeChange.changed_field → History event type. ONE shared map for
 # both history endpoints (they used to carry drifting private copies:
 # backorder events rendered as raw field names in product history).
@@ -20440,6 +20588,15 @@ def product_history(term: str, session: Session = Depends(get_session)):
                       + (f" · {sr.retired} tag(s) since marked sold"
                          if sr.retired else ""),
             "shopify": True,
+            # Structured ride-alongs for the card's chain dropdown
+            # (Nick, 2026-09-24): each chained sale previews its order
+            # and clicks through to that order in Shopify admin.
+            "order_name": sr.order_name or sr.order_id,
+            "qty": sr.quantity,
+            "order_admin_url": _admin_order_url(
+                sr.order_id, sr.order_name
+            ),
+            "source": sr.source or "shopify",
         })
 
     # Labels: one event per print RUN (same outcome, batch and requester,

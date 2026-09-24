@@ -1401,6 +1401,15 @@ class LabelName(Base):
     # (label_name+placement can't express that): label_name is the top
     # line, this is the centre line.
     sku_text: Mapped[str | None] = mapped_column(String(56))
+    # --- 2026-09-24 (Nick's four-box label editor) -------------------------
+    # What the barcode block encodes: NULL/"auto" = the product barcode
+    # (SKU when none on file, the long-standing fallback), "sku" = always
+    # the SKU. Applied when the agent CLAIMS a job, so edits reach even
+    # already-queued labels.
+    barcode_mode: Mapped[str | None] = mapped_column(String(10))
+    # Custom bin-line VALUE (the "BIN: " prefix stays the printer's);
+    # NULL = the product's real bin, as always.
+    bin_text: Mapped[str | None] = mapped_column(String(100))
     updated_by: Mapped[str | None] = mapped_column(String(100))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

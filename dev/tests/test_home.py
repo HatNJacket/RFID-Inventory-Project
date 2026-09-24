@@ -102,6 +102,64 @@ with patch("app.main._maybe_refresh_bin_map", return_value=False), \
                   ("online", "fault", "wedged", "holding",
                    "win_jobs", "last_seen_seconds")), body)
 
+    # ---- round 3 (2026-09-24): settings tab + suggest images ------------
+    check("settings is a sidebar tab with its own section",
+          'data-tab="settings"' in html and 'id="tab-settings"' in html
+          and "settings-menu" not in html, "")
+    check("embedded branch carries the App Bridge nav menu",
+          "ui-nav-menu" in open(os.path.join(
+              os.path.dirname(os.path.dirname(os.path.dirname(
+                  os.path.abspath(__file__)))),
+              "app", "templates", "index.html"), encoding="utf-8").read(),
+          "")
+    check("suggest rows carry an image slot",
+          all(len(p) == 4 for p in r3.json()["products"]),
+          r3.json()["products"][:2])
+
+    # ---- four-box label editor: extras save + claim overlay -------------
+    r = cl.put("/api/label-names/ASK-M54-OAG", json={
+        "top_text": "Telescopes Canada", "sku_line": "Askar M54 OAG",
+        "barcode_mode": "sku", "bin_text": "SHOW-1",
+        "updated_by": "Nick"})
+    check("four-box save answers with the extras",
+          r.status_code == 200 and r.json()["barcode_mode"] == "sku"
+          and r.json()["bin_text"] == "SHOW-1", r.text[:200])
+    r = cl.get("/api/label-names/ASK-M54-OAG")
+    check("extras round-trip on GET",
+          r.json()["barcode_mode"] == "sku"
+          and r.json()["bin_text"] == "SHOW-1", r.json())
+    # queue a job with the OLD product values, then claim as the agent:
+    # the claim payload must wear the CURRENT label settings.
+    r = cl.post("/api/print-jobs", json={
+        "quantity": 1, "sku": "ASK-M54-OAG", "barcode": "697039",
+        "product_title": "Askar M54 OAG",
+        "bin_location": "G2-1", "shopify_variant_id": "t:1"})
+    check("job queued", r.status_code == 201, r.text[:200])
+    r = cl.post("/api/print-jobs/claim?limit=5")
+    j = next((x for x in r.json()["jobs"]
+              if x["sku"] == "ASK-M54-OAG"), None)
+    centre = j and (j["label_sku"] or (
+        j["label_name"] if (j["label_placement"] or "") in ("sku", "both")
+        else None))
+    check("claim overlays the saved label: SKU-encoded barcode + custom bin",
+          j is not None and j["barcode"] == "ASK-M54-OAG"
+          and j["bin_location"] == "SHOW-1"
+          and centre == "Askar M54 OAG",
+          j)
+    # clearing the extras restores the product's own values on claim
+    cl.put("/api/label-names/ASK-M54-OAG", json={
+        "barcode_mode": "auto", "bin_text": ""})
+    r = cl.post("/api/print-jobs", json={
+        "quantity": 1, "sku": "ASK-M54-OAG", "barcode": "697039",
+        "product_title": "Askar M54 OAG",
+        "bin_location": "G2-1", "shopify_variant_id": "t:1"})
+    r = cl.post("/api/print-jobs/claim?limit=5")
+    j = next((x for x in r.json()["jobs"]
+              if x["sku"] == "ASK-M54-OAG"), None)
+    check("cleared extras fall back to the product's barcode and bin",
+          j is not None and j["barcode"] == "697039"
+          and j["bin_location"] == "G2-1", j)
+
 print()
 if fails:
     print(f"{len(fails)} FAILED"); sys.exit(1)
