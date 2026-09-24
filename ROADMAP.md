@@ -208,6 +208,28 @@ the likely causes: an admin-side correction, or a replaced sticker
 whose old tag was never retired - those tags need retiring by hand.
 Regression check rides test_home.
 
+**Ready-for-pickup audit awareness (Nick, 2026-09-24, F9168A) - on
+dev, NOT yet on prod:** "Mark as ready for pickup" never writes a
+fulfillment, so a staged box sits in no ledger, answers no sweep, and
+the audit read it as missing (F9168A: off by 2, orders #50894/#50895).
+Pickup is NOT treated as sold anywhere else - on-hand only drops when
+"picked up" finally lands, so folding it into the ledger would
+double-count. It surfaces ONLY in the bin audit, and only when the
+numbers close exactly: shopify.get_open_pickup_lines() (read-only,
+order search delivery_method:pick-up - the fulfillmentOrders field
+carrying the READY state is outside our token's scopes, and an
+unprepared pickup order's box answers the sweep anyway) feeds a
+store-wide 180s cache in main (_pickup_pending_map, empty on any
+Shopify hiccup); bin_check rows carry pickup_pending + pickup_orders;
+the UI silence ladder explains a silent count covered by sold+pickup
+with an OK chip naming the orders, and the Lower offer is suppressed
+when the shortfall beyond recorded sales is pickup-covered (lowering
+would double-drop when the customer collects). Sales-only coverage
+keeps its Lower (that flow consumes recorded sales on purpose).
+Regression checks ride test_home. NOTE: the main.py half was swept
+into a803dd2 (round 8) by the parallel window mid-edit; the rest is
+its own commit.
+
 **Feature redesign notes (later passes, per Nick - each feature gets
 reworked to fit the streamlined menu, one at a time):**
 - Receiving: per-SO view inside tile 1; stable /#receive/so-NNN URLs;

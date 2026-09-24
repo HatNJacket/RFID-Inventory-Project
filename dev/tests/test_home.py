@@ -274,6 +274,38 @@ with patch("app.main._maybe_refresh_bin_map", return_value=False), \
     check("audit row: snapshot 0 on-hand, 3 records, WINDOWED sold of 2",
           row["expected_qty"] == 0 and row["units_here"] == 3
           and row["sold_unretired"] == 2, row)
+    check("no pickup info reads as zero, never an error",
+          row.get("pickup_pending") == 0 and row.get("pickup_orders") == [],
+          row)
+
+    # ---- F9168A regression (Nick, 2026-09-24): ready-for-pickup --------
+    # Two boxes staged at the desk: no fulfillment, no ledger row, tags
+    # silent. The audit row must carry the open-pickup counts so the UI
+    # can explain the silence instead of flagging shrinkage.
+    with Session(get_engine()) as s:
+        s.add(BME(sku="PICKUP-1", product_title="Pickup Scope", bin="I9-2",
+                  qty=2, shopify_variant_id="t:pk"))
+        for e in ("P1A", "P1B"):
+            s.add(RA(rfid_id=e, shopify_variant_id="t:pk",
+                     product_title="Pickup Scope", sku="PICKUP-1",
+                     bin_location="I9-2",
+                     assigned_at=datetime(2026, 9, 1, tzinfo=timezone.utc)))
+        s.commit()
+    with patch("app.main._pickup_pending_map", return_value={
+            "PICKUP-1": {"qty": 2, "orders": ["#50894", "#50895"]}}):
+        r = cl.post("/api/bins/I9-2/check", json={"epcs": [], "skus": []})
+    row = next(x for x in r.json()["items"] if x["sku"] == "PICKUP-1")
+    check("pickup row: 2 silent records explained by 2 pickup-pending",
+          row["expected_qty"] == 2 and row["units_here"] == 2
+          and row["detected_units"] == 0 and row["pickup_pending"] == 2
+          and row["pickup_orders"] == ["#50894", "#50895"], row)
+    appjs = open(os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__)))),
+        "app", "static", "app.js"), encoding="utf-8").read()
+    check("audit UI reads the pickup explanation (chip + lower guard)",
+          "binAuditPickupNote" in appjs and "pickup_pending" in appjs
+          and "pickupExplains" in appjs, "")
 
 print()
 if fails:

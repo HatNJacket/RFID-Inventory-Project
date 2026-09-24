@@ -13836,6 +13836,13 @@ document
   .getElementById("binaudit-next")
   .addEventListener("click", () => binAuditStep(1));
 
+// The pickup orders backing a "ready for pickup" explanation, named so
+// the operator can check the desk (capped - the chip stays a chip).
+function binAuditPickupNote(r) {
+  const names = (r.pickup_orders || []).slice(0, 3);
+  return names.length ? ` (${names.join(", ")})` : "";
+}
+
 // One audit item scored for display: its warning chips and whether it
 // counts as untagged. Shared by the full render AND the single-row
 // refresh (Nick, 2026-09-14: a write must not repaint the page).
@@ -13986,13 +13993,24 @@ function binAuditRowHtml({ r, flags, untagged }) {
       // ride along in the target so they aren't written off.
       const lowTo = r.detected_units + unav;
       const drop = Math.max(0, r.expected_qty - r.detected_units);
+      // A shortfall that open pickup orders (after recorded sales)
+      // fully explain is NOT shrinkage: the boxes sit staged at the
+      // desk, and the coming "picked up" fulfillment drops on-hand by
+      // itself - lowering now would double-drop (Nick, 2026-09-24,
+      // F9168A). Sales-only coverage keeps its Lower: that flow
+      // consumes the recorded sales on purpose.
+      const pickupN = r.pickup_pending || 0;
+      const pickupExplains =
+        pickupN > 0 && drop > soldN && drop <= soldN + pickupN;
       const epcs = (r.silent_epcs || []).slice(0, drop);
-      expCell += `<div><button class="reset binaudit-lower" type="button"
+      if (!pickupExplains) {
+        expCell += `<div><button class="reset binaudit-lower" type="button"
         data-sku="${escapeHtml(r.sku)}" data-qty="${lowTo}"
         data-drop="${drop}" data-unbacked="${r.lower_unbacked || 0}"
         data-detected="${r.detected}"
         data-epcs="${escapeHtml(epcs.join(","))}"
         title="Lower Shopify on-hand to the audited count - retires the silent tag(s) presumed-sold, consumes matching recorded sales, writes the rest off as shrinkage. Confirmed, logged, one Undo in History.">Lower to ${lowTo}</button></div>`;
+      }
     }
   }
   return `<tr data-rowsku="${escapeHtml((r.sku || "").toUpperCase())}"${

@@ -1427,3 +1427,41 @@ def get_fulfilled_orders(
         cursor = block["pageInfo"]["endCursor"]
     return out
 
+
+def get_open_pickup_lines(max_pages: int = 4) -> dict[str, dict]:
+    """Unfulfilled units sitting on OPEN local-pickup orders, per SKU:
+    {SKU_UPPER: {"qty": int, "orders": ["#50894", ...]}}.
+
+    "Mark as ready for pickup" never writes a fulfillment (Nick,
+    2026-09-24, F9168A: two units staged at the desk, invisible to the
+    sold ledger, audited as missing) - and the fulfillmentOrders field
+    that carries the READY state is outside this token's scopes, so the
+    searchable truth is the delivery_method:pick-up filter: an open
+    pickup order with unfulfilled units either sits staged at the desk
+    or still on the shelf (where the sweep hears it anyway).
+
+    READ-ONLY, requires read_orders - callers treat any error as "no
+    pickup info", never as an outage."""
+    out: dict[str, dict] = {}
+    cursor = None
+    for _ in range(max_pages):
+        data = query_shopify(_ORDERS_QUERY, {
+            "search": "status:open delivery_method:pick-up",
+            "cursor": cursor,
+        })
+        block = data["orders"]
+        for node in block["nodes"]:
+            for li in node["lineItems"]["nodes"]:
+                sku = (li.get("sku") or "").strip().upper()
+                left = li.get("unfulfilledQuantity") or 0
+                if not sku or left <= 0:
+                    continue
+                d = out.setdefault(sku, {"qty": 0, "orders": []})
+                d["qty"] += left
+                if node["name"] not in d["orders"]:
+                    d["orders"].append(node["name"])
+        if not block["pageInfo"]["hasNextPage"]:
+            break
+        cursor = block["pageInfo"]["endCursor"]
+    return out
+
