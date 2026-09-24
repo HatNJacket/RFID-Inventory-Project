@@ -36,8 +36,49 @@
              to every label this device queues, whichever tab queued it. -->
         <button class="reset printerbtn" id="printer-btn" type="button" hidden
                 title="Choose which printer prints this device's labels">🖨</button>
-        <details class="settings" id="settings-menu">
-          <summary>⚙ Settings</summary>
+        
+        <select class="operator" id="operator" title="Who's using the station">
+          <!-- Placeholder face of the closed select — hidden from the open
+               list, so picking is a one-way door to a real name. -->
+          <option value="" disabled hidden>Who's scanning?</option>
+          {% for name in operators %}
+          <option value="{{ name }}">{{ name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </header>
+
+    <!-- Global scan/search + resume row: visible on every view, above the
+         sidebar (Nick, 2026-09-24). A lookup from anywhere opens the Home
+         product card. -->
+    <div class="toprow">
+      <div class="resume" id="resume-card" hidden>
+        <span class="resume__label">Pick up where you left off</span>
+        <span class="resume__what" id="resume-what"></span>
+        <span class="resume__meta" id="resume-meta"></span>
+        <button id="resume-go" type="button">Resume</button>
+      </div>
+      <div class="lookup">
+        <span class="lookup__icon" aria-hidden="true">&#128269;</span>
+        <input id="home-lookup" type="text" autocomplete="off" spellcheck="false"
+               placeholder="Scan a barcode or search a product" />
+        <div class="lookup__drop" id="home-drop" hidden></div>
+      </div>
+    </div>
+
+    <div class="layout" id="layout">
+    <nav class="tabs" role="tablist">
+      <button class="tabs__tab tabs__tab--active" data-tab="home" role="tab"><span class="tabs__ico" aria-hidden="true">&#127968;</span><span class="tabs__lbl">Home</span></button>
+      <button class="tabs__tab" data-tab="scan" role="tab"><span class="tabs__ico" aria-hidden="true">&#128247;</span><span class="tabs__lbl">Scan station</span></button>
+      <button class="tabs__tab" data-tab="batch" role="tab"><span class="tabs__ico" aria-hidden="true">&#127991;</span><span class="tabs__lbl">Batch tagging</span></button>
+      <button class="tabs__tab" data-tab="inventory" role="tab"><span class="tabs__ico" aria-hidden="true">&#128451;</span><span class="tabs__lbl">Inventory</span></button>
+      <button class="tabs__tab" data-tab="queue" role="tab"><span class="tabs__ico" aria-hidden="true">&#128424;</span><span class="tabs__lbl">Print queue</span></button>
+      <button class="tabs__tab" data-tab="review" role="tab"><span class="tabs__ico" aria-hidden="true">&#128203;</span><span class="tabs__lbl">Review <span class="wip">WIP</span></span></button>
+      <button class="tabs__tab" data-tab="audits" role="tab"><span class="tabs__ico" aria-hidden="true">&#9989;</span><span class="tabs__lbl">Audits</span></button>
+      <button class="tabs__tab" data-tab="history" role="tab"><span class="tabs__ico" aria-hidden="true">&#128337;</span><span class="tabs__lbl">History</span></button>
+      <hr class="tabs__rule" />
+      <details class="settings" id="settings-menu">
+          <summary title="Settings"><span class="tabs__ico" aria-hidden="true">⚙</span><span class="tabs__lbl">Settings</span></summary>
           <div class="settings__panel">
             <!-- Auto-reset moved into the Scan RFID cell (next to BULK). -->
             <label class="settings__item" id="auto-print-item">
@@ -79,45 +120,6 @@
             <button class="reset u-mt8" id="evcolor-open" type="button">🎨 Event colours…</button>
           </div>
         </details>
-        <select class="operator" id="operator" title="Who's using the station">
-          <!-- Placeholder face of the closed select — hidden from the open
-               list, so picking is a one-way door to a real name. -->
-          <option value="" disabled hidden>Who's scanning?</option>
-          {% for name in operators %}
-          <option value="{{ name }}">{{ name }}</option>
-          {% endfor %}
-        </select>
-      </div>
-    </header>
-
-    <!-- Global scan/search + resume row: visible on every view, above the
-         sidebar (Nick, 2026-09-24). A lookup from anywhere opens the Home
-         product card. -->
-    <div class="toprow">
-      <div class="resume" id="resume-card" hidden>
-        <span class="resume__label">Pick up where you left off</span>
-        <span class="resume__what" id="resume-what"></span>
-        <span class="resume__meta" id="resume-meta"></span>
-        <button id="resume-go" type="button">Resume</button>
-      </div>
-      <div class="lookup">
-        <span class="lookup__icon" aria-hidden="true">&#128269;</span>
-        <input id="home-lookup" type="text" autocomplete="off" spellcheck="false"
-               placeholder="Scan a barcode or search a product" />
-        <div class="lookup__drop" id="home-drop" hidden></div>
-      </div>
-    </div>
-
-    <div class="layout" id="layout">
-    <nav class="tabs" role="tablist">
-      <button class="tabs__tab tabs__tab--active" data-tab="home" role="tab"><span class="tabs__ico" aria-hidden="true">&#127968;</span><span class="tabs__lbl">Home</span></button>
-      <button class="tabs__tab" data-tab="scan" role="tab"><span class="tabs__ico" aria-hidden="true">&#128247;</span><span class="tabs__lbl">Scan station</span></button>
-      <button class="tabs__tab" data-tab="batch" role="tab"><span class="tabs__ico" aria-hidden="true">&#127991;</span><span class="tabs__lbl">Batch tagging</span></button>
-      <button class="tabs__tab" data-tab="inventory" role="tab"><span class="tabs__ico" aria-hidden="true">&#128451;</span><span class="tabs__lbl">Inventory</span></button>
-      <button class="tabs__tab" data-tab="queue" role="tab"><span class="tabs__ico" aria-hidden="true">&#128424;</span><span class="tabs__lbl">Print queue</span></button>
-      <button class="tabs__tab" data-tab="review" role="tab"><span class="tabs__ico" aria-hidden="true">&#128203;</span><span class="tabs__lbl">Review <span class="wip">WIP</span></span></button>
-      <button class="tabs__tab" data-tab="audits" role="tab"><span class="tabs__ico" aria-hidden="true">&#9989;</span><span class="tabs__lbl">Audits</span></button>
-      <button class="tabs__tab" data-tab="history" role="tab"><span class="tabs__ico" aria-hidden="true">&#128337;</span><span class="tabs__lbl">History</span></button>
     </nav>
 
     <div class="content">
@@ -1733,6 +1735,14 @@
                   title="Add a printer - start a print agent next to it and press this to detect it">🖨<span class="printerpick__plus">+</span></button>
         </div>
         <p class="linkbox__text">Labels queue to the selected printer. A printer adds itself here the moment its print agent checks in.</p>
+        <!-- Live agent health + the remote fix (Nick, 2026-09-24): the
+             header chip opens this window, so the status and the restart
+             live where the user lands. -->
+        <p class="linkbox__text printerpick__agentline" id="printer-agentline"></p>
+        <div class="printerpick__agentfix" id="printer-agentfix" hidden>
+          <button class="reset" id="printer-restart" type="button"
+                  title="The agent exits cleanly and its runner starts it fresh - picks up updates and clears a stuck state">&#8635; Restart print agent</button>
+        </div>
         <div class="printerpick__cards" id="printer-cards"></div>
         <p class="linkbox__text" id="printer-msg"></p>
         <div class="linkbox__actions">

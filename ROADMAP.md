@@ -48,6 +48,23 @@ get redesigned later, one at a time (notes below).
   server: typeahead, card tabs, scan-station jump, rail toggle, mobile
   wrap, zero console errors.
 
+**Polish round 2 (Nick's list, 2026-09-24, same day):** resume/search
+row shows on Home only; hamburger docks at the screen edge with the
+sidebar; margins widened to 15% per side (sidebar + rail still clear
+them, tiles align to the margin); printer chip replaced the old 🖨
+picker button and now OPENS the printer window, which gained a live
+agent-health line + a "Restart print agent" button (queues the
+control-plane restart command; honest copy when no agent polls - on
+DEV that is always, the warehouse agent serves prod's queue only);
+chip wording: green "Printer online", agent-up-printer-dead reads
+"Printer offline", agent-down reads "Print agent offline"; product
+card: 340px identity column, bigger image, 13px SKU/barcode, all four
+panes one fixed height, the X actually centered; sidebar buttons carry
+hover titles for rail mode; Settings moved from the header into the
+sidebar bottom (panel opens to its right). Dev twin got
+ONELEFT_MODE=read (the "Bridge off" Nick saw was just the unset dev
+setting; prod stays "confirm", dev can never confirm their checks).
+
 **Feature redesign notes (later passes, per Nick - each feature gets
 reworked to fit the streamlined menu, one at a time):**
 - Receiving: per-SO view inside tile 1; stable /#receive/so-NNN URLs;

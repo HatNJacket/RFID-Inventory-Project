@@ -2993,10 +2993,9 @@ async function fetchPrinters(force = false) {
 function printerBtnRender() {
   const btn = document.getElementById("printer-btn");
   if (!btn) return;
-  // A little icon in the header (left of ⚙): the choice applies to every
-  // label this device queues, so it lives outside any one tab. Only on
-  // stations that can print at all.
-  btn.hidden = !printingEnabled;
+  // Retired 2026-09-24 (Nick): the header's printer STATUS chip opens
+  // the picker now, so the separate icon button stays hidden.
+  btn.hidden = true;
   btn.textContent = "🖨";
   btn.title = selectedPrinter
     ? `Printer: ${selectedPrinter} - click to change`
@@ -3062,6 +3061,7 @@ async function openPrinterPicker(afterPick) {
   printerPickSel = selectedPrinter;
   document.getElementById("printer-msg").textContent = "";
   document.getElementById("printer-overlay").hidden = false;
+  renderPrinterAgentHealth();
   renderPrinterCards(await fetchPrinters(true));
 }
 
@@ -19307,19 +19307,25 @@ async function refreshAgentChip() {
     } else if ((s.win_jobs || 0) > 0) {
       cls += " pill--warn";
       text = `Printing - ${s.win_jobs} in queue`;
+    } else if (s.agent_last_error
+               && /createfile|usb|open|handle|unreachable/i.test(
+                    s.agent_last_error)) {
+      // the AGENT answers but the printer itself does not
+      cls += " pill--bad";
+      text = "Printer offline";
     } else {
       cls += " pill--ok";
-      text = "Printer ready";
+      text = "Printer online";
     }
     homeEls.agentChip.className = cls;
     homeEls.agentChip.textContent = text;
-    homeEls.agentChip.title = "Open the print queue";
+    homeEls.agentChip.title = "Printer status and options";
     homeEls.agentChip.hidden = false;
   } catch (err) {
     homeEls.agentChip.hidden = true;
   }
 }
-homeEls.agentChip.addEventListener("click", () => goTab("queue"));
+homeEls.agentChip.addEventListener("click", () => openPrinterPicker(null));
 setInterval(refreshAgentChip, 60000);
 refreshAgentChip();
 
@@ -19695,3 +19701,79 @@ async function openProductCard(term) {
     ? want : "home";
   goTab(target);
 })();
+
+
+// --- toprow (resume + search) shows on Home only (Nick, 2026-09-24) ---------
+const homeToprow = document.querySelector(".toprow");
+document.querySelectorAll(".tabs__tab").forEach((b) => {
+  b.addEventListener("click", () => {
+    homeToprow.hidden = b.dataset.tab !== "home";
+  });
+  // hover text carries the label while the sidebar is a rail
+  const lbl = b.querySelector(".tabs__lbl");
+  if (lbl) b.title = lbl.textContent.replace(/WIP/i, "").trim();
+});
+
+// --- printer window: agent health + remote restart (Nick, 2026-09-24) -------
+async function renderPrinterAgentHealth() {
+  const line = document.getElementById("printer-agentline");
+  const fix = document.getElementById("printer-agentfix");
+  line.textContent = "Checking the print agent…";
+  fix.hidden = true;
+  try {
+    const res = await apiFetch("/api/print-agent/status");
+    if (!res.ok) throw new Error("status " + res.status);
+    const st = await res.json();
+    let msg;
+    if (!st.online) {
+      const seen = homeAgo(st.last_seen_seconds);
+      msg =
+        "⚠ The print agent is not polling this site" +
+        (seen ? ` (last seen ${seen})` : "") +
+        ". On the dev site that is normal - the warehouse agent serves " +
+        "the production queue only. A queued restart waits until an " +
+        "agent polls; a truly dead agent must be started at the " +
+        "warehouse PC once.";
+    } else {
+      msg =
+        `✓ Print agent v${st.agent_version || "?"} online` +
+        (st.fault
+          ? ` - printer fault: ${st.fault}`
+          : st.wedged
+            ? " - Windows queue wedged (use Clear stuck jobs)"
+            : " - printer healthy");
+    }
+    line.textContent = msg;
+    fix.hidden = false;
+  } catch (err) {
+    line.textContent = "Could not read the agent status.";
+  }
+}
+document
+  .getElementById("printer-restart")
+  .addEventListener("click", async () => {
+    if (
+      !confirm(
+        "Restart the print agent on the warehouse PC?\n\nIt exits " +
+          "cleanly and its runner starts it fresh - this clears a " +
+          "stuck state and picks up any pending agent update. Nothing " +
+          "mid-label is lost (jobs re-verify on startup). If no agent " +
+          "is polling, the command simply waits until one does."
+      )
+    )
+      return;
+    try {
+      await postJson("/api/printer-commands", {
+        printer: selectedPrinter || null,
+        kind: "restart",
+        requested_by: operatorEl.value || null,
+      });
+      document.getElementById("printer-msg").textContent =
+        "Restart queued ✓ - a polling agent restarts within " +
+        "seconds; this window re-checks in 15.";
+      setTimeout(renderPrinterAgentHealth, 15000);
+    } catch (err) {
+      document.getElementById("printer-msg").textContent =
+        "Could not queue the restart: " + err.message;
+    }
+  });

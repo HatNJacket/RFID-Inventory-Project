@@ -79,10 +79,11 @@ body {
 /* Full-bleed since 2026-09-24 (Nick): the old centered 1240px column
    wasted most of a wide screen. The sidebar breaks out of the base
    gutter (negative margin below) to sit flush against the screen's
-   left edge; everything else breathes inside a 10%-per-side margin on
+   left edge; everything else breathes inside a 15%-per-side margin on
    wide screens (the content's LEFT inset only grows past the sidebar
-   once 10vw clears it, so the sidebar never pushes content around). */
+   once 15vw clears it, so the sidebar never pushes content around). */
 .station {
+  position: relative;
   max-width: none;
   margin: 0;
   padding: 10px 12px 48px;
@@ -92,17 +93,17 @@ body {
      the file and would win a plain single-class tie */
   .station .station__head,
   .station .toprow {
-    padding-inline: calc(10vw - 12px);
+    padding-inline: calc(15vw - 12px);
   }
   .content {
-    padding-right: calc(10vw - 12px);
+    padding-right: calc(15vw - 12px);
     /* the sidebar's -12px breakout already ate the gutter, so content
        starts at sidebar width + the 18px layout gap */
-    padding-left: max(0px, calc(10vw - 206px));
+    padding-left: max(0px, calc(15vw - 206px));
   }
   .layout--rail .content {
     /* rail is 56px wide: 74px = 56 + 18 */
-    padding-left: max(0px, calc(10vw - 74px));
+    padding-left: max(0px, calc(15vw - 74px));
   }
 }
 
@@ -775,6 +776,12 @@ body {
 .layout--rail .tabs__lbl { display: none; }
 .layout--rail .tabs__tab { justify-content: center; padding: 9px 0; }
 .side-toggle {
+  /* docked with the sidebar at the screen edge, outside the page's
+     15% margins (Nick, 2026-09-24) */
+  position: absolute;
+  left: 10px;
+  top: 12px;
+  z-index: 15;
   font-size: 16px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -1789,6 +1796,11 @@ body {
   z-index: 5;
   width: 30px;
   height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  line-height: 1;
   border-radius: 8px;
   border: 1px solid var(--line);
   background: var(--card);
@@ -1798,7 +1810,7 @@ body {
 }
 .pcard__close:hover { color: var(--ink); border-color: var(--accent); }
 .pcard__id {
-  flex: 0 0 300px;
+  flex: 0 0 340px;
   padding: 18px;
   border-right: 1px solid var(--line);
   display: flex;
@@ -1808,8 +1820,8 @@ body {
 }
 .pcard__img {
   width: 100%;
-  max-height: 180px;
-  min-height: 120px;
+  max-height: 260px;
+  min-height: 160px;
   border-radius: 10px;
   background: var(--card-2);
   display: flex;
@@ -1823,9 +1835,9 @@ body {
 .pcard__codes {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 13px;
   color: var(--ink-dim);
   overflow-wrap: anywhere;
 }
@@ -1859,10 +1871,13 @@ body {
   border-bottom: 2px solid transparent;
 }
 .pcard__tabbtn--active { color: var(--ink); font-weight: 600; border-bottom-color: var(--accent); }
-.pcard__pane { padding: 14px 18px; overflow-y: auto; flex: 1; max-height: 420px; }
+/* every tab shares one height - History no longer stretches the card
+   taller than the other panes (Nick, 2026-09-24) */
+.pcard__pane { padding: 14px 18px; overflow-y: auto; height: 470px; }
 @media (max-width: 900px) {
   .pcard { flex-direction: column; }
   .pcard__id { border-right: 0; border-bottom: 1px solid var(--line); flex: none; }
+  .pcard__pane { height: auto; max-height: 420px; }
 }
 
 /* the card's history feed: timeline dots coloured by EVENT_META */
@@ -3696,3 +3711,42 @@ tr.binaudit-untagged td { opacity: 0.72; }
    var(--red, #c0392b); --red never existed, so this also moves the
    colour onto the real bad token. */
 .fs-status--err { color: var(--bad-ink); }
+
+
+/* Settings lives in the sidebar since 2026-09-24 (Nick) */
+.tabs__rule { border: 0; border-top: 1px solid var(--line); margin: 6px 4px; width: auto; }
+.tabs .settings { position: relative; }
+.tabs .settings summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink-dim);
+  background: none;
+  border: 0;
+  border-radius: 8px;
+  box-shadow: none;
+  padding: 9px 11px;
+}
+.tabs .settings summary:hover { color: var(--ink); background: var(--card-2); }
+.tabs .settings[open] summary { color: var(--ink); background: var(--accent-soft); border-color: transparent; }
+.tabs .settings__panel {
+  left: calc(100% + 10px);
+  right: auto;
+  top: 0;
+}
+.layout--rail .tabs .settings summary { justify-content: center; padding: 9px 0; }
+
+/* the printer window's agent-health line + remote restart */
+.printerpick__agentline { display: flex; align-items: center; gap: 8px; }
+.printerpick__agentfix { margin: -4px 0 8px; }
+.printerpick__agentfix .reset {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card-2);
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 14px;
+}
+.printerpick__agentfix .reset:hover { border-color: var(--accent); color: var(--ink); }
