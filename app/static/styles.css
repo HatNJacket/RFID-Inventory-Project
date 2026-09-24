@@ -4141,3 +4141,30 @@ button.ph-order:hover { border-color: var(--accent); }
   padding: 0 10px;
   font-size: 13px;
 }
+
+
+/* label editor round 7: reset X inside the box, no field headers */
+.labedit__row > label { display: none; }
+.labedit__box { position: relative; }
+.labedit__box input, .labedit__box textarea { padding-right: 26px; }
+.labedit__reset {
+  position: absolute;
+  right: 5px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 20px;
+  height: 20px;
+  border: 0;
+  background: none;
+  color: var(--ink-dim);
+  font-size: 11px;
+}
+.labedit__reset:hover { color: var(--ink); border: 0; }
+.labedit__reset--area { top: 12px; transform: none; }
+.labedit__box .labedit__toggle { position: static; }
+/* the barcode row keeps its toggle OUTSIDE the input */
+.labedit__box input#lab-barcode { margin-right: 0; }
+.labedit__box #lab-mode { margin-left: 6px; }
+
+/* the barcode row's X hugs the INPUT's edge, not the toggle after it */
+.labedit__box:has(#lab-mode) .labedit__reset { right: 88px; }

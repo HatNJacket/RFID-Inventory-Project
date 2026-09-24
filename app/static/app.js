@@ -20179,7 +20179,7 @@ function code128Svg(data, module, x, y, height) {
 
 const LABEL_LL = 253; // 1.25in x 203dpi, matching LABEL_PW = 431
 
-function labelSvg(header, centre, barcode, binText, otherBins) {
+function labelSvg(header, centre, barcode, binText, otherBins, dirtyParts) {
   // print_agent.build_zpl, ported: same fonts, same wrap decisions.
   // Each section wraps in a <g data-part> so the editor can focus the
   // matching input from a click on the label itself.
@@ -20259,6 +20259,14 @@ function labelSvg(header, centre, barcode, binText, otherBins) {
   } else {
     seg.bin = T(LABEL_PW / 2, LABEL_LL - 45, 30, `BIN: ${bt}`);
   }
+  // Unsaved edits show AMBER on the sticker preview and go black the
+  // moment they save (Nick, 2026-09-24).
+  const dirty = dirtyParts || {};
+  for (const part of ["header", "desc", "barcode", "bin"]) {
+    if (dirty[part]) {
+      seg[part] = seg[part].replace(/fill="#111"/g, 'fill="#c78500"');
+    }
+  }
   const svg =
     `<svg viewBox="0 0 ${LABEL_PW} ${LABEL_LL}" xmlns="http://www.w3.org/2000/svg">` +
     `<rect x="0" y="0" width="${LABEL_PW}" height="${LABEL_LL}" fill="#fff"/>` +
@@ -20310,37 +20318,33 @@ async function pcardEnsureLabelEditor() {
   pane.innerHTML = `
     <div class="labedit">
       <div class="labedit__form">
-        <div class="labedit__row"><label>Header</label>
+        <div class="labedit__row">
           <div class="labedit__box">
-            <input id="lab-header" maxlength="76" value="${escapeHtml(eff.header)}" />
+            <input id="lab-header" maxlength="76" title="Header" value="${escapeHtml(eff.header)}" />
             <button class="labedit__reset" data-reset="header" title="Back to the default">✕</button>
           </div></div>
-        <div class="labedit__row"><label>Description</label>
+        <div class="labedit__row">
           <div class="labedit__box">
-            <textarea id="lab-desc" maxlength="56" rows="2" title="The centre line - a | forces the line break">${escapeHtml(eff.desc)}</textarea>
-            <button class="labedit__reset" data-reset="desc" title="Back to the default">✕</button>
+            <textarea id="lab-desc" maxlength="56" rows="2" title="Description - a | forces the line break">${escapeHtml(eff.desc)}</textarea>
+            <button class="labedit__reset labedit__reset--area" data-reset="desc" title="Back to the default">✕</button>
           </div></div>
-        <div class="labedit__row"><label>Barcode</label>
+        <div class="labedit__row">
           <div class="labedit__box">
-            <input id="lab-barcode" maxlength="64" value="${escapeHtml(eff.barcode)}" />
+            <input id="lab-barcode" maxlength="64" title="What the barcode encodes" value="${escapeHtml(eff.barcode)}" />
+            <button class="labedit__reset" data-reset="barcode" title="Back to the default">✕</button>
             <button class="labedit__toggle" id="lab-mode" type="button"
                     title="Fill with the product barcode or the SKU">SKU</button>
-            <button class="labedit__reset" data-reset="barcode" title="Back to the default">✕</button>
           </div></div>
-        <div class="labedit__row"><label>Bin</label>
+        <div class="labedit__row">
           <div class="labedit__box">
             <span class="prefix">Bin:</span>
-            <input id="lab-bin" maxlength="100" value="${escapeHtml(eff.bin)}" />
+            <input id="lab-bin" maxlength="100" title="The bin line" value="${escapeHtml(eff.bin)}" />
             <button class="labedit__reset" data-reset="bin" title="Back to the product's bin">✕</button>
           </div></div>
         <button class="labedit__save" id="lab-save" disabled>Save label</button>
-        <div class="pcard__note" id="lab-msg">Saves apply immediately - even
-        labels already in the print queue pick the new text up when they
-        print.</div>
+        <div class="pcard__note" id="lab-msg"></div>
       </div>
       <div class="labedit__preview">
-        <span class="cap">Exactly what prints (2.125 x 1.25 in) - click a
-        line to edit it</span>
         <div class="labedit__svgwrap" id="lab-svg"></div>
         <span class="labedit__printgrp">
           <input id="lab-qty" type="number" min="1" max="200" value="1" />
@@ -20375,9 +20379,16 @@ async function pcardEnsureLabelEditor() {
     const onSku = els.barcode.value.trim() === (st.sku || "");
     els.mode.textContent = onSku && st.barcode ? "Barcode" : "SKU";
     els.mode.disabled = !st.sku && !st.barcode;
+    const dirtyParts = {
+      header: els.header.value.trim() !== savedEff.header,
+      desc: els.desc.value.trim() !== savedEff.desc,
+      barcode: els.barcode.value.trim() !== savedEff.barcode,
+      bin: els.bin.value.trim() !== savedEff.bin,
+    };
     const { svg, warns } = labelSvg(
       els.header.value, els.desc.value, els.barcode.value.trim(),
-      els.bin.value, st.label.bin_text ? "" : (p.other_bins || "")
+      els.bin.value, st.label.bin_text ? "" : (p.other_bins || ""),
+      dirtyParts
     );
     els.svg.innerHTML = svg;
     els.warn.hidden = warns.length === 0;
@@ -20452,7 +20463,9 @@ async function pcardEnsureLabelEditor() {
       savedEff.desc = centre || defaults.desc;
       savedEff.barcode = code || defaults.barcode;
       savedEff.bin = bin || defaults.bin;
+      refresh(); // the preview goes black the moment the save lands
       els.save.textContent = "Saved ✓";
+      els.save.disabled = true;
       setTimeout(() => { els.save.textContent = "Save label"; refresh(); }, 1200);
     } catch (err) {
       els.save.textContent = "Save failed - try again";
