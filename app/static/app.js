@@ -4332,9 +4332,33 @@ function renderBundles() {
     const lp = JSON.parse(bndlData.last_pull || "null");
     if (lp && lp.at) last = ` · last pulled ${fmtAgo(lp.at)}`;
   } catch (e) { /* stamp is decoration */ }
-  meta.textContent = `${bndlData.count} bundle(s) defined${last}`;
+  // The tab's search box narrows these cards too (Nick, 2026-09-28):
+  // bundle SKU/title/barcode, or any component's SKU/title.
+  const q = (document.getElementById("inv-search").value || "")
+    .trim()
+    .toLowerCase();
+  const shown = q
+    ? bndlData.bundles.filter(
+        (b) =>
+          b.bundle_sku.toLowerCase().includes(q) ||
+          (b.title || "").toLowerCase().includes(q) ||
+          (b.barcode || "").toLowerCase().includes(q) ||
+          (b.contents || []).some(
+            (c) =>
+              c.component_sku.toLowerCase().includes(q) ||
+              (c.title || "").toLowerCase().includes(q)
+          )
+      )
+    : bndlData.bundles;
+  meta.textContent =
+    `${bndlData.count} bundle(s) defined${last}` +
+    (q && shown.length !== bndlData.count
+      ? ` · ${shown.length} match the search`
+      : "");
   list.innerHTML = bndlData.bundles.length
-    ? bndlData.bundles.map(bndlCardHtml).join("")
+    ? shown.length
+      ? shown.map(bndlCardHtml).join("")
+      : `<p class="result">No bundles match "${escapeHtml(q)}".</p>`
     : `<p class="result">No bundles defined yet. Pull from bundles.app
        to build them all at once, or define one from a product panel's
        Bundle row.</p>`;
@@ -4704,7 +4728,13 @@ document.getElementById("inv-body").addEventListener("click", async (e) => {
 let invSearchTimer;
 document.getElementById("inv-search").addEventListener("input", () => {
   clearTimeout(invSearchTimer);
-  invSearchTimer = setTimeout(renderInventory, 150);
+  invSearchTimer = setTimeout(() => {
+    renderInventory();
+    // The same box narrows the bundle cards when the panel is open.
+    if (bndlData && !document.getElementById("inv-bundles").hidden) {
+      renderBundles();
+    }
+  }, 150);
 });
 
 invBinCombo = makeCombo("combo-bin", (v) => {

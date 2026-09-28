@@ -166,10 +166,12 @@ first-class RFID records.**
   until re-imported. GET /api/bundles is the enriched index
   (component titles/bins/snapshot stock/tag counts + buildable,
   ?sku= and ?component= views).
-- Inventory tab: a Bundles panel (📦 button in the header) with the
-  Pull button and per-bundle cards - add/remove components inline
-  (wholesale replace through /api/bundle-contents, History receipt
-  as before).
+- Inventory tab: a Bundles panel (📦 button at the right of the
+  Bin/Vendor/Sort filter row) with the Pull button and per-bundle
+  cards - add/remove components inline (wholesale replace through
+  /api/bundle-contents, History receipt as before). The tab's
+  search box narrows the bundle cards too (bundle SKU/title/
+  barcode or any component's SKU/title).
 - SOLD LEDGER: bundle sales are COMPONENT sales now. Both feeds
   (ShipStation shipments + voids, Shopify fallback) explode bundle
   line items into component lines at ingest, and the pull re-books
