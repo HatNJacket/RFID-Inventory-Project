@@ -89,6 +89,7 @@ class DatabaseNotConfigured(RuntimeError):
 # twin's sqlite, test sqlite) - this replaces the one-off ALTER scripts
 # for these columns.
 _COLUMN_UPGRADES = [
+    ("rfid_epc_captures", "bin", "NVARCHAR(100) NULL"),
     ("rfid_sold_ledger", "source", "VARCHAR(16) NULL"),
     ("rfid_sold_ledger", "ss_order_id", "VARCHAR(32) NULL"),
     ("rfid_sold_ledger", "ss_shipments", "VARCHAR(2000) NULL"),

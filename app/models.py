@@ -1683,6 +1683,11 @@ class EpcCapture(Base):
     # Newline-joined unique EPCs. Text, not String: sweeps of a full rack
     # can be thousands of tags.
     epcs: Mapped[str] = mapped_column(Text, nullable=False)
+    # The bin or rack this sweep audited (Nick, 2026-09-28): audit
+    # checks stamp it, so each location keeps its own sweep history -
+    # "open a bin, see its latest audit" on the gun and the web.
+    # Uppercased. Added to prod by init_db's idempotent upgrade.
+    bin: Mapped[str | None] = mapped_column(String(100), index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -1701,6 +1706,7 @@ class EpcCapture(Base):
             "device": self.device,
             "note": self.note,
             "batch_id": self.batch_id,
+            "bin": self.bin,
             "epc_count": self.epc_count,
             "created_at": (
                 self.created_at.isoformat() if self.created_at else None

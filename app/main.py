@@ -6854,6 +6854,7 @@ def bin_audit_complete(
     queue and the expected range compute walks forward from here. A
     rack name anchors every bin it covers."""
     swept = {_up(e) for e in payload.epcs if e and str(e).strip()}
+    loc = (bin_name or "").strip()
     if payload.capture_id:
         cap = session.get(EpcCapture, payload.capture_id)
         if cap is None:
@@ -6862,8 +6863,9 @@ def bin_audit_complete(
             e.strip().upper()
             for e in (cap.epcs or "").split("\n") if e.strip()
         }
+        if not cap.bin and loc:
+            cap.bin = loc.upper()[:100]
     _stamp_heard(session, swept)
-    loc = (bin_name or "").strip()
     if not loc:
         raise HTTPException(422, "Which bin?")
     bin_keys = [loc.lower()]
@@ -6952,6 +6954,34 @@ def _stamp_heard(session: Session, epcs) -> int:
         return 0
 
 
+@app.get(
+    "/api/bins/{bin_name}/sweeps", dependencies=[Depends(require_user)]
+)
+def bin_sweeps(
+    bin_name: str,
+    limit: int = 5,
+    session: Session = Depends(get_session),
+):
+    """The location's own audit-sweep history, newest first (Nick,
+    2026-09-28): every sweep checked or saved against this bin (or its
+    rack - a rack sweep covers the bin). Staleness is the CLIENT's
+    call: the gun and the browser compare created_at to their own
+    local day."""
+    loc = (bin_name or "").strip().upper()
+    if not loc:
+        raise HTTPException(422, "Which bin?")
+    wanted = [loc]
+    if "-" in loc:
+        wanted.append(loc.split("-")[0])
+    rows = session.scalars(
+        select(EpcCapture)
+        .where(EpcCapture.bin.in_(wanted))
+        .order_by(EpcCapture.id.desc())
+        .limit(max(1, min(limit, 25)))
+    ).all()
+    return {"bin": loc, "sweeps": [r.as_dict() for r in rows]}
+
+
 @app.post("/api/bins/{bin_name}/check", dependencies=[Depends(require_user)])
 def bin_check(
     bin_name: str,
@@ -6965,6 +6995,7 @@ def bin_check(
     audited as ONE zone (Nick, 2026-09-01 - the C72's read field can't
     localize below a rack anyway; bins are just levels of one shelf)."""
     swept = {_up(e) for e in payload.epcs if e}
+    loc = bin_name.strip()
     if payload.capture_id:
         cap = session.get(EpcCapture, payload.capture_id)
         if cap is None:
@@ -6973,9 +7004,13 @@ def bin_check(
             e.strip().upper()
             for e in (cap.epcs or "").split("\n") if e.strip()
         }
+        # Checking a sweep against a location claims it for that
+        # location's history (Nick, 2026-09-28) - first claim wins.
+        if not cap.bin and loc:
+            cap.bin = loc.upper()[:100]
+            session.commit()
     if swept and _stamp_heard(session, swept):
         session.commit()
-    loc = bin_name.strip()
     bin_keys = [loc.lower()]
     rack = False
     if "-" not in loc and loc:
@@ -16202,7 +16237,11 @@ def batch_item_reprint(
 
 
 class VerifyIn(BaseModel):
-    epcs: list[str] = Field(max_length=2000)
+    epcs: list[str] = Field(default_factory=list, max_length=2000)
+    # A saved sweep to verify with (2026-09-28): unioned with epcs.
+    # The gun saves its sweep ONCE and re-checks by id - much faster
+    # than re-uploading the EPC list on every press.
+    capture_id: int | None = None
 
 
 @app.post(
@@ -16236,6 +16275,14 @@ def batch_verify(
         )
     ]
     epcs = {e.strip().upper() for e in payload.epcs if e and e.strip()}
+    if payload.capture_id:
+        cap = session.get(EpcCapture, payload.capture_id)
+        if cap is None:
+            raise HTTPException(404, "No such sweep on the server.")
+        epcs |= {
+            e.strip().upper()
+            for e in (cap.epcs or "").split("\n") if e.strip()
+        }
     if epcs and batch.verified_at is None:
         batch.verified_at = datetime.now(timezone.utc)
         session.commit()
@@ -16928,6 +16975,9 @@ class CaptureIn(BaseModel):
     # Sweeps taken inside a batch carry it, so the web terminal watching
     # that batch can pick the sweep up by itself.
     batch_id: int | None = None
+    # The bin or rack an audit sweep covered (Nick, 2026-09-28): the
+    # location keeps its own sweep history.
+    bin: str | None = Field(default=None, max_length=100)
 
 
 @app.post(
@@ -16949,6 +16999,7 @@ def create_capture(payload: CaptureIn, session: Session = Depends(get_session)):
         device=(payload.device or "").strip() or None,
         note=(payload.note or "").strip() or None,
         batch_id=payload.batch_id,
+        bin=(payload.bin or "").strip().upper() or None,
         epc_count=len(epcs),
         epcs="\n".join(epcs),
     )

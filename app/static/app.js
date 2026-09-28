@@ -10972,7 +10972,7 @@ function renderAuditBins() {
     if (!q) return true;
     return (
       b.bin.toLowerCase().includes(q) ||
-      b.products.some((p) => (p.sku || "").toLowerCase().includes(q))
+      (b.products || []).some((p) => (p.sku || "").toLowerCase().includes(q))
     );
   });
   list.innerHTML = "";
@@ -11102,6 +11102,32 @@ function binAuditProdRowShow(show) {
 // clearly just walked the shelf, so the audit runs itself; a stale sweep
 // would only produce a scary everything-is-missing report, so instead the
 // panel says what to go do.
+// The location's own latest saved audit sweep (Nick, 2026-09-28):
+// every checked sweep is stamped with its bin/rack server-side, so
+// opening a bin shows ITS last audit - marked stale when it's from
+// another day, but still usable.
+async function binLatestSweep(bin) {
+  try {
+    const d = await apiJson(
+      `/api/bins/${encodeURIComponent(bin)}/sweeps?limit=1`
+    );
+    return (d.sweeps || [])[0] || null;
+  } catch (err) {
+    return null;
+  }
+}
+
+function sweepIsStale(iso) {
+  const d = tsDate(iso);
+  if (Number.isNaN(d.getTime())) return false;
+  const now = new Date();
+  return (
+    d.getFullYear() !== now.getFullYear() ||
+    d.getMonth() !== now.getMonth() ||
+    d.getDate() !== now.getDate()
+  );
+}
+
 async function jumpToBinAudit(bin) {
   document.querySelector('.tabs__tab[data-tab="audits"]').click();
   audShowPane("binaudit");
@@ -11115,6 +11141,12 @@ async function jumpToBinAudit(bin) {
     document.getElementById("binaudit-run").click();
     return;
   }
+  // The bin's own last audit first - any age, honestly stale-marked.
+  const own = await binLatestSweep(bin);
+  if (own) {
+    await runBinAudit(own);
+    return;
+  }
   try {
     const cap = await apiJson("/api/epc-captures/latest?pickable=1");
     const ageMs = Date.now() - tsDate(cap.created_at).getTime();
@@ -11122,12 +11154,13 @@ async function jumpToBinAudit(bin) {
       document.getElementById("binaudit-run").click();
       return;
     }
-    out.innerHTML = `<p class="result">Walk-scan ${escapeHtml(bin)} with the C72
-      (SWEEP → SEND), then hit RUN - the newest sweep on file is
+    out.innerHTML = `<p class="result">${escapeHtml(bin)} has no saved audit
+      sweep yet. Sweep it on the C72's AUDIT tab, then hit RUN - the
+      newest unclaimed sweep on file is
       ${escapeHtml(fmtAgo(cap.created_at))}.</p>`;
   } catch (err) {
-    out.innerHTML = `<p class="result">Walk-scan ${escapeHtml(bin)} with the C72
-      (SWEEP → SEND), then hit RUN.</p>`;
+    out.innerHTML = `<p class="result">${escapeHtml(bin)} has no saved audit
+      sweep yet. Sweep it on the C72's AUDIT tab, then hit RUN.</p>`;
   }
 }
 
@@ -11228,14 +11261,18 @@ function binAuditCacheBust(bin) {
 
 document.getElementById("binaudit-run").addEventListener("click", async () => {
   const out = document.getElementById("binaudit-report");
-  binAuditCacheBust(document.getElementById("binaudit-bin").value);
+  const bin = document.getElementById("binaudit-bin").value.trim();
+  binAuditCacheBust(bin);
   if (binAuditPinnedCap) {
     await runBinAudit(binAuditPinnedCap);
     return;
   }
-  out.innerHTML = `<p class="result">Pulling the latest sweep…</p>`;
+  out.innerHTML = `<p class="result">Looking for ${escapeHtml(bin)}'s own sweep…</p>`;
   try {
-    const cap = await apiJson("/api/epc-captures/latest?pickable=1");
+    // This location's saved audit first; the global newest only when
+    // the bin has no history of its own.
+    const own = bin ? await binLatestSweep(bin) : null;
+    const cap = own || (await apiJson("/api/epc-captures/latest?pickable=1"));
     await runBinAudit(cap);
   } catch (err) {
     out.innerHTML = `<p class="result result--err">${escapeHtml(err.message)}</p>`;
@@ -12446,6 +12483,10 @@ function renderBinAudit() {
     )}</b> \u00b7 ${escapeHtml(cap.device || "C72")} \u00b7 ${
       cap.epc_count
     } tag(s) \u00b7 ${escapeHtml(fmtWhen(cap.created_at))}${
+      sweepIsStale(cap.created_at)
+        ? ` <span class="ba-stale">\u26a0 from another day - still usable; re-sweep for fresh truth</span>`
+        : ""
+    }${
       pm
         ? ` \u00b7 checked for <b>${escapeHtml(pm.title)}</b> at ${escapeHtml(rep.bin)}`
         : rep.rack
@@ -13142,8 +13183,24 @@ async function loadAuditBins() {
     auditData = await apiJson("/api/audit/bins");
     renderAuditBins();
     renderAuditReco();
+    // Slim copy for the next visit's instant paint (no per-product
+    // arrays - the reco cards and session pills don't need them).
+    try {
+      localStorage.setItem("audbins_cache", JSON.stringify({
+        ts: Date.now(),
+        threshold_days: auditData.threshold_days,
+        bins: auditData.bins.map((b) => ({
+          bin: b.bin, score: b.score, overdue: b.overdue,
+          batch_done: b.batch_done,
+          last_audited_at: b.last_audited_at,
+          last_audited_by: b.last_audited_by,
+          mismatched_count: b.mismatched_count,
+          product_count: b.product_count,
+        })),
+      }));
+    } catch (e) { /* storage blocked */ }
     // Open sessions carry live bin pills from the same data.
-    if (audSessions.length) loadAuditSessions();
+    if (audSessions.length) renderAuditSessions();
   } catch (err) {
     list.innerHTML = `<li class="recent__empty">${escapeHtml(err.message)}</li>`;
   }
@@ -13184,10 +13241,35 @@ refreshify("audit-refresh", "audit-onhand-pull", async () => {
   }
 });
 
+function audPaintFromCache() {
+  // Sessions + recommended racks draw from the last visit's data
+  // BEFORE any network answers; the live loads overwrite in place
+  // and the freshness tag flips green when they land.
+  try {
+    if (!auditData) {
+      const raw = JSON.parse(localStorage.getItem("audbins_cache") || "null");
+      if (raw && raw.bins) {
+        auditData = { threshold_days: raw.threshold_days, bins: raw.bins,
+                      _cached: true };
+        renderAuditReco();
+      }
+    }
+    if (!audSessions.length) {
+      const raw = JSON.parse(
+        localStorage.getItem("audsess_cache") || "null");
+      if (raw && Array.isArray(raw.sessions)) {
+        audSessions = raw.sessions;
+        renderAuditSessions();
+      }
+    }
+  } catch (e) { /* cache is decoration */ }
+}
+
 async function loadAudits() {
   // Last-known card numbers paint instantly (yellow "last refreshed"
   // tag); the tag flips green once every live load below has landed.
   audRestoreCards();
+  audPaintFromCache();
   const slowLoads = [
     loadOneleft(),
     loadAuditBins(),
@@ -13946,15 +14028,8 @@ function audBinPillHtml(i) {
     )} <i>${mark}</i></button>`;
 }
 
-async function loadAuditSessions() {
+function renderAuditSessions() {
   const list = document.getElementById("audsess-list");
-  try {
-    const data = await apiJson("/api/audit-sessions?status=open");
-    audSessions = data.sessions;
-  } catch (err) {
-    list.innerHTML = `<li class="recent__empty">Could not load sessions: ${escapeHtml(err.message)}</li>`;
-    return;
-  }
   document.getElementById("audsess-meta").textContent = audSessions.length
     ? `(${audSessions.length} open)`
     : "";
@@ -13963,15 +14038,15 @@ async function loadAuditSessions() {
   list.innerHTML = "";
   audSessions.forEach((sn) => {
     const pct = sn.total ? Math.round((sn.done / sn.total) * 100) : 0;
-    const li = document.createElement("li");
-    li.className = "sess";
+    const card = document.createElement("div");
+    card.className = "sess";
     const strip =
       sn.kind === "bins" && (sn.items || []).length
         ? `<div class="binstrip">${sn.items
             .map(audBinPillHtml)
             .join("")}</div>`
         : "";
-    li.innerHTML = `
+    card.innerHTML = `
       <div class="sess__row">
         <span class="sess__name audsess-open" data-sid="${sn.id}">${escapeHtml(sn.name)}</span>
         <span class="sess__meta">${
@@ -13985,8 +14060,36 @@ async function loadAuditSessions() {
       <div class="audsess__bar"><div class="audsess__fill" style="width:${pct}%"></div></div>
       <div class="audsess__nums"><span>${sn.done} of ${sn.total} done</span><span>${pct}%</span></div>
       ${strip}`;
-    list.append(li);
+    list.append(card);
   });
+}
+
+async function loadAuditSessions() {
+  const list = document.getElementById("audsess-list");
+  try {
+    const data = await apiJson("/api/audit-sessions?status=open");
+    audSessions = data.sessions;
+  } catch (err) {
+    list.innerHTML = `<div class="pcard__note">Could not load sessions: ${escapeHtml(err.message)}</div>`;
+    return;
+  }
+  renderAuditSessions();
+  // Instant paint next visit (Nick, 2026-09-28: "show up quickly") -
+  // the slim list is enough to draw the cards before the network
+  // answers; the freshness tag already says when numbers are stale.
+  try {
+    localStorage.setItem("audsess_cache", JSON.stringify({
+      ts: Date.now(),
+      sessions: audSessions.map((sn) => ({
+        id: sn.id, name: sn.name, kind: sn.kind, status: sn.status,
+        total: sn.total, done: sn.done, created_at: sn.created_at,
+        created_by: sn.created_by,
+        items: (sn.items || []).map((i) => ({
+          id: i.id, key: i.key, done: i.done, done_by: i.done_by,
+        })),
+      })),
+    }));
+  } catch (e) { /* storage blocked - instant paint just won't happen */ }
   // The open session detail refreshes from the same fetch.
   if (audSessOpenId !== null) {
     const open = audSessions.find((x) => x.id === audSessOpenId);

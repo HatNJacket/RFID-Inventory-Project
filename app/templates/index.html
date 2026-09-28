@@ -1344,7 +1344,9 @@
           <button class="reset" id="aud-onebin-go" type="button">Open</button>
         </div>
         <div class="grouplab" id="audsess-openlab" hidden>In progress</div>
-        <ul class="recent__list" id="audsess-list"></ul>
+        <!-- A plain div: recent__list's flex-row li styling flattened
+             the session cards (Nick's screenshot, 2026-09-28). -->
+        <div id="audsess-list"></div>
         <div class="audfin" id="audsess-finished" hidden>
           <div class="grouplab">Finished</div>
           <div id="audsess-finlist"></div>

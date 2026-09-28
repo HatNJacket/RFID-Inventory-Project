@@ -7049,6 +7049,14 @@ public class MainActivity extends Activity {
                     + "sweep power (⚙ → Trigger pulls).");
             return;
         }
+        // STATION with a product up: the sweep pairs every heard tag
+        // to it, exactly as if each sticker had been trigger-read one
+        // by one (Nick, 2026-09-28). Already-assigned tags fall out as
+        // duplicates, same as a repeat single scan would.
+        if (activeTab == TAB_STATION && stationProduct != null) {
+            stationSweepPair(swept);
+            return;
+        }
         status.setText("Sending sweep (" + swept.size() + " tags)…");
         new Thread(() -> {
             try {
@@ -7232,13 +7240,14 @@ public class MainActivity extends Activity {
     // A default of 0 means "no default: keep whatever power is set".
     // Resolution order while a batch is open with per-step defaults on:
     // step default → tab default → leave the power alone.
-    // Indexed by tab (LINK first since 4.19). The retired sweep/find
-    // keys just sit unused in prefs.
+    // Indexed by tab (LINK first since 4.19); every tab has its own
+    // default again (Nick, 2026-09-28). The retired sweep/find keys
+    // just sit unused in prefs.
     private static final String[] TAB_POWER_KEYS = {
             "pow_tab_link", "pow_tab_batch", "pow_tab_station",
-            "pow_tab_locate"};
+            "pow_tab_locate", "pow_tab_audit", "pow_tab_returns"};
     private static final String[] TAB_POWER_NAMES = {
-            "Link", "Batch", "Station", "Locate"};
+            "Link", "Batch", "Station", "Locate", "Audit", "Returns"};
     // Display order for the settings list only. Power RESOLUTION goes
     // through stepPowerKey()'s explicit switch, never a step-indexed
     // array: inserting STEP_SHELF shifted every index once and Verify
@@ -7588,6 +7597,9 @@ public class MainActivity extends Activity {
         conn.setReadTimeout(20000);
         conn.setRequestMethod(method);
         conn.setRequestProperty("X-Station-Key", key);
+        // Big JSON answers (bin checks, batch verifies) compress ~8x;
+        // the server gzips anything over 1 KB when asked (2026-09-28).
+        conn.setRequestProperty("Accept-Encoding", "gzip");
         if (body != null) {
             conn.setRequestProperty("Content-Type", "application/json");
             conn.setDoOutput(true);
@@ -7598,6 +7610,10 @@ public class MainActivity extends Activity {
         int code = conn.getResponseCode();
         InputStream in = code >= 400 ? conn.getErrorStream()
                 : conn.getInputStream();
+        if (in != null && "gzip".equalsIgnoreCase(
+                conn.getContentEncoding())) {
+            in = new java.util.zip.GZIPInputStream(in);
+        }
         String text = in == null ? "" : readAll(in);
         conn.disconnect();
         if (code >= 400) {
@@ -8615,9 +8631,12 @@ public class MainActivity extends Activity {
                 JSONObject body = new JSONObject()
                         .put("device", prefs.getString("device", "C72"))
                         .put("batch_id", batchId)
+                        .put("bin", batchBin == null ? JSONObject.NULL
+                                : batchBin)
                         .put("note", "Bin " + batchBin + " verify sweep")
                         .put("epcs", new JSONArray(epcs));
-                api("POST", "/api/epc-captures", body);
+                JSONObject saved = api("POST", "/api/epc-captures", body);
+                final int capId = saved.optInt("id");
                 // Then the same sweep against the bin, for the on-device
                 // table: every product the bin knows about, with tags on
                 // file / in this bin / actually heard. The batch's own
@@ -8628,10 +8647,15 @@ public class MainActivity extends Activity {
                 // splits detections into THIS batch's pairs vs earlier
                 // records, so a sold-out tag can only ever go yellow \u2014
                 // never fail the bin (Nick, 2026-08-19).
+                // By id, not by re-upload (2026-09-28): the server
+                // already holds the sweep - a whole-rack list stops
+                // crossing the Wi-Fi twice.
                 JSONObject check = api("POST", "/api/batches/" + batchId
                         + "/verify",
-                        new JSONObject()
-                                .put("epcs", new JSONArray(epcs)));
+                        capId > 0
+                                ? new JSONObject().put("capture_id", capId)
+                                : new JSONObject()
+                                        .put("epcs", new JSONArray(epcs)));
                 final JSONObject rep = check;
                 final int sweptCount = epcs.size();
                 ui.post(() -> {
@@ -15549,6 +15573,65 @@ public class MainActivity extends Activity {
         }).start();
     }
 
+    /** A station hold-sweep's tags, paired to the loaded product in
+     *  one bulk call - the same records N individual trigger reads
+     *  would have written (Nick, 2026-09-28). */
+    private void stationSweepPair(final List<String> swept) {
+        final JSONObject p = stationProduct;
+        if (p == null) return;
+        status.setText("Pairing " + swept.size() + " swept tag(s) to "
+                + p.optString("product_title", "the product") + "\u2026");
+        new Thread(() -> {
+            try {
+                JSONObject body = new JSONObject()
+                        .put("epcs", new JSONArray(swept))
+                        .put("shopify_variant_id",
+                                p.optString("shopify_variant_id"))
+                        .put("shopify_product_id",
+                                p.isNull("shopify_product_id")
+                                        ? JSONObject.NULL
+                                        : p.optString("shopify_product_id"))
+                        .put("product_title",
+                                p.optString("product_title", "(unknown)"))
+                        .put("variant_title",
+                                p.isNull("variant_title") ? JSONObject.NULL
+                                        : p.optString("variant_title"))
+                        .put("sku", p.isNull("sku") ? JSONObject.NULL
+                                : p.optString("sku"))
+                        .put("barcode", p.isNull("barcode")
+                                ? JSONObject.NULL : p.optString("barcode"))
+                        .put("bin_location",
+                                p.isNull("bin_location") ? JSONObject.NULL
+                                        : p.optString("bin_location"))
+                        .put("assigned_by",
+                                prefs.getString("device", "C72"));
+                JSONObject resp = api("POST",
+                        "/api/rfid-assignments/sweep", body);
+                final int done = resp.optInt("count");
+                final org.json.JSONArray dup =
+                        resp.optJSONArray("duplicates");
+                final int dups = dup == null ? 0 : dup.length();
+                final String warn = resp.optString("warning", "");
+                ui.post(() -> {
+                    stationTags += done;
+                    stationTracker.setText(String.valueOf(stationTags));
+                    beep(done > 0 ? SOUND_OK : SOUND_ERR);
+                    status.setText(done + " tag(s) paired \u2713"
+                            + (dups > 0 ? " \u00b7 " + dups
+                              + " already assigned (skipped)" : "")
+                            + " \u00b7 " + stationTags + " on file"
+                            + (warn.isEmpty() ? "" : "\n\u26a0 " + warn));
+                });
+            } catch (Exception e) {
+                ui.post(() -> {
+                    beep(SOUND_ERR);
+                    status.setText("Sweep pair failed: " + e.getMessage()
+                            + " - nothing was written; sweep again.");
+                });
+            }
+        }).start();
+    }
+
     private void stationReadTag() {
         if (stationProduct == null) {
             // No product up: the trigger means "what IS this sticker?"
@@ -15752,6 +15835,16 @@ public class MainActivity extends Activity {
     private final java.util.HashSet<String> auditTagSet =
             new java.util.HashSet<>();
     private JSONObject auditRep = null;       // last LOAD (expected list)
+    // The saved server-side copy of the collected set (2026-09-28):
+    // checks and the sign-off go by capture_id, so the EPC list
+    // crosses the Wi-Fi exactly once per sweep, not once per press.
+    private int auditSavedCapId = 0;
+    private int auditSavedHash = 0;
+    // Set when the shown report came from a SAVED sweep (opening a bin
+    // with nothing collected): {id, created_at} - the render marks it,
+    // stale when it is from another day.
+    private JSONObject auditShownSweep = null;
+    private boolean auditAlsoOpen = false;    // "Also heard" fold
     private String auditLoc = null;           // the LOADed location
     private final java.util.HashMap<String, java.util.HashSet<String>>
             auditItemEpcs = new java.util.HashMap<>();
@@ -16034,24 +16127,118 @@ public class MainActivity extends Activity {
             auditItemEpcs.clear();
             auditRender();
             status.setText("Walk mode: sweep shelves and barcode tagless "
-                    + "boxes. Type or ◀ ▶ a bin or rack for counters.");
+                    + "boxes. Type or \u25c0 \u25b6 a bin or rack for counters.");
             return;
         }
-        auditFetch(loc, "Loading " + loc + "…");
+        // Nothing collected yet: open the location's LAST SAVED audit
+        // sweep instead (Nick, 2026-09-28) - marked stale when it is
+        // from another day, still fully usable.
+        if (auditTagSet.isEmpty()) {
+            auditLoadSaved(loc);
+            return;
+        }
+        auditFetch(loc, "Loading " + loc + "\u2026");
+    }
+
+    /** The location's own newest saved sweep -> check by id; falls
+     *  back to a plain empty-handed load when it has none. */
+    private void auditLoadSaved(final String loc) {
+        status.setText("Opening " + loc + "\u2026");
+        new Thread(() -> {
+            JSONObject sw = null;
+            try {
+                JSONObject resp = api("GET", "/api/bins/" + encPath(loc)
+                        + "/sweeps?limit=1", null);
+                org.json.JSONArray arr = resp.optJSONArray("sweeps");
+                if (arr != null && arr.length() > 0) {
+                    sw = arr.optJSONObject(0);
+                }
+            } catch (Exception ignored) {
+                // No history is not an error.
+            }
+            final JSONObject sweep = sw;
+            ui.post(() -> {
+                if (sweep == null) {
+                    auditFetchBody(loc, "Loading " + loc + "\u2026",
+                            null, null);
+                    return;
+                }
+                auditFetchBody(loc, "Opening " + loc + "'s last audit\u2026",
+                        sweep.optInt("id"), sweep);
+            });
+        }).start();
+    }
+
+    /** True when the ISO stamp falls on a different LOCAL day. */
+    private boolean sweepStale(String iso) {
+        try {
+            java.time.LocalDate d = java.time.Instant.parse(
+                    iso.endsWith("Z") || iso.contains("+")
+                            ? iso : iso + "Z")
+                    .atZone(java.time.ZoneId.systemDefault())
+                    .toLocalDate();
+            return !d.equals(java.time.LocalDate.now());
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** Save the collected set server-side once per change; every check
+     *  and the sign-off then go by id. Runs on a worker thread. */
+    private int auditEnsureCapture(String loc) throws Exception {
+        if (auditTagSet.isEmpty()) return 0;
+        int h = auditTagSet.hashCode();
+        if (h == auditSavedHash && auditSavedCapId > 0) {
+            return auditSavedCapId;
+        }
+        JSONObject resp = api("POST", "/api/epc-captures",
+                new JSONObject()
+                        .put("device", prefs.getString("device", "C72"))
+                        .put("note", "AUDIT " + loc)
+                        .put("bin", loc)
+                        .put("epcs", new JSONArray(
+                                new ArrayList<>(auditTagSet))));
+        auditSavedCapId = resp.optInt("id");
+        auditSavedHash = h;
+        auditLastSentHash = h;
+        return auditSavedCapId;
     }
 
     /** The one server round-trip behind LOAD, CHECK and every re-check:
-     *  POST the collected sweep to /check and render the report in the
-     *  tab's own list (the old pop-up window is gone - Nick,
-     *  2026-09-28: the list IS the check screen now). */
+     *  the collected sweep is saved ONCE (capture) and the check goes
+     *  by id, so the EPC list never crosses the Wi-Fi twice. */
     private void auditFetch(final String loc, final String busyMsg) {
+        auditFetchBody(loc, busyMsg, null, null);
+    }
+
+    /** capId != null checks that saved sweep (shownSweep carries its
+     *  meta for the stale banner); null checks the live collected set,
+     *  saving it as a capture first. */
+    private void auditFetchBody(final String loc, final String busyMsg,
+            final Integer capId, final JSONObject shownSweep) {
         status.setText(busyMsg);
         new Thread(() -> {
             try {
-                JSONObject body = new JSONObject().put("epcs",
-                        new JSONArray(new ArrayList<>(auditTagSet)));
+                JSONObject body;
+                if (capId != null && capId > 0) {
+                    body = new JSONObject().put("capture_id", capId);
+                } else {
+                    int saved = 0;
+                    try {
+                        saved = auditEnsureCapture(loc);
+                    } catch (Exception ignored) {
+                        // Saving is an optimization - fall back to the
+                        // full list rather than fail the check.
+                    }
+                    body = saved > 0
+                            ? new JSONObject().put("capture_id", saved)
+                            : new JSONObject().put("epcs", new JSONArray(
+                                    new ArrayList<>(auditTagSet)));
+                }
                 final JSONObject rep = api("POST", "/api/bins/"
                         + encPath(loc) + "/check", body);
+                ui.post(() -> auditShownSweep =
+                        capId != null && capId > 0 ? shownSweep : null);
                 ui.post(() -> {
                     auditRep = rep;
                     auditLoc = loc;
@@ -16227,6 +16414,9 @@ public class MainActivity extends Activity {
                     auditTagSet.clear();
                     auditMergedSize = -1;
                     auditEvidenceAt = null;
+                    auditSavedCapId = 0;
+                    auditSavedHash = 0;
+                    auditShownSweep = null;
                     auditRender();
                     status.setText("Cleared - ready for the next sweep.");
                 })
@@ -16323,6 +16513,22 @@ public class MainActivity extends Activity {
         JSONArray unknown = rep.optJSONArray("unknown_epcs");
         JSONArray owed = rep.optJSONArray("printed_labels_heard");
         int flagged = 0;
+        // Saved-sweep banner (Nick, 2026-09-28): this report came from
+        // the bin's stored audit, honestly dated - amber when stale.
+        if (auditShownSweep != null) {
+            String at = auditShownSweep.isNull("created_at") ? null
+                    : auditShownSweep.optString("created_at");
+            boolean stale = at != null && sweepStale(at);
+            TextView bn = auditRowView("\ud83d\udcc2 Showing " + loc
+                    + "'s saved audit - sweep #"
+                    + auditShownSweep.optInt("id") + " ("
+                    + auditShownSweep.optInt("epc_count") + " tags)"
+                    + (stale ? "\n\u26a0 From another day - still "
+                       + "usable; trigger to re-sweep for fresh truth."
+                       : " from today."),
+                    stale ? C_WARN : C_MUTED);
+            auditList.addView(bn, auditRowLp());
+        }
         // Every product whose silence is FULLY covered by sales - fed
         // to the one-tap MARK ALL SOLD row.
         final List<Object[]> sellable = new ArrayList<>();
@@ -16424,73 +16630,131 @@ public class MainActivity extends Activity {
             }
             boolean red = false;
             boolean warn = false;
+            final List<View> frows = new ArrayList<>();
+            final String fSku = sku;
+            final String fTitle = it.optString("product_title", sku);
+            final List<String> silAll = new ArrayList<>();
+            JSONArray silArr = it.optJSONArray("silent_epcs");
+            for (int j = 0; silArr != null && j < silArr.length(); j++) {
+                silAll.add(silArr.optString(j));
+            }
             if (gh > 0) {
-                auditFlagLine(sub, "\u26a0 " + gh + " tag(s) marked sold "
-                        + "ANSWERED - box never left", C_OVER);
+                final List<String> ghostEpcs = new ArrayList<>();
+                for (int j = 0; j < ghosts.length(); j++) {
+                    ghostEpcs.add(ghosts.optJSONObject(j)
+                            .optString("epc"));
+                }
+                frows.add(auditFlagRowView(gh + " retired tag(s) "
+                        + "ANSWERED - box never left", C_OVER,
+                        "Un-retire",
+                        () -> auditActUnretire(ghostEpcs)));
                 red = true;
             }
             if (silent > 0) {
-                if (salesCover && salesAgree != Boolean.FALSE) {
-                    auditFlagLine(sub, "Sales agree - " + silent
-                            + " silent, " + sold
-                            + " sold since last audit", C_OK);
-                    warn = true;
-                } else if (salesCover) {
-                    auditFlagLine(sub, silent + " silent, " + sold
-                            + " sold - times don't line up; might be a "
-                            + "missing, misplaced or mislabeled product",
-                            C_WARN);
-                    warn = true;
-                } else if (unavailOk) {
-                    auditFlagLine(sub, silent + " silent - likely the "
-                            + "set-aside/unavailable unit"
-                            + (silent == 1 ? "" : "s"), C_OK);
-                } else if (pickupOk) {
-                    auditFlagLine(sub, silent + " silent - sold/pickup "
-                            + "orders cover it (" + sold + " sold, "
-                            + pickup + " for pickup)", C_OK);
-                } else if (sold > 0) {
-                    auditFlagLine(sub, silent + " silent vs only " + sold
-                            + " sold - might be a missing, misplaced or "
-                            + "mislabeled product", C_OVER);
-                    red = true;
-                } else {
-                    auditFlagLine(sub, silent + " silent - no sales "
-                            + "explain it; might be a missing, misplaced "
-                            + "or mislabeled product", C_OVER);
-                    red = true;
-                }
                 if (salesCover) {
-                    JSONArray se = it.optJSONArray("silent_epcs");
-                    if (se != null && se.length() > 0) {
-                        List<String> eps = new ArrayList<>();
-                        for (int j = 0; j < se.length(); j++) {
-                            String e = se.optString(j);
-                            if (!auditTagSet.contains(e.toUpperCase(
-                                    java.util.Locale.ROOT))) {
-                                eps.add(e);
-                            }
-                        }
-                        if (!eps.isEmpty()) {
-                            sellable.add(new Object[]{sku, eps});
+                    // MARK-ALL-SOLD feed: the still-unheard covered
+                    // tags, same rule as before the flag-row rework.
+                    List<String> sellEps = new ArrayList<>();
+                    for (String e : silAll) {
+                        if (!auditTagSet.contains(e.toUpperCase(
+                                java.util.Locale.ROOT))) {
+                            sellEps.add(e);
                         }
                     }
+                    if (!sellEps.isEmpty()) {
+                        sellable.add(new Object[]{sku, sellEps});
+                    }
+                }
+                if (salesCover && salesAgree != Boolean.FALSE) {
+                    frows.add(auditFlagRowView("Sales agree - " + silent
+                            + " silent, " + sold + " sold since last "
+                            + "audit", C_OK,
+                            "Mark " + silent + " sold",
+                            () -> auditActMarkSold(fSku, silAll)));
+                    warn = true;
+                } else if (salesCover) {
+                    frows.add(auditFlagRowView(silent + " silent, "
+                            + sold + " sold - times don't line up; "
+                            + "might be a missing, misplaced or "
+                            + "mislabeled product", C_WARN,
+                            "Mark sold",
+                            () -> auditActMarkSold(fSku, silAll)));
+                    warn = true;
+                } else if (unavailOk) {
+                    frows.add(auditFlagRowView(silent + " silent - "
+                            + "likely the set-aside/unavailable unit"
+                            + (silent == 1 ? "" : "s"), C_OK, null,
+                            null));
+                } else if (pickupOk) {
+                    frows.add(auditFlagRowView(silent + " silent - "
+                            + "sold/pickup orders cover it (" + sold
+                            + " sold, " + pickup + " for pickup)",
+                            C_OK, null, null));
+                } else {
+                    final List<String> unexplained = new ArrayList<>(
+                            silAll.subList(Math.min(sold, silAll.size()),
+                                    silAll.size()));
+                    frows.add(auditFlagRowView(silent + " silent - "
+                            + (sold > 0 ? "only " + sold + " sold"
+                               : "no sales explain it")
+                            + "; might be a missing, misplaced or "
+                            + "mislabeled product.\nCheck the shelf "
+                            + "first - re-sweep behind the boxes.",
+                            C_OVER,
+                            "\u21bb Unpair+print",
+                            () -> auditActUnpairPrint(fSku,
+                                    auditItemFirstBin(it, loc),
+                                    unexplained)));
+                    red = true;
                 }
             }
             if (fOpen > 0) {
-                auditFlagLine(sub, fOpen + " tagless box(es) noted - "
-                        + "label owed (banner prints them)", C_WARN);
+                frows.add(auditFlagRowView(fOpen + " tagless box(es) "
+                        + "noted - label owed (banner prints them)",
+                        C_WARN, null, null));
                 warn = true;
             }
             if (fPrinted > 0) {
-                auditFlagLine(sub, fPrinted + " label(s) printed, not "
-                        + "paired yet", C_OVER);
+                frows.add(auditFlagRowView(fPrinted + " label(s) "
+                        + "printed, not paired yet", C_OVER, null,
+                        null));
                 red = true;
             }
+            // The shelf carries more stock than tag records: some boxes
+            // never got a sticker - print exactly the missing labels
+            // (the neutral W9177 path).
+            final int unitsHereF = unitsHere;
+            if (exp >= 0 && unitsHere < exp && !sku.isEmpty()) {
+                final int kMiss = exp - unitsHere;
+                frows.add(auditFlagRowView(kMiss + " box"
+                        + (kMiss == 1 ? "" : "es") + " never got a "
+                        + "label (pairing never changes on-hand)",
+                        C_WARN,
+                        "\ud83c\udff7 Print " + kMiss,
+                        () -> auditPrintMissingLabels(fSku,
+                                auditItemFirstBin(it, loc), kMiss)));
+                warn = true;
+            }
             if (rangeOff) {
-                auditFlagLine(sub, "Outside the expected range - "
-                        + "re-scan the shelf thoroughly (behind boxes "
-                        + "too) before trusting the number", C_WARN);
+                final int heardNow = detUnits + gh;
+                frows.add(auditFlagRowView("Outside the expected range "
+                        + "- re-scan the shelf thoroughly (behind "
+                        + "boxes too) before trusting the number",
+                        C_WARN,
+                        exp >= 0 && heardNow > exp && !sku.isEmpty()
+                                ? "Set to " + heardNow : null,
+                        exp >= 0 && heardNow > exp && !sku.isEmpty()
+                                ? () -> auditActSetStock(fSku, heardNow,
+                                        exp)
+                                : null));
+                warn = true;
+            } else if (exp >= 0 && detUnits + gh > exp
+                    && !sku.isEmpty()) {
+                final int heardNow = detUnits + gh;
+                frows.add(auditFlagRowView("Shelf physically holds "
+                        + heardNow + " - more than Shopify's " + exp,
+                        C_WARN, "Set to " + heardNow,
+                        () -> auditActSetStock(fSku, heardNow, exp)));
                 warn = true;
             }
             if (noscan) {
@@ -16511,6 +16775,17 @@ public class MainActivity extends Activity {
                     it.optString("product_title", sku), sub,
                     det + "/" + here, color,
                     it.optString("image_url", null));
+            // The flag rows live INSIDE the card's text column, under
+            // the counts - the web's card shape.
+            LinearLayout col = (LinearLayout) row.getChildAt(2);
+            for (View fv : frows) {
+                LinearLayout.LayoutParams fl =
+                        new LinearLayout.LayoutParams(
+                                LinearLayout.LayoutParams.MATCH_PARENT,
+                                LinearLayout.LayoutParams.WRAP_CONTENT);
+                fl.topMargin = dp(4);
+                col.addView(fv, fl);
+            }
             row.setOnClickListener(x -> auditItemActions(loc, it, rep));
             cards.add(new Object[]{rank,
                     bins.isEmpty() ? "zzzz" : bins, row});
@@ -16520,6 +16795,46 @@ public class MainActivity extends Activity {
             if (r != 0) return r;
             return ((String) a[1]).compareToIgnoreCase((String) b2[1]);
         });
+
+        // Summary strip, the web's ba-summary shape: products / all
+        // match / flagged / strays as bold figures in one card row.
+        int nOk = 0;
+        int nBad = 0;
+        for (Object[] c : cards) {
+            if ((Integer) c[0] <= 1) nBad++;
+            else nOk++;
+        }
+        int strays = (foreign == null ? 0 : foreign.length())
+                + (unknown == null ? 0 : unknown.length());
+        LinearLayout strip = new LinearLayout(this);
+        strip.setBackground(rr(C_CARD, C_LINE, 10));
+        strip.setPadding(dp(12), dp(8), dp(12), dp(8));
+        strip.setGravity(Gravity.CENTER_VERTICAL);
+        String[][] stats = {
+                {String.valueOf(cards.size()), "products", null},
+                {String.valueOf(nOk), "all match", "ok"},
+                {String.valueOf(nBad), "flagged", nBad > 0 ? "bad" : null},
+                {String.valueOf(strays), "strays", null},
+        };
+        for (String[] st : stats) {
+            LinearLayout cell = new LinearLayout(this);
+            cell.setOrientation(LinearLayout.VERTICAL);
+            cell.setPadding(0, 0, dp(16), 0);
+            TextView num = new TextView(this);
+            num.setText(st[0]);
+            num.setTextSize(19);
+            num.setTypeface(null, Typeface.BOLD);
+            num.setTextColor("ok".equals(st[2]) ? C_OK
+                    : "bad".equals(st[2]) ? C_OVER : C_TEXT);
+            cell.addView(num);
+            TextView lbl = new TextView(this);
+            lbl.setText(st[1].toUpperCase(java.util.Locale.ROOT));
+            lbl.setTextSize(9);
+            lbl.setTextColor(C_MUTED);
+            cell.addView(lbl);
+            strip.addView(cell);
+        }
+        auditList.addView(strip, auditRowLp());
 
         if (flagged == 0) {
             auditList.addView(auditRowView("\u2713 ALL CLEAR - every "
@@ -16541,19 +16856,42 @@ public class MainActivity extends Activity {
         for (Object[] c : cards) {
             auditList.addView((LinearLayout) c[2], auditRowLp());
         }
+        // "Also heard on this shelf": one collapsed row, the web's
+        // fold - tap to unfold the strays and unknown stickers.
         int nForeign = foreign == null ? 0 : foreign.length();
         int nUnknown = unknown == null ? 0 : unknown.length();
-        if (nForeign > 0) {
-            auditList.addView(auditRowView(nForeign + " tag(s) from "
-                    + "other shelves - normal neighbour noise on a big "
-                    + "antenna; the web terminal lists each one.",
-                    C_MUTED), auditRowLp());
-        }
-        if (nUnknown > 0) {
-            auditList.addView(auditRowView(nUnknown + " sticker(s) not "
-                    + "linked to any product - saved to the locate "
-                    + "list; hunt them from LOCATE, LIST button.",
-                    C_WARN), auditRowLp());
+        if (nForeign + nUnknown > 0) {
+            TextView fold = auditRowView("Also heard on this shelf ("
+                    + (nForeign + nUnknown) + ") "
+                    + (auditAlsoOpen ? "\u25b4" : "\u25be"), C_MUTED);
+            fold.setOnClickListener(x -> {
+                auditAlsoOpen = !auditAlsoOpen;
+                auditRender();
+            });
+            auditList.addView(fold, auditRowLp());
+            if (auditAlsoOpen) {
+                for (int i = 0; foreign != null && i < foreign.length();
+                        i++) {
+                    JSONObject f = foreign.optJSONObject(i);
+                    auditList.addView(auditRowView("\u00b7 "
+                            + f.optString("product_title",
+                                    f.optString("sku", "?"))
+                            + (f.isNull("bin_location") ? ""
+                               : " - lives in "
+                                 + f.optString("bin_location"))
+                            + " (neighbour noise)", C_MUTED),
+                            auditRowLp());
+                }
+                for (int i = 0; unknown != null && i < unknown.length();
+                        i++) {
+                    String e = unknown.optString(i);
+                    auditList.addView(auditRowView("\u00b7 \u2026"
+                            + e.substring(Math.max(0, e.length() - 6))
+                            + " - linked to nothing; on the locate "
+                            + "list (LOCATE \u2192 LIST)", C_WARN),
+                            auditRowLp());
+                }
+            }
         }
     }
 
@@ -16977,29 +17315,9 @@ public class MainActivity extends Activity {
             auditToggleScan();
             return;
         }
-        status.setText("Checking " + loc + "\u2026");
-        new Thread(() -> {
-            // CHECK saves the collected sweep server-side too (Nick,
-            // 2026-09-01) - the web terminal can re-run this exact
-            // audit later from "Recent sweeps" without a Send press.
-            // Deduped so repeated CHECKs of the same set save once;
-            // fail-soft, the check itself never waits on it.
-            if (!auditTagSet.isEmpty()
-                    && auditTagSet.hashCode() != auditLastSentHash) {
-                try {
-                    api("POST", "/api/epc-captures", new JSONObject()
-                            .put("device",
-                                    prefs.getString("device", "C72"))
-                            .put("note", "AUDIT " + loc)
-                            .put("epcs", new JSONArray(
-                                    new ArrayList<>(auditTagSet))));
-                    auditLastSentHash = auditTagSet.hashCode();
-                } catch (Exception ignored) {
-                    // The capture is a convenience copy.
-                }
-            }
-            ui.post(() -> auditFetch(loc, "Checking " + loc + "\u2026"));
-        }).start();
+        // The fetch saves the sweep once and checks by id - one path
+        // for LOAD, CHECK and every write's re-check (2026-09-28).
+        auditFetch(loc, "Checking " + loc + "\u2026");
     }
 
     /** LOG AUDIT: sign the shelf off. The collected sweep becomes the
@@ -17024,18 +17342,24 @@ public class MainActivity extends Activity {
                 .setPositiveButton("LOG \u2713", (d, w) ->
                         new Thread(() -> {
                             try {
+                                int capId = 0;
+                                try {
+                                    capId = auditEnsureCapture(loc);
+                                } catch (Exception ignored) {
+                                }
+                                JSONObject body = capId > 0
+                                        ? new JSONObject().put(
+                                                "capture_id", capId)
+                                        : new JSONObject().put("epcs",
+                                                new JSONArray(
+                                                    new ArrayList<>(
+                                                        auditTagSet)));
                                 JSONObject resp = api("POST",
                                         "/api/bins/" + encPath(loc)
                                         + "/audit-complete",
-                                        new JSONObject()
-                                                .put("epcs",
-                                                    new JSONArray(
-                                                        new ArrayList<>(
-                                                            auditTagSet)))
-                                                .put("worker",
-                                                        prefs.getString(
-                                                            "device",
-                                                            "C72")));
+                                        body.put("worker",
+                                                prefs.getString(
+                                                    "device", "C72")));
                                 final String msg = resp.optString(
                                         "message", "Audit recorded.");
                                 ui.post(() -> {
@@ -17173,10 +17497,350 @@ public class MainActivity extends Activity {
                 .show();
     }
 
+
+    // ---- shared audit actions (2026-09-28): the flag-row buttons and
+    // the product dialog both land here - one confirm, one write, one
+    // quiet re-check. Mirrors the web bin audit's handlers.
+
+    private void auditActMarkSold(final String sku,
+            final List<String> epcs) {
+        dlg().setMessage("Retire " + epcs.size() + " silent tag(s) of "
+                        + sku + " as presumed sold? Fulfilled orders "
+                        + "account for them. Shopify untouched; undo "
+                        + "in History.")
+                .setPositiveButton("MARK SOLD", (d, w) ->
+                        new Thread(() -> {
+                            try {
+                                api("POST", "/api/assignments/mark-sold",
+                                        new JSONObject()
+                                                .put("sku", sku)
+                                                .put("epcs",
+                                                    new JSONArray(epcs))
+                                                .put("changed_by",
+                                                    prefs.getString(
+                                                        "device", "C72")));
+                                ui.post(() -> {
+                                    beep(SOUND_OK);
+                                    status.setText(epcs.size()
+                                            + " tag(s) retired "
+                                            + "presumed-sold \u2713 "
+                                            + "Re-checking\u2026");
+                                    auditCheck();
+                                });
+                            } catch (Exception e) {
+                                ui.post(() -> status.setText(
+                                        e.getMessage()));
+                            }
+                        }).start())
+                .setNegativeButton("Cancel", null).show();
+    }
+
+    private void auditActUnretire(final List<String> epcs) {
+        dlg().setMessage("These tag(s) were marked sold/retired but "
+                        + "they ANSWERED this sweep - the box is still "
+                        + "on the shelf. Make the record(s) live again?")
+                .setPositiveButton("UN-RETIRE", (d, w) ->
+                        new Thread(() -> {
+                            try {
+                                api("POST", "/api/assignments/unretire",
+                                        new JSONObject()
+                                                .put("epcs",
+                                                    new JSONArray(epcs))
+                                                .put("changed_by",
+                                                    prefs.getString(
+                                                        "device", "C72")));
+                                ui.post(() -> {
+                                    beep(SOUND_OK);
+                                    status.setText("Un-retired \u2713 "
+                                            + "Re-checking\u2026");
+                                    auditCheck();
+                                });
+                            } catch (Exception e) {
+                                ui.post(() -> status.setText(
+                                        e.getMessage()));
+                            }
+                        }).start())
+                .setNegativeButton("Cancel", null).show();
+    }
+
+    private void auditActSetStock(final String sku, final int qty,
+            final int cur) {
+        dlg().setMessage("Set Shopify on-hand for " + sku + " to " + qty
+                        + "? Shopify carries " + cur + ". Logged with "
+                        + "an undo in History.")
+                .setPositiveButton("SET", (d, w) ->
+                        new Thread(() -> {
+                            try {
+                                api("POST", "/api/onhand-updates",
+                                        new JSONObject()
+                                                .put("sku", sku)
+                                                .put("new_qty", qty)
+                                                .put("changed_by",
+                                                    prefs.getString(
+                                                        "device", "C72"))
+                                                .put("sweep_at",
+                                                    auditEvidenceAt == null
+                                                        ? JSONObject.NULL
+                                                        : auditEvidenceAt)
+                                                .put("confirmed", true));
+                                ui.post(() -> {
+                                    beep(SOUND_OK);
+                                    status.setText("Shopify set to "
+                                            + qty + " \u2713 "
+                                            + "Re-checking\u2026");
+                                    auditCheck();
+                                });
+                            } catch (Exception e) {
+                                ui.post(() -> status.setText(
+                                        e.getMessage()));
+                            }
+                        }).start())
+                .setNegativeButton("Cancel", null).show();
+    }
+
+    private void auditActLowerStock(final String sku, final String bin,
+            final int qty, final List<String> epcs, final int cur,
+            final boolean canLower, final boolean pickupExplains) {
+        dlg().setMessage("Lower Shopify on-hand for " + sku + " to "
+                        + qty + "? " + epcs.size() + " silent tag(s) "
+                        + "retire presumed-sold with it - sales cover "
+                        + "what they can, the rest writes off as "
+                        + "shrinkage."
+                        + (pickupExplains
+                           ? "\n\n\u26a0 Open local-pickup orders "
+                             + "explain this shortfall - the staged "
+                             + "boxes drop on-hand by themselves when "
+                             + "collected. Lowering now would "
+                             + "DOUBLE-DROP the count."
+                           : "")
+                        + (canLower ? ""
+                           : "\n\n\u26a0 The server may refuse this: "
+                             + "a product that never completed a batch "
+                             + "tagging only lowers as far as recorded "
+                             + "sales cover.")
+                        + "\n\nOne undo in History reverses all of it.")
+                .setPositiveButton("LOWER", (d, w) ->
+                        new Thread(() -> {
+                            try {
+                                api("POST", "/api/onhand-updates/lower",
+                                        new JSONObject()
+                                                .put("sku", sku)
+                                                .put("bin_name", bin)
+                                                .put("new_qty", qty)
+                                                .put("epcs",
+                                                    new JSONArray(epcs))
+                                                .put("changed_by",
+                                                    prefs.getString(
+                                                        "device", "C72"))
+                                                .put("sweep_at",
+                                                    auditEvidenceAt == null
+                                                        ? JSONObject.NULL
+                                                        : auditEvidenceAt)
+                                                .put("confirmed", true));
+                                ui.post(() -> {
+                                    beep(SOUND_OK);
+                                    status.setText("Lowered to " + qty
+                                            + " \u2713 Re-checking\u2026");
+                                    auditCheck();
+                                });
+                            } catch (Exception e) {
+                                ui.post(() -> status.setText(
+                                        e.getMessage()));
+                            }
+                        }).start())
+                .setNegativeButton("Cancel", null).show();
+    }
+
+    private void auditActLocate(final String sku, final String title,
+            final JSONArray epcs) {
+        new Thread(() -> {
+            try {
+                JSONObject body = new JSONObject()
+                        .put("sku", sku)
+                        .put("label", title)
+                        .put("worker", prefs.getString("device", "C72"));
+                if (epcs != null && epcs.length() > 0) {
+                    body.put("epcs", epcs);
+                }
+                api("POST", "/api/locate-queue", body);
+                ui.post(() -> {
+                    beep(SOUND_OK);
+                    status.setText(sku + " queued for LOCATE \u2713 - "
+                            + "the silent tag(s) are the hunt targets "
+                            + "on the LOCATE tab.");
+                });
+            } catch (Exception e) {
+                ui.post(() -> status.setText(e.getMessage()));
+            }
+        }).start();
+    }
+
+    private void auditActUnpair(final String epc, final String sku) {
+        dlg().setMessage("Unpair tag \u2026" + epc.substring(
+                        Math.max(0, epc.length() - 6)) + " from " + sku
+                        + "? The record is removed - the sticker is "
+                        + "gone or on another box. Shopify untouched; "
+                        + "History logs it as Tag Unlinked.")
+                .setPositiveButton("UNPAIR", (d, w) ->
+                        new Thread(() -> {
+                            try {
+                                api("DELETE", "/api/rfid-assignments/"
+                                        + encPath(epc) + "?by="
+                                        + encPath(prefs.getString(
+                                                "device", "C72")), null);
+                                ui.post(() -> {
+                                    beep(SOUND_OK);
+                                    status.setText("Unpaired \u2713 "
+                                            + "Re-checking\u2026");
+                                    auditCheck();
+                                });
+                            } catch (Exception e) {
+                                ui.post(() -> status.setText(
+                                        e.getMessage()));
+                            }
+                        }).start())
+                .setNegativeButton("Cancel", null).show();
+    }
+
+    /** The web's one-step fix for unexplained silence: the dead
+     *  records go and the same number of fresh labels queue to pair.
+     *  Pairing never moves on-hand - the warning stays until the next
+     *  check confirms. */
+    private void auditActUnpairPrint(final String sku, final String bin,
+            final List<String> epcs) {
+        dlg().setMessage("Unpair " + epcs.size() + " silent tag(s) of "
+                        + sku + " and queue " + epcs.size()
+                        + " replacement label(s)?\n\nCheck the shelf "
+                        + "first - re-sweep behind the boxes. If the "
+                        + "boxes really are here with dead or missing "
+                        + "stickers, this removes the old record(s) "
+                        + "and prints fresh labels to pair. Shopify "
+                        + "on-hand is NOT touched.")
+                .setPositiveButton("UNPAIR + PRINT", (d, w) ->
+                        new Thread(() -> {
+                            try {
+                                for (String epc : epcs) {
+                                    api("DELETE",
+                                            "/api/rfid-assignments/"
+                                            + encPath(epc) + "?by="
+                                            + encPath(prefs.getString(
+                                                    "device", "C72")),
+                                            null);
+                                }
+                                auditQueueLabels(sku, bin, epcs.size());
+                                ui.post(() -> {
+                                    beep(SOUND_OK);
+                                    status.setText("\u2713 " + epcs.size()
+                                            + " unpaired, " + epcs.size()
+                                            + " label(s) queued - stick "
+                                            + "and pair them (banner "
+                                            + "pair mode). "
+                                            + "Re-checking\u2026");
+                                    auditCheck();
+                                });
+                            } catch (Exception e) {
+                                ui.post(() -> {
+                                    beep(SOUND_ERR);
+                                    status.setText("Failed mid-way: "
+                                            + e.getMessage()
+                                            + " - CHECK for the true "
+                                            + "state.");
+                                    auditCheck();
+                                });
+                            }
+                        }).start())
+                .setNegativeButton("Cancel", null).show();
+    }
+
+    /** Plain label queue by SKU (worker thread) - the neutral path. */
+    private void auditQueueLabels(String sku, String bin, int n)
+            throws Exception {
+        JSONObject p = api("GET", "/api/products/by-barcode/"
+                + encPath(sku), null);
+        api("POST", "/api/print-jobs", new JSONObject()
+                .put("quantity", n)
+                .put("shopify_variant_id",
+                        p.optString("shopify_variant_id"))
+                .put("shopify_product_id",
+                        p.isNull("shopify_product_id") ? JSONObject.NULL
+                                : p.optString("shopify_product_id"))
+                .put("product_title", p.optString("product_title", sku))
+                .put("variant_title",
+                        p.isNull("variant_title") ? JSONObject.NULL
+                                : p.optString("variant_title"))
+                .put("sku", p.isNull("sku") ? sku : p.optString("sku"))
+                .put("barcode", p.isNull("barcode") ? JSONObject.NULL
+                        : p.optString("barcode"))
+                .put("bin_location", !p.isNull("bin_location")
+                        ? p.optString("bin_location")
+                        : bin == null ? JSONObject.NULL : bin)
+                .put("requested_by", prefs.getString("device", "C72")));
+    }
+
+    /** An item's own first bin (falls back to the checked location) -
+     *  labels print with the product's home on them. */
+    private String auditItemFirstBin(JSONObject it, String loc) {
+        JSONArray bins = it.optJSONArray("bins");
+        return bins != null && bins.length() > 0
+                ? bins.optString(0) : loc;
+    }
+
+    /** One flag row inside a report card: severity-edged, the verdict
+     *  text left, its recommended fix as a small button right - the
+     *  web's flagrow shape. */
+    private LinearLayout auditFlagRowView(String text, int color,
+            String btnLabel, Runnable act) {
+        LinearLayout r = new LinearLayout(this);
+        r.setGravity(Gravity.CENTER_VERTICAL);
+        r.setBackground(statusBg(color));
+        r.setPadding(dp(9), dp(5), dp(6), dp(5));
+        TextView t = new TextView(this);
+        t.setText(text);
+        t.setTextSize(11);
+        t.setTextColor(color == C_MUTED ? C_MUTED : color);
+        r.addView(t, weight());
+        if (btnLabel != null && act != null) {
+            Button b = smallBtn(btnLabel);
+            b.setTextSize(11);
+            b.setTextColor(C_BLUE);
+            b.setMinimumHeight(dp(30));
+            LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            bl.leftMargin = dp(6);
+            b.setOnClickListener(x -> act.run());
+            r.addView(b, bl);
+        }
+        return r;
+    }
+
+    /** Relative stamp for the silent-tag drawer. */
+    private String agoShort(String iso) {
+        try {
+            long ms = System.currentTimeMillis()
+                    - java.time.Instant.parse(
+                            iso.endsWith("Z") || iso.contains("+")
+                                    ? iso : iso + "Z").toEpochMilli();
+            long m = Math.max(0, ms / 60000);
+            if (m < 60) return m + " min ago";
+            long h = m / 60;
+            if (h < 48) return h + " h ago";
+            return (h / 24) + " d ago";
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    /** The per-product fix window, rebuilt 2026-09-28 on the shared
+     *  audit actions: the product's face and numbers, the on-hand
+     *  STEPPER (one Apply routes raise or guarded lower), the
+     *  silent-tag drawer (per-tag last-heard with Unpair / Sold /
+     *  Locate), then one full-width button per remaining action -
+     *  the same toolbox as the web's bin-audit card. */
     private void auditItemActions(final String loc, final JSONObject it,
                                   final JSONObject rep) {
         final String sku = it.optString("sku");
-        final String device = prefs.getString("device", "C72");
+        final String title = it.optString("product_title", sku);
         int det = it.optInt("detected");
         int here = it.optInt("tags_here");
         final int silent = here - det;
@@ -17184,15 +17848,19 @@ public class MainActivity extends Activity {
         final int gh = ghostsArr == null ? 0 : ghostsArr.length();
         final int unavail = it.optInt("unavailable");
         // Expected folds the unavailable bucket in - the shelf
-        // physically holds the set-aside unit(s) too. (Backorder debt
-        // is gone; scope reset 2026-09-28.)
+        // physically holds the set-aside unit(s) too.
         final int exp = it.isNull("expected_qty") ? -1
                 : it.optInt("expected_qty") + unavail;
         final int heardUnits = it.optInt("detected_units") + gh;
-        int sold = it.optInt("sold_unretired");
-        JSONArray myBins = it.optJSONArray("bins");
-        final String firstBin = myBins != null && myBins.length() > 0
-                ? myBins.optString(0) : loc;
+        final int sold = it.optInt("sold_unretired");
+        final int pickup = it.optInt("pickup_pending");
+        final int unitsHere = it.optInt("units_here");
+        final String firstBin = auditItemFirstBin(it, loc);
+        final List<String> silentEpcs = new ArrayList<>();
+        JSONArray se = it.optJSONArray("silent_epcs");
+        for (int i = 0; se != null && i < se.length(); i++) {
+            silentEpcs.add(se.optString(i));
+        }
 
         final List<String> labels = new ArrayList<>();
         final List<Runnable> acts = new ArrayList<>();
@@ -17205,37 +17873,10 @@ public class MainActivity extends Activity {
             }
             labels.add("UN-RETIRE " + gh + " ANSWERED TAG(S) - box "
                     + "never left");
-            acts.add(() -> dlg().setMessage("These tag(s) were marked "
-                            + "sold/retired but they ANSWERED this sweep - "
-                            + "the box is still on the shelf. Make the "
-                            + "record live again?")
-                    .setPositiveButton("UN-RETIRE", (d, w) ->
-                            new Thread(() -> {
-                                try {
-                                    api("POST",
-                                            "/api/assignments/unretire",
-                                            new JSONObject()
-                                                    .put("epcs",
-                                                        new JSONArray(
-                                                            ghostEpcs))
-                                                    .put("changed_by",
-                                                            device));
-                                    ui.post(() -> {
-                                        beep(SOUND_OK);
-                                        status.setText("Un-retired ✓ "
-                                                + "Re-checking…");
-                                        auditCheck();
-                                    });
-                                } catch (Exception e) {
-                                    ui.post(() -> status.setText(
-                                            e.getMessage()));
-                                }
-                            }).start())
-                    .setNegativeButton("Cancel", null).show());
+            acts.add(() -> auditActUnretire(ghostEpcs));
         }
         // A ghost with an open-box return on file gets its own action:
-        // the box LEFT and came back opened, so un-retire is the wrong
-        // verb - the prompt adopts (or peels) instead (Nick, 2026-09-15).
+        // the box LEFT and came back opened (Nick, 2026-09-15).
         for (int i = 0; ghostsArr != null && i < ghostsArr.length(); i++) {
             final JSONObject g = ghostsArr.optJSONObject(i);
             if (g == null || !g.has("openbox_return_id")) continue;
@@ -17243,118 +17884,24 @@ public class MainActivity extends Activity {
                     + epcTail(g.optString("epc")));
             acts.add(() -> openOpenboxPrompt(g));
         }
-        if (exp >= 0 && heardUnits > exp) {
-            labels.add("SET SHOPIFY STOCK TO " + heardUnits
-                    + " (now " + exp + ")");
-            acts.add(() -> dlg().setMessage("Raise Shopify on-hand for "
-                            + sku + " to " + heardUnits + "? The shelf "
-                            + "physically holds more than Shopify knows. "
-                            + "Logged with an undo in History.")
-                    .setPositiveButton("SET", (d, w) ->
-                            new Thread(() -> {
-                                try {
-                                    api("POST", "/api/onhand-updates",
-                                            new JSONObject()
-                                                    .put("sku", sku)
-                                                    .put("new_qty",
-                                                            heardUnits)
-                                                    .put("changed_by",
-                                                            device)
-                                                    .put("sweep_at",
-                                                            auditEvidenceAt
-                                                            == null
-                                                            ? JSONObject.NULL
-                                                            : auditEvidenceAt)
-                                                    .put("confirmed",
-                                                            true));
-                                    ui.post(() -> {
-                                        beep(SOUND_OK);
-                                        status.setText("Shopify set to "
-                                                + heardUnits + " ✓ "
-                                                + "Re-checking…");
-                                        auditCheck();
-                                    });
-                                } catch (Exception e) {
-                                    ui.post(() -> status.setText(
-                                            e.getMessage()));
-                                }
-                            }).start())
-                    .setNegativeButton("Cancel", null).show());
+        if (silent > 0 && sold >= silent) {
+            labels.add("MARK " + silent + " PRESUMED SOLD (sales "
+                    + "cover it)");
+            final List<String> eps = new ArrayList<>(silentEpcs);
+            acts.add(() -> auditActMarkSold(sku, eps));
+        } else if (silent > 0 && !sku.isEmpty()
+                && silent > sold + unavail + pickup) {
+            final List<String> unexplained = new ArrayList<>(
+                    silentEpcs.subList(
+                            Math.min(sold, silentEpcs.size()),
+                            silentEpcs.size()));
+            labels.add("\u21bb UNPAIR " + unexplained.size()
+                    + " + PRINT REPLACEMENT(S)");
+            acts.add(() -> auditActUnpairPrint(sku, firstBin,
+                    unexplained));
         }
-        // Lowering: the audited count is the truth. The server decides
-        // eligibility (sales-backed, or a previously batch-tagged
-        // product - the FIRST-TAGGING ban is the one guardrail left).
-        // Kept off rack zones, and skipped when open pickup orders
-        // explain the shortfall (lowering would double-drop, F9168A).
-        final int lowDrop = exp >= 0
-                ? Math.max(0, it.optInt("expected_qty")
-                        - it.optInt("detected_units")) : 0;
-        final int pickupN = it.optInt("pickup_pending");
-        final boolean pickupExplains = pickupN > 0 && lowDrop > sold
-                && lowDrop <= sold + pickupN;
-        final int lowTo = it.optInt("detected_units") + unavail;
-        if (it.optBoolean("can_lower") && !rep.optBoolean("rack")
-                && lowDrop > 0 && !pickupExplains) {
-            final List<String> silentEpcs = new ArrayList<>();
-            JSONArray se = it.optJSONArray("silent_epcs");
-            for (int i = 0; se != null && i < se.length()
-                    && i < lowDrop; i++) {
-                silentEpcs.add(se.optString(i));
-            }
-            final int unbacked = it.optInt("lower_unbacked");
-            labels.add("LOWER SHOPIFY STOCK TO " + lowTo
-                    + " (audited count)");
-            acts.add(() -> dlg().setMessage("Lower Shopify on-hand for "
-                            + sku + " to " + lowTo + "? The silent "
-                            + "tag(s) retire presumed-sold against "
-                            + "recorded sales"
-                            + (unbacked > 0 ? "; " + unbacked
-                               + " unit(s) write off as shrinkage" : "")
-                            + ". One undo in History reverses all of it.")
-                    .setPositiveButton("LOWER", (d, w) ->
-                            new Thread(() -> {
-                                try {
-                                    api("POST",
-                                            "/api/onhand-updates/lower",
-                                            new JSONObject()
-                                                    .put("sku", sku)
-                                                    .put("bin_name",
-                                                            firstBin)
-                                                    .put("new_qty",
-                                                            lowTo)
-                                                    .put("epcs",
-                                                        new JSONArray(
-                                                            silentEpcs))
-                                                    .put("changed_by",
-                                                            device)
-                                                    .put("sweep_at",
-                                                            auditEvidenceAt
-                                                            == null
-                                                            ? JSONObject.NULL
-                                                            : auditEvidenceAt)
-                                                    .put("confirmed",
-                                                            true));
-                                    ui.post(() -> {
-                                        beep(SOUND_OK);
-                                        status.setText("Lowered to "
-                                                + lowTo + " ✓ silent "
-                                                + "tag(s) retired. "
-                                                + "Re-checking…");
-                                        auditCheck();
-                                    });
-                                } catch (Exception e) {
-                                    ui.post(() -> status.setText(
-                                            e.getMessage()));
-                                }
-                            }).start())
-                    .setNegativeButton("Cancel", null).show());
-        }
-        // "Print X labels" (Nick, 2026-09-28, the W9177 case): the
-        // shelf shows more stock than tag records because some boxes
-        // never got a sticker. Queue exactly the missing labels and
-        // pair them - pairing NEVER touches Shopify on-hand, so the
-        // count stays put (no re-receiving surprises).
-        final int unitsHere = it.optInt("units_here");
+        // "Print X labels" (the W9177 case): boxes with more stock
+        // than tag records get stickers - the neutral path.
         if (exp >= 0 && unitsHere < exp && !sku.isEmpty()) {
             final int owedLabels = exp - unitsHere;
             labels.add("PRINT " + owedLabels + " LABEL(S) - expected "
@@ -17362,74 +17909,11 @@ public class MainActivity extends Activity {
             acts.add(() -> auditPrintMissingLabels(sku, firstBin,
                     owedLabels));
         }
-        if (silent > 0 && sold >= silent) {
-            final List<String> silentEpcs = new ArrayList<>();
-            JSONArray se = it.optJSONArray("silent_epcs");
-            for (int i = 0; se != null && i < se.length(); i++) {
-                silentEpcs.add(se.optString(i));
-            }
-            labels.add("MARK " + silent + " PRESUMED SOLD (sales "
-                    + "cover it)");
-            acts.add(() -> dlg().setMessage("Retire " + silent
-                            + " silent tag(s) of " + sku + " as presumed "
-                            + "sold? Fulfilled orders account for them. "
-                            + "Shopify untouched; undo in History.")
-                    .setPositiveButton("MARK SOLD", (d, w) ->
-                            new Thread(() -> {
-                                try {
-                                    api("POST",
-                                            "/api/assignments/mark-sold",
-                                            new JSONObject()
-                                                    .put("sku", sku)
-                                                    .put("epcs",
-                                                        new JSONArray(
-                                                            silentEpcs))
-                                                    .put("changed_by",
-                                                            device));
-                                    ui.post(() -> {
-                                        beep(SOUND_OK);
-                                        status.setText(silent + " tag(s) "
-                                                + "retired presumed-sold "
-                                                + "✓ Re-checking…");
-                                        auditCheck();
-                                    });
-                                } catch (Exception e) {
-                                    ui.post(() -> status.setText(
-                                            e.getMessage()));
-                                }
-                            }).start())
-                    .setNegativeButton("Cancel", null).show());
-        }
         if (silent > 0) {
+            final JSONArray seF = se;
             labels.add("ADD TO LOCATE LIST (" + silent + " silent)");
-            acts.add(() -> new Thread(() -> {
-                try {
-                    // The SILENT tags ride along (Nick, 2026-09-08,
-                    // ...B3F1EB): the hunt targets exactly the missing
-                    // ones, not the whole shelf's answering boxes.
-                    JSONObject body = new JSONObject()
-                            .put("sku", sku)
-                            .put("label", it.optString("product_title",
-                                    sku))
-                            .put("worker", device);
-                    JSONArray se = it.optJSONArray("silent_epcs");
-                    if (se != null && se.length() > 0) {
-                        body.put("epcs", se);
-                    }
-                    api("POST", "/api/locate-queue", body);
-                    ui.post(() -> {
-                        beep(SOUND_OK);
-                        status.setText(sku + " queued for LOCATE ✓ - the "
-                                + silent + " SILENT tag(s) are the hunt "
-                                + "targets on the LOCATE tab.");
-                    });
-                } catch (Exception e) {
-                    ui.post(() -> status.setText(e.getMessage()));
-                }
-            }).start());
+            acts.add(() -> auditActLocate(sku, title, seF));
         }
-        // Printed-but-unpaired finds note: dismissible for good (Nick,
-        // 2026-09-01) - the boxes were handled some other way.
         final int fPrinted = it.optInt("finds_printed");
         if (fPrinted > 0) {
             labels.add("DISMISS THE PRINTED-LABEL NOTE (" + fPrinted
@@ -17448,15 +17932,18 @@ public class MainActivity extends Activity {
                                         f.optString("status"))) {
                             api("POST", "/api/audit/finds/"
                                     + f.optInt("id") + "/dismiss",
-                                    new JSONObject().put("by", device));
+                                    new JSONObject().put("by",
+                                            prefs.getString("device",
+                                                    "C72")));
                             done++;
                         }
                     }
                     final int doneF = done;
                     ui.post(() -> {
                         beep(SOUND_OK);
-                        status.setText("✓ " + doneF + " printed-label "
-                                + "note(s) dismissed. Re-checking…");
+                        status.setText("\u2713 " + doneF
+                                + " printed-label note(s) dismissed. "
+                                + "Re-checking\u2026");
                         auditRefreshFinds();
                         auditCheck();
                     });
@@ -17471,8 +17958,7 @@ public class MainActivity extends Activity {
             stationLookup(sku);
         });
 
-        // Styled window (Nick, 2026-09-01): the product's face and
-        // numbers up top, then one full-width button per action.
+        // ---- the window ------------------------------------------------
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(dp(18), dp(6), dp(18), dp(8));
@@ -17480,7 +17966,7 @@ public class MainActivity extends Activity {
         img.setScaleType(ImageView.ScaleType.FIT_CENTER);
         img.setBackgroundColor(C_BG);
         LinearLayout.LayoutParams il = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(100));
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(96));
         il.bottomMargin = dp(8);
         box.addView(img, il);
         String imgUrl = it.optString("image_url", null);
@@ -17492,19 +17978,172 @@ public class MainActivity extends Activity {
         meta.setTextSize(13);
         meta.setTextColor(C_TEXT);
         String binsLine = auditBinsText(it);
-        meta.setText("SKU: " + (sku.isEmpty() ? "—" : sku)
+        meta.setText("SKU: " + (sku.isEmpty() ? "\u2014" : sku)
                 + (binsLine.isEmpty() ? "" : "\n" + binsLine)
                 + "\nHeard " + det + "/" + here
-                + (exp >= 0 ? " · expected " + exp + " · on shelf "
+                + (exp >= 0 ? " \u00b7 expected " + exp + " \u00b7 on shelf "
                    + heardUnits : "")
-                + (silent > 0 ? "\n" + silent + " silent · " + sold
-                   + " sold since last audit" : "")
-                + (gh > 0 ? "\n" + gh + " marked-sold tag(s) answered"
-                   : "")
-                + (fPrinted > 0 ? "\n" + fPrinted + " label(s) printed, "
-                   + "not paired" : ""));
+                + (silent > 0 ? "\n" + silent + " silent \u00b7 " + sold
+                   + " sold since last audit" : ""));
         box.addView(meta);
+
         final AlertDialog[] dRef = new AlertDialog[1];
+
+        // On-hand stepper (web parity): one Apply, raise or guarded
+        // lower by direction.
+        if (exp >= 0 && !sku.isEmpty()) {
+            LinearLayout step = new LinearLayout(this);
+            step.setGravity(Gravity.CENTER_VERTICAL);
+            LinearLayout.LayoutParams sl2 =
+                    new LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT);
+            sl2.topMargin = dp(10);
+            TextView lab = new TextView(this);
+            lab.setText("Shopify on-hand  ");
+            lab.setTextSize(11);
+            lab.setTextColor(C_MUTED);
+            step.addView(lab);
+            final Button minus = smallBtn("\u2212");
+            final TextView val = new TextView(this);
+            final Button plus = smallBtn("+");
+            final Button apply = smallBtn("Apply");
+            minus.setMinimumHeight(dp(32));
+            plus.setMinimumHeight(dp(32));
+            apply.setMinimumHeight(dp(32));
+            apply.setTextColor(C_BLUE);
+            apply.setVisibility(View.GONE);
+            val.setText(String.valueOf(exp));
+            val.setTextSize(15);
+            val.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+            val.setTextColor(C_TEXT);
+            val.setPadding(dp(10), 0, dp(10), 0);
+            final Runnable sync = () -> {
+                int n = Integer.parseInt(val.getText().toString());
+                val.setTextColor(n == exp ? C_TEXT : C_BLUE);
+                apply.setText("Apply " + n);
+                apply.setVisibility(n == exp ? View.GONE
+                        : View.VISIBLE);
+            };
+            minus.setOnClickListener(x -> {
+                int n = Math.max(0, Integer.parseInt(
+                        val.getText().toString()) - 1);
+                val.setText(String.valueOf(n));
+                sync.run();
+            });
+            plus.setOnClickListener(x -> {
+                int n = Integer.parseInt(val.getText().toString()) + 1;
+                val.setText(String.valueOf(n));
+                sync.run();
+            });
+            apply.setOnClickListener(x -> {
+                int n = Integer.parseInt(val.getText().toString());
+                if (n == exp) return;
+                if (dRef[0] != null) dRef[0].dismiss();
+                if (n > exp) {
+                    auditActSetStock(sku, n, exp);
+                } else {
+                    int drop = exp - n;
+                    List<String> eps = new ArrayList<>(
+                            silentEpcs.subList(0,
+                                    Math.min(drop, silentEpcs.size())));
+                    boolean pickupExplains = pickup > 0 && drop > sold
+                            && drop <= sold + pickup;
+                    auditActLowerStock(sku, firstBin, n, eps, exp,
+                            it.optBoolean("can_lower"), pickupExplains);
+                }
+            });
+            step.addView(minus);
+            step.addView(val);
+            step.addView(plus);
+            LinearLayout.LayoutParams al = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            al.leftMargin = dp(8);
+            step.addView(apply, al);
+            box.addView(step, sl2);
+        }
+
+        // Silent-tag drawer: each missing tag with its last hearing
+        // and its own Unpair / Sold / Locate.
+        JSONArray silTags = it.optJSONArray("silent_tags");
+        if (silTags != null && silTags.length() > 0 && !sku.isEmpty()) {
+            TextView dl = new TextView(this);
+            dl.setText("SILENT TAGS");
+            dl.setTextSize(10);
+            dl.setTextColor(C_MUTED);
+            dl.setPadding(0, dp(10), 0, dp(2));
+            box.addView(dl);
+            int shown = Math.min(silTags.length(), 8);
+            for (int i = 0; i < shown; i++) {
+                JSONObject t = silTags.optJSONObject(i);
+                if (t == null) continue;
+                final String epc = t.optString("epc");
+                LinearLayout tr = new LinearLayout(this);
+                tr.setGravity(Gravity.CENTER_VERTICAL);
+                tr.setBackground(rr(C_BG, C_LINE, 8));
+                tr.setPadding(dp(8), dp(3), dp(4), dp(3));
+                TextView tt = new TextView(this);
+                String when = t.isNull("last_heard_at") ? ""
+                        : agoShort(t.optString("last_heard_at"));
+                tt.setText("\u2026" + epc.substring(
+                        Math.max(0, epc.length() - 6))
+                        + (when.isEmpty() ? ""
+                           : "\nheard " + when));
+                tt.setTextSize(10);
+                tt.setTypeface(Typeface.MONOSPACE);
+                tt.setTextColor(C_MUTED);
+                tr.addView(tt, weight());
+                Button up = smallBtn("Unpair");
+                up.setTextSize(10);
+                up.setMinimumHeight(dp(28));
+                up.setOnClickListener(x -> {
+                    if (dRef[0] != null) dRef[0].dismiss();
+                    auditActUnpair(epc, sku);
+                });
+                tr.addView(up);
+                Button sd = smallBtn("Sold");
+                sd.setTextSize(10);
+                sd.setMinimumHeight(dp(28));
+                sd.setOnClickListener(x -> {
+                    if (dRef[0] != null) dRef[0].dismiss();
+                    List<String> one = new ArrayList<>();
+                    one.add(epc);
+                    auditActMarkSold(sku, one);
+                });
+                LinearLayout.LayoutParams gl2 =
+                        new LinearLayout.LayoutParams(
+                                LinearLayout.LayoutParams.WRAP_CONTENT,
+                                LinearLayout.LayoutParams.WRAP_CONTENT);
+                gl2.leftMargin = dp(4);
+                tr.addView(sd, gl2);
+                Button lc = smallBtn("Locate");
+                lc.setTextSize(10);
+                lc.setMinimumHeight(dp(28));
+                lc.setOnClickListener(x -> {
+                    if (dRef[0] != null) dRef[0].dismiss();
+                    JSONArray one = new JSONArray();
+                    one.put(epc);
+                    auditActLocate(sku, title, one);
+                });
+                tr.addView(lc, gl2);
+                LinearLayout.LayoutParams tl2 =
+                        new LinearLayout.LayoutParams(
+                                LinearLayout.LayoutParams.MATCH_PARENT,
+                                LinearLayout.LayoutParams.WRAP_CONTENT);
+                tl2.topMargin = dp(3);
+                box.addView(tr, tl2);
+            }
+            if (silTags.length() > shown) {
+                TextView more = new TextView(this);
+                more.setText("+" + (silTags.length() - shown)
+                        + " more - work the list from the top");
+                more.setTextSize(10);
+                more.setTextColor(C_MUTED);
+                box.addView(more);
+            }
+        }
+
         for (int i = 0; i < labels.size(); i++) {
             final Runnable act = acts.get(i);
             Button btn = smallBtn(labels.get(i));
@@ -17521,7 +18160,7 @@ public class MainActivity extends Activity {
         }
         ScrollView sc = new ScrollView(this);
         sc.addView(box);
-        dRef[0] = dlg().setTitle(it.optString("product_title", sku))
+        dRef[0] = dlg().setTitle(title)
                 .setView(sc)
                 .setNegativeButton("BACK", null)
                 .show();

@@ -156,6 +156,37 @@ iterated over the "Audits Tab Redesign" preview artifact, 3 rounds):**
   removed (packing goes through an audit sweep; the server's
   /api/packing/* endpoints and the web pane stay).
 
+**ROUND 10 (Nick's list, 2026-09-28) — ✅ BUILT + ON PROD:**
+- Web: the session cards were being flattened by recent__list's
+  row styling (Nick's screenshot) - the list is a plain div now and
+  the cards stack properly. Sessions + recommended racks paint
+  INSTANTLY from localStorage on tab entry (slim caches of the last
+  visit; the freshness tag still says when live data lands).
+- Per-location saved sweeps: EpcCapture grew a `bin` column
+  (idempotent upgrade). Audit captures name their location, a check
+  claims unstamped captures for the bin it ran against, and
+  GET /api/bins/{bin}/sweeps lists a location's history (rack
+  sweeps cover their bins). Opening a bin on the WEB or the GUN
+  with nothing collected shows the location's latest saved audit,
+  amber-marked when from another day, still fully usable.
+- Faster sweeps: gun requests gzip (reports shrink ~8x); audit
+  checks save the collected set ONCE as a capture and every check /
+  re-check / sign-off goes by capture_id; batch verify accepts
+  capture_id the same way. The EPC list crosses the Wi-Fi once per
+  sweep instead of once per press.
+- C72 4.20 (code 138), the audit tab matched to the web: summary
+  strip (products / all match / flagged / strays), verdict FLAG
+  ROWS inside each card with their recommended fix inline (Mark
+  sold / Un-retire / Unpair+print / Print N / Set to N), the
+  product dialog rebuilt on shared actions with the on-hand STEPPER
+  (one Apply, raise or guarded lower) and the silent-tag drawer
+  (per-tag last-heard + Unpair / Sold / Locate), strays folded into
+  one "Also heard" row. STATION hold-sweeps now PAIR every heard
+  tag to the loaded product (bulk, duplicates skipped) instead of
+  just sending a capture. Every tab has its own default trigger
+  power again (Settings), audit and returns included.
+- test_binsweeps.py covers the capture/bin/verify surface.
+
 **C72 UPDATE — ✅ BUILT 2026-09-28 (C72 4.18, code 136), Nick's
 five asks + the queued cleanup, one session. ✅ ON PROD 2026-09-28:
 prod serves the 4.18 APK, so the gun self-updates on its next app
