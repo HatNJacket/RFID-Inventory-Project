@@ -35,14 +35,52 @@ interaction pattern (writes operator-confirmed + History + undo) and
 the first-tagging lower ban. Audits become the source of truth; the
 remaining prompts just ask the user to re-scan when a count is off.
 
-**Scored audit queue (replaces 1-left/0-left marking) - design in
-progress with Nick:** per-tag last-heard dataset; bins scored by
-|on-hand − active tags heard since last fulfillment| and time since
-last audit (split at a ~1-2 week threshold, each half ordered by
-score); expected value becomes a RANGE from {on-hand, tags − sold},
-out-of-range scans prompt a re-scan then manual confirm or silent
-tags → locate list. Auto-retiring a tag on fulfillment: idea noted,
-not building yet. Silent-tag handling is the hard part.
+**Scored audit queue (replaces 1-left/0-left marking) - DESIGN
+SETTLED 2026-09-28:**
+- New dataset: `last_heard_at` per tag (stamped by every sweep
+  ingest) + `last_audited_at` per bin. Ship EARLY so heard-history
+  accumulates before the queue needs it.
+- Everything anchors at the bin's LAST COMPLETED AUDIT (audits are
+  the source of truth and cheap to run).
+- Per-product diff: |H − (heard at last audit − sold since audit +
+  received since audit)| with H = live on-hand, sold from the
+  ShipStation ledger, received from planner receipts.
+- Bin score = SUM of its products' diffs (many small mismatches walk
+  the bin too; no skew toward big fast-moving shelves). Queue split:
+  bins overdue past a ~1-2 week Settings threshold first, then the
+  rest; each half ordered by score.
+- Expected value is a RANGE [min, max] of {H, tags − sold since
+  audit}. A scan outside it prompts "check the count thoroughly",
+  then manual confirm (normal confirmed on-hand write) or silent
+  tags → locate list. NOTHING blocks the lower.
+- Silent-tag triage via last_heard_at: silent count matches sales
+  since audit AND each silent tag last heard before a matching
+  order → "Sales agree" note (retire-sold strongly suggested);
+  mismatch → note replaced with "might be a missing, misplaced or
+  mislabeled product" message, locate-list add recommended harder.
+  Heard elsewhere recently → offer re-bin.
+- Confirm+undo stays until the system earns its removal (Nick).
+  Auto-retire-on-fulfillment: designed toward, not built.
+- The external 1-left bridge KEEPS auto-confirming their board
+  (user-confirmed inventory closes that product's check) until the
+  Unification hub collects the apps.
+
+**Draft-listing autofill (settled):** box 1 (ingredient) autofills
+the scanned code when it is a SKU (13-digit barcodes filtered out);
+box 2 (main) autofills the suffix-stripped SKU whenever box 1 holds
+a hyphen-number pattern ("ABC-2" → "ABC") - fired on scan OR when
+box 1 is confirmed with that pattern by hand, even if the scan was a
+barcode. Normal confirm on the trigger. Dummy name format:
+"[INGREDIENT SKU] DRAFT BUNDLE COMPONENT -> [MAIN SKU]".
+
+**Build order (one session per phase, Nick fires each):**
+1. Removals (independent; shrink everything after).
+2. last_heard_at + last_audited_at dataset (can run parallel with 1;
+   ship first so data accumulates).
+3. Expected-range + scored queue + silent-tag triage (replaces the
+   review inbox and internal 1-left marking).
+4. Scan-station thinning + returns-assist.
+5. Draft-listing fix + un-bundling workflow.
 
 ## 🏠 Home landing page + sidebar navigation — ✅ BUILT + ON DEV 2026-09-24, ⏳ PROD WAITS FOR NICK'S UPDATE BUNDLE
 
