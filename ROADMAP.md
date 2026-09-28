@@ -156,6 +156,42 @@ iterated over the "Audits Tab Redesign" preview artifact, 3 rounds):**
   removed (packing goes through an audit sweep; the server's
   /api/packing/* endpoints and the web pane stay).
 
+**ROUND 12 (Nick, 2026-09-28) — ✅ BUILT: bundles.app bundles as
+first-class RFID records.**
+- POST /api/bundles/pull walks every variant's bundles_app.content
+  metafield and builds/refreshes the definitions in one go
+  (BundleContent + the new rfid_bundles table: title, source,
+  synced_at). App-sourced bundles re-sync on every pull; a bundle
+  the operator edited by hand flips to "manual" and survives pulls
+  until re-imported. GET /api/bundles is the enriched index
+  (component titles/bins/snapshot stock/tag counts + buildable,
+  ?sku= and ?component= views).
+- Inventory tab: a Bundles panel (📦 button in the header) with the
+  Pull button and per-bundle cards - add/remove components inline
+  (wholesale replace through /api/bundle-contents, History receipt
+  as before).
+- SOLD LEDGER: bundle sales are COMPONENT sales now. Both feeds
+  (ShipStation shipments + voids, Shopify fallback) explode bundle
+  line items into component lines at ingest, and the pull re-books
+  any old rows still sitting under a bundle SKU (quantities and
+  parcel maps scaled, pre-baseline rows settled). Audits can now
+  explain component silences that bundle sales caused.
+- Audit: bin checks hold defined bundles out of the report and
+  return them as covered_bundles - the web report shows a "covered
+  by their components" line instead of a never-tagged flag.
+- Locate: queueing a defined bundle expands to its components
+  server-side (the C72's LIST hunts real tags; web callers show
+  the expansion message).
+- Product card: a bundle strip - component rows (qty, bin, tags,
+  on hand, tap-through) with the buildable count when every
+  component's stock is known; component cards show "Part of
+  bundle(s): X (n× each)" chips.
+- Batch tagging needed nothing new: defined bundles were already
+  held out at collect (covered_bundles note) - the pull just makes
+  that automatic. No C72 changes (server-side data covers the gun).
+- Tests: test_bundles.py (+16 checks) and test_shipstation.py
+  (bundle shipment + void unwind).
+
 **ROUND 11 (Nick's list, 2026-09-28) — ✅ BUILT + ON PROD: the
 In-progress card IS the walk.**
 - The In-progress session card carries the rack view itself: ring +

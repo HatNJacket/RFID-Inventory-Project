@@ -1465,6 +1465,35 @@ class BundleContent(Base):
         }
 
 
+class BundleInfo(Base):
+    """Bundle-level facts beside the per-component rows: the listing's
+    title (bundles rarely sit in the bin map, so nothing else knows it)
+    and where the definition came from - "app" (the bundles.app pull or
+    the per-SKU Shopify import) or "manual" (typed on the terminal). A
+    re-pull refreshes "app" bundles and leaves "manual" ones alone."""
+
+    __tablename__ = "rfid_bundles"
+
+    bundle_sku: Mapped[str] = mapped_column(String(100), primary_key=True)
+    title: Mapped[str | None] = mapped_column(String(255))
+    source: Mapped[str] = mapped_column(String(16), nullable=False,
+                                        default="manual")
+    synced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    updated_by: Mapped[str | None] = mapped_column(String(100))
+
+    def as_dict(self) -> dict:
+        return {
+            "bundle_sku": self.bundle_sku,
+            "title": self.title,
+            "source": self.source,
+            "synced_at": (
+                self.synced_at.isoformat() if self.synced_at else None
+            ),
+        }
+
+
 class ReviewNote(Base):
     """Operator notes pinned to a Review entry. Keyed by STRING so notes
     stick to both stored tasks (their integer id as text) and the live

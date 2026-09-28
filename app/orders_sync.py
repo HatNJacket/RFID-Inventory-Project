@@ -55,6 +55,7 @@ from app.models import (
     Batch,
     BatchItem,
     BinMapEntry,
+    BundleContent,
     OnhandLog,
     OrderReceipt,
     RefreshLog,
@@ -341,6 +342,119 @@ def _sku_baselines(session: Session, skus) -> dict[str, object]:
     return out
 
 
+# ------------------------------------------------------- bundle sales -------
+def bundle_defs(session: Session) -> dict[str, list[tuple[str, int]]]:
+    """Upper bundle SKU -> [(component_sku, per-unit qty), ...]. One
+    query; the whole table is a few hundred rows."""
+    out: dict[str, list[tuple[str, int]]] = {}
+    for bc in session.scalars(
+        select(BundleContent).order_by(BundleContent.id)
+    ):
+        out.setdefault(
+            (bc.bundle_sku or "").strip().upper(), []
+        ).append((bc.component_sku, bc.qty or 1))
+    return out
+
+
+def explode_bundle_items(defs: dict, items: list[dict]) -> list[dict]:
+    """A sold bundle is components leaving the shelf: expand bundle
+    line items into component line items (one level - a bundle listed
+    inside a bundle stays as itself) so the ledger only ever records
+    things that physically carry tags. Non-bundle items pass through
+    untouched."""
+    if not defs:
+        return items
+    out: list[dict] = []
+    for it in items:
+        key = (it.get("sku") or "").strip().upper()
+        contents = defs.get(key)
+        if not contents:
+            out.append(it)
+            continue
+        for comp, per in contents:
+            out.append({**it, "sku": comp,
+                        "qty": (it.get("qty") or 0) * per})
+    return out
+
+
+def explode_ledger_bundles(session: Session) -> dict:
+    """One-time repair for rows recorded BEFORE their bundle was
+    defined: re-book each bundle-SKU ledger row as its component rows
+    (quantities and per-shipment maps scaled), then settle any that
+    predate the component's tag-pool baseline - exactly what the live
+    explosion would have written. Rows something already retired
+    against are left alone (that history is spent)."""
+    defs = bundle_defs(session)
+    stats = {"rows_exploded": 0, "component_rows": 0, "settled": 0}
+    if not defs:
+        return stats
+    rows = [
+        r for r in session.scalars(select(SoldRecord))
+        if (r.sku or "").strip().upper() in defs
+        and (r.quantity or 0) > 0 and not (r.retired or 0)
+    ]
+    if not rows:
+        return stats
+    made: list[SoldRecord] = []
+    for r in rows:
+        for comp, per in defs[(r.sku or "").strip().upper()]:
+            ship_map = {}
+            try:
+                parsed = json.loads(r.ss_shipments or "{}")
+                if isinstance(parsed, dict):
+                    ship_map = {k: int(v) * per for k, v in parsed.items()}
+            except (ValueError, TypeError):
+                ship_map = {}
+            # Merge into an existing row for the same (order, component)
+            # rather than double-recording a mixed order.
+            existing = session.scalars(
+                select(SoldRecord).where(
+                    SoldRecord.order_id == r.order_id,
+                    func.upper(SoldRecord.sku) == comp.strip().upper(),
+                )
+            ).first()
+            if existing is not None:
+                existing.quantity = (
+                    (existing.quantity or 0) + (r.quantity or 0) * per
+                )
+                continue
+            row = SoldRecord(
+                order_id=r.order_id,
+                order_name=r.order_name,
+                sku=comp,
+                quantity=(r.quantity or 0) * per,
+                retired=0,
+                fulfilled_at=r.fulfilled_at,
+                source=r.source,
+                ss_order_id=r.ss_order_id,
+                ss_shipments=(
+                    json.dumps(ship_map)[:2000] if ship_map else None
+                ),
+                ss_line_qty=(
+                    r.ss_line_qty * per
+                    if r.ss_line_qty is not None else None
+                ),
+            )
+            session.add(row)
+            made.append(row)
+            stats["component_rows"] += 1
+        session.delete(r)
+        stats["rows_exploded"] += 1
+    session.flush()
+    # Sales older than the component's baseline can't expect tags -
+    # settle them exactly like the first-run backfill does.
+    if made:
+        uppers = {(m.sku or "").strip().upper() for m in made}
+        baselines = _sku_baselines(session, uppers)
+        for m in made:
+            cut = _as_utc(baselines.get((m.sku or "").strip().upper()))
+            f = _as_utc(m.fulfilled_at)
+            if cut is not None and f is not None and f <= cut:
+                m.retired = m.quantity
+                stats["settled"] += 1
+    return stats
+
+
 # ----------------------------------------------------- ShipStation feed -----
 def _norm_order_no(value: str | None) -> str:
     """'#50930' and '50930' are the same order to both feeds."""
@@ -429,6 +543,10 @@ def sync_shipstation(session: Session) -> dict:
         "ss_voided_skipped": 0, "ss_no_sku_units": 0,
         "ss_manual": 0, "ss_qty_conflicts": 0, "ss_voids_applied": 0,
     }
+    # A shipped bundle is components leaving the shelf: its line items
+    # are exploded into component lines BEFORE the ledger sees them, so
+    # audits can explain the components' silence (round 12).
+    defs = bundle_defs(session)
     order_lines_cache: dict = {}
     new_rows: list[SoldRecord] = []
     for sh in shipments:
@@ -440,7 +558,7 @@ def sync_shipstation(session: Session) -> dict:
         manual = sh["store_id"] not in shopify_ids
         num = _norm_order_no(sh["order_number"])
         by_sku: dict[str, dict] = {}
-        for it in sh["items"]:
+        for it in explode_bundle_items(defs, sh["items"]):
             if not it["sku"]:
                 stats["ss_no_sku_units"] += it["qty"]
                 continue
@@ -537,7 +655,9 @@ def sync_shipstation(session: Session) -> dict:
             continue
         sid = str(sh["shipment_id"])
         touched = False
-        for it in sh["items"]:
+        # The forward feed exploded bundle lines, so the void must
+        # unwind the same component rows.
+        for it in explode_bundle_items(defs, sh["items"]):
             row = rows.get((it["sku"] or "").strip().upper())
             if row is None:
                 continue
@@ -702,9 +822,13 @@ def run(session: Session, source: str = "manual") -> dict:
         tracked = tracked_skus(session)
         recorded = 0
         skipped_ss = qty_conflicts = 0
+        # Same bundle explosion as the ShipStation feed, so the two
+        # sources keep recording the SAME (order, component) lines and
+        # the dedupe between them still matches up.
+        b_defs = bundle_defs(session)
         for order in orders:
             order_no = _norm_order_no(order.get("name"))
-            for line in order["lines"]:
+            for line in explode_bundle_items(b_defs, order["lines"]):
                 sku = (line["sku"] or "").strip()
                 if sku.upper() not in tracked:
                     continue

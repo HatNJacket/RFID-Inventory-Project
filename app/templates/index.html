@@ -128,6 +128,9 @@
             </button>
           </div>
           <div class="pcard__chips" id="pcard-chips"></div>
+          <!-- Bundle context (round 12): components when this IS a
+               bundle, membership chips when it's part of one. -->
+          <div id="pcard-bundle" hidden></div>
         </div>
         <div class="pcard__body">
           <div class="pcard__tabs" id="pcard-tabs">
@@ -621,11 +624,24 @@
     <section class="inventory" id="tab-inventory" hidden>
       <div class="recent__head">
         <h2>Products in the RFID system <span class="recent__note" id="inv-count"></span></h2>
+        <button class="reset invbndl-btn" id="inv-bundles-btn" type="button"
+                title="Bundle listings and the component products that carry their tags">&#128230; Bundles <span id="bndl-count"></span></button>
         <input id="inv-search" class="recent__search" type="search" placeholder="Search product, SKU, barcode…" autocomplete="off" />
       </div>
       <!-- Freshness tag (Nick, 2026-09-08): snapshot paints instantly
            in yellow, flips green once the live Shopify walk lands. -->
       <div id="inv-fresh" class="freshtag" hidden></div>
+      <!-- Bundles (Nick, 2026-09-28 round 12): definitions pulled from
+           bundles.app, each pointing at the components that carry the
+           tags. Editable here; batch collect, audits, locate and the
+           sold ledger all read the same records. -->
+      <div class="bndl" id="inv-bundles" hidden>
+        <div class="bndl__head">
+          <button class="print__btn" id="bndl-pull" type="button">&#8675; Pull from bundles.app</button>
+          <span class="recent__note" id="bndl-meta"></span>
+        </div>
+        <div id="bndl-list"><p class="result">Loading bundles&#8230;</p></div>
+      </div>
       <div class="invfilters">
         <label class="invfilter">
           <span class="invfilter__label">Bin</span>

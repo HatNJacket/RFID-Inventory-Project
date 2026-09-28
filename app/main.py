@@ -57,6 +57,7 @@ from app.models import (
     BatchItem,
     BinMapEntry,
     BundleContent,
+    BundleInfo,
     CaseCode,
     EpcCapture,
     FlaggedBin,
@@ -4832,8 +4833,54 @@ def add_locate_queue(
     payload: LocateQueueIn, session: Session = Depends(get_session)
 ):
     """Add a product to the locate list (idempotent per SKU): re-queuing
-    an already-listed product is a no-op, not a duplicate."""
+    an already-listed product is a no-op, not a duplicate. A defined
+    BUNDLE has no tags of its own to hunt, so queueing one expands to
+    its components (round 12) - the C72's list then hunts real tags."""
     sku = payload.sku.strip()
+    contents = _bundle_contents(session, sku)
+    if contents:
+        titles = {
+            _up(e.sku): e.product_title
+            for e in session.scalars(
+                select(BinMapEntry).where(func.upper(BinMapEntry.sku).in_(
+                    sorted({_up(c["component_sku"]) for c in contents})
+                ))
+            ) if e.sku
+        }
+        expanded = []
+        for c in contents:
+            comp = c["component_sku"]
+            exists = session.scalar(
+                select(LocateQueueEntry).where(
+                    func.upper(LocateQueueEntry.sku) == _up(comp)
+                )
+            )
+            if exists is None:
+                session.add(LocateQueueEntry(
+                    sku=comp,
+                    label=(titles.get(_up(comp)) or "")[:255] or None,
+                    added_by=payload.worker,
+                ))
+            expanded.append(comp)
+        _log_change(
+            session,
+            sku=sku,
+            title=payload.label,
+            field="locate-list",
+            old=None,
+            new=f"bundle - components queued: {', '.join(expanded)}",
+            by=payload.worker,
+        )
+        session.commit()
+        return {
+            "bundle": sku,
+            "expanded": expanded,
+            "message": (
+                f"{sku} is a bundle - no tags of its own. Its "
+                f"component(s) went on the locate list instead: "
+                f"{', '.join(expanded)}."
+            ),
+        }
     epcs_text = "\n".join(sorted({
         _up(e) for e in (payload.epcs or []) if e
     })) or None
@@ -7266,9 +7313,31 @@ def bin_check(
         g["unavail"] += e.unavailable or 0
         if e.bin and e.bin not in g["bins"]:
             g["bins"].append(e.bin)
+    # Defined bundles aren't countable shelf products - their
+    # components carry the tags (round 12). They leave the report and
+    # come back as a covered note instead of a never-tagged flag.
+    bundle_cover: dict[str, list[dict]] = {}
+    if merged_order:
+        for bc in session.scalars(
+            select(BundleContent).where(
+                func.upper(BundleContent.bundle_sku).in_(merged_order)
+            ).order_by(BundleContent.id)
+        ):
+            bundle_cover.setdefault(
+                bc.bundle_sku.strip().upper(), []
+            ).append(bc.as_dict())
+    covered_bundles: list[dict] = []
     for key in merged_order:
         g = merged[key]
         e = g["entry"]
+        if key in bundle_cover:
+            covered_bundles.append({
+                "sku": e.sku,
+                "product_title": e.product_title,
+                "bins": g["bins"],
+                "contents": bundle_cover[key],
+            })
+            continue
         counts = _tag_counts(key)
         if key in unlab:
             # Un-labelable box: the one tag is a location marker, never
@@ -7481,6 +7550,7 @@ def bin_check(
         "swept": len(swept),
         "count": len(report),
         "items": report,
+        "covered_bundles": covered_bundles,
         "foreign": foreign,
         "unknown_epcs": unknown,
         "printed_labels_heard": printed_labels_heard,
@@ -12152,10 +12222,13 @@ def _write_bundle_contents(
     sku: str,
     rows: list[tuple[str, int]],
     updated_by: str | None,
+    source: str = "manual",
+    title: str | None = None,
 ) -> dict:
-    """Replace a bundle's contents (shared by manual entry and the
-    Shopify import): rewrites the rows, settles the product kind, and
-    leaves the History receipt."""
+    """Replace a bundle's contents (shared by manual entry, the Shopify
+    import and the bundles.app pull): rewrites the rows, settles the
+    product kind, keeps the bundle-level record (title + where the
+    definition came from), and leaves the History receipt."""
     before = _bundle_contents(session, sku)
     for old in session.scalars(
         select(BundleContent).where(
@@ -12167,6 +12240,19 @@ def _write_bundle_contents(
         session.add(BundleContent(
             bundle_sku=sku, component_sku=comp, qty=qty
         ))
+    info = session.get(BundleInfo, sku)
+    if rows:
+        if info is None:
+            info = BundleInfo(bundle_sku=sku)
+            session.add(info)
+        info.source = source
+        info.updated_by = updated_by
+        if title:
+            info.title = title[:255]
+        if source == "app":
+            info.synced_at = datetime.now(timezone.utc)
+    elif info is not None:
+        session.delete(info)
     # A defined bundle IS a bundle — settle the kind question too, so the
     # Check step stops asking (the operator can still override later).
     if rows:
@@ -12243,7 +12329,252 @@ def import_bundle_contents(
         sku,
         [(c["component_sku"], c["qty"]) for c in components],
         payload.updated_by,
+        source="app",
+        title=product.get("product_title"),
     )
+
+
+@app.get("/api/bundles", dependencies=[Depends(require_user)])
+def list_bundles(
+    sku: str | None = None,
+    component: str | None = None,
+    session: Session = Depends(get_session),
+):
+    """Every defined bundle, enriched for the Inventory panel and the
+    product card: title, where the definition came from, and each
+    component's live shelf context (title, bin, snapshot on-hand, tags
+    on file) plus how many units are buildable right now. ?sku= narrows
+    to one bundle; ?component= answers the reverse question - which
+    bundles this product is part of."""
+    q = select(BundleContent).order_by(
+        BundleContent.bundle_sku, BundleContent.id
+    )
+    if sku:
+        q = q.where(
+            func.upper(BundleContent.bundle_sku) == _up(sku)
+        )
+    rows = session.scalars(q).all()
+    if component:
+        comp_u = _up(component)
+        keep = {
+            r.bundle_sku.strip().upper() for r in rows
+            if _up(r.component_sku) == comp_u
+        }
+        rows = [r for r in rows
+                if r.bundle_sku.strip().upper() in keep]
+    by_bundle: dict[str, list[BundleContent]] = {}
+    order: list[str] = []
+    for r in rows:
+        k = r.bundle_sku.strip().upper()
+        if k not in by_bundle:
+            by_bundle[k] = []
+            order.append(k)
+        by_bundle[k].append(r)
+    all_skus = {k for k in by_bundle} | {
+        _up(r.component_sku) for r in rows
+    }
+    map_rows: dict[str, BinMapEntry] = {}
+    if all_skus:
+        for e in session.scalars(
+            select(BinMapEntry).where(
+                func.upper(BinMapEntry.sku).in_(sorted(all_skus))
+            )
+        ):
+            map_rows.setdefault(_up(e.sku), e)
+    tag_counts: dict[str, int] = {}
+    comp_skus = sorted({_up(r.component_sku) for r in rows})
+    if comp_skus:
+        for t_sku, n in session.execute(
+            select(RfidAssignment.sku, func.count())
+            .where(func.upper(RfidAssignment.sku).in_(comp_skus))
+            .group_by(RfidAssignment.sku)
+        ):
+            k = _up(t_sku)
+            tag_counts[k] = tag_counts.get(k, 0) + n
+    infos = {
+        i.bundle_sku.strip().upper(): i
+        for i in session.scalars(select(BundleInfo))
+    }
+    kinds = {
+        p.sku.strip().upper(): p
+        for p in session.scalars(
+            select(ProductKind).where(
+                func.upper(ProductKind.sku).in_(sorted(by_bundle))
+            )
+        )
+    } if by_bundle else {}
+    bundles = []
+    for k in order:
+        parts = by_bundle[k]
+        first = parts[0]
+        info = infos.get(k)
+        b_map = map_rows.get(k)
+        contents = []
+        buildable: int | None = None
+        all_known = True
+        for r in parts:
+            ck = _up(r.component_sku)
+            ce = map_rows.get(ck)
+            snap = ce.qty if ce is not None else None
+            contents.append({
+                "component_sku": r.component_sku,
+                "qty": r.qty,
+                "title": ce.product_title if ce else None,
+                "bin": ce.bin if ce else None,
+                "on_hand": snap,
+                "tags": tag_counts.get(ck, 0),
+            })
+            if snap is None:
+                # A component with no stock snapshot makes the whole
+                # buildable claim a guess - say nothing instead.
+                all_known = False
+                continue
+            can = snap // max(1, r.qty or 1)
+            buildable = can if buildable is None else min(buildable, can)
+        if not all_known:
+            buildable = None
+        pk = kinds.get(k)
+        bundles.append({
+            "bundle_sku": first.bundle_sku,
+            "title": (
+                (info.title if info else None)
+                or (b_map.product_title if b_map else None)
+            ),
+            "source": info.source if info else "manual",
+            "synced_at": (
+                info.synced_at.isoformat()
+                if info and info.synced_at else None
+            ),
+            "excluded": bool(pk.excluded) if pk else False,
+            "bin": b_map.bin if b_map else None,
+            "barcode": b_map.barcode if b_map else None,
+            "buildable": buildable,
+            "contents": contents,
+        })
+    last_pull = session.get(AppSetting, "bundles_last_pull")
+    return {
+        "bundles": bundles,
+        "count": len(bundles),
+        "last_pull": last_pull.value if last_pull else None,
+    }
+
+
+class BundlePullIn(BaseModel):
+    updated_by: str | None = Field(default=None, max_length=100)
+
+
+@app.post(
+    "/api/bundles/pull",
+    status_code=201,
+    dependencies=[Depends(require_user)],
+)
+def pull_bundles(
+    payload: BundlePullIn, session: Session = Depends(get_session)
+):
+    """Walk the whole store's bundles.app definitions and build/refresh
+    the matching RFID bundle records in one go (Nick, 2026-09-28 round
+    12). App-sourced bundles are re-synced to what the app says now;
+    bundles defined by hand on the terminal are left alone. Afterwards,
+    any sold-ledger rows still booked under a bundle SKU are re-booked
+    as their components, so audits can explain component silences that
+    bundle sales caused."""
+    _require_shopify_env()
+    try:
+        found = shopify.fetch_all_bundles()
+    except RuntimeError as error:
+        raise HTTPException(502, f"bundles.app walk failed: {error}")
+    existing: dict[str, list[tuple[str, int]]] = {}
+    for bc in session.scalars(
+        select(BundleContent).order_by(BundleContent.id)
+    ):
+        existing.setdefault(
+            bc.bundle_sku.strip().upper(), []
+        ).append((bc.component_sku.strip().upper(), bc.qty or 1))
+    infos = {
+        i.bundle_sku.strip().upper(): i
+        for i in session.scalars(select(BundleInfo))
+    }
+    created = updated = unchanged = 0
+    for b in found:
+        key = _up(b["sku"])
+        want = [(c["component_sku"], c["qty"]) for c in b["components"]]
+        have = existing.get(key)
+        if have is not None:
+            info = infos.get(key)
+            if info is not None and info.source != "app":
+                # A hand-tuned definition: the operator's word beats
+                # the app's until they re-import it themselves.
+                unchanged += 1
+                continue
+            if sorted((s.upper(), q) for s, q in want) == sorted(have):
+                info = infos.get(key)
+                if info is None:
+                    info = BundleInfo(bundle_sku=b["sku"], source="app")
+                    session.add(info)
+                    infos[key] = info
+                info.source = "app"
+                info.synced_at = datetime.now(timezone.utc)
+                if b.get("title"):
+                    info.title = b["title"][:255]
+                unchanged += 1
+                continue
+            updated += 1
+        else:
+            created += 1
+        _write_bundle_contents(
+            session, b["sku"], want, payload.updated_by,
+            source="app", title=b.get("title"),
+        )
+    # Re-book any ledger rows still sitting under a bundle SKU.
+    ledger = orders_sync.explode_ledger_bundles(session)
+    local_only = sorted(
+        k for k in existing
+        if k not in {_up(b["sku"]) for b in found}
+    )
+    row = session.get(AppSetting, "bundles_last_pull")
+    stamp = json.dumps({
+        "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "found": len(found),
+    })
+    if row is None:
+        session.add(AppSetting(key="bundles_last_pull", value=stamp))
+    else:
+        row.value = stamp
+    _log_change(
+        session,
+        sku=None,
+        title="bundles.app pull",
+        field="bundles-pulled",
+        old=None,
+        new=(
+            f"{len(found)} bundle(s) in the app: {created} new, "
+            f"{updated} updated, {unchanged} unchanged"
+            + (f"; {ledger['rows_exploded']} ledger row(s) re-booked "
+               f"as components"
+               if ledger.get("rows_exploded") else "")
+        ),
+        by=payload.updated_by,
+    )
+    session.commit()
+    return {
+        "found": len(found),
+        "created": created,
+        "updated": updated,
+        "unchanged": unchanged,
+        "local_only": local_only,
+        "ledger": ledger,
+        "message": (
+            f"bundles.app holds {len(found)} bundle(s): "
+            f"{created} built, {updated} re-synced, "
+            f"{unchanged} already matched."
+            + (f" {len(local_only)} bundle(s) exist only on this "
+               f"terminal and were left alone."
+               if local_only else "")
+            + (f" {ledger['rows_exploded']} old bundle sale(s) were "
+               f"re-booked against their components for the audits."
+               if ledger.get("rows_exploded") else "")
+        ),
+    }
 
 
 class ItemKindIn(BaseModel):

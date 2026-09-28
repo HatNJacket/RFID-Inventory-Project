@@ -724,6 +724,67 @@ def get_bundle_components(variant_gid: str) -> list[dict]:
     return out
 
 
+_ALL_BUNDLES_QUERY = """
+query allBundles($cursor: String) {
+  productVariants(first: 250, after: $cursor) {
+    nodes {
+      sku
+      title
+      product { title }
+      bundlesApp: metafield(namespace: "bundles_app", key: "content") {
+        value
+      }
+    }
+    pageInfo { hasNextPage endCursor }
+  }
+}
+"""
+
+
+def fetch_all_bundles() -> list[dict]:
+    """Walk EVERY variant and return the ones bundles.app defines: the
+    variants carrying a parseable bundles_app.content metafield. A page
+    query with no nested connections, so the whole store is a handful
+    of cheap calls. Answers [{"sku", "title", "components": [{
+    "component_sku", "qty"}]}]; malformed metafields are skipped, never
+    fatal."""
+    results: list[dict] = []
+    cursor = None
+    while True:
+        data = query_shopify(_ALL_BUNDLES_QUERY, {"cursor": cursor})
+        page = data["productVariants"]
+        for v in page["nodes"]:
+            raw = ((v.get("bundlesApp") or {}).get("value") or "").strip()
+            sku = (v.get("sku") or "").strip()
+            if not raw or not sku:
+                continue
+            components = []
+            try:
+                for entry in json.loads(raw):
+                    c_sku = str(entry.get("sku") or "").strip()
+                    qty = int(entry.get("quantity") or 0)
+                    if c_sku and qty > 0:
+                        components.append(
+                            {"component_sku": c_sku, "qty": qty}
+                        )
+            except (ValueError, TypeError, AttributeError):
+                continue
+            if not components:
+                continue
+            title = (v.get("product") or {}).get("title") or ""
+            if v.get("title") and v["title"] != "Default Title":
+                title = f"{title} - {v['title']}" if title else v["title"]
+            results.append({
+                "sku": sku,
+                "title": title.strip() or None,
+                "components": components,
+            })
+        if not page["pageInfo"]["hasNextPage"]:
+            return results
+        cursor = page["pageInfo"]["endCursor"]
+        time.sleep(0.3)  # stay far away from the throttle
+
+
 def get_on_hand_by_skus(skus: list[str]) -> dict[str, int]:
     """Live ON-HAND only (kept for callers that don't care about bins)."""
     return {

@@ -164,6 +164,149 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
     check("a cleared bundle seeds as countable once more",
           "W9184B-B10" in seeded, seeded)
 
+    # ================= round 12: bundles.app pull + the surfaces =========
+    import json as _json
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+    from app.models import LocateQueueEntry, SoldRecord
+    from app import orders_sync as osync
+
+    # Re-define B10 (cleared just above).
+    cl.post("/api/bundle-contents", json={
+        "bundle_sku": "W9184B-B10",
+        "contents": [{"component_sku": "W9184B", "qty": 10}],
+        "updated_by": "Nick"})
+
+    # ---- the enriched index --------------------------------------------
+    d = cl.get("/api/bundles").json()
+    check("bundle index lists every defined bundle",
+          {b["bundle_sku"] for b in d["bundles"]}
+          == {"W9184B-B10", "W9184B-B5", "W9184B-B3"}, d)
+    b10 = [b for b in d["bundles"] if b["bundle_sku"] == "W9184B-B10"][0]
+    check("bundle title rides from the bin map",
+          b10["title"] == "BUNDLE: Antlia 3nm x10", b10)
+    comp = b10["contents"][0]
+    check("components carry shelf context",
+          comp["title"] == "Antlia 3nm filter" and comp["bin"] == "D4-2"
+          and comp["on_hand"] == 63, comp)
+    check("buildable = component stock // per-unit qty",
+          b10["buildable"] == 6, b10)
+    # A component with no stock snapshot makes buildable a guess - the
+    # index says nothing rather than overstating.
+    cl.post("/api/bundle-contents", json={
+        "bundle_sku": "W9184B-BX",
+        "contents": [{"component_sku": "W9184B", "qty": 5},
+                     {"component_sku": "GHOST-COMP", "qty": 1}]})
+    bx = cl.get("/api/bundles?sku=W9184B-BX").json()["bundles"][0]
+    check("an unmapped component leaves buildable unknown",
+          bx["buildable"] is None, bx)
+    cl.post("/api/bundle-contents",
+            json={"bundle_sku": "W9184B-BX", "contents": []})
+    b3 = [b for b in d["bundles"] if b["bundle_sku"] == "W9184B-B3"][0]
+    check("the Shopify import marked its bundle app-sourced, with title",
+          b3["source"] == "app"
+          and b3["title"] == "BUNDLE: Antlia 3nm x3", b3)
+    d = cl.get("/api/bundles?component=W9184B").json()
+    check("reverse lookup answers which bundles a product is part of",
+          len(d["bundles"]) == 3, d)
+
+    # ---- the bulk pull --------------------------------------------------
+    APP_BUNDLES = [
+        {"sku": "W9184B-B10", "title": "BUNDLE: Antlia 3nm x10",
+         "components": [{"component_sku": "W9184B", "qty": 10}]},
+        {"sku": "W9184B-B20", "title": "BUNDLE: Antlia 3nm x20",
+         "components": [{"component_sku": "W9184B", "qty": 20}]},
+    ]
+    with patch("app.shopify.fetch_all_bundles", return_value=APP_BUNDLES):
+        r = cl.post("/api/bundles/pull", json={"updated_by": "Nick"})
+    d = r.json()
+    check("pull builds the new bundle and counts the rest",
+          r.status_code == 201 and d["found"] == 2 and d["created"] == 1
+          and d["updated"] == 0 and d["unchanged"] == 1, d)
+    check("hand-defined bundles missing from the app are left alone",
+          d["local_only"] == ["W9184B-B3", "W9184B-B5"], d)
+    b20 = cl.get("/api/bundles?sku=W9184B-B20").json()["bundles"][0]
+    check("the pulled bundle is app-sourced with the app's contents",
+          b20["source"] == "app" and b20["contents"][0]["qty"] == 20
+          and b20["synced_at"], b20)
+    ev = [e for e in cl.get("/api/history").json()["events"]
+          if e["type"] == "bundles-pulled"]
+    check("the pull leaves one History receipt", len(ev) == 1, ev)
+    check("the index remembers when the pull ran",
+          cl.get("/api/bundles").json()["last_pull"] is not None, None)
+    # A re-pull with changed app contents re-syncs app bundles...
+    APP2 = [{"sku": "W9184B-B20", "title": "BUNDLE: Antlia 3nm x20",
+             "components": [{"component_sku": "W9184B", "qty": 19}]}]
+    with patch("app.shopify.fetch_all_bundles", return_value=APP2):
+        d = cl.post("/api/bundles/pull", json={}).json()
+    b20 = cl.get("/api/bundles?sku=W9184B-B20").json()["bundles"][0]
+    check("a re-pull re-syncs app-sourced bundles",
+          d["updated"] == 1 and b20["contents"][0]["qty"] == 19, (d, b20))
+    # ...but never overwrites one the operator tuned by hand.
+    cl.post("/api/bundle-contents", json={
+        "bundle_sku": "W9184B-B20",
+        "contents": [{"component_sku": "W9184B", "qty": 21}],
+        "updated_by": "Nick"})
+    with patch("app.shopify.fetch_all_bundles", return_value=APP2):
+        cl.post("/api/bundles/pull", json={})
+    b20 = cl.get("/api/bundles?sku=W9184B-B20").json()["bundles"][0]
+    check("a hand-tuned bundle survives the next pull",
+          b20["source"] == "manual" and b20["contents"][0]["qty"] == 21,
+          b20)
+
+    # ---- audits: bundles leave the report as covered notes -------------
+    d = cl.post("/api/bins/D4-2/check", json={"epcs": []}).json()
+    skus = {i["sku"] for i in d["items"]}
+    check("defined bundles leave the bin-check report",
+          "W9184B-B10" not in skus and "W9184B-B5" not in skus
+          and "W9184B" in skus, skus)
+    check("…and come back as covered-by-components notes",
+          {c["sku"] for c in d["covered_bundles"]}
+          == {"W9184B-B10", "W9184B-B5"}
+          and d["covered_bundles"][0]["contents"], d["covered_bundles"])
+
+    # ---- locate: a bundle expands to its components --------------------
+    r = cl.post("/api/locate-queue",
+                json={"sku": "W9184B-B10", "worker": "Nick"})
+    d = r.json()
+    check("locating a bundle queues its components instead",
+          d.get("expanded") == ["W9184B"] and "component" in d["message"],
+          d)
+    q = cl.get("/api/locate-queue").json()["entries"]
+    check("the queue holds the component, never the bundle",
+          [e["sku"] for e in q] == ["W9184B"], q)
+
+    # ---- sold ledger: bundle sales are component sales -----------------
+    with S(get_engine()) as s:
+        defs = osync.bundle_defs(s)
+        out = osync.explode_bundle_items(defs, [
+            {"sku": "w9184b-b10", "qty": 1}, {"sku": "OTHER", "qty": 2}])
+        check("feed line items explode one level, others pass through",
+              out == [{"sku": "W9184B", "qty": 10},
+                      {"sku": "OTHER", "qty": 2}], out)
+        # Backfill: a row recorded under the bundle SKU re-books as its
+        # component with quantity and parcel map scaled.
+        s.add(SoldRecord(
+            order_id="o-77", order_name="77", sku="W9184B-B10",
+            quantity=2, retired=0,
+            fulfilled_at=datetime(2026, 9, 20, tzinfo=timezone.utc),
+            source="shipstation", ss_order_id="777",
+            ss_shipments='{"111": 2}', ss_line_qty=2))
+        s.commit()
+        stats = osync.explode_ledger_bundles(s)
+        s.commit()
+        check("the bundle ledger row explodes into component units",
+              stats["rows_exploded"] == 1
+              and stats["component_rows"] == 1, stats)
+        rows = s.scalars(select(SoldRecord).where(
+            SoldRecord.order_id == "o-77")).all()
+        check("component row: 2 bundles = 20 units, parcel map scaled",
+              len(rows) == 1 and rows[0].sku == "W9184B"
+              and rows[0].quantity == 20 and (rows[0].retired or 0) == 0
+              and _json.loads(rows[0].ss_shipments) == {"111": 20}
+              and rows[0].ss_line_qty == 20,
+              [(r2.sku, r2.quantity, r2.ss_shipments) for r2 in rows])
+
 print()
 print("FAILED: "+", ".join(fails) if fails else "ALL CHECKS PASSED")
 sys.exit(1 if fails else 0)

@@ -424,6 +424,7 @@ const EVENT_META = {
   "bin-mismatch": ["Mismatched Bins", "#0e7a8a"],
   "tags-rebinned": ["Tags Re-binned", "#0e7a8a"],
   "bundle-contents-set": ["Bundle Contents", "#6f42c1"],
+  "bundles-pulled": ["Bundles Pulled", "#6f42c1"],
   "locate-list": ["Locate List", "#5561c9"],
   "locate-paired": ["Locate Assigned Tag", "#2f9e6e"],
   "receiving-dismissed": ["Sold Before Label", "#5c5f62"],
@@ -4264,6 +4265,7 @@ function applyInventoryData(data) {
 async function loadInventory() {
   const body = document.getElementById("inv-body");
   let livePainted = false;
+  loadBundles(); // the panel's badge + cards (DB-only, fast)
   // Instant paint from the bin-map snapshot (the live Shopify walk
   // takes ~14s; nobody should stare at "Loading…" for it).
   apiFetch("/api/inventory/summary?fast=1")
@@ -4297,6 +4299,194 @@ async function loadInventory() {
       '<tr><td colspan="7" class="inventory__empty">Network error.</td></tr>';
   }
 }
+
+// --- bundles (Nick, 2026-09-28 round 12) ------------------------------------
+// Bundle listings live in bundles.app; here they become RFID records
+// pointing at the component products that carry the tags. One pull
+// builds them all; add/remove edits go through the same wholesale
+// replace the product panel uses, so History gets its receipt.
+let bndlData = null;
+
+async function loadBundles() {
+  try {
+    bndlData = await apiJson("/api/bundles");
+  } catch (err) {
+    bndlData = null;
+  }
+  renderBundles();
+}
+
+function renderBundles() {
+  const cnt = document.getElementById("bndl-count");
+  const list = document.getElementById("bndl-list");
+  const meta = document.getElementById("bndl-meta");
+  if (!cnt || !list) return;
+  if (!bndlData) {
+    list.innerHTML =
+      '<p class="result result--err">Could not load bundles.</p>';
+    return;
+  }
+  cnt.textContent = bndlData.count ? String(bndlData.count) : "";
+  let last = "";
+  try {
+    const lp = JSON.parse(bndlData.last_pull || "null");
+    if (lp && lp.at) last = ` · last pulled ${fmtAgo(lp.at)}`;
+  } catch (e) { /* stamp is decoration */ }
+  meta.textContent = `${bndlData.count} bundle(s) defined${last}`;
+  list.innerHTML = bndlData.bundles.length
+    ? bndlData.bundles.map(bndlCardHtml).join("")
+    : `<p class="result">No bundles defined yet. Pull from bundles.app
+       to build them all at once, or define one from a product panel's
+       Bundle row.</p>`;
+}
+
+function bndlCardHtml(b) {
+  const rows = b.contents
+    .map(
+      (c) => `
+    <div class="bndl__row">
+      <span class="bndl__qty">${c.qty}&#215;</span>
+      <button class="reset bndl__comp" type="button"
+        data-sku="${escapeHtml(c.component_sku)}"
+        title="Open the product card">${escapeHtml(c.component_sku)}</button>
+      <span class="bndl__ctitle">${escapeHtml(c.title || "")}</span>
+      <span class="bndl__facts">${
+        c.bin ? `${escapeHtml(c.bin)} · ` : ""
+      }${c.tags} tag(s)${
+        c.on_hand != null ? ` · ${c.on_hand} on hand` : ""
+      }</span>
+      <button class="reset bndl-rm" type="button"
+        data-bundle="${escapeHtml(b.bundle_sku)}"
+        data-comp="${escapeHtml(c.component_sku)}"
+        title="Remove this component from the bundle">&#215;</button>
+    </div>`
+    )
+    .join("");
+  return `<div class="bndl__card" data-bundle="${escapeHtml(b.bundle_sku)}">
+    <div class="bndl__top">
+      <span class="bndl__title">${escapeHtml(
+        b.title || b.bundle_sku
+      )}</span>
+      <button class="reset bndl__sku" type="button"
+        data-sku="${escapeHtml(b.bundle_sku)}"
+        title="Open the bundle's product card">${escapeHtml(b.bundle_sku)}</button>
+      <span class="bndl__src${b.source === "app" ? "" : " bndl__src--man"}">${
+        b.source === "app" ? "bundles.app" : "manual"
+      }</span>
+      ${b.excluded ? '<span class="bndl__src bndl__src--man">dropped from RFID</span>' : ""}
+      <span class="bndl__grow"></span>
+      ${
+        b.buildable != null
+          ? `<span class="bndl__build" title="How many units the components on hand can build">buildable: <b>${b.buildable}</b></span>`
+          : ""
+      }
+    </div>
+    ${rows}
+    <div class="bndl__addrow">
+      <input class="recent__search bndl-addsku" type="text"
+             placeholder="Component SKU" autocomplete="off" />
+      <input class="recent__search bndl-addqty" type="number" min="1"
+             value="1" title="Units per bundle" />
+      <button class="reset bndl-add" type="button"
+        data-bundle="${escapeHtml(b.bundle_sku)}">+ Add component</button>
+    </div>
+  </div>`;
+}
+
+async function bndlWrite(bundleSku, contents) {
+  const r = await postJson("/api/bundle-contents", {
+    bundle_sku: bundleSku,
+    contents,
+    updated_by: operatorEl.value || null,
+  });
+  await loadBundles();
+  return r;
+}
+
+document.getElementById("inv-bundles-btn").addEventListener("click", () => {
+  const box = document.getElementById("inv-bundles");
+  box.hidden = !box.hidden;
+  if (!box.hidden && !bndlData) loadBundles();
+});
+
+document.getElementById("bndl-pull").addEventListener("click", async (ev) => {
+  const btn = ev.currentTarget;
+  const stopDots = startDots(btn, "Walking bundles.app");
+  btn.disabled = true;
+  try {
+    const r = await postJson("/api/bundles/pull", {
+      updated_by: operatorEl.value || null,
+    });
+    document.getElementById("bndl-meta").textContent = r.message;
+    await loadBundles();
+    document.getElementById("bndl-meta").textContent = r.message;
+  } catch (err) {
+    alert(err.message);
+  }
+  stopDots();
+  btn.disabled = false;
+});
+
+document.getElementById("bndl-list").addEventListener("click", async (e) => {
+  const open = e.target.closest(".bndl__comp, .bndl__sku");
+  if (open) {
+    openProductCard(open.dataset.sku);
+    return;
+  }
+  const b = (sku) =>
+    (bndlData.bundles || []).find((x) => x.bundle_sku === sku);
+  const rm = e.target.closest(".bndl-rm");
+  if (rm) {
+    const bundle = b(rm.dataset.bundle);
+    if (!bundle) return;
+    const left = bundle.contents.filter(
+      (c) => c.component_sku !== rm.dataset.comp
+    );
+    if (
+      !left.length &&
+      !window.confirm(
+        `${rm.dataset.comp} is the last component - removing it clears ` +
+          `the definition and ${bundle.bundle_sku} becomes a countable ` +
+          `product again. Continue?`
+      )
+    )
+      return;
+    rm.disabled = true;
+    try {
+      await bndlWrite(
+        bundle.bundle_sku,
+        left.map((c) => ({ component_sku: c.component_sku, qty: c.qty }))
+      );
+    } catch (err) {
+      alert(err.message);
+      rm.disabled = false;
+    }
+    return;
+  }
+  const add = e.target.closest(".bndl-add");
+  if (add) {
+    const card = add.closest(".bndl__card");
+    const sku = card.querySelector(".bndl-addsku").value.trim().toUpperCase();
+    const qty = parseInt(card.querySelector(".bndl-addqty").value, 10) || 0;
+    if (!sku || qty < 1) {
+      alert("Component SKU and a quantity of at least 1, please.");
+      return;
+    }
+    const bundle = b(add.dataset.bundle);
+    if (!bundle) return;
+    const contents = bundle.contents
+      .filter((c) => c.component_sku.toUpperCase() !== sku)
+      .map((c) => ({ component_sku: c.component_sku, qty: c.qty }));
+    contents.push({ component_sku: sku, qty });
+    add.disabled = true;
+    try {
+      await bndlWrite(bundle.bundle_sku, contents);
+    } catch (err) {
+      alert(err.message);
+      add.disabled = false;
+    }
+  }
+});
 
 // Link to a product's page in Shopify admin. Real GIDs go straight to
 // the product page; legacy "handle:…" ids (old TELCAN-sourced rows —
@@ -12604,6 +12794,20 @@ function renderBinAudit() {
         : ""
     }
     ${
+      !pm && (rep.covered_bundles || []).length
+        ? `<p class="result">&#128230; ${rep.covered_bundles.length} bundle
+           listing(s) here are covered by their components - no tags of
+           their own to hear: ${rep.covered_bundles
+             .map(
+               (cb) =>
+                 `<b>${escapeHtml(cb.sku)}</b> (= ${(cb.contents || [])
+                   .map((c) => `${c.qty}× ${escapeHtml(c.component_sku)}`)
+                   .join(" + ")})`
+             )
+             .join(", ")}.</p>`
+        : ""
+    }
+    ${
       pm || rep.rack
         ? ""
         : rep.batch_done
@@ -12855,13 +13059,16 @@ document
           (x) => (x.sku || "").toUpperCase() === (sku || "").toUpperCase());
         const merged = new Set(mine ? mine.epcs || [] : []);
         epcs.forEach((x) => merged.add(x));
-        await postJson("/api/locate-queue", {
+        const r = await postJson("/api/locate-queue", {
           sku,
           label: locBtn.dataset.title || sku,
           worker: operatorEl.value || null,
           epcs: Array.from(merged),
         });
-        locBtn.textContent = "ON THE LOCATE LIST ✓";
+        locBtn.textContent = r.expanded
+          ? "COMPONENTS QUEUED ✓"
+          : "ON THE LOCATE LIST ✓";
+        if (r.message) locBtn.title = r.message;
       } catch (err) {
         alert(err.message);
         locBtn.disabled = false;
@@ -16275,13 +16482,14 @@ document
         const title = phistData.product
           ? phistData.product.product_title
           : null;
-        await postJson("/api/locate-queue", {
+        const r = await postJson("/api/locate-queue", {
           sku: phistData.sku,
           label: title,
           worker: operatorEl.value || null,
         });
-        msg.textContent =
-          "On the locate list ✓ - open LOCATE on the C72 and tap LIST.";
+        msg.textContent = r.message
+          ? r.message + " Open LOCATE on the C72 and tap LIST."
+          : "On the locate list ✓ - open LOCATE on the C72 and tap LIST.";
       }
       renderLocateRow();
     } catch (err) {
@@ -19813,6 +20021,68 @@ function renderLabTuner(pane) {
 const pcardLookupCache = new Map();
 const PCARD_CACHE_MS = 5 * 60 * 1000;
 
+// The card's bundle strip: component rows when the product IS a
+// defined bundle, membership chips when it's a component of one.
+function pcardRenderBundle() {
+  const el = document.getElementById("pcard-bundle");
+  if (!el) return;
+  const st = pcardState;
+  el.hidden = true;
+  el.innerHTML = "";
+  if (!st || !st.sku) return;
+  if (st.bundle) {
+    const b = st.bundle;
+    el.innerHTML = `<div class="pcb">
+      <div class="pcb__head">&#128230; Bundle - the components below carry
+        the tags; nothing prints for this listing.${
+          b.buildable != null
+            ? ` Components on hand can build <b>${b.buildable}</b> unit(s).`
+            : ""
+        }</div>
+      ${b.contents
+        .map(
+          (c) => `<button class="reset pcb__row" type="button"
+            data-sku="${escapeHtml(c.component_sku)}"
+            title="Open the component's product card">
+            <span class="bndl__qty">${c.qty}&#215;</span>
+            <span class="pcb__sku">${escapeHtml(c.component_sku)}</span>
+            <span class="pcb__title">${escapeHtml(c.title || "")}</span>
+            <span class="bndl__facts">${
+              c.bin ? escapeHtml(c.bin) + " · " : ""
+            }${c.tags} tag(s)${
+              c.on_hand != null ? ` · ${c.on_hand} on hand` : ""
+            }</span>
+          </button>`
+        )
+        .join("")}
+    </div>`;
+    el.hidden = false;
+  } else if ((st.partOf || []).length) {
+    el.innerHTML = `<div class="pcb pcb--member">
+      <span class="pcb__memlab">Part of bundle(s):</span>
+      ${st.partOf
+        .map((b) => {
+          const me = (b.contents || []).find(
+            (c) =>
+              c.component_sku.toUpperCase() === st.sku.toUpperCase()
+          );
+          return `<button class="reset pcb__chip" type="button"
+            data-sku="${escapeHtml(b.bundle_sku)}"
+            title="${escapeHtml(b.title || "Open the bundle's card")}">${escapeHtml(
+              b.bundle_sku
+            )}${me ? ` (${me.qty}&#215; each)` : ""}</button>`;
+        })
+        .join("")}
+    </div>`;
+    el.hidden = false;
+  }
+}
+
+document.getElementById("pcard-bundle").addEventListener("click", (e) => {
+  const go = e.target.closest("[data-sku]");
+  if (go) openProductCard(go.dataset.sku);
+});
+
 async function openProductCard(term) {
   goTab("home");
   homeEls.pcard.hidden = false;
@@ -19821,6 +20091,11 @@ async function openProductCard(term) {
   homeEls.pcardName.textContent = "Looking up " + term + "…";
   homeEls.pcardCodes.innerHTML = "";
   homeEls.pcardChips.innerHTML = "";
+  const bndlEl = document.getElementById("pcard-bundle");
+  if (bndlEl) {
+    bndlEl.hidden = true;
+    bndlEl.innerHTML = "";
+  }
   document.getElementById("pcard-onhand").hidden = true;
   document.getElementById("pcard-tagcount").hidden = true;
   const setBtn = document.getElementById("pcard-onhand-set");
@@ -19880,7 +20155,7 @@ async function openProductCard(term) {
     (product.shopify_product_id
       ? `&pid=${encodeURIComponent(product.shopify_product_id)}`
       : "");
-  const [tagsBody, histBody, obBody] = await Promise.all([
+  const [tagsBody, histBody, obBody, bndlAs, bndlIn] = await Promise.all([
     apiFetch(
       `/api/products/tags?${st.sku ? "sku=" + encodeURIComponent(st.sku) : "barcode=" + encodeURIComponent(st.barcode || term)}`
     ).then((r) => (r.ok ? r.json() : null)).catch(() => null),
@@ -19890,12 +20165,24 @@ async function openProductCard(term) {
       ? apiFetch(`/api/products/tags?light=1&sku=${encodeURIComponent(st.obSku)}`)
           .then((r) => (r.ok ? r.json() : null)).catch(() => null)
       : null,
+    // Bundle context, both directions (round 12). DB-only, cheap.
+    st.sku
+      ? apiFetch(`/api/bundles?sku=${encodeURIComponent(st.sku)}`)
+          .then((r) => (r.ok ? r.json() : null)).catch(() => null)
+      : null,
+    st.sku
+      ? apiFetch(`/api/bundles?component=${encodeURIComponent(st.sku)}`)
+          .then((r) => (r.ok ? r.json() : null)).catch(() => null)
+      : null,
   ]);
   if (pcardState !== st) return;
   st.tags = tagsBody;
   st.hist = histBody;
   st.ob = obBody && (obBody.assignments || []).length ? obBody : null;
+  st.bundle = (bndlAs && (bndlAs.bundles || [])[0]) || null;
+  st.partOf = (bndlIn && bndlIn.bundles) || [];
   st.adminUrl = histBody && histBody.product && histBody.product.admin_url;
+  pcardRenderBundle();
   pcardRenderStats();
   pcardRenderHistory();
   pcardRenderTags();

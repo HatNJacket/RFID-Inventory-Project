@@ -4584,3 +4584,59 @@ button.ph-order:hover { border-color: var(--accent); }
 .sw-foot { display: flex; align-items: center; gap: 10px; padding: 9px 14px; font-size: 12.5px; color: var(--ink-dim); flex-wrap: wrap; }
 .sw-foot .print__btn { margin-left: auto; padding: 5px 12px; font-size: 12.5px; }
 .ba-stale { color: var(--warn-ink); font-weight: 600; }
+
+/* --- bundles (round 12): the Inventory panel + the card strip --------- */
+.invbndl-btn { font-size: 13px; padding: 6px 12px; white-space: nowrap; }
+.invbndl-btn span { color: var(--accent); font-weight: 700; }
+.bndl { margin: 12px 0 18px; }
+.bndl__head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.bndl__card {
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: var(--shadow); padding: 12px 14px; margin-bottom: 10px;
+}
+.bndl__top { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.bndl__title { font-weight: 700; }
+.bndl__sku { font-family: var(--mono); font-size: 12.5px; color: var(--ink-dim); }
+.bndl__sku:hover { color: var(--accent); }
+.bndl__src {
+  font-size: 11px; padding: 2px 8px; border-radius: 999px;
+  background: var(--accent-soft); color: var(--accent); font-weight: 600;
+}
+.bndl__src--man { background: var(--card-2); color: var(--ink-dim); }
+.bndl__grow { flex: 1; }
+.bndl__build { font-size: 12.5px; color: var(--ink-dim); }
+.bndl__build b { color: var(--ink); }
+.bndl__row {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  padding: 6px 0; border-top: 1px solid var(--line);
+}
+.bndl__qty { font-family: var(--mono); font-weight: 700; min-width: 34px; text-align: right; }
+.bndl__comp { font-family: var(--mono); font-weight: 600; }
+.bndl__comp:hover { color: var(--accent); }
+.bndl__ctitle { font-size: 12.5px; }
+.bndl__facts { font-size: 12px; color: var(--ink-dim); margin-left: auto; }
+.bndl__row .bndl-rm { color: var(--bad-ink); font-weight: 700; padding: 2px 8px; }
+.bndl__addrow { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+.bndl__addrow .bndl-addsku { max-width: 180px; }
+.bndl__addrow .bndl-addqty { max-width: 70px; }
+
+.pcb {
+  margin-top: 10px; background: var(--card-2); border: 1px solid var(--line);
+  border-radius: 10px; padding: 10px 12px;
+}
+.pcb__head { font-size: 12.5px; margin-bottom: 6px; }
+.pcb__row {
+  display: flex; align-items: baseline; gap: 8px; width: 100%;
+  padding: 5px 0; border-top: 1px solid var(--line); text-align: left;
+  flex-wrap: wrap;
+}
+.pcb__row:hover .pcb__sku { color: var(--accent); }
+.pcb__sku { font-family: var(--mono); font-weight: 600; }
+.pcb__title { font-size: 12px; color: var(--ink-dim); }
+.pcb--member { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.pcb__memlab { font-size: 12.5px; color: var(--ink-dim); }
+.pcb__chip {
+  font-family: var(--mono); font-size: 12px; padding: 3px 10px;
+  border: 1px solid var(--line); border-radius: 999px; background: var(--card);
+}
+.pcb__chip:hover { color: var(--accent); border-color: var(--accent); }

@@ -210,6 +210,36 @@ with TestClient(app) as cl:
           r3 is not None and r3.quantity==1 and r3.retired==1,
           r3 and r3.as_dict())
 
+  # ---- a bundle sale lands as its components (round 12) ----------------
+  from app.models import BundleContent
+  with Session(get_engine()) as s:
+    s.add(BundleContent(bundle_sku="LENS-KIT", component_sku="LENS-5",
+                        qty=2))
+    s.commit()
+  VOIDS["rows"] = []
+  SHIPMENTS.append(
+      ship(9010, 999, "9099", 6421, [("LENS-KIT", 1)], utc(2026,9,22)))
+  r = run_sync()
+  with Session(get_engine()) as s:
+    kit = s.scalars(select(SoldRecord).where(
+        SoldRecord.order_name=="9099")).all()
+    check("the shipped bundle recorded as component units",
+          len(kit)==1 and kit[0].sku=="LENS-5" and kit[0].quantity==2,
+          [(x.sku,x.quantity) for x in kit])
+    check("no ledger row ever carries the bundle SKU",
+          not s.scalars(select(SoldRecord).where(
+              SoldRecord.sku=="LENS-KIT")).all(), None)
+  # ...and its void unwinds the same component row.
+  VOIDS["rows"] = [ship(9010, 999, "9099", 6421, [("LENS-KIT",1)],
+                        utc(2026,9,22), voided=True)]
+  SHIPMENTS.pop()
+  r = run_sync()
+  with Session(get_engine()) as s:
+    kit = s.scalars(select(SoldRecord).where(
+        SoldRecord.order_name=="9099")).all()
+    check("voiding the bundle label unwinds the component row",
+          len(kit)==0, [(x.sku,x.quantity) for x in kit])
+
   # ---- unconfigured = the old world, untouched --------------------------
   with patch("app.shipstation.configured", return_value=False), \
        patch("app.shopify.get_fulfilled_orders", return_value=[]), \

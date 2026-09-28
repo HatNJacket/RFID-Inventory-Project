@@ -452,6 +452,15 @@ _sh.get_variant_idents = lambda vid: (
 # the MISMATCH-1 demo product answers as a bundle of 4 × NORMAL-1.
 _sh.get_bundle_components = lambda gid: (
     [{"component_sku": "NORMAL-1", "qty": 4}] if gid == "t:MM" else [])
+# The bundles.app bulk pull (round 12): two demo bundles so the
+# Inventory panel's Pull button works end to end.
+_sh.fetch_all_bundles = lambda: [
+    {"sku": "MISMATCH-1", "title": "BUNDLE: Demo kit x4",
+     "components": [{"component_sku": "NORMAL-1", "qty": 4}]},
+    {"sku": "KIT-2X", "title": "BUNDLE: Surplus pair",
+     "components": [{"component_sku": "SURPLUS-1", "qty": 2},
+                    {"component_sku": "OPTO-LPRO", "qty": 1}]},
+]
 # Box-set builder demo (Nick, 2026-09-14): any new-box SKU ending in
 # "-2" already exists as a premade DRAFT listing, so the "use the
 # premade listing?" ask can be exercised end to end; drafts otherwise
