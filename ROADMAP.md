@@ -96,6 +96,41 @@ scope-reset commits. Notes that survive the session:
 - The audit threshold lives in AppSetting "audit_threshold_days"
   (default 14); no Settings UI yet - say the word.
 
+**AUDITS TAB OVERHAUL — ✅ BUILT + ON PROD 2026-09-28 (Nick's spec,
+iterated over the "Audits Tab Redesign" preview artifact, 3 rounds):**
+- Landing: ONE row of four home-style tiles (1-left checks, Audit
+  queue, Packing, Unavailable stock; live numbers as corner badges).
+  "Run an audit" and the cleanup subheader are gone - audits start
+  from the recommended racks, a session, or the one-bin input.
+- Audit sessions: description text gone. RECOMMENDED racks up top
+  (the scored queue rolled up per rack prefix - overdue past the
+  threshold first, then up-to-date, both by summed drift; open
+  1-left checks ride as a chip; "Start audit" creates the rack's
+  walk session in one click; tapping a card unfolds its scored bin
+  pills). Open sessions are cards with a progress bar and a LIVE
+  bin-pill strip. Finished audits sit behind the 🗄 icon (count on
+  it, collapsible list below).
+- Session detail: Rack ↔ Bins segmented views (progress ring +
+  worst-open-bin callout vs a severity-edged bin-card grid with
+  audit/mark-done per bin).
+- Bin audit: table → product CARDS in red/yellow/green order, flags
+  VERTICAL with their recommended action attached (Sales agree →
+  Mark sold; unexplained silence → "Unpair + print replacement" in
+  one step, warning kept; ghosts → Un-retire; label shortfall →
+  Print N labels, the neutral W9177 path; out-of-range → re-scan
+  hint + Set stock). Silent-tag drawer per card (per-tag last-heard
+  + Unpair / Sold / Locate). Shopify on-hand is a −/+ stepper with
+  one Apply (raise = normal confirmed write, lower = the guarded
+  path, first-tagging ban server-enforced). Summary bar with the
+  Audit-complete anchor button; strays/never-paired labels fold
+  into one collapsed "Also heard" block.
+- Recent sweeps is a real popover: pinned banner inside it, fresh
+  dot per row, Pin buttons, write-off behind a ⋯ menu, tick-to-
+  combine footer ("Check X with N sweeps"), Show older. The old
+  bottom "Recent C72 sweeps" list is gone.
+- Web-only: every action maps to existing endpoints (the one new
+  wiring is DELETE /api/rfid-assignments/{epc} surfaced as Unpair).
+
 **C72 UPDATE — ✅ BUILT 2026-09-28 (C72 4.18, code 136), Nick's
 five asks + the queued cleanup, one session. ✅ ON PROD 2026-09-28:
 prod serves the 4.18 APK, so the gun self-updates on its next app

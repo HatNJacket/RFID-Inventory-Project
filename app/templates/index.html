@@ -1270,66 +1270,50 @@
            — and audits can run as named, resumable sessions. The tool
            internals below keep their original ids untouched. -->
       <div id="audit-hub">
-        <!-- Freshness tag (Nick, 2026-09-08): saved card numbers show
-             instantly in yellow; green checkmark once live data lands. -->
+        <!-- Overhauled 2026-09-28 (Nick): home-style tiles (one row of
+             four), the recommended-rack cards, session cards with bin
+             strips, finished audits behind the icon. Tool pane ids and
+             the audSetCard num/sub ids are unchanged. -->
         <div id="audhub-fresh" class="freshtag" hidden></div>
-        <div class="linkbox__actions u-mb10">
-          <button class="reset" id="review-locate-btn" type="button"
+        <div class="home__minor u-mb10">
+          <button class="reset home__minorlink" id="review-locate-btn" type="button"
                   title="Products queued for a physical tag hunt on the C72's Locate tab">📡 Locate list</button>
-          <button class="reset" id="review-ordersync" type="button"
+          <button class="reset home__minorlink" id="review-ordersync" type="button"
                   title="Pull fulfilled orders (read-only) and refresh the sold ledger. Runs by itself hourly.">↻ Sync orders</button>
         </div>
         <p class="review-note" id="review-sync-note" hidden></p>
-        <div class="audhub-cards">
-          <button class="audcard" type="button" data-pane="checks">
-            <span class="audcard__label">1-left checks</span>
-            <span class="audcard__num" id="ahc-checks-num">–</span>
+        <div class="tiles tiles--aud">
+          <button class="tile" type="button" data-pane="checks">
+            <span class="tile__badge tile__badge--info" id="ahc-checks-num">–</span>
+            <span class="tile__icon" aria-hidden="true">&#9989;</span>
+            <span class="tile__name">1-left checks</span>
             <span class="audcard__sub" id="ahc-checks-sub">loading…</span>
           </button>
-          <button class="audcard" type="button" data-pane="drift">
-            <span class="audcard__label">Audit queue</span>
-            <span class="audcard__num" id="ahc-drift-num">–</span>
+          <button class="tile" type="button" data-pane="drift">
+            <span class="tile__badge tile__badge--info" id="ahc-drift-num">–</span>
+            <span class="tile__icon" aria-hidden="true">&#128202;</span>
+            <span class="tile__name">Audit queue</span>
             <span class="audcard__sub" id="ahc-drift-sub">loading…</span>
           </button>
-          <button class="audcard" type="button" data-pane="packing">
-            <span class="audcard__label">Packing</span>
-            <span class="audcard__num" id="ahc-pack-num">–</span>
+          <button class="tile" type="button" data-pane="packing">
+            <span class="tile__badge tile__badge--info" id="ahc-pack-num">–</span>
+            <span class="tile__icon" aria-hidden="true">&#128230;</span>
+            <span class="tile__name">Packing</span>
             <span class="audcard__sub" id="ahc-pack-sub">loading…</span>
           </button>
-          <button class="audcard" type="button" data-pane="binaudit">
-            <span class="audcard__label">Run an audit</span>
-            <span class="audcard__num" id="ahc-sweep-num">–</span>
-            <span class="audcard__sub" id="ahc-sweep-sub">loading…</span>
-          </button>
-        </div>
-        <!-- Shopify product cleanup (Nick, 2026-09-14): the cards that
-             tidy the CATALOG rather than the shelves - set-asides and
-             Boxify's missing shipping dimensions. -->
-        <div class="recent__head u-mt14">
-          <h2>Shopify product cleanup</h2>
-        </div>
-        <div class="audhub-cards">
-          <!-- Unavailable stock (Nick, 2026-09-08): every set-aside in
-               one place - who, when, and the Staff Comments why. -->
-          <button class="audcard" type="button" data-pane="unavail">
-            <span class="audcard__label">Unavailable stock</span>
-            <span class="audcard__num" id="ahc-unavail-num">–</span>
+          <button class="tile" type="button" data-pane="unavail">
+            <span class="tile__badge tile__badge--info" id="ahc-unavail-num">–</span>
+            <span class="tile__icon" aria-hidden="true">&#128451;</span>
+            <span class="tile__name">Unavailable stock</span>
             <span class="audcard__sub" id="ahc-unavail-sub">loading…</span>
           </button>
         </div>
-        <div class="recent__head u-mt18">
+        <div class="sess-head">
           <h2>Audit sessions <span class="recent__note" id="audsess-meta"></span></h2>
-        </div>
-        <p class="linkbox__text u-maxw78ch">
-          A session bundles a scope - a rack of bins to walk-scan, or a
-          slice of the 1-left queue - and tracks it across days and
-          people until everything is accounted for. 1-left items tick
-          themselves when their check clears; bins are ticked by whoever
-          walks them.
-        </p>
-        <div class="linkbox__actions u-mb10">
-          <button class="reset" id="audsess-newbtn" type="button">+ New audit</button>
-          <button class="reset" id="audsess-toggle" type="button">Show finished</button>
+          <span class="sess-head__spacer"></span>
+          <button class="print__btn" id="audsess-newbtn" type="button">+ New audit</button>
+          <button class="iconbtn" id="audsess-toggle" type="button"
+                  title="Finished audits">&#128452; <span id="audsess-fincount">0</span></button>
         </div>
         <!-- No naming step (Nick, 2026-09-08): an audit IS its scope -
              the rack or bins (or vendor) name it automatically. -->
@@ -1344,7 +1328,21 @@
           <button class="reset" id="audsess-create" type="button">Start</button>
           <button class="reset" id="audsess-cancel" type="button">Cancel</button>
         </div>
+        <!-- Recommended racks: the scored queue rolled up per rack -
+             overdue first, then the rest, both by drift. -->
+        <div id="aud-reco"></div>
+        <div class="onebin">
+          <label for="aud-onebin">Or audit one bin:</label>
+          <input id="aud-onebin" class="recent__search u-maxw150" type="text"
+                 placeholder="e.g. F1-3" autocomplete="off" />
+          <button class="reset" id="aud-onebin-go" type="button">Open</button>
+        </div>
+        <div class="grouplab" id="audsess-openlab" hidden>In progress</div>
         <ul class="recent__list" id="audsess-list"></ul>
+        <div class="audfin" id="audsess-finished" hidden>
+          <div class="grouplab">Finished</div>
+          <div id="audsess-finlist"></div>
+        </div>
       </div>
 
       <div class="apane" id="apane-session" hidden>
@@ -1433,35 +1431,19 @@
       </div>
 
       <div class="apane" id="apane-binaudit" hidden>
-      <div class="linkbox__actions u-mb10">
+      <!-- Audit a bin with a C72 sweep. Card layout 2026-09-28 (Nick):
+           the explainer paragraph is gone - every write explains itself
+           in its own confirm. Ids unchanged. -->
+      <div class="ba-top">
         <button class="reset apane-back" type="button">← Audits</button>
-      </div>
-      <!-- Audit: sweep a shelf with the C72's SWEEP tab, SEND, then
-           check it here — the Check-step story for any bin, no batch.
-           Or name one product and check just it (Nick, 2026-09-15). -->
-      <div class="recent__head">
-        <h2>Audit a bin or product with a C72 sweep</h2>
-      </div>
-      <p class="linkbox__text u-maxw78ch">
-        Sweep the shelf on the C72 (SWEEP tab → SEND), then pull it here
-        against a bin: every product the bin should hold, what answered, and
-        any strays or unknown tags. The check itself changes nothing. Three
-        buttons here do write, and all ask first: <b>Set to N</b> raises
-        Shopify's on-hand for that one product, <b>Lower to N</b> drops it
-        to the audited count (only for products that have completed a batch
-        tagging before; both logged, with an Undo in History), and
-        <b>Record as batch tagged</b> files the bin as done in this system
-        only - it never touches Shopify.
-      </p>
-      <div class="linkbox__actions u-mb10">
         <button class="reset" id="binaudit-prev" type="button"
                 title="Previous bin in walking order (previous rack when a rack is typed)">◀</button>
-        <input id="binaudit-bin" class="recent__search u-maxw150"
-               type="text" placeholder="Bin or rack: D2-2, D2" autocomplete="off" />
+        <input id="binaudit-bin" class="ba-bininput"
+               type="text" placeholder="D2-2, D2" autocomplete="off" />
         <button class="reset" id="binaudit-next" type="button"
                 title="Next bin in walking order (next rack when a rack is typed)">▶</button>
         <button class="reset" id="binaudit-run" type="button"
-                title="Reads the newest sweep sent from the C72 and checks it against this location. A rack (no dash: D2) checks every one of its bins as one zone.">Pull latest C72 sweep &amp; check</button>
+                title="Reads the newest sweep sent from the C72 (or the pinned one) and checks it against this location. A rack (no dash: D2) checks every one of its bins as one zone.">Pull latest sweep &amp; check</button>
         <button class="reset" id="binaudit-pick" type="button"
                 title="Pick one or more recent sweeps instead of the newest - ticking several combines them into one check">Recent sweeps ▾</button>
       </div>
@@ -1475,10 +1457,8 @@
         <button class="reset" id="binaudit-prodrun" type="button"
                 title="Looks the product up, reads the newest C72 sweep (or the pinned one) and checks just this product at its home bin: expected count, tags on file, which answered, which stayed silent.">Audit this product</button>
       </div>
-      <div id="binaudit-sweeps" hidden></div>
+      <div id="binaudit-sweeps" class="sw-pop" hidden></div>
       <div id="binaudit-report"></div>
-      <div class="recent__head u-mt24"><h2>Recent C72 sweeps</h2></div>
-      <ul class="recent__list" id="sweep-list"></ul>
       </div>
 
       <div class="apane" id="apane-drift" hidden>

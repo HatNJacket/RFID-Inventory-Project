@@ -11140,36 +11140,33 @@ let binAuditPinnedCap = null;
 const binAuditCache = new Map(); // "capId|BIN" -> report
 
 function renderPinnedSweep() {
-  let bar = document.getElementById("binaudit-pinnedbar");
-  if (!bar) {
-    const anchor = document.getElementById("binaudit-sweeps");
-    if (!anchor) return;
-    bar = document.createElement("div");
-    bar.id = "binaudit-pinnedbar";
-    anchor.parentElement.insertBefore(bar, anchor);
+  // A pill in the pane's top bar (card layout 2026-09-28), created on
+  // first use so the template stays clean.
+  let pill = document.getElementById("binaudit-pinnedbar");
+  if (!pill) {
+    const top = document.querySelector("#apane-binaudit .ba-top");
+    if (!top) return;
+    pill = document.createElement("span");
+    pill.id = "binaudit-pinnedbar";
+    pill.className = "ba-sweep";
+    top.append(pill);
   }
-  bar.className = "ba-pin";
   if (!binAuditPinnedCap) {
-    bar.hidden = true;
+    pill.hidden = true;
     return;
   }
   const c = binAuditPinnedCap;
-  bar.hidden = false;
-  bar.innerHTML =
-    `<span class="ba-pin__icon">📌</span>` +
-    `<span class="ba-pin__main">Sweep #${escapeHtml(String(c.id))}` +
-    `<span class="ba-pin__meta">${escapeHtml(c.device || "C72")} · ` +
-    `${c.epc_count} tag(s) · ` +
-    `${escapeHtml(fmtAgo(c.created_at))}</span></span>` +
-    `<span class="ba-pin__hint">◀ ▶ check each bin with this sweep</span>` +
-    `<button class="reset" id="binaudit-unpin" type="button">use newest sweep instead</button>`;
-  bar
-    .querySelector("#binaudit-unpin")
-    .addEventListener("click", async () => {
-      binAuditPinnedCap = null;
-      renderPinnedSweep();
-      document.getElementById("binaudit-run").click();
-    });
+  pill.hidden = false;
+  pill.innerHTML =
+    `\ud83d\udccc <b>#${escapeHtml(String(c.id))}</b> \u00b7 ` +
+    `${c.epc_count} tag(s) \u00b7 ${escapeHtml(fmtAgo(c.created_at))} ` +
+    `<button class="reset" id="binaudit-unpin" type="button"
+       title="Every bin check uses this pinned sweep - unpin to go back to the newest">unpin</button>`;
+  pill.querySelector("#binaudit-unpin").addEventListener("click", async () => {
+    binAuditPinnedCap = null;
+    renderPinnedSweep();
+    document.getElementById("binaudit-run").click();
+  });
 }
 
 async function runBinAudit(cap) {
@@ -11368,56 +11365,107 @@ function sweepPagerHtml(page, total) {
   </div>`;
 }
 
-async function loadBinauditSweeps(page) {
+let sweepShown = SWEEP_PAGE;
+
+function swUpdateFoot() {
   const box = document.getElementById("binaudit-sweeps");
-  box.innerHTML = `<p class="result">Loading recent sweeps…</p>`;
+  const ticked = [...box.querySelectorAll(".sw-row input:checked")];
+  const tags = ticked.reduce(
+    (a2, el) =>
+      a2 + (parseInt(el.closest(".sw-row").dataset.n, 10) || 0),
+    0
+  );
+  const lab = box.querySelector("#sw-ticked");
+  if (lab) {
+    lab.textContent = ticked.length
+      ? `${ticked.length} ticked \u00b7 ${tags} tags combined`
+      : "tick sweeps to combine them into one check";
+  }
+  const run = box.querySelector("#binaudit-runpicked");
+  if (run) {
+    run.disabled = !ticked.length;
+    const bin = document.getElementById("binaudit-bin").value.trim();
+    run.textContent = `Check ${bin || "\u2026"} with ${
+      ticked.length || "ticked"
+    } sweep(s)`;
+  }
+}
+
+async function loadBinauditSweeps() {
+  const box = document.getElementById("binaudit-sweeps");
+  box.innerHTML = `<div class="sw-foot">Loading recent sweeps\u2026</div>`;
   try {
     const body = await apiJson(
-      `/api/epc-captures?pickable=1&limit=${SWEEP_PAGE}&offset=${
-        (page - 1) * SWEEP_PAGE
-      }`
+      `/api/epc-captures?pickable=1&limit=${sweepShown}&offset=0`
     );
-    if (!body.captures.length && page > 1) {
-      // The listing shrank under us - fall back to the front.
-      loadBinauditSweeps(1);
-      return;
-    }
     if (!body.captures.length) {
-      box.innerHTML = `<p class="result">No sweeps received yet.</p>`;
+      box.innerHTML = `<div class="sw-foot">No sweeps received yet - C72 SWEEP tab \u2192 SEND.</div>`;
       return;
     }
     const selId = binAuditPinnedCap ? String(binAuditPinnedCap.id) : null;
-    box.innerHTML =
-      body.captures
-        .map(
-          (c) => `<div class="ba-sweeprow${
-            String(c.id) === selId ? " ba-sweeprow--sel" : ""
-          }" data-cid="${c.id}">
-            <input type="checkbox" value="${c.id}" title="Tick several to combine them into one union check">
-            <span class="ba-sweeprow__main">#${c.id} · ${escapeHtml(
-              c.device || "C72"
-            )}${c.note ? " · " + escapeHtml(c.note) : ""}
-              <span class="ba-sweeprow__meta">${
-                c.epc_count
-              } tag(s) · ${escapeHtml(fmtWhen(c.created_at))}</span>
-            </span>
-            <button class="reset ba-sweeprow__use" type="button"
-              title="Select this sweep - every bin check (and the ◀ ▶ arrows) uses it until replaced">${
-                String(c.id) === selId ? "SELECTED ✓" : "USE"
-              }</button>
-            <button class="reset ba-sweeprow__writeoff" type="button"
-              title="Dismiss this sweep's unpaired stickers from the locate list - for the blank roll and broken or test labels. Tags that belong to products are untouched. Undoable from History.">write off unpaired</button>
-          </div>`
-        )
-        .join("") +
-      `<div class="linkbox__actions ba-sweepactions">
-         <button class="reset" id="binaudit-runpicked" type="button">Check with ticked sweep(s)</button>
-       </div>` +
-      sweepPagerHtml(page, body.total);
+    const rows = body.captures
+      .map((c) => {
+        const ageMin = Math.max(
+          0,
+          Math.round((Date.now() - tsDate(c.created_at).getTime()) / 60000)
+        );
+        const sel = String(c.id) === selId;
+        return `<div class="sw-row${sel ? " sw-row--sel" : ""}"
+          data-cid="${c.id}" data-n="${c.epc_count}">
+          <input type="checkbox" value="${c.id}"
+            title="Tick several to combine them into one union check">
+          <span class="sw-dot ${ageMin < 10 ? "sw-dot--fresh" : "sw-dot--old"}"
+            title="${ageMin < 10 ? "fresh - under 10 minutes old" : "older sweep"}"></span>
+          <span class="sw-row__id">#${c.id}</span>
+          <div class="sw-row__main">${escapeHtml(c.device || "C72")} \u00b7 ${
+            c.epc_count
+          } tag(s)${
+            c.note ? `<span class="sw-note">${escapeHtml(c.note)}</span>` : ""
+          }
+            <span class="sw-meta">${escapeHtml(fmtAgo(c.created_at))}${
+              sel ? " \u00b7 pinned \u00b7 in use for this check" : ""
+            }</span></div>
+          <button class="reset sw-use" type="button"${sel ? " disabled" : ""}
+            title="Pin this sweep - every bin check (and the \u25c0 \u25b6 arrows) uses it until replaced">${
+              sel ? "\u2713 in use" : "Pin"
+            }</button>
+          <details class="sw-kebab"><summary title="More">\u22ef</summary>
+            <div class="sw-menu">
+              <button class="sw-writeoff" type="button"
+                title="Blank-roll, broken and test stickers this sweep heard leave the unpaired locate list for good. Tags that belong to products are untouched. Undo in History.">Write off unpaired stickers\u2026</button>
+            </div></details>
+        </div>`;
+      })
+      .join("");
+    const more = (body.total || 0) > body.captures.length;
+    box.innerHTML = `
+      <div class="sw-pop__head">Recent C72 sweeps
+        <span class="sw-pop__note">newest is used automatically - pin one to walk bin after bin with it</span></div>
+      ${
+        binAuditPinnedCap
+          ? `<div class="sw-pin">\ud83d\udccc Pinned: <b>#${binAuditPinnedCap.id}</b>
+               - every bin check (and the \u25c0 \u25b6 arrows) uses this sweep
+               <button class="sw-pin__unpin" type="button">unpin, use newest</button></div>`
+          : ""
+      }
+      ${rows}
+      <div class="sw-foot"><span id="sw-ticked"></span>
+        ${
+          more
+            ? `<button class="reset sw-older" type="button">Show older \u25be</button>`
+            : ""
+        }
+        <button class="print__btn" id="binaudit-runpicked" type="button" disabled></button>
+      </div>`;
+    swUpdateFoot();
   } catch (err) {
-    box.innerHTML = `<p class="result result--err">${escapeHtml(err.message)}</p>`;
+    box.innerHTML = `<div class="sw-foot">${escapeHtml(err.message)}</div>`;
   }
 }
+
+document
+  .getElementById("binaudit-sweeps")
+  .addEventListener("change", swUpdateFoot);
 
 document.getElementById("binaudit-pick").addEventListener("click", async () => {
   const box = document.getElementById("binaudit-sweeps");
@@ -11426,16 +11474,17 @@ document.getElementById("binaudit-pick").addEventListener("click", async () => {
     return;
   }
   box.hidden = false;
-  loadBinauditSweeps(1);
+  sweepShown = SWEEP_PAGE;
+  loadBinauditSweeps();
 });
 
 document
   .getElementById("binaudit-sweeps")
   .addEventListener("click", async (e) => {
     const box = document.getElementById("binaudit-sweeps");
-    const useBtn = e.target.closest(".ba-sweeprow__use");
+    const useBtn = e.target.closest(".sw-use");
     if (useBtn) {
-      const id = parseInt(useBtn.closest(".ba-sweeprow").dataset.cid, 10);
+      const id = parseInt(useBtn.closest(".sw-row").dataset.cid, 10);
       useBtn.disabled = true;
       try {
         const cap = await apiJson(`/api/epc-captures/${id}`);
@@ -11448,16 +11497,22 @@ document
       }
       return;
     }
-    const pgBtn = e.target.closest(".ba-pager__btn");
-    if (pgBtn) {
-      if (pgBtn.disabled || pgBtn.classList.contains("ba-pager__btn--cur"))
-        return;
-      loadBinauditSweeps(parseInt(pgBtn.dataset.page, 10) || 1);
+    const older = e.target.closest(".sw-older");
+    if (older) {
+      sweepShown += SWEEP_PAGE;
+      loadBinauditSweeps();
       return;
     }
-    const woBtn = e.target.closest(".ba-sweeprow__writeoff");
+    const unpin = e.target.closest(".sw-pin__unpin");
+    if (unpin) {
+      binAuditPinnedCap = null;
+      renderPinnedSweep();
+      loadBinauditSweeps();
+      return;
+    }
+    const woBtn = e.target.closest(".sw-writeoff");
     if (woBtn) {
-      const id = parseInt(woBtn.closest(".ba-sweeprow").dataset.cid, 10);
+      const id = parseInt(woBtn.closest(".sw-row").dataset.cid, 10);
       if (
         !confirm(
           `Write off sweep #${id}'s unpaired stickers?\n\nEvery tag it ` +
@@ -11880,239 +11935,326 @@ function binAuditPickupNote(r) {
 // One audit item scored for display: its warning chips and whether it
 // counts as untagged. Shared by the full render AND the single-row
 // refresh (Nick, 2026-09-14: a write must not repaint the page).
+// Verdict flags with their RECOMMENDED ACTION attached (approved
+// preview, 2026-09-28): every problem line carries the fix that
+// resolves it, vertically stacked. Tone ranks the card red -> yellow
+// -> green like everywhere else.
 function binAuditScoreRow(r) {
   const flags = [];
   const silent = r.tags_here - r.detected;
+  const sold = r.sold_unretired || 0;
+  const unav = r.unavailable || 0;
+  const pickup = r.pickup_pending || 0;
+  const exp = r.expected_qty != null ? r.expected_qty + unav : null;
+  const det = r.detected_units;
+  const skuA = escapeHtml(r.sku || "");
+  const silEpcs = r.silent_epcs || [];
+  const untagged = r.tags_here === 0 && r.detected === 0;
+  let tone = "ok";
+  const bump = (t) => {
+    if (t === "bad" || tone === "bad") tone = "bad";
+    else if (t === "warn") tone = "warn";
+  };
+  const flag = (cls, txt, acts, hint) =>
+    flags.push({ cls, txt, acts: acts || "", hint: hint || "" });
+  const locateBtn = (epcs, label) =>
+    r.sku
+      ? `<button class="reset binaudit-locate" type="button"
+           data-sku="${skuA}" data-title="${escapeHtml(r.product_title || "")}"
+           data-epcs="${escapeHtml(epcs.join(","))}"
+           title="Queue the silent tag(s) on the C72 locate list - hunt them before deciding they're gone">${label || "Locate"}</button>`
+      : "";
+  const soldBtn = (epcs, label) =>
+    r.sku
+      ? `<button class="ba-act binaudit-marksold" type="button"
+           data-sku="${skuA}" data-epcs="${escapeHtml(epcs.join(","))}"
+           title="These boxes shipped on fulfilled orders - remove their tag record(s) and retire the sale(s) in the ledger. History-logged; Shopify untouched.">${label}</button>`
+      : "";
+
   if (r.rfid_incompatible) {
-    flags.push(["⊘ won't scan on box", "chip--na"]);
-  } else if (silent > 0 && (r.sold_unretired || 0) > 0) {
-    // Sales explain some or all of the silence: offer MARK SOLD for
-    // the covered tags; anything beyond the sold count is still a
-    // real silence.
-    if (silent <= r.sold_unretired && r.sales_agree !== false) {
-      // "Sales agree" (Nick, 2026-09-28): each silent tag's last
-      // hearing predates a matching recorded sale - the cleanest
-      // possible explanation.
-      flags.push([
-        `Sales agree - ${silent} silent, ${r.sold_unretired} sold since last audit`,
-        "chip--ok",
-      ]);
-    } else if (silent <= r.sold_unretired) {
-      // The counts fit but the TIMES don't (a silent tag was heard
-      // AFTER the sale that would explain it) - lowering is still
-      // allowed, this is just honesty about the mismatch.
-      flags.push([
-        `${silent} silent, ${r.sold_unretired} sold - times don't line up; might be a missing, misplaced or mislabeled product`,
-        "chip--warn",
-      ]);
-    } else if (silent - r.sold_unretired <= (r.pickup_pending || 0)) {
-      // Sales reconcile part of the silence and open pickup orders
-      // cover the rest (Nick, 2026-09-24, F9168A): "Ready for pickup"
-      // writes no fulfillment, so a staged box answers no sweep and
-      // sits in no ledger. Explained ONLY when the numbers close
-      // exactly - a loose pickup order never papers over shrinkage.
-      flags.push([
-        `${silent} silent - ${r.sold_unretired} sold + ${silent - r.sold_unretired} ready for pickup${binAuditPickupNote(r)}`,
-        "chip--ok",
-      ]);
-    } else {
-      flags.push([
-        `${silent} silent vs ${r.sold_unretired} sold - might be a missing, misplaced or mislabeled product`,
-        "chip--warn",
-      ]);
-    }
-  } else if (silent > 0 && silent <= (r.unavailable || 0)) {
-    // A set-aside (unavailable) unit's tag stays on file but the
-    // box may sit off the shelf - silence covered by the bucket is
-    // the expected picture, not a warning (Nick, 2026-09-08).
-    flags.push([
-      `${silent} silent - likely the set-aside/unavailable unit${silent === 1 ? "" : "s"}`,
-      "chip--ok",
-    ]);
-  } else if (
-    silent > 0 &&
-    silent <= (r.unavailable || 0) + (r.pickup_pending || 0)
-  ) {
-    // Open local-pickup orders explain the silence (Nick, 2026-09-24,
-    // F9168A): the boxes are staged at the desk, invisible to a shelf
-    // sweep, and the ledger has no sale until "picked up" lands.
-    flags.push([
-      `${silent} silent - ready for pickup, not collected yet${binAuditPickupNote(r)}`,
-      "chip--ok",
-    ]);
-  } else if (silent > 0) {
-    flags.push([`${silent} tagged box(es) silent`, "chip--warn"]);
+    flag("na", "\u2298 won't scan on box - count by hand");
   }
-  // Ghosts: presumed-sold (or replaced/dead) tags that ANSWERED -
-  // the box never left. Treated as one more scan in the end; the
-  // chip says why the numbers moved (Nick, 2026-09-01).
+  if (silent > 0 && !r.rfid_incompatible) {
+    const cleanGhostCase =
+      silent > sold &&
+      r.expected_qty != null &&
+      det === r.expected_qty &&
+      r.detected > 0 &&
+      silEpcs.length > 0;
+    if (sold > 0 && silent <= sold && r.sales_agree !== false) {
+      flag(
+        "ok",
+        `<b>Sales agree.</b> ${silent} silent, ${sold} sold since the ` +
+          `last audit - the shipped box${silent === 1 ? "" : "es"} ` +
+          `explain the silence.`,
+        soldBtn(silEpcs, `\u2713 Mark ${silent} sold`)
+      );
+      bump("warn");
+    } else if (sold > 0 && silent <= sold) {
+      flag(
+        "warn",
+        `<b>${silent} silent, ${sold} sold - times don't line up.</b> ` +
+          `Might be a missing, misplaced or mislabeled product.`,
+        soldBtn(silEpcs, `Mark ${silent} sold`) + locateBtn(silEpcs),
+        "A silent tag was heard AFTER the sale that would explain it."
+      );
+      bump("warn");
+    } else if (sold > 0 && silent - sold <= pickup) {
+      flag(
+        "ok",
+        `<b>${silent} silent.</b> ${sold} sold + ` +
+          `${silent - sold} ready for pickup cover it${binAuditPickupNote(r)}.`
+      );
+    } else if (sold === 0 && silent <= unav) {
+      flag(
+        "ok",
+        `<b>${silent} silent.</b> Likely the set-aside/unavailable ` +
+          `unit${silent === 1 ? "" : "s"} - expected, not a fault.`
+      );
+    } else if (sold === 0 && silent <= unav + pickup && pickup > 0) {
+      flag(
+        "ok",
+        `<b>${silent} silent.</b> Ready for pickup, not collected ` +
+          `yet${binAuditPickupNote(r)}.`
+      );
+    } else if (cleanGhostCase) {
+      flag(
+        "warn",
+        `<b>Shelf reads exactly right, but ${silent} silent record(s) ` +
+          `linger.</b> Usually stickers replaced without unlinking.`,
+        `<button class="ba-act binaudit-cleanghosts" type="button"
+           data-sku="${skuA}" data-epcs="${escapeHtml(silEpcs.join(","))}"
+           title="Recorded sales cover the oldest ones (presumed sold); the rest retire as replaced. History-logged, each restorable; Shopify untouched.">Clean up ${silent} ghost tag(s)\u2026</button>`
+      );
+      bump("warn");
+    } else {
+      const unexplained = silEpcs.slice(sold);
+      flag(
+        "bad",
+        `<b>${silent} silent - ${
+          sold ? `only ${sold} sold` : "no sales explain it"
+        }.</b> Might be a missing, misplaced or mislabeled product.`,
+        (r.sku && unexplained.length
+          ? `<button class="ba-act binaudit-unpairprint" type="button"
+               data-sku="${skuA}" data-epcs="${escapeHtml(unexplained.join(","))}"
+               title="Removes the silent tag record(s) AND queues the same number of replacement labels to pair - one step. Pairing never changes Shopify on-hand.">\u21bb Unpair + print replacement</button>`
+          : "") + locateBtn(silEpcs),
+        "Check the shelf first - re-sweep behind the boxes before " +
+          "deciding the sticker is gone."
+      );
+      bump("bad");
+    }
+  }
   if ((r.ghosts || []).length) {
-    flags.push([
-      `${r.ghosts.length} retired tag(s) answered - box still here`,
-      "chip--warn",
-    ]);
+    const gEpcs = r.ghosts.map((g) => g.epc);
+    flag(
+      "warn",
+      `<b>${r.ghosts.length} retired tag(s) answered - box still ` +
+        `here.</b> Marked sold, but it never left.`,
+      `<button class="ba-act binaudit-unretire" type="button"
+         data-sku="${skuA}" data-epcs="${escapeHtml(gEpcs.join(","))}"
+         title="Makes the record(s) live again - the box never left. History-logged.">Un-retire ${r.ghosts.length} tag(s)</button>`
+    );
+    bump("warn");
   }
   if (r.finds_open > 0) {
-    flags.push([
-      `${r.finds_open} tagless box(es) scanned - labels not printed`,
-      "chip--warn",
-    ]);
+    flag(
+      "warn",
+      `${r.finds_open} tagless box(es) scanned on a walk - labels ` +
+        `not printed yet (the C72 banner prints them).`
+    );
+    bump("warn");
   }
   if (r.finds_printed > 0) {
-    flags.push([
-      `${r.finds_printed} label(s) printed, not yet paired`,
-      "chip--warn",
-    ]);
+    flag("warn", `${r.finds_printed} label(s) printed, not yet paired.`);
+    bump("warn");
   }
-  // Untagged: Shopify expects stock here but the RFID system holds
-  // nothing for it. On a part-tagged shelf that's most of the list,
-  // so it sits behind a toggle, below everything that IS tagged.
-  const untagged = r.tags_here === 0 && r.detected === 0;
-  return { r, flags, untagged };
+  // The shelf carries more stock than tag records: some boxes never
+  // got a sticker. Print exactly the missing labels - the neutral
+  // path (the W9177 lesson: pairing never moves on-hand).
+  if (exp != null && !untagged && r.sku && r.units_here < exp) {
+    const kMiss = exp - r.units_here;
+    flag(
+      "warn",
+      `<b>${kMiss} box${kMiss === 1 ? "" : "es"} never got a label.</b>`,
+      `<button class="reset binaudit-printlabels" type="button"
+         data-sku="${skuA}" data-n="${kMiss}"
+         title="Queue plain labels on the warehouse printer (home bin on each). Pairing them never changes Shopify on-hand.">\ud83c\udff7 Print ${kMiss} label${kMiss === 1 ? "" : "s"}</button>`,
+      "Pairing a printed label never changes Shopify on-hand."
+    );
+    bump("warn");
+  }
+  if (r.in_range === false) {
+    const lo = (r.range_lo != null ? r.range_lo : r.expected_qty) + unav;
+    const hi = (r.range_hi != null ? r.range_hi : r.expected_qty) + unav;
+    flag(
+      "warn",
+      `<b>Heard ${det} unit(s) - outside the expected ` +
+        `${lo === hi ? lo : `${lo}\u2013${hi}`}.</b>`,
+      exp != null && det > exp && r.sku
+        ? `<button class="reset binaudit-fix" type="button"
+             data-sku="${skuA}" data-qty="${det}" data-exp="${exp}"
+             title="The sweep physically heard ${det} unit(s) - write that count to Shopify on-hand. Confirmed, logged, undoable from History.">Set stock to ${det}</button>`
+        : "",
+      "Re-scan the shelf thoroughly first (behind the boxes too); " +
+        "if the number is real, write it."
+    );
+    bump("warn");
+  } else if (exp != null && det > exp && r.sku) {
+    flag(
+      "warn",
+      `<b>Shelf physically holds ${det} - more than Shopify's ${exp}.</b>`,
+      `<button class="reset binaudit-fix" type="button"
+         data-sku="${skuA}" data-qty="${det}" data-exp="${exp}"
+         title="Write the heard count to Shopify on-hand. Confirmed, logged, undoable from History.">Set stock to ${det}</button>`
+    );
+    bump("warn");
+  }
+  if (untagged) {
+    flag("na", "no tags on file here yet - not in the RFID system");
+  }
+  return { r, flags, untagged, tone };
 }
 
-// One scored item as its table row. data-rowsku is what lets a write
-// repaint JUST this row (Nick, 2026-09-14: raising a count must not
-// refresh the page).
-function binAuditRowHtml({ r, flags, untagged }) {
-  const tagsNote = (units, tags) =>
-    units !== tags
-      ? ` <span class="bexp--note">(${tags} tag${tags === 1 ? "" : "s"})</span>`
-      : "";
-  // Expected reads exactly like the batch-tagging verify table:
-  // Shopify's number with the difference in brackets, and the
-  // increase-only on-hand write offered when the shelf holds more
-  // than Shopify knows about.
-  let expCell = "—";
-  if (r.expected_qty != null) {
-    // Expected is a RANGE (Nick, 2026-09-28): the shelf should hold
-    // somewhere between {Shopify on-hand} and {tags here − sold since
-    // the last audit}. The set-aside (unavailable) units are physical
-    // boxes, so they ride on both ends. A sweep outside the range asks
-    // for a thorough re-scan; NOTHING blocks the manual confirm.
-    const unav = r.unavailable || 0;
-    const soldN = r.sold_unretired || 0;
-    const lo = (r.range_lo != null ? r.range_lo
-      : Math.min(r.expected_qty, r.units_here - soldN)) + unav;
-    const hi = (r.range_hi != null ? r.range_hi
-      : Math.max(r.expected_qty, r.units_here - soldN)) + unav;
-    const det = r.detected_units;
-    expCell = lo === hi ? `${lo}` : `${lo}–${hi}`;
-    if (unav) {
-      expCell += ` <span class="bexp--note">(incl. ${unav} unavailable)</span>`;
-    }
-    if (soldN) {
-      expCell += ` <span class="bexp--note">(${soldN} sold since audit)</span>`;
-    }
-    const inRange = det >= lo && det <= hi;
-    if (!inRange) {
-      expCell += ` <span class="bexp--off" title="The sweep heard ${det} unit(s) - outside the expected range. Check the count thoroughly (re-sweep, look behind boxes), then confirm the true value or send the silent tags to the locate list.">(heard ${det})</span>`;
-    }
-    if (r.sku && det > r.expected_qty + unav) {
-      expCell += `<div><button class="reset binaudit-fix" type="button"
-        data-sku="${escapeHtml(r.sku)}" data-qty="${det}"
-        data-exp="${r.expected_qty + unav}"
-        title="The sweep physically heard ${det} box(es) - write that count to Shopify on-hand. Confirmed, logged, undoable from History">Set to ${det}</button></div>`;
-    } else if (
-      det < r.expected_qty &&
-      r.can_lower &&
-      binAudit &&
-      binAudit.rep &&
-      !binAudit.rep.rack
-    ) {
-      // Lowering: the audited count is the truth once the product has
-      // completed a tagging before (the FIRST-TAGGING ban is the one
-      // guardrail that stays - enforced server-side too). Kept off
-      // rack zones - lower from the product's own bin.
-      const lowTo = det + unav;
-      const drop = Math.max(0, r.expected_qty - det);
-      // A shortfall that open pickup orders (after recorded sales)
-      // fully explain is NOT shrinkage: the boxes sit staged at the
-      // desk and the coming fulfillment drops on-hand by itself -
-      // lowering now would double-drop (F9168A).
-      const pickupN = r.pickup_pending || 0;
-      const pickupExplains =
-        pickupN > 0 && drop > soldN && drop <= soldN + pickupN;
-      const epcs = (r.silent_epcs || []).slice(0, drop);
-      if (!pickupExplains) {
-        expCell += `<div><button class="reset binaudit-lower" type="button"
-        data-sku="${escapeHtml(r.sku)}" data-qty="${lowTo}"
-        data-drop="${drop}" data-unbacked="${r.lower_unbacked || 0}"
-        data-detected="${r.detected}"
-        data-epcs="${escapeHtml(epcs.join(","))}"
-        title="Lower Shopify on-hand to the audited count - retires the silent tag(s) presumed-sold, consumes matching recorded sales, writes the rest off as shrinkage. Confirmed, logged, one Undo in History.">Lower to ${lowTo}</button></div>`;
-      }
-    }
+// One scored product as a CARD (approved preview, 2026-09-28):
+// severity edge, plain numbers, flag rows with their fixes, the
+// silent-tag drawer, and the on-hand stepper. data-rowsku still lets
+// a write repaint just this card.
+function binAuditRowHtml({ r, flags, untagged, tone }) {
+  const unav = r.unavailable || 0;
+  const sold = r.sold_unretired || 0;
+  const exp = r.expected_qty != null ? r.expected_qty + unav : null;
+  const silent = r.tags_here - r.detected;
+  const edge = untagged ? "" : ` pcr--${tone}`;
+  let expCell = "\u2014";
+  let expTitle = "";
+  if (exp != null) {
+    const lo = (r.range_lo != null
+      ? r.range_lo
+      : Math.min(r.expected_qty, r.units_here - sold)) + unav;
+    const hi = (r.range_hi != null
+      ? r.range_hi
+      : Math.max(r.expected_qty, r.units_here - sold)) + unav;
+    expCell = lo === hi ? String(lo) : `${lo}\u2013${hi}`;
+    expTitle =
+      `Shopify carries ${exp}` +
+      (unav ? ` (incl. ${unav} unavailable)` : "") +
+      (sold ? `; ${sold} sold since the last audit` : "") +
+      `. The shelf should hold somewhere in this range.`;
   }
-  return `<tr data-rowsku="${escapeHtml((r.sku || "").toUpperCase())}"${
-    untagged ? ' class="binaudit-untagged"' : ""
-  }>
-    <td>${
+  const tagsNote = (units, tags) =>
+    units !== tags ? ` (${tags} tag${tags === 1 ? "" : "s"})` : "";
+  const seenTone =
+    r.in_range === false || (silent > 0 && tone === "bad")
+      ? " pcr__num--bad"
+      : flags.length === 0 && r.detected > 0
+        ? " pcr__num--ok"
+        : "";
+  const flagRows = flags
+    .map(
+      (f) => `<div class="flagrow flagrow--${f.cls}">
+        <span class="flagrow__txt">${f.txt}${
+          f.hint ? `<span class="flagrow__hint">${f.hint}</span>` : ""
+        }</span>${f.acts}</div>`
+    )
+    .join("");
+  // The silent-tag drawer: each missing tag with its last hearing and
+  // its own Unpair / Sold / Locate.
+  const tagLines = (r.silent_tags || []).slice(0, 12)
+    .map((t) => {
+      const e = escapeHtml(t.epc || "");
+      return `<div class="tagline">
+        <span class="tagline__epc" title="${e}">\u2026${escapeHtml(
+          (t.epc || "").slice(-6)
+        )}</span>
+        <span class="tagline__when">${
+          t.last_heard_at
+            ? "last heard " + escapeHtml(fmtAgo(t.last_heard_at))
+            : "never heard on a sweep"
+        }</span>
+        <span class="tagline__spacer"></span>
+        <button class="reset binaudit-unpair" type="button"
+          data-sku="${escapeHtml(r.sku || "")}" data-epc="${e}"
+          title="Remove this tag record - the sticker is gone or belongs to another box. History-logged as Tag Unlinked.">Unpair</button>
+        <button class="reset binaudit-marksold" type="button"
+          data-sku="${escapeHtml(r.sku || "")}" data-epcs="${e}"
+          title="Retire this one tag as sold against a recorded sale">Sold</button>
+        <button class="reset binaudit-locate" type="button"
+          data-sku="${escapeHtml(r.sku || "")}"
+          data-title="${escapeHtml(r.product_title || "")}" data-epcs="${e}"
+          title="Hunt this exact tag on the C72">Locate</button>
+      </div>`;
+    })
+    .join("");
+  const drawer =
+    tagLines && r.sku
+      ? `<details class="pcr__tags"><summary>${silent} silent tag(s) \u25be</summary>
+          ${tagLines}${
+            (r.silent_tags || []).length > 12
+              ? `<div class="tagline"><span class="tagline__when">+${
+                  r.silent_tags.length - 12
+                } more - work the list from the top</span></div>`
+              : ""
+          }</details>`
+      : "";
+  const stepper =
+    exp != null && r.sku && !r.unlabelable
+      ? `<span class="steplab">Shopify on-hand</span>
+         <span class="stepper" data-sku="${escapeHtml(r.sku)}"
+               data-base="${exp}" data-canlower="${r.can_lower ? 1 : 0}"
+               data-sold="${sold}" data-pickup="${r.pickup_pending || 0}"
+               data-epcs="${escapeHtml((r.silent_epcs || []).join(","))}">
+           <button type="button" class="ba-step-dn"
+             title="Count the shelf by hand, then lower to the true number - sales cover what they can, the rest writes off as shrinkage (first-tagging ban enforced server-side)">\u2212</button>
+           <span class="stepper__val">${exp}</span>
+           <button type="button" class="ba-step-up"
+             title="Count the shelf by hand, then raise to the true number">+</button>
+         </span>
+         <button class="ba-act ba-apply" type="button" hidden
+           title="Writes the new number to Shopify - confirmed, logged, one Undo in History">Apply</button>`
+      : "";
+  return `<div class="pcardrow${edge}" data-rowsku="${escapeHtml(
+    (r.sku || "").toUpperCase()
+  )}">
+    ${
       r.image_url
-        ? `<img class="bvx__img bvx__img--sm" src="${escapeHtml(r.image_url)}" alt="">`
+        ? `<img class="pcr__img" src="${escapeHtml(r.image_url)}" alt="">`
+        : `<span class="pcr__imgbox">\ud83d\udce6</span>`
+    }
+    <div class="pcr__main">
+      <div class="pcr__title">${
+        r.sku
+          ? `<span class="prodopen" data-sku="${escapeHtml(r.sku)}"
+               title="Open this product - label editor, RFID flag, full history">${escapeHtml(
+                 r.product_title || "(unknown)"
+               )}</span>`
+          : escapeHtml(r.product_title || "(unknown)")
+      }${
+        r.variant_title ? ` (${escapeHtml(r.variant_title)})` : ""
+      } <span class="pcr__sku">\u00b7 ${escapeHtml(r.sku || "\u2014")}</span></div>
+      <div class="pcr__nums">
+        <div class="pcr__num" title="${escapeHtml(expTitle)}"><b>${expCell}</b><span>expected</span></div>
+        <div class="pcr__num" title="Units whose tag records say this bin${tagsNote(
+          r.units_here, r.tags_here
+        )}"><b>${r.units_here}</b><span>tagged here</span></div>
+        <div class="pcr__num${seenTone}" title="Units whose tags answered this sweep${tagsNote(
+          r.detected_units, r.detected
+        )}"><b>${r.detected_units}</b><span>seen</span></div>
+      </div>
+      ${flagRows ? `<div class="pcr__flags">${flagRows}</div>` : ""}
+      ${drawer}
+      ${
+        stepper
+          ? `<div class="pcr__acts">${stepper}</div>`
+          : ""
+      }
+    </div>
+    ${
+      !flags.length && !untagged
+        ? `<span class="pcr__done">\u2713 all match</span>`
         : ""
-    }</td>
-    <td>${
-      r.sku
-        ? `<span class="prodopen" data-sku="${escapeHtml(r.sku)}" title="Open this product - label editor, RFID flag, full history">${escapeHtml(r.product_title || "(unknown)")}</span>`
-        : escapeHtml(r.product_title || "(unknown)")
-    }${r.variant_title ? ` (${escapeHtml(r.variant_title)})` : ""}</td>
-    <td class="mono"><span class="skulink" data-sku="${escapeHtml(r.sku || "")}" title="Open this product - label editor, RFID flag, full history">${escapeHtml(r.sku || "—")}</span></td>
-    <td class="num">${expCell}</td>
-    <td class="num">${r.units_here}${tagsNote(r.units_here, r.tags_here)}</td>
-    <td class="num">${r.detected_units}${tagsNote(r.detected_units, r.detected)}</td>
-    <td>${
-      flags.length
-        ? flags
-            .map(
-              ([t, c]) =>
-                `<span class="binaudit-chip ${c}">${escapeHtml(t)}</span>`
-            )
-            .join(" ")
-        : "✓"
-    }${(() => {
-      // Silence fully covered by fulfilled orders: one click retires
-      // the shipped boxes' tags against the sold ledger.
-      const silent = r.tags_here - r.detected;
-      if (
-        silent > 0 &&
-        (r.sold_unretired || 0) >= silent &&
-        (r.silent_epcs || []).length &&
-        r.sku
-      )
-        return `<div><button class="reset binaudit-marksold" type="button"
-             data-sku="${escapeHtml(r.sku)}"
-             data-epcs="${escapeHtml((r.silent_epcs || []).join(","))}"
-             title="These boxes shipped on fulfilled orders - remove their tag record(s) and retire the sale(s) in the ledger. History-logged; Shopify untouched.">MARK ${silent} SOLD</button></div>`;
-      // Ghost cleanup (Nick, 2026-09-14, the ASIAIR bracket): the
-      // sweep heard EXACTLY what Shopify expects, but MORE silent
-      // records linger than sales explain - re-sticker leftovers.
-      // Offered only on a confirmed shelf, so real missing stock
-      // never gets tidied away.
-      if (
-        silent > 0 &&
-        silent > (r.sold_unretired || 0) &&
-        r.expected_qty != null &&
-        r.detected_units === r.expected_qty &&
-        r.detected > 0 &&
-        (r.silent_epcs || []).length &&
-        r.sku
-      )
-        return `<div><button class="reset binaudit-cleanghosts" type="button"
-             data-sku="${escapeHtml(r.sku)}"
-             data-epcs="${escapeHtml((r.silent_epcs || []).join(","))}"
-             title="The shelf reads exactly right, so these silent records are leftovers - usually stickers replaced without unlinking. Recorded sales cover the oldest ones (presumed sold); the rest retire as replaced. History-logged, each restorable; Shopify untouched.">CLEAN UP ${silent} GHOST TAG(S)…</button></div>`;
-      // Silent tags can ALWAYS go to the locate list (Nick,
-      // 2026-09-28) - recommended harder when nothing explains them.
-      if (silent > 0 && (r.silent_epcs || []).length && r.sku)
-        return `<div><button class="reset binaudit-locate" type="button"
-             data-sku="${escapeHtml(r.sku)}"
-             data-title="${escapeHtml(r.product_title || "")}"
-             data-epcs="${escapeHtml((r.silent_epcs || []).join(","))}"
-             title="Queue the ${silent} silent tag(s) on the C72 locate list - hunt them before deciding they're gone.">SEND ${silent} TO LOCATE</button></div>`;
-      return "";
-    })()}</td>
-  </tr>`;
+    }
+  </div>`;
 }
 
 // Surgical row refresh (Nick, 2026-09-14): after a per-product write
@@ -12141,10 +12283,10 @@ async function binAuditRefreshRow(sku) {
         String(cap.id) + "|" + bin.toUpperCase(), fresh);
     }
     const up = sku.toUpperCase();
-    const tr = document.querySelector(
-      `#binaudit-report tr[data-rowsku="${CSS.escape(up)}"]`
+    const card = document.querySelector(
+      `#binaudit-report [data-rowsku="${CSS.escape(up)}"]`
     );
-    if (!tr) {
+    if (!card) {
       renderBinAudit();
       return;
     }
@@ -12157,15 +12299,15 @@ async function binAuditRefreshRow(sku) {
         item.tags_here > 0 ||
         item.detected > 0);
     if (!inStory) {
-      tr.remove();
+      card.remove();
       return;
     }
     const scored = binAuditScoreRow(item);
     if (scored.untagged && !binAuditShowUntagged) {
-      tr.remove();
+      card.remove();
       return;
     }
-    tr.outerHTML = binAuditRowHtml(scored);
+    card.outerHTML = binAuditRowHtml(scored);
   } catch (err) {
     // Rather a full honest repaint than a stale row.
     document.getElementById("binaudit-run").click();
@@ -12182,9 +12324,8 @@ function renderBinAudit() {
   const pm = binAuditProduct;
   const pmSku = pm ? pm.sku.toUpperCase() : null;
 
+  const rank = { bad: 0, warn: 1, ok: 2 };
   const scored = rep.items
-    // Nothing expected, nothing tagged, nothing heard: not part of this
-    // bin's story at all.
     .filter((r) =>
       pm
         ? (r.sku || "").toUpperCase() === pmSku
@@ -12194,13 +12335,19 @@ function renderBinAudit() {
     .sort(
       (a, b) =>
         a.untagged - b.untagged ||
-        b.flags.length - a.flags.length ||
+        rank[a.tone] - rank[b.tone] ||
         String(a.r.product_title).localeCompare(String(b.r.product_title))
     );
   const untaggedCount = scored.filter((s) => s.untagged).length;
   const shown = binAuditShowUntagged
     ? scored
     : scored.filter((s) => !s.untagged);
+  const flaggedCount = shown.filter(
+    (s) => !s.untagged && s.tone !== "ok"
+  ).length;
+  const okCount = shown.filter(
+    (s) => !s.untagged && s.tone === "ok"
+  ).length;
 
   const cells = shown.map(binAuditRowHtml).join("");
   const strays = (pm ? [] : rep.foreign)
@@ -12211,21 +12358,18 @@ function renderBinAudit() {
             ? `<span class="prodopen" data-sku="${escapeHtml(f.sku)}">${escapeHtml(f.product_title || "?")}</span>`
             : escapeHtml(f.product_title || "?")
         } <span class="mono">${escapeHtml(f.sku || "")}</span>${
-          f.bin_location ? " · recorded at " + escapeHtml(f.bin_location) : ""
-        } <span class="mono">${escapeHtml(f.epc)}</span></li>`
+          f.bin_location ? " \u00b7 recorded at " + escapeHtml(f.bin_location) : ""
+        } <span class="mono">${escapeHtml(f.epc)}</span> - neighbour noise on a big antenna</li>`
     )
     .join("");
   const unknowns = (pm ? [] : rep.unknown_epcs)
-    .map((e) => `<li>Unknown tag <span class="mono">${escapeHtml(e)}</span></li>`)
+    .map((e) => `<li>Unknown tag <span class="mono">${escapeHtml(e)}</span> - not linked to any product</li>`)
     .join("");
-  // Printed labels that answered but were never paired - the strongest
-  // owed-pairing signal (a label applied and forgotten answers sweeps
-  // as a productless tag).
   const owedLabels = (rep.printed_labels_heard || [])
     .filter((l) => !pm || (l.sku || "").toUpperCase() === pmSku)
     .map(
       (l) =>
-        `<li>⚠ Printed label for ${
+        `<li>\u26a0 Printed label for ${
           l.sku
             ? `<span class="prodopen" data-sku="${escapeHtml(l.sku)}">${escapeHtml(l.product_title || l.sku)}</span>`
             : escapeHtml(l.product_title || "?")
@@ -12245,9 +12389,7 @@ function renderBinAudit() {
     )
     .join("");
   // Open-box return prompts (Nick, 2026-09-15): a heard presumed-sold
-  // tag with a return watch on file asks the real question here, not
-  // just "possible return". One block for every flagged ghost, per-SKU
-  // rows and strays alike.
+  // tag with a return watch on file asks the real question here.
   const obxGhosts = [];
   (rep.items || []).forEach((it) => {
     if (pm && (it.sku || "").toUpperCase() !== pmSku) return;
@@ -12265,7 +12407,7 @@ function renderBinAudit() {
          ${obxGhosts
            .map(
              (g) => `<div class="obxprompt__row">
-               <div>Tag <span class="mono">…${escapeHtml((g.epc || "").slice(-6))}</span> of
+               <div>Tag <span class="mono">\u2026${escapeHtml((g.epc || "").slice(-6))}</span> of
                  <span class="prodopen" data-sku="${escapeHtml(g.sku || "")}">${escapeHtml(g.product_title || g.sku || "?")}</span>
                  was retired as SOLD, and an open-box return of it is on file.
                  Is the box this tag is on the open-box unit (${escapeHtml(g.openbox_sku || "")})?</div>
@@ -12279,29 +12421,52 @@ function renderBinAudit() {
        </div>`
     : "";
 
+  const extrasCount = pm
+    ? (rep.stray_ghosts || []).filter(
+        (g) => (g.sku || "").toUpperCase() === pmSku
+      ).length +
+      (rep.printed_labels_heard || []).filter(
+        (l) => (l.sku || "").toUpperCase() === pmSku
+      ).length
+    : rep.foreign.length +
+      rep.unknown_epcs.length +
+      (rep.stray_ghosts || []).length +
+      (rep.printed_labels_heard || []).length;
+  const extras =
+    strays || unknowns || strayGhosts || owedLabels
+      ? `<details class="ba-extra"><summary>${
+          pm ? "Also heard of this product" : "Also heard on this shelf"
+        } (${extrasCount})</summary>
+         <ul>${owedLabels}${strayGhosts}${strays}${unknowns}</ul></details>`
+      : "";
+
   out.innerHTML = `
-    <p class="result result--ok">Sweep #${cap.id} from ${escapeHtml(
-      cap.device || "the C72"
-    )} - ${cap.epc_count} tag(s), ${escapeHtml(fmtWhen(cap.created_at))} -
-    ${
+    <div class="ba-sweep u-mb10">checked against <b>sweep #${escapeHtml(
+      String(cap.id)
+    )}</b> \u00b7 ${escapeHtml(cap.device || "C72")} \u00b7 ${
+      cap.epc_count
+    } tag(s) \u00b7 ${escapeHtml(fmtWhen(cap.created_at))}${
       pm
-        ? `checked for <b>${escapeHtml(pm.title)}</b>
-           (<span class="mono">${escapeHtml(pm.sku)}</span>) at its home
-           bin ${escapeHtml(rep.bin)}.`
-        : `checked against ${escapeHtml(rep.bin)}${
-            rep.rack
-              ? ` <b>(whole rack: ${(rep.bins_covered || [])
-                  .map((b) => escapeHtml(b.toUpperCase()))
-                  .join(", ")})</b>`
-              : ""
-          }.`
-    }</p>
-    ${
-      pm
-        ? ""
-        : `<p class="result"><button class="print__btn" id="binaudit-complete" type="button"
-             title="Sign this audit off: the sweep's per-product heard counts become this bin's new anchor - the audit queue and the expected ranges walk forward from here.">✓ Audit complete - record it</button></p>`
-    }
+        ? ` \u00b7 checked for <b>${escapeHtml(pm.title)}</b> at ${escapeHtml(rep.bin)}`
+        : rep.rack
+          ? ` \u00b7 whole rack: ${(rep.bins_covered || [])
+              .map((b) => escapeHtml(b.toUpperCase()))
+              .join(", ")}`
+          : ""
+    }</div>
+    <div class="ba-summary">
+      <div class="ba-stat"><b>${shown.length}</b><span>products</span></div>
+      <div class="ba-stat ba-stat--ok"><b>${okCount}</b><span>all match</span></div>
+      <div class="ba-stat${flaggedCount ? " ba-stat--bad" : ""}"><b>${flaggedCount}</b><span>flagged</span></div>
+      <div class="ba-stat"><b>${extrasCount}</b><span>strays heard</span></div>
+      <span class="ba-summary__spacer"></span>
+      ${
+        pm
+          ? ""
+          : `<button class="print__btn" id="binaudit-complete" type="button"
+               title="Sign this audit off: the sweep's per-product heard counts become this bin's new anchor - the audit queue and the expected ranges walk forward from here.">\u2713 Audit complete - record it</button>`
+      }
+    </div>
     ${
       pm
         ? ""
@@ -12309,7 +12474,7 @@ function renderBinAudit() {
         ? `<p class="result">${
             (rep.bins_batch_done || []).length ===
             (rep.bins_covered || []).length
-              ? "✓ Every bin on this rack is recorded as batch tagged."
+              ? "\u2713 Every bin on this rack is recorded as batch tagged."
               : `Batch tagged so far: ${
                   (rep.bins_batch_done || [])
                     .map((b) => escapeHtml(b.toUpperCase()))
@@ -12322,43 +12487,28 @@ function renderBinAudit() {
       pm || rep.rack
         ? ""
         : rep.batch_done
-        ? `<p class="result result--ok">✓ Already recorded as batch tagged -
+        ? `<p class="result result--ok">✓ Recorded as batch tagged -
            batch #${rep.batch_done_id}${
              rep.batch_done_at
                ? `, finished ${escapeHtml(fmtWhen(rep.batch_done_at))}`
                : ""
-           }. Nothing to record here.${
-             (rep.abandoned_batches || []).length
-               ? ` (Bin also has ${
-                   rep.abandoned_batches.length
-                 } abandoned attempt(s): ${rep.abandoned_batches
-                   .map((n) => "#" + n)
-                   .join(", ")} - superseded by #${rep.batch_done_id}.)`
-               : ""
-           }</p>`
+           }.</p>`
         : `<p class="result result--warn-soft">This bin has no completed batch -
            it doesn't count as tagged. If the shelf really is fully tagged (a
            batch abandoned after every tag was paired), you can record it:
            <button class="reset" id="binaudit-marktagged" type="button"
-             title="Records the bin as batch tagged from the tags already on file - tags nothing, prints nothing, writes nothing to Shopify">Record ${escapeHtml(rep.bin)} as batch tagged…</button></p>`
+             title="Records the bin as batch tagged from the tags already on file - tags nothing, prints nothing, writes nothing to Shopify">Record ${escapeHtml(rep.bin)} as batch tagged\u2026</button></p>`
     }
-    <div class="inventory__scroll"><table class="inventory__table">
-      <thead><tr><th></th><th>Product</th><th>SKU</th>
-        <th class="num" title="Shopify on-hand for this bin; brackets show tagged-vs-expected">Expected</th>
-        <th class="num" title="Units whose tag records say this bin">Tagged here</th>
-        <th class="num" title="Units whose tags answered this sweep">Seen</th>
-        <th></th></tr></thead>
-      <tbody>${
-        cells ||
-        `<tr><td colspan="7">${
-          pm
-            ? `${escapeHtml(pm.sku)} did not come back in this check.`
-            : untaggedCount
-            ? "Nothing on this shelf is tagged yet."
-            : `Nothing expected or tagged in ${escapeHtml(rep.bin)}.`
-        }</td></tr>`
-      }</tbody>
-    </table></div>
+    ${
+      cells ||
+      `<p class="result">${
+        pm
+          ? `${escapeHtml(pm.sku)} did not come back in this check.`
+          : untaggedCount
+          ? "Nothing on this shelf is tagged yet."
+          : `Nothing expected or tagged in ${escapeHtml(rep.bin)}.`
+      }</p>`
+    }
     ${
       !pm && untaggedCount
         ? `<div class="linkbox__actions u-mt8">
@@ -12368,30 +12518,11 @@ function renderBinAudit() {
            </div>`
         : ""
     }
-    ${
-      owedLabels
-        ? `<div class="recent__head u-mt14"><h2>Printed labels never paired (${rep.printed_labels_heard.length})</h2></div>
-           <ul class="recent__list">${owedLabels}</ul>`
-        : ""
-    }
     ${obxBlock}
-    ${
-      strays || unknowns || strayGhosts
-        ? `<div class="recent__head u-mt14"><h2>${
-            pm
-              ? "Retired tags of this product heard"
-              : "Also heard on this shelf"
-          } (${
-            pm
-              ? strayGhosts.split("<li>").length - 1
-              : rep.foreign.length + rep.unknown_epcs.length +
-                (rep.stray_ghosts || []).length
-          })</h2></div>
-           <ul class="recent__list">${strays}${strayGhosts}${unknowns}</ul>`
-        : pm
+    ${extras ||
+      (pm
         ? `<p class="result">Run a bin audit of ${escapeHtml(rep.bin)} for the shelf's full story - strays and unknown tags included.</p>`
-        : `<p class="result">No stray or unknown tags in the sweep.</p>`
-    }`;
+        : `<p class="result">No stray or unknown tags in the sweep.</p>`)}`;
 }
 
 // Full quiet re-check + repaint, for answers that change more than one
@@ -12415,6 +12546,29 @@ async function binAuditRefetchAll() {
       String(cap.id) + "|" + rep.bin.toUpperCase(), fresh);
   }
   renderBinAudit();
+}
+
+// Queue N plain labels for a product (the neutral path - pairing a
+// printed label never changes Shopify on-hand). Product resolved by
+// SKU through the same rescue chain the station uses.
+async function binAuditQueueLabels(sku, n) {
+  const p = await apiJson(
+    `/api/products/by-barcode/${encodeURIComponent(sku)}`
+  );
+  await postJson("/api/print-jobs", {
+    quantity: n,
+    shopify_variant_id: p.shopify_variant_id,
+    shopify_product_id: p.shopify_product_id || null,
+    product_title: p.product_title || sku,
+    variant_title: p.variant_title || null,
+    sku: p.sku || sku,
+    barcode: p.barcode || null,
+    bin_location:
+      p.bin_location && p.bin_location !== "No bin assigned"
+        ? p.bin_location
+        : (binAudit && binAudit.rep.bin) || null,
+    requested_by: operatorEl.value || null,
+  });
 }
 
 // One delegated handler for the whole panel — the report re-renders on
@@ -12677,6 +12831,248 @@ document
       }
       return;
     }
+    // Unpair ONE silent tag (drawer row): the sticker is gone or on
+    // another box - the record goes, History keeps the receipt.
+    const unpair = e.target.closest(".binaudit-unpair");
+    if (unpair) {
+      const epc = unpair.dataset.epc;
+      const sku = unpair.dataset.sku;
+      if (
+        !confirm(
+          `Unpair tag \u2026${epc.slice(-6)} from ${sku}?\n\n` +
+            `The tag record is removed - use this when the sticker is ` +
+            `gone or belongs to another box. Shopify is not touched; ` +
+            `History logs it as Tag Unlinked.`
+        )
+      )
+        return;
+      unpair.disabled = true;
+      try {
+        await apiJson(
+          `/api/rfid-assignments/${encodeURIComponent(epc)}?by=` +
+            encodeURIComponent(operatorEl.value || ""),
+          { method: "DELETE" }
+        );
+        await binAuditRefreshRow(sku);
+      } catch (err) {
+        alert(err.message);
+        unpair.disabled = false;
+      }
+      return;
+    }
+    // Unpair + print replacement (Nick, 2026-09-28, the approved
+    // preview): one step for the "missing, misplaced or mislabeled"
+    // verdict - the dead records go and the same number of fresh
+    // labels queue for pairing. Pairing never moves on-hand.
+    const upp = e.target.closest(".binaudit-unpairprint");
+    if (upp) {
+      const sku = upp.dataset.sku;
+      const epcs = (upp.dataset.epcs || "").split(",").filter(Boolean);
+      if (
+        !confirm(
+          `Unpair ${epcs.length} silent tag(s) of ${sku} and queue ` +
+            `${epcs.length} replacement label(s)?\n\n` +
+            `Check the shelf first - re-sweep behind the boxes. If the ` +
+            `boxes really are here with dead or missing stickers, this ` +
+            `removes the old record(s) and prints fresh labels to ` +
+            `pair. Shopify on-hand is NOT touched; each unpair is ` +
+            `History-logged.`
+        )
+      )
+        return;
+      upp.disabled = true;
+      try {
+        for (const epc of epcs) {
+          await apiJson(
+            `/api/rfid-assignments/${encodeURIComponent(epc)}?by=` +
+              encodeURIComponent(operatorEl.value || ""),
+            { method: "DELETE" }
+          );
+        }
+        await binAuditQueueLabels(sku, epcs.length);
+        alert(
+          `${epcs.length} tag record(s) unpaired and ${epcs.length} ` +
+            `label(s) queued on the warehouse printer.\n\nStick and ` +
+            `pair them (Scan station, or the C72's pair mode) - the ` +
+            `count stays put.`
+        );
+        await binAuditRefreshRow(sku);
+      } catch (err) {
+        alert(err.message);
+        upp.disabled = false;
+      }
+      return;
+    }
+    // Plain "print N labels" (the W9177 case): boxes with more stock
+    // than tag records get stickers with NO receiving side effects.
+    const plab = e.target.closest(".binaudit-printlabels");
+    if (plab) {
+      const sku = plab.dataset.sku;
+      const def = parseInt(plab.dataset.n, 10) || 1;
+      const raw = prompt(
+        `How many labels for ${sku}?\n\nThey queue on the warehouse ` +
+          `printer (home bin on each). Pairing them never changes ` +
+          `Shopify on-hand.`,
+        String(def)
+      );
+      if (raw === null) return;
+      const n = parseInt(raw, 10);
+      if (!Number.isFinite(n) || n < 1 || n > 100) {
+        alert("Type a label count from 1 to 100.");
+        return;
+      }
+      plab.disabled = true;
+      try {
+        await binAuditQueueLabels(sku, n);
+        alert(
+          `${n} label(s) queued for ${sku}. Stick them on, then pair ` +
+            `(Scan station or the C72) - the count stays put.`
+        );
+      } catch (err) {
+        alert(err.message);
+      }
+      plab.disabled = false;
+      return;
+    }
+    // Un-retire: the marked-sold tag answered - the box never left.
+    const unret = e.target.closest(".binaudit-unretire");
+    if (unret) {
+      const sku = unret.dataset.sku;
+      const epcs = (unret.dataset.epcs || "").split(",").filter(Boolean);
+      if (
+        !confirm(
+          `Un-retire ${epcs.length} tag(s) of ${sku}?\n\nThey were ` +
+            `marked sold but they ANSWERED this sweep - the box is ` +
+            `still on the shelf. The record(s) become live again. ` +
+            `History-logged.`
+        )
+      )
+        return;
+      unret.disabled = true;
+      try {
+        await postJson("/api/assignments/unretire", {
+          epcs,
+          changed_by: operatorEl.value || null,
+        });
+        await binAuditRefreshRow(sku);
+      } catch (err) {
+        alert(err.message);
+        unret.disabled = false;
+      }
+      return;
+    }
+    // The on-hand stepper: +/- pick the number, Apply writes it.
+    // Raises go through the normal confirmed write; lowers through the
+    // guarded lower (silent tags retire with it, first-tagging ban
+    // enforced server-side).
+    const stepBtn = e.target.closest(".ba-step-dn, .ba-step-up");
+    if (stepBtn) {
+      const wrap = stepBtn.closest(".stepper");
+      const val = wrap.querySelector(".stepper__val");
+      const base = parseInt(wrap.dataset.base, 10);
+      let n =
+        parseInt(val.textContent, 10) +
+        (stepBtn.classList.contains("ba-step-up") ? 1 : -1);
+      if (n < 0) n = 0;
+      val.textContent = n;
+      val.classList.toggle("stepper__val--dirty", n !== base);
+      const apply = wrap.parentElement.querySelector(".ba-apply");
+      if (apply) {
+        apply.hidden = n === base;
+        apply.textContent = `Apply ${n}`;
+      }
+      return;
+    }
+    const applyBtn = e.target.closest(".ba-apply");
+    if (applyBtn) {
+      const wrap = applyBtn.parentElement.querySelector(".stepper");
+      const sku = wrap.dataset.sku;
+      const base = parseInt(wrap.dataset.base, 10);
+      const n = parseInt(
+        wrap.querySelector(".stepper__val").textContent, 10
+      );
+      if (!Number.isFinite(n) || n === base) return;
+      const sweepAt =
+        (binAudit &&
+          binAudit.cap &&
+          (binAudit.cap.oldest_at || binAudit.cap.created_at)) ||
+        null;
+      applyBtn.disabled = true;
+      try {
+        if (n > base) {
+          if (
+            !confirm(
+              `Set Shopify ON-HAND for ${sku} to ${n}?\n\nShopify ` +
+                `carries ${base}. This WRITES the number to Shopify. ` +
+                `Undo stays available in History.`
+            )
+          ) {
+            applyBtn.disabled = false;
+            return;
+          }
+          const res = await postJson("/api/onhand-updates", {
+            sku,
+            new_qty: n,
+            changed_by: operatorEl.value || null,
+            confirmed: true,
+            sweep_at: sweepAt,
+          });
+          alert(res.message);
+        } else {
+          const drop = base - n;
+          const epcs = (wrap.dataset.epcs || "")
+            .split(",")
+            .filter(Boolean)
+            .slice(0, drop);
+          const canLower = wrap.dataset.canlower === "1";
+          // Pickup guard (F9168A): a shortfall that open local-pickup
+          // orders explain is NOT shrinkage - the coming fulfillment
+          // drops on-hand by itself, so lowering now would double-drop.
+          const sold = parseInt(wrap.dataset.sold, 10) || 0;
+          const pickup = parseInt(wrap.dataset.pickup, 10) || 0;
+          const pickupExplains =
+            pickup > 0 && drop > sold && drop <= sold + pickup;
+          if (
+            !confirm(
+              `Set Shopify ON-HAND for ${sku} DOWN to ${n}?\n\n` +
+                `${epcs.length} silent tag(s) retire presumed-sold ` +
+                `with it - sales cover what they can, the rest writes ` +
+                `off as shrinkage.` +
+                (pickupExplains
+                  ? `\n\n\u26a0 Open local-pickup orders explain this ` +
+                    `shortfall - the staged boxes drop on-hand by ` +
+                    `themselves when they're collected. Lowering now ` +
+                    `would DOUBLE-DROP the count.`
+                  : ``) +
+                (canLower
+                  ? ""
+                  : `\n\n\u26a0 The server may refuse this: a product ` +
+                    `that never completed a batch tagging only lowers ` +
+                    `as far as recorded sales cover.`) +
+                `\n\nOne Undo in History reverses all of it.`
+            )
+          ) {
+            applyBtn.disabled = false;
+            return;
+          }
+          const res = await postJson("/api/onhand-updates/lower", {
+            sku,
+            bin_name: (binAudit && binAudit.rep.bin) || "",
+            new_qty: n,
+            epcs,
+            changed_by: operatorEl.value || null,
+            confirmed: true,
+            sweep_at: sweepAt,
+          });
+          alert(res.message);
+        }
+        await binAuditRefreshRow(sku);
+      } catch (err) {
+        alert(err.message);
+        applyBtn.disabled = false;
+      }
+      return;
+    }
     // Audit sign-off (Nick, 2026-09-28): writes the BinAudit anchor.
     const done = e.target.closest("#binaudit-complete");
     if (done && binAudit) {
@@ -12745,6 +13141,9 @@ async function loadAuditBins() {
   try {
     auditData = await apiJson("/api/audit/bins");
     renderAuditBins();
+    renderAuditReco();
+    // Open sessions carry live bin pills from the same data.
+    if (audSessions.length) loadAuditSessions();
   } catch (err) {
     list.innerHTML = `<li class="recent__empty">${escapeHtml(err.message)}</li>`;
   }
@@ -12796,7 +13195,7 @@ async function loadAudits() {
     loadUnavailable(),
     loadPacking(),
   ];
-  Promise.allSettled(slowLoads.concat([auditsSweepsLoad()])).then(() =>
+  Promise.allSettled(slowLoads).then(() =>
     setFreshTag("audhub-fresh", true)
   );
 }
@@ -12917,42 +13316,6 @@ async function loadUnavailable() {
   }
 }
 
-async function auditsSweepsLoad() {
-  const sweeps = document.getElementById("sweep-list");
-  try {
-    // Batch-tagging sweeps stay out of the big-picture lists (Nick,
-    // 2026-09-14) - they belong to their batch, not to audits.
-    const { captures } = await apiJson("/api/epc-captures?limit=10&pickable=1");
-    sweeps.innerHTML = "";
-    if (!captures.length) {
-      audSetCard("ahc-sweep", "—", "no sweeps from the C72 yet", null);
-      sweeps.innerHTML =
-        '<li class="recent__empty">No sweeps from the C72 app yet.</li>';
-      return;
-    }
-    const newest = captures[0];
-    const ageMin = Math.max(
-      0, Math.round((Date.now() - tsDate(newest.created_at).getTime()) / 60000)
-    );
-    audSetCard(
-      "ahc-sweep",
-      ageMin < 60 ? `${ageMin}m` : `${Math.round(ageMin / 60)}h`,
-      `newest sweep: ${newest.epc_count} tags from ${newest.device || "C72"}`,
-      ageMin < 5 ? "ok" : null
-    );
-    captures.forEach((c) => {
-      const li = document.createElement("li");
-      li.innerHTML = `
-        ${evChip("sweep")}
-        <span class="recent__prod"><b>#${c.id} · ${c.epc_count} tags</b> from ${escapeHtml(c.device || "C72")}${c.note ? " - " + escapeHtml(c.note) : ""}</span>
-        <span class="recent__meta recent__when">${escapeHtml(fmtAgo(c.created_at))}</span>`;
-      sweeps.append(li);
-    });
-  } catch (err) {
-    sweeps.innerHTML = '<li class="recent__empty">Could not load sweeps.</li>';
-  }
-}
-
 // === Packing scans (phase 6, 2026-09-28) ====================================
 // The desk list: what got scanned while packing, allocated against
 // ShipStation's awaiting-shipment orders. Live-ish: reloads on open and
@@ -13028,7 +13391,7 @@ async function loadPacking() {
 }
 
 document
-  .querySelector('#tab-audits .audcard[data-pane="packing"]')
+  .querySelector('#tab-audits .tile[data-pane="packing"]')
   .addEventListener("click", () => {
     loadPacking();
     clearInterval(packTimer);
@@ -13108,6 +13471,7 @@ async function loadOneleft() {
     return;
   }
   renderOneleft();
+  renderAuditReco();
 }
 
 function renderOneleft() {
@@ -13483,7 +13847,7 @@ function audShowPane(name) {
   if (name === "binaudit") binAuditProdRowShow(true);
 }
 
-document.querySelectorAll("#tab-audits .audcard").forEach((card) => {
+document.querySelectorAll("#tab-audits .tiles--aud .tile[data-pane]").forEach((card) => {
   card.addEventListener("click", () => audShowPane(card.dataset.pane));
 });
 document.querySelectorAll("#tab-audits .apane-back").forEach((btn) => {
@@ -13540,99 +13904,502 @@ function audRestoreCards() {
 }
 
 // === Audit sessions =========================================================
+// Overhauled 2026-09-28 (approved preview): recommended racks up top
+// (the scored queue rolled up per rack, overdue first), open sessions
+// as cards with live bin strips, finished audits behind the icon.
 let audSessions = [];
+let audSessDone = [];
 let audSessShowDone = false;
 let audSessOpenId = null;
+
+function audBinInfo(bin) {
+  if (!auditData) return null;
+  const up = (bin || "").toUpperCase();
+  return (
+    auditData.bins.find((b) => (b.bin || "").toUpperCase() === up) || null
+  );
+}
+
+function audBinPillHtml(i) {
+  const b = audBinInfo(i.key);
+  const score = b ? b.score : null;
+  const cls = i.done
+    ? "binpill--ok"
+    : score == null
+      ? ""
+      : score >= 5
+        ? "binpill--bad"
+        : score > 0
+          ? "binpill--warn"
+          : "binpill--ok";
+  const mark = i.done
+    ? "\u2713"
+    : score == null
+      ? "\u00b7"
+      : score === 0
+        ? "\u2713"
+        : String(score);
+  return `<button class="binpill ${cls} aud-binjump" type="button"
+    data-bin="${escapeHtml(i.key)}"
+    title="Open the bin audit with ${escapeHtml(i.key)} loaded">${escapeHtml(
+      i.key
+    )} <i>${mark}</i></button>`;
+}
 
 async function loadAuditSessions() {
   const list = document.getElementById("audsess-list");
   try {
-    const data = await apiJson(
-      `/api/audit-sessions?status=${audSessShowDone ? "done" : "open"}`
-    );
+    const data = await apiJson("/api/audit-sessions?status=open");
     audSessions = data.sessions;
   } catch (err) {
     list.innerHTML = `<li class="recent__empty">Could not load sessions: ${escapeHtml(err.message)}</li>`;
     return;
   }
-  document.getElementById("audsess-meta").textContent = audSessShowDone
-    ? `(${audSessions.length} finished)`
-    : audSessions.length
-      ? `(${audSessions.length} open)`
-      : "";
-  document.getElementById("audsess-toggle").textContent = audSessShowDone
-    ? "Show open"
-    : "Show finished";
-  list.innerHTML = audSessions.length
-    ? ""
-    : `<li class="recent__empty">${audSessShowDone ? "No finished audits yet." : "No open audits - start one to bundle a rack walk or a 1-left blitz."}</li>`;
-  audSessions.forEach((s) => {
-    const pct = s.total ? Math.round((s.done / s.total) * 100) : 0;
+  document.getElementById("audsess-meta").textContent = audSessions.length
+    ? `(${audSessions.length} open)`
+    : "";
+  const lab = document.getElementById("audsess-openlab");
+  if (lab) lab.hidden = !audSessions.length;
+  list.innerHTML = "";
+  audSessions.forEach((sn) => {
+    const pct = sn.total ? Math.round((sn.done / sn.total) * 100) : 0;
     const li = document.createElement("li");
-    li.className = "audsess";
+    li.className = "sess";
+    const strip =
+      sn.kind === "bins" && (sn.items || []).length
+        ? `<div class="binstrip">${sn.items
+            .map(audBinPillHtml)
+            .join("")}</div>`
+        : "";
     li.innerHTML = `
-      <div class="audsess__row">
-        <span class="audsess__name" data-sid="${s.id}">${escapeHtml(s.name)}</span>
-        <span class="audsess__meta">${s.kind === "bins" ? `${s.total} bin(s)` : `${s.total} check(s)`} · started ${escapeHtml(fmtAgo(s.created_at))}${s.created_by ? " by " + escapeHtml(s.created_by) : ""}${s.status !== "open" ? " · " + s.status : ""}</span>
-        <button class="binlist__go audsess-open" type="button" data-sid="${s.id}">${s.status === "open" ? "Resume" : "View"}</button>
+      <div class="sess__row">
+        <span class="sess__name audsess-open" data-sid="${sn.id}">${escapeHtml(sn.name)}</span>
+        <span class="sess__meta">${
+          sn.kind === "bins" ? `${sn.total} bin(s)` : `${sn.total} check(s)`
+        } \u00b7 started ${escapeHtml(fmtAgo(sn.created_at))}${
+          sn.created_by ? " by " + escapeHtml(sn.created_by) : ""
+        }</span>
+        <span class="sess__grow"></span>
+        <button class="print__btn audsess-open" type="button" data-sid="${sn.id}">Resume</button>
       </div>
       <div class="audsess__bar"><div class="audsess__fill" style="width:${pct}%"></div></div>
-      <div class="audsess__nums"><span>${s.done} of ${s.total} done</span><span>${pct}%</span></div>`;
+      <div class="audsess__nums"><span>${sn.done} of ${sn.total} done</span><span>${pct}%</span></div>
+      ${strip}`;
     list.append(li);
   });
   // The open session detail refreshes from the same fetch.
   if (audSessOpenId !== null) {
-    const open = audSessions.find((s) => s.id === audSessOpenId);
+    const open = audSessions.find((x) => x.id === audSessOpenId);
     if (open) renderAuditSessionDetail(open);
   }
+  loadAuditSessionsDone();
 }
 
-function renderAuditSessionDetail(s) {
-  audSessOpenId = s.id;
-  const el = document.getElementById("audsess-detail");
-  const pct = s.total ? Math.round((s.done / s.total) * 100) : 0;
-  const openCount = s.total - s.done;
-  const rows = s.items
-    .map((i) => {
-      const doneBtn = s.status === "open"
-        ? `<button class="binlist__go audsess-done" type="button"
-             data-item="${i.id}" data-done="${i.done ? 1 : 0}"
-             title="${i.done ? "Un-tick this item" : "Mark this item accounted for"}">${i.done ? "✓ done" : "mark done"}</button>`
-        : i.done ? `<span class="binlist__check">✓</span>` : "";
-      const jump = s.kind === "bins"
-        ? `<button class="binlist__go audsess-jump" type="button" data-bin="${escapeHtml(i.key)}"
-             title="Open the bin audit with ${escapeHtml(i.key)} loaded">audit</button>`
-        : "";
-      const sub = [
-        i.done && i.done_by ? `by ${i.done_by}` : "",
-        i.done && i.done_at ? fmtAgo(i.done_at) : "",
-        i.note || "",
-      ].filter(Boolean).join(" · ");
-      return `
-        <li class="olrow${i.done ? " olrow--done" : ""}">
-          <div class="olrow__main">
-            <span class="binlist__name ${s.kind === "oneleft" ? "ol-sku" : ""}"
-                  ${s.kind === "oneleft" ? `data-sku="${escapeHtml(i.key)}"` : ""}>${escapeHtml(i.key)}</span>
-            <span class="olrow__title">${escapeHtml(i.label || "")}</span>
-            ${sub ? `<div class="olrow__sub">${escapeHtml(sub)}</div>` : ""}
-          </div>
-          ${jump}${doneBtn}
-        </li>`;
-    })
+async function loadAuditSessionsDone() {
+  try {
+    const data = await apiJson("/api/audit-sessions?status=done");
+    audSessDone = data.sessions;
+  } catch (err) {
+    audSessDone = [];
+  }
+  const cnt = document.getElementById("audsess-fincount");
+  if (cnt) cnt.textContent = String(audSessDone.length);
+  renderAuditSessionsDone();
+}
+
+function renderAuditSessionsDone() {
+  const wrap = document.getElementById("audsess-finished");
+  const listEl = document.getElementById("audsess-finlist");
+  if (!wrap || !listEl) return;
+  wrap.hidden = !audSessShowDone;
+  document
+    .getElementById("audsess-toggle")
+    .classList.toggle("iconbtn--on", audSessShowDone);
+  if (!audSessShowDone) return;
+  listEl.innerHTML = audSessDone.length
+    ? ""
+    : `<div class="fin"><span class="fin__meta">No finished audits yet.</span></div>`;
+  audSessDone.forEach((sn) => {
+    const div = document.createElement("div");
+    div.className = "fin";
+    div.innerHTML = `<span class="fin__ok">\u2713</span> ${escapeHtml(sn.name)}
+      <span class="fin__meta">${sn.done} of ${sn.total} \u00b7 ${escapeHtml(
+        sn.status
+      )} ${escapeHtml(fmtAgo(sn.finished_at || sn.created_at))}${
+        sn.created_by ? " \u00b7 by " + escapeHtml(sn.created_by) : ""
+      }</span>
+      <button class="reset fin__view audsess-open" type="button" data-sid="${sn.id}">View</button>`;
+    listEl.append(div);
+  });
+}
+
+// ---- recommended racks -----------------------------------------------
+// The scored queue rolled up per rack: overdue past the threshold
+// first, then the rest, both by summed drift. Open 1-left checks ride
+// as a chip when their bin resolves to the rack.
+function audRackAgg() {
+  if (!auditData) return null;
+  const racks = new Map();
+  for (const b of auditData.bins) {
+    if (!b.batch_done) continue;
+    const rack = (b.bin.split("-")[0] || b.bin).toUpperCase();
+    let r = racks.get(rack);
+    if (!r) {
+      r = {
+        rack,
+        score: 0,
+        bins: [],
+        mismatched: 0,
+        overdue: false,
+        last: undefined,
+        anyNever: false,
+        worst: null,
+      };
+      racks.set(rack, r);
+    }
+    r.score += b.score;
+    r.mismatched += b.mismatched_count;
+    r.bins.push(b);
+    r.overdue = r.overdue || b.overdue;
+    if (!b.last_audited_at) r.anyNever = true;
+    else if (
+      r.last === undefined ||
+      tsDate(b.last_audited_at) < tsDate(r.last)
+    ) {
+      r.last = b.last_audited_at;
+    }
+    if (!r.worst || b.score > r.worst.score) r.worst = b;
+  }
+  return [...racks.values()];
+}
+
+function audRackCardHtml(r, overdue, checks) {
+  const nChecks = checks[r.rack] || 0;
+  const scoreCls =
+    r.score === 0
+      ? "rack__score--ok"
+      : overdue || r.score >= 5
+        ? "rack__score--bad"
+        : "rack__score--warn";
+  const when =
+    r.anyNever && r.last === undefined
+      ? "<b>Never audited</b>"
+      : r.anyNever
+        ? "<b>Some bins never audited</b>"
+        : `Oldest audit <b>${escapeHtml(fmtAgo(r.last))}</b>`;
+  const pills = r.bins
+    .slice()
+    .sort((a, b2) => b2.score - a.score)
+    .map((b) =>
+      audBinPillHtml({ key: b.bin, done: false })
+    )
     .join("");
-  el.innerHTML = `
-    <div class="recent__head">
-      <h2>${escapeHtml(s.name)} <span class="recent__note">${s.kind === "bins" ? "bin walk" : "1-left checks"} · ${s.status}</span></h2>
+  return `<div class="rack" data-rack="${escapeHtml(r.rack)}">
+    <div class="rack__top"><span class="rack__name">${escapeHtml(r.rack)}</span>
+      <span class="rack__score ${scoreCls}">${
+        r.score === 0 ? "all match \u2713" : "score " + r.score
+      }</span></div>
+    <div class="rack__meta">${when} \u00b7 ${r.bins.length} bin(s) \u00b7 ${
+      r.mismatched
+    } mismatched product(s)</div>
+    ${
+      nChecks || (r.worst && r.worst.score > 0)
+        ? `<div class="rack__chips">${
+            nChecks
+              ? `<span class="rack__chip rack__chip--warn">${nChecks} stock check(s) open</span>`
+              : ""
+          }${
+            r.worst && r.worst.score > 0
+              ? `<span class="rack__chip">worst bin ${escapeHtml(r.worst.bin)}</span>`
+              : ""
+          }</div>`
+        : ""
+    }
+    <div class="rack__foot">
+      <button class="${overdue ? "print__btn" : "reset"} aud-reco-start"
+        type="button" data-rack="${escapeHtml(r.rack)}"
+        title="Start a walk-scan session covering every bin on this rack">Start audit</button>
+      <span class="rack__hint">tap card for bins</span>
     </div>
-    <div class="audsess__bar u-maxw420"><div class="audsess__fill" style="width:${pct}%"></div></div>
-    <div class="audsess__nums u-maxw420"><span>${s.done} of ${s.total} done</span><span>${pct}%</span></div>
-    ${s.kind === "oneleft" ? `<p class="linkbox__text u-maxw70ch">Items tick themselves when their 1-left check clears (auto or manual confirm); anything left needs a walk.</p>` : `<p class="linkbox__text u-maxw70ch">Sweep each bin on the C72, check it with the bin audit, then mark it done here.</p>`}
-    ${s.status === "open" ? `
-      <div class="linkbox__actions u-mt8 u-mb12">
-        <button class="reset" id="audsess-finish" type="button">Finish audit</button>
-        <button class="reset" id="audsess-abandon" type="button">Abandon</button>
-      </div>` : ""}
-    <ul class="recent__list binlist u-maxh480">${rows}</ul>`;
+    <div class="rack__bins"><div><div class="binstrip">${pills}</div></div></div>
+  </div>`;
+}
+
+function renderAuditReco() {
+  const el = document.getElementById("aud-reco");
+  if (!el) return;
+  const racks = audRackAgg();
+  if (!racks) {
+    el.innerHTML = "";
+    return;
+  }
+  const checks = {};
+  if (olData && Array.isArray(olData.items)) {
+    for (const it of olData.items) {
+      const bin = (it.bin || "").trim();
+      if (!bin) continue;
+      const rack = bin.split("-")[0].toUpperCase();
+      checks[rack] = (checks[rack] || 0) + 1;
+    }
+  }
+  const over = racks
+    .filter((r) => r.overdue)
+    .sort((a, b) => b.score - a.score);
+  const fresh = racks
+    .filter((r) => !r.overdue)
+    .sort((a, b) => b.score - a.score);
+  const thr = auditData.threshold_days || 14;
+  el.innerHTML =
+    (over.length
+      ? `<div class="grouplab"><span class="grouplab__dot grouplab__dot--bad"></span>
+           Recommended - last audited over ${thr} days ago (or never), biggest drift first</div>
+         <div class="rackrow">${over
+           .slice(0, 6)
+           .map((r) => audRackCardHtml(r, true, checks))
+           .join("")}</div>`
+      : "") +
+    (fresh.length
+      ? `<div class="grouplab"><span class="grouplab__dot grouplab__dot--ok"></span>
+           Up to date - audited inside ${thr} days, biggest drift first</div>
+         <div class="rackrow">${fresh
+           .slice(0, 6)
+           .map((r) => audRackCardHtml(r, false, checks))
+           .join("")}</div>`
+      : "") +
+    (over.length > 6 || fresh.length > 6
+      ? `<p class="result">${over.length + fresh.length} rack(s) total - the Audit queue tile lists every bin, scored.</p>`
+      : "");
+}
+
+async function audStartRackAudit(rack, btn) {
+  btn.disabled = true;
+  try {
+    const res = await postJson("/api/audit-sessions", {
+      kind: "bins",
+      rack,
+      name: `Rack ${rack}`,
+      worker: operatorEl.value || null,
+    });
+    await loadAuditSessions();
+    const sn =
+      res && res.items
+        ? res
+        : audSessions.find(
+            (x) => x.status === "open" && x.name === `Rack ${rack}`
+          );
+    if (sn) {
+      renderAuditSessionDetail(sn);
+      audShowPane("session");
+    }
+  } catch (err) {
+    alert(err.message);
+  }
+  btn.disabled = false;
+}
+
+document.getElementById("aud-reco").addEventListener("click", (e) => {
+  const start = e.target.closest(".aud-reco-start");
+  if (start) {
+    audStartRackAudit(start.dataset.rack, start);
+    return;
+  }
+  const pill = e.target.closest(".aud-binjump");
+  if (pill) {
+    jumpToBinAudit(pill.dataset.bin);
+    return;
+  }
+  const card = e.target.closest(".rack");
+  if (card) card.classList.toggle("rack--open");
+});
+
+document.getElementById("aud-onebin-go").addEventListener("click", () => {
+  const v = document.getElementById("aud-onebin").value.trim();
+  if (v) jumpToBinAudit(v.toUpperCase());
+});
+document.getElementById("aud-onebin").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    document.getElementById("aud-onebin-go").click();
+  }
+});
+
+let audSessView = "rack";
+
+function renderAuditSessionDetail(sn) {
+  audSessOpenId = sn.id;
+  const el = document.getElementById("audsess-detail");
+  const pct = sn.total ? Math.round((sn.done / sn.total) * 100) : 0;
+  const openCount = sn.total - sn.done;
+  const actions =
+    sn.status === "open"
+      ? `<div class="linkbox__actions u-mt14">
+           <button class="reset" id="audsess-finish" type="button">Finish audit</button>
+           <button class="reset" id="audsess-abandon" type="button">Abandon</button>
+         </div>`
+      : "";
+  if (sn.kind === "bins") {
+    // Rack facts from the scored queue, when it has loaded.
+    let drift = 0;
+    let mism = 0;
+    let known = 0;
+    let worst = null;
+    (sn.items || []).forEach((i) => {
+      const b = audBinInfo(i.key);
+      if (!b) return;
+      known++;
+      drift += b.score;
+      mism += b.mismatched_count;
+      if (!i.done && (!worst || b.score > worst.b.score)) {
+        worst = { key: i.key, b };
+      }
+    });
+    const C = 2 * Math.PI * 46;
+    const rackview = `<div class="rackview">
+      <div class="ring"><svg width="108" height="108" viewBox="0 0 108 108">
+        <circle class="ring__trk" cx="54" cy="54" r="46" fill="none" stroke-width="10"/>
+        <circle class="ring__val" cx="54" cy="54" r="46" fill="none" stroke-width="10"
+          stroke-dasharray="${C.toFixed(1)}" stroke-dashoffset="${(
+            C * (1 - pct / 100)
+          ).toFixed(1)}"/></svg>
+        <div class="ring__pct">${pct}%</div></div>
+      <div class="rackview__facts">
+        <div><span class="rackview__lab">Bins</span><br>${sn.done} of ${sn.total} walked</div>
+        <div><span class="rackview__lab">Drift</span><br>${
+          known
+            ? `score ${drift} across ${mism} mismatched product(s)`
+            : "open the Audit queue once for live scores"
+        }</div>
+        ${
+          worst && worst.b.score > 0
+            ? `<div class="rackview__worst">Worst open bin: <b>${escapeHtml(
+                worst.key
+              )}</b> - score ${worst.b.score}${
+                worst.b.last_audited_at
+                  ? `, audited ${escapeHtml(fmtAgo(worst.b.last_audited_at))}`
+                  : ", never audited"
+              }. Start there.</div>`
+            : openCount === 0
+              ? `<div>\u2713 Every bin walked - finish the audit below.</div>`
+              : ""
+        }
+      </div></div>`;
+    const bincards = `<div class="bingrid">${(sn.items || [])
+      .map((i) => {
+        const b = audBinInfo(i.key);
+        const score = b ? b.score : null;
+        const cls = i.done
+          ? "binc--ok"
+          : score == null
+            ? ""
+            : score >= 5
+              ? "binc--bad"
+              : score > 0
+                ? "binc--warn"
+                : "binc--ok";
+        return `<div class="binc ${cls}">
+          ${
+            i.done
+              ? `<span class="binc__done">\u2713 done${
+                  i.done_by ? " \u00b7 " + escapeHtml(i.done_by) : ""
+                }</span>`
+              : ""
+          }
+          <div class="binc__row"><span class="binc__name">${escapeHtml(i.key)}</span>
+            ${
+              !i.done && score != null
+                ? `<span class="binc__score">${score === 0 ? "\u2713" : score}</span>`
+                : ""
+            }</div>
+          <div class="binc__sub">${
+            b
+              ? (b.last_audited_at
+                  ? `audited ${escapeHtml(fmtAgo(b.last_audited_at))}${
+                      b.last_audited_by
+                        ? " by " + escapeHtml(b.last_audited_by)
+                        : ""
+                    }`
+                  : "never audited") +
+                ` \u00b7 ${b.mismatched_count} mismatched of ${b.product_count}`
+              : escapeHtml(i.note || "")
+          }</div>
+          <div class="binc__act">
+            <button class="reset audsess-jump" type="button"
+              data-bin="${escapeHtml(i.key)}"
+              title="Open the bin audit with ${escapeHtml(i.key)} loaded">Audit</button>
+            ${
+              sn.status === "open"
+                ? `<button class="reset audsess-done" type="button"
+                     data-item="${i.id}" data-done="${i.done ? 1 : 0}"
+                     title="${i.done ? "Un-tick this bin" : "Mark this bin walked"}">${
+                       i.done ? "un-tick" : "mark done"
+                     }</button>`
+                : ""
+            }
+          </div></div>`;
+      })
+      .join("")}</div>`;
+    el.innerHTML = `
+      <div class="sessdetail__head"><h2>${escapeHtml(sn.name)}</h2>
+        <span class="recent__note">bin walk \u00b7 ${escapeHtml(sn.status)}</span>
+        <span class="sessdetail__spacer"></span>
+        <div class="seg" id="audsess-seg">
+          <button type="button" data-view="rack"${
+            audSessView === "rack" ? ' class="seg--on"' : ""
+          }>Rack</button>
+          <button type="button" data-view="bins"${
+            audSessView === "bins" ? ' class="seg--on"' : ""
+          }>Bins</button>
+        </div></div>
+      <div id="audsess-view-rack"${audSessView === "bins" ? " hidden" : ""}>${rackview}</div>
+      <div id="audsess-view-bins"${audSessView === "rack" ? " hidden" : ""}>${bincards}</div>
+      ${actions}`;
+    document.querySelectorAll("#audsess-seg button").forEach((btn) =>
+      btn.addEventListener("click", () => {
+        audSessView = btn.dataset.view;
+        renderAuditSessionDetail(sn);
+      })
+    );
+  } else {
+    const rows = (sn.items || [])
+      .map((i) => {
+        const doneBtn =
+          sn.status === "open"
+            ? `<button class="binlist__go audsess-done" type="button"
+                 data-item="${i.id}" data-done="${i.done ? 1 : 0}"
+                 title="${i.done ? "Un-tick this item" : "Mark this item accounted for"}">${
+                   i.done ? "\u2713 done" : "mark done"
+                 }</button>`
+            : i.done
+              ? `<span class="binlist__check">\u2713</span>`
+              : "";
+        const sub = [
+          i.done && i.done_by ? `by ${i.done_by}` : "",
+          i.done && i.done_at ? fmtAgo(i.done_at) : "",
+          i.note || "",
+        ]
+          .filter(Boolean)
+          .join(" \u00b7 ");
+        return `
+          <li class="olrow${i.done ? " olrow--done" : ""}">
+            <div class="olrow__main">
+              <span class="binlist__name ol-sku"
+                    data-sku="${escapeHtml(i.key)}">${escapeHtml(i.key)}</span>
+              <span class="olrow__title">${escapeHtml(i.label || "")}</span>
+              ${sub ? `<div class="olrow__sub">${escapeHtml(sub)}</div>` : ""}
+            </div>
+            ${doneBtn}
+          </li>`;
+      })
+      .join("");
+    el.innerHTML = `
+      <div class="sessdetail__head"><h2>${escapeHtml(sn.name)}</h2>
+        <span class="recent__note">1-left checks \u00b7 ${escapeHtml(sn.status)}</span></div>
+      <div class="audsess__bar u-maxw420"><div class="audsess__fill" style="width:${pct}%"></div></div>
+      <div class="audsess__nums u-maxw420"><span>${sn.done} of ${sn.total} done</span><span>${pct}%</span></div>
+      <p class="linkbox__text u-maxw70ch">Items tick themselves when their 1-left check clears (auto or manual confirm); anything left needs a walk.</p>
+      ${actions}
+      <ul class="recent__list binlist u-maxh480">${rows}</ul>`;
+  }
 
   const finish = document.getElementById("audsess-finish");
   if (finish)
@@ -13645,7 +14412,7 @@ function renderAuditSessionDetail(s) {
       )
         return;
       try {
-        await postJson(`/api/audit-sessions/${s.id}/finish`, {
+        await postJson(`/api/audit-sessions/${sn.id}/finish`, {
           worker: operatorEl.value || null,
         });
         audSessOpenId = null;
@@ -13661,7 +14428,7 @@ function renderAuditSessionDetail(s) {
       if (!window.confirm("Abandon this audit? Its ticks are kept for the record."))
         return;
       try {
-        await postJson(`/api/audit-sessions/${s.id}/abandon`, {
+        await postJson(`/api/audit-sessions/${sn.id}/abandon`, {
           worker: operatorEl.value || null,
         });
         audSessOpenId = null;
@@ -13674,11 +14441,27 @@ function renderAuditSessionDetail(s) {
 }
 
 document.getElementById("audsess-list").addEventListener("click", (e) => {
-  const open = e.target.closest(".audsess-open, .audsess__name");
+  const pill = e.target.closest(".aud-binjump");
+  if (pill) {
+    jumpToBinAudit(pill.dataset.bin);
+    return;
+  }
+  const open = e.target.closest(".audsess-open");
   if (!open) return;
-  const s = audSessions.find((x) => x.id === Number(open.dataset.sid));
-  if (!s) return;
-  renderAuditSessionDetail(s);
+  const sn = audSessions
+    .concat(audSessDone)
+    .find((x) => x.id === Number(open.dataset.sid));
+  if (!sn) return;
+  renderAuditSessionDetail(sn);
+  audShowPane("session");
+});
+
+document.getElementById("audsess-finlist").addEventListener("click", (e) => {
+  const open = e.target.closest(".audsess-open");
+  if (!open) return;
+  const sn = audSessDone.find((x) => x.id === Number(open.dataset.sid));
+  if (!sn) return;
+  renderAuditSessionDetail(sn);
   audShowPane("session");
 });
 
@@ -13711,7 +14494,7 @@ document.getElementById("audsess-detail").addEventListener("click", async (e) =>
 
 document.getElementById("audsess-toggle").addEventListener("click", () => {
   audSessShowDone = !audSessShowDone;
-  loadAuditSessions();
+  renderAuditSessionsDone();
 });
 
 const audsessKindEl = document.getElementById("audsess-kind");
