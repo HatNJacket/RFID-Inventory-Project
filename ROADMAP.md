@@ -1,7 +1,48 @@
 # RFID Inventory System — Roadmap
 
 Source of truth for project status. Updated by Claude each working session.
-Last updated: 2026-09-23 (ShipStation-fed sold ledger).
+Last updated: 2026-09-28 (scope reset).
+
+## ⚠️ SCOPE RESET (Nick, 2026-09-28) — the app is an RFID EXTENSION, not a do-everything app
+
+Three core workflows: **1. Label printing** (simplified scan station +
+receiving strips), **2. Inventory verification** (massively simplified,
+see the scored-audit design below), **3. Product locating**. Plus
+returns-assist, batch tagging, and history past Shopify's 6 months.
+Nothing has been removed yet - this section is the agreed plan.
+
+**REMOVE (approved):** held/unpaired label strips + the printed-never-
+paired warnings + label dismissals; multibox leftovers (companion tags,
+boxset parts, multibox tables); sort handoff; Boxify dims mirror;
+open-box LISTING tools (returns-assist stays); product merge/split UI
+(scripts stay in dev/); C72 tuning/telemetry/debug plumbing; backorder
+debt; the review task inbox (differences show live in audit instead);
+the per-feature SHOPIFY_WRITE_MODE comma list (one on/off).
+
+**KEEP (decided):** returns-assist (scan box → pick option → restock +
+print label; tag paired by hand until an RFID printer); LINK relay;
+draft-listing creation FIXED UP (dummy name format
+"[INGREDIENT SKU] DRAFT BUNDLE COMPONENT -> [MAIN SKU]", two text
+boxes autofilled - ingredient "SKU-X", main = SKU without the suffix -
+normal confirm on the trigger); bundle contents, plus a NEW un-bundling
+workflow (scan bundle → box count → confirm contents → deaden bundle
+tags → print per-box labels) since the warehouse is moving bundles to
+per-component SKUs; the first-batch-tagging lower ban STAYS.
+
+**Guardrails:** predictive/blocking guards go (lower-capped-by-sales,
+heard-sweep raise requirement, stale-sweep guard); what stays is the
+interaction pattern (writes operator-confirmed + History + undo) and
+the first-tagging lower ban. Audits become the source of truth; the
+remaining prompts just ask the user to re-scan when a count is off.
+
+**Scored audit queue (replaces 1-left/0-left marking) - design in
+progress with Nick:** per-tag last-heard dataset; bins scored by
+|on-hand − active tags heard since last fulfillment| and time since
+last audit (split at a ~1-2 week threshold, each half ordered by
+score); expected value becomes a RANGE from {on-hand, tags − sold},
+out-of-range scans prompt a re-scan then manual confirm or silent
+tags → locate list. Auto-retiring a tag on fulfillment: idea noted,
+not building yet. Silent-tag handling is the hard part.
 
 ## 🏠 Home landing page + sidebar navigation — ✅ BUILT + ON DEV 2026-09-24, ⏳ PROD WAITS FOR NICK'S UPDATE BUNDLE
 
