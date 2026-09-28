@@ -1,7 +1,7 @@
 # RFID Inventory System — Roadmap
 
 Source of truth for project status. Updated by Claude each working session.
-Last updated: 2026-09-28 (scope reset).
+Last updated: 2026-09-28 (scope reset + C72 4.18, ON PROD).
 
 ## ⚠️ SCOPE RESET (Nick, 2026-09-28) — the app is an RFID EXTENSION, not a do-everything app
 
@@ -73,8 +73,10 @@ box 1 is confirmed with that pattern by hand, even if the scan was a
 barcode. Normal confirm on the trigger. Dummy name format:
 "[INGREDIENT SKU] DRAFT BUNDLE COMPONENT -> [MAIN SKU]".
 
-**BUILD STATUS (2026-09-28, one session, dev-only): phases 1-3, 5, 6
-BUILT; phase 4 delivered light (see note).** Detail in the two
+**BUILD STATUS (2026-09-28): phases 1-3, 5, 6 BUILT; phase 4
+delivered light (see note). ✅ ON PROD 2026-09-28 (Nick's call),
+dev/backfill_last_heard.py run against prod (2841 tags stamped);
+dev mirrors prod again.** Detail in the two
 scope-reset commits. Notes that survive the session:
 - Held-strip removal kept LabelDismissal + the write-off flows on
   purpose: they silence blank/test labels in sweeps and power the
@@ -95,7 +97,10 @@ scope-reset commits. Notes that survive the session:
   (default 14); no Settings UI yet - say the word.
 
 **C72 UPDATE — ✅ BUILT 2026-09-28 (C72 4.18, code 136), Nick's
-five asks + the queued cleanup, one session:**
+five asks + the queued cleanup, one session. ✅ ON PROD 2026-09-28:
+prod serves the 4.18 APK, so the gun self-updates on its next app
+open pointed at prod. Once 4.18 is confirmed on the gun, delete the
+/api/c72/* stubs.**
 - Dialog buttons stay in ONE horizontal row (the platform stacked
   every confirm's buttons into a scrolling vertical list; fixed in
   dlg() for all ~50 dialogs at once).
@@ -151,7 +156,7 @@ five asks + the queued cleanup, one session:**
    explicit sessions (lean rolling); barcode scans allowed but
    badged "no tag" (no retirement precision).
 
-## 🏠 Home landing page + sidebar navigation — ✅ BUILT + ON DEV 2026-09-24, ⏳ PROD WAITS FOR NICK'S UPDATE BUNDLE
+## 🏠 Home landing page + sidebar navigation — ✅ ON PROD 2026-09-28 (the WIP-badge bundle)
 
 Nick (09-24): the terminal is finicky to learn - it should open to a
 menu of use cases (EasyScan-style), ordered by what average workers
@@ -404,7 +409,7 @@ reworked to fit the streamlined menu, one at a time):**
 - Type scale going forward: 12px meta / 14px body / 16px headings,
   mono only for machine strings - stop minting one-off sizes.
 
-## 🚚 Expected Count reworked onto ShipStation — ✅ BUILT + ON DEV 2026-09-23, ⏳ PROD WAITS FOR NICK'S UPDATE BUNDLE
+## 🚚 Expected Count reworked onto ShipStation — ✅ ON PROD 2026-09-28 (the WIP-badge bundle)
 
 Nick (09-23): the adjustment-history-windowed sales math "relies
 heavily on hoping to read the adjustment history at the right time" -
