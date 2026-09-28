@@ -12374,25 +12374,6 @@ function renderBinAudit() {
            <ul class="recent__list">${owedLabels}</ul>`
         : ""
     }
-    ${
-      !pm && (rep.companions_heard || []).length
-        ? `<div class="recent__head u-mt14"><h2>Companion boxes heard (${rep.companions_heard.length})</h2></div>
-           <ul class="recent__list">${rep.companions_heard
-             .map(
-               (c) =>
-                 `<li class="recent__item">📦 Box ${c.box_no || "?"} of ${
-                   c.box_count || "?"
-                 } of <strong>${escapeHtml(
-                   c.product_title || c.sku || "?"
-                 )}</strong>${
-                   c.bin_location
-                     ? ` · lives in ${escapeHtml(c.bin_location)}`
-                     : ""
-                 } - recognized, counts nowhere (the unit's tag is on box 1)</li>`
-             )
-             .join("")}</ul>`
-        : ""
-    }
     ${obxBlock}
     ${
       strays || unknowns || strayGhosts

@@ -32,7 +32,12 @@ def run_suite(path: str) -> subprocess.CompletedProcess:
     unmocked network call waiting forever - into a named FAIL instead
     of a battery that never finishes."""
     tmp = tempfile.mkdtemp(prefix="rfid_suite_")
-    env = {**os.environ, "TEMP": tmp, "TMP": tmp, "TMPDIR": tmp}
+    # PYTHONIOENCODING: a child whose stdout is a pipe defaults to the
+    # Windows codepage (cp1252), and any suite printing "→" or "✓" in
+    # a check label dies with UnicodeEncodeError instead of its result
+    # (test_link, 2026-09-28). The suites are UTF-8; say so.
+    env = {**os.environ, "TEMP": tmp, "TMP": tmp, "TMPDIR": tmp,
+           "PYTHONIOENCODING": "utf-8"}
     try:
         return subprocess.run(
             [sys.executable, path], capture_output=True, env=env,

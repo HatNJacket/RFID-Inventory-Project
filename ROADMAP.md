@@ -91,12 +91,42 @@ scope-reset commits. Notes that survive the session:
   Nick can overrule.
 - Run dev/backfill_last_heard.py once against each DB so old sweeps
   seed last_heard_at (consumers already fall back to assigned_at).
-- C72-update cleanup list: remove the tuning/debug/commands stubs,
-  the companions_skipped/companions_heard [] response keys, the gun's
-  sort-handoff sender, multibox_ok field; add the PACK toggle
-  (/api/packing/scans) and the draft dialog's two autofilled boxes.
 - The audit threshold lives in AppSetting "audit_threshold_days"
   (default 14); no Settings UI yet - say the word.
+
+**C72 UPDATE — ✅ BUILT 2026-09-28 (C72 4.18, code 136), Nick's
+five asks + the queued cleanup, one session:**
+- Dialog buttons stay in ONE horizontal row (the platform stacked
+  every confirm's buttons into a scrolling vertical list; fixed in
+  dlg() for all ~50 dialogs at once).
+- The AUDIT tab's list IS the check screen now: the pop-up window is
+  gone, LOAD/arrows run a real /check, CHECK re-submits and repaints
+  in place, and STOPPING a trigger sweep re-checks by itself. Cards
+  show the SKU, sort red → yellow → green → untagged, and carry the
+  web's verdict language (expected RANGE, Sales agree, "missing,
+  misplaced or mislabeled", out-of-range re-scan prompt).
+- LOG AUDIT (new bottom-bar button) signs the shelf off through
+  /api/bins/{bin}/audit-complete - the gun anchors BinAudit rows now,
+  same as the web.
+- "PRINT X LABELS - expected but not paired" in the product fix menu
+  (the W9177 case): N defaults to expected − units-here, editable,
+  queues plain /api/print-jobs - pairing them NEVER moves on-hand.
+- PACK toggle on the LINK tab: PACK mode posts every barcode/trigger
+  read to /api/packing/scans, verdict rows in the feed, ding/buzz.
+- Draft dialog autofills per the settled spec (box 1 = scanned SKU,
+  13-digit barcodes filtered; box 2 follows the hyphen-number
+  pattern live; main_sku sent to the server).
+- Cleanup landed: tuning/commands/telemetry client plumbing removed
+  (field-tuned values baked in; the heartbeat is the new
+  POST /api/link/presence), sort-handoff sender removed, multibox_ok
+  dropped, companions_skipped/companions_heard keys removed from the
+  server + the web's dead renderer. The /api/c72/* server stubs STAY
+  until C72 4.18 is confirmed on the gun (the 4.17 APK polls them
+  every 2 s until it self-updates) - then delete them.
+- The broken GET /api/c72/debug-log (referenced the deleted
+  C72DebugEvent model, latent 500) is gone.
+- STILL OPEN from phase 4: the wholesale scan-station panel
+  replacement (Nick can call it).
 
 **Build order (one session per phase, Nick fires each):**
 1. Removals (independent; shrink everything after).

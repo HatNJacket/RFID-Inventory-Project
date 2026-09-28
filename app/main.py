@@ -1474,9 +1474,6 @@ def sweep_assign(
         "count": len(assigned),
         "assigned": [a.as_dict() for a in assigned],
         "duplicates": duplicates,
-        # Multibox is gone; the key stays [] until the C72 update stops
-        # reading it.
-        "companions_skipped": [],
     }
     warn = _overpair_warning(session, payload.sku)
     if warn:
@@ -4552,12 +4549,27 @@ def rebin_tags(payload: RebinTagsIn, session: Session = Depends(get_session)):
     return {"sku": sku, "bin": new_bin, "tags_moved": len(tags)}
 
 
+# ---- C72 presence -----------------------------------------------------
+# The gun pings this every ~2 s (C72 4.18+) so the web terminal's LINK
+# toggle can say whether a C72 is around. It replaced the retired
+# tuning poll as the heartbeat.
+
+class GunPresenceIn(BaseModel):
+    device: str | None = Field(default=None, max_length=100)
+    tab: str | None = Field(default=None, max_length=32)
+
+
+@app.post("/api/link/presence", dependencies=[Depends(require_user)])
+def post_gun_presence(payload: GunPresenceIn):
+    _stamp_gun(payload.device or "C72", payload.tab)
+    return {"ok": True}
+
+
 # ---- C72 tuning/telemetry: RETIRED (scope reset, 2026-09-28) --------------
 # The live-tuning, remote-command and debug-stream plumbing did its job
 # (field tuning without APK loops) and is gone. These stubs stay ONLY
-# because the CURRENT APK still polls them every few seconds; the gun's
-# own update removes them for good. The tuning GET keeps one real duty:
-# it is the gun's presence heartbeat for LINK.
+# so a not-yet-updated 4.17 APK doesn't 404 every few seconds while it
+# self-updates; delete them once C72 4.18 is confirmed on the gun.
 
 class C72DebugIn(BaseModel):
     device: str | None = Field(default=None, max_length=100)
@@ -4584,23 +4596,6 @@ def post_c72_debug(payload: C72DebugIn):
 @app.get("/api/c72/commands/pending", dependencies=[Depends(require_user)])
 def pending_c72_commands():
     return {"commands": []}
-
-
-@app.get("/api/c72/debug-log", dependencies=[Depends(require_user)])
-def get_c72_debug(
-    limit: int = 200, session: Session = Depends(get_session)
-):
-    rows = session.scalars(
-        select(C72DebugEvent).order_by(C72DebugEvent.id.desc())
-        .limit(max(1, min(limit, 1000)))
-    ).all()
-    return {"lines": [
-        {
-            "at": r.created_at.isoformat() if r.created_at else None,
-            "device": r.device,
-            "line": r.line,
-        } for r in rows
-    ]}
 
 
 # The rolling "unlinked stickers" hunt (Nick, 2026-09-09): every sweep
@@ -7213,7 +7208,6 @@ def bin_check(
     # count wrong".
     foreign, unknown = [], []
     printed_labels_heard: list[dict] = []
-    companions_heard: list[dict] = []
     if swept:
         covered = wanted | extra
         owners = {
@@ -7381,7 +7375,6 @@ def bin_check(
         "foreign": foreign,
         "unknown_epcs": unknown,
         "printed_labels_heard": printed_labels_heard,
-        "companions_heard": companions_heard,
         "stray_ghosts": stray_ghosts,
         "batch_done": bool(bin_key_set) and bin_key_set <= done_bin_keys,
         "batch_done_id": done_batch.id if done_batch else None,
@@ -16542,7 +16535,6 @@ def batch_verify(
         "foreign": foreign,
         "retired_heard": retired_heard,
         "unknown_epcs": unknown,
-        "companions_heard": [],
         # Unresolved codes still in the batch: worth a heads-up at verify
         # (they were counted but match no product), never a blocker —
         # completion drops them without filing Review work (Nick's call,

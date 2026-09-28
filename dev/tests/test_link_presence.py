@@ -42,6 +42,14 @@ with TestClient(app) as cl:
     check("tab updates in place (no duplicate gun)",
           len(st["guns"]) == 1 and st["guns"][0]["tab"] == "link", st)
 
+    # --- gun presence via the dedicated ping (C72 4.18+) ------------------
+    r = cl.post("/api/link/presence",
+                json={"device": "C72", "tab": "audit"})
+    check("presence ping answers", r.status_code == 200, r.text)
+    st = cl.get("/api/link/status").json()
+    check("ping updates the gun's tab in place",
+          len(st["guns"]) == 1 and st["guns"][0]["tab"] == "audit", st)
+
     # --- gun presence via a LINK scan POST (old APKs too) -----------------
     cl.post("/api/link/scans",
             json={"kind": "barcode", "value": "1", "device": "OLD-GUN"})
