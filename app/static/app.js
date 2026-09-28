@@ -5506,6 +5506,8 @@ function publishBatchStep(stage) {
 
 async function pullBatch(announce) {
   if (!batch) return;
+  // Bundle definitions for the kit cards - one fetch per page life.
+  if (batchBundles === null) loadBatchBundles();
   try {
     const prevStatus = batch.status;
     const prevShelfSweep = batch.shelf_swept_at;
@@ -6117,10 +6119,8 @@ function renderBatchItems() {
   } else {
     summary.hidden = true;
   }
-  bEl.items.innerHTML = "";
-  batchItems.forEach((item) => {
-    bEl.items.append(collectItemCard(item));
-  });
+  // Bundle cards (round 13): visible kits wrap their component rows.
+  renderWithBundleCards(bEl.items, batchItems, collectItemCard);
   renderMultibinBar();
 }
 
@@ -6182,6 +6182,432 @@ function collectItemCard(item) {
       li.prepend(cb);
     }
     return li;
+}
+
+// === bundle cards in the batch steps (Nick, 2026-09-28 round 13) ============
+// Design C: a kit renders as one purple card with its component rows
+// tucked inside - the SAME rows, steppers and all, so counting never
+// moves. A three-way mode decides when cards materialize: "started"
+// (any component box scanned), "buildable" (the scanned boxes complete
+// at least one full kit), "off" (today's flat list). Pure display
+// state; the server never sees it.
+let batchBundles = null; // /api/bundles rows, one fetch per page life
+let batchBundlesLoading = false;
+let bundleCardsMode = localStorage.getItem("bundleCards") || "started";
+
+async function loadBatchBundles() {
+  if (batchBundlesLoading) return;
+  batchBundlesLoading = true;
+  try {
+    batchBundles = (await apiJson("/api/bundles")).bundles || [];
+  } catch (err) {
+    batchBundles = [];
+  }
+  renderBundleModeControls();
+  // The definitions landed AFTER the first paint - redraw the lists so
+  // the kit cards appear without waiting for the next poll.
+  if (batch && !isReceivingBatch() && batchBundles.length) {
+    renderBatchItems();
+    renderPairItems();
+  }
+}
+
+// Units a batch item contributes to kit math: loose scans + sealed-case
+// units + boxes already tagged (they are on the shelf too).
+function bundleUnitsOf(item) {
+  return (
+    (item.units_total != null ? item.units_total : item.qty_scanned) +
+    (item.tagged_before || 0)
+  );
+}
+
+// Families: bundles touching this batch, merged when they share a
+// component (the ALP-T x10/x5 pool), members = the batch items.
+function bundleFamilies() {
+  if (
+    !batchBundles ||
+    !batchBundles.length ||
+    !batchItems.length ||
+    isReceivingBatch()
+  )
+    return [];
+  const itemBySku = new Map();
+  batchItems.forEach((i) => {
+    if (i.sku && i.resolved && !i.skipped && i.kind !== "bundle")
+      itemBySku.set(i.sku.toUpperCase(), i);
+  });
+  const touching = batchBundles.filter(
+    (b) =>
+      !b.excluded &&
+      (b.contents || []).some((c) =>
+        itemBySku.has((c.component_sku || "").toUpperCase())
+      )
+  );
+  let fams = [];
+  const bySku = new Map();
+  touching.forEach((b) => {
+    const hit = [];
+    (b.contents || []).forEach((c) => {
+      const f = bySku.get((c.component_sku || "").toUpperCase());
+      if (f && !hit.includes(f)) hit.push(f);
+    });
+    let fam = hit[0];
+    if (!fam) {
+      fam = { masters: [], skus: new Set() };
+      fams.push(fam);
+    } else if (hit.length > 1) {
+      // A bundle bridging two families merges them.
+      hit.slice(1).forEach((other) => {
+        other.masters.forEach((m) => fam.masters.push(m));
+        other.skus.forEach((s) => {
+          fam.skus.add(s);
+          bySku.set(s, fam);
+        });
+        fams = fams.filter((f) => f !== other);
+      });
+    }
+    fam.masters.push(b);
+    (b.contents || []).forEach((c) => {
+      const k = (c.component_sku || "").toUpperCase();
+      fam.skus.add(k);
+      bySku.set(k, fam);
+    });
+  });
+  fams.forEach((fam) => {
+    fam.members = batchItems.filter(
+      (i) => i.sku && fam.skus.has(i.sku.toUpperCase()) && itemBySku.has(i.sku.toUpperCase())
+    );
+    fam.units = (sku) => {
+      const it = itemBySku.get((sku || "").toUpperCase());
+      return it ? bundleUnitsOf(it) : 0;
+    };
+  });
+  return fams.filter((f) => f.members.length);
+}
+
+function bundleMasterStat(b, units) {
+  let buildable = null;
+  const missing = [];
+  (b.contents || []).forEach((c) => {
+    const can = Math.floor(units(c.component_sku) / Math.max(1, c.qty || 1));
+    buildable = buildable === null ? can : Math.min(buildable, can);
+    if (can < 1) missing.push(c.component_sku);
+  });
+  buildable = buildable || 0;
+  const listed = b.on_hand;
+  const covered =
+    listed != null &&
+    listed > 0 &&
+    (b.contents || []).every(
+      (c) => units(c.component_sku) >= listed * (c.qty || 1)
+    );
+  return { buildable, listed, covered, missing };
+}
+
+function bundleMasterChip(st) {
+  if (st.covered)
+    return `<span class="chip chip--ok">covers ${st.listed} listed ✓</span>`;
+  if (st.buildable > 0)
+    return `<span class="chip chip--warn">builds ${st.buildable}${
+      st.listed != null ? ` of ${st.listed} listed` : ""
+    }</span>`;
+  return `<span class="chip chip--bdim">builds 0${
+    st.missing.length
+      ? " - short on " + st.missing.map(escapeHtml).join(", ")
+      : ""
+  }</span>`;
+}
+
+// Which of a family's listings the current mode shows. Empty = no card.
+function famVisibleMasters(fam) {
+  if (bundleCardsMode === "off") return [];
+  if (!fam.members.some((i) => bundleUnitsOf(i) > 0)) return [];
+  if (bundleCardsMode === "started") return fam.masters;
+  return fam.masters.filter(
+    (b) => bundleMasterStat(b, fam.units).buildable >= 1
+  );
+}
+
+// The purple card shell; the caller appends member <li>s to .ul.
+function bundleFamilyCard(fam, masters) {
+  const li = document.createElement("li");
+  li.className = "bundlecard";
+  const recipe = (b) =>
+    (b.contents || [])
+      .map((c) => `${c.qty}× ${escapeHtml(c.component_sku)}`)
+      .join(" + ");
+  li.innerHTML =
+    `<div class="bundlecard__masters">` +
+    masters
+      .map((b) => {
+        const st = bundleMasterStat(b, fam.units);
+        return `<div class="bundlecard__master">
+          <span class="bundlecard__pkg">\u{1F4E6}</span>
+          <span class="bundlecard__name">${escapeHtml(b.title || b.bundle_sku)}</span>
+          <span class="bundlecard__sku">${escapeHtml(b.bundle_sku)} = ${recipe(b)}</span>
+          ${bundleMasterChip(st)}
+        </div>`;
+      })
+      .join("") +
+    `</div><ul class="batch__items bundlecard__items"></ul>`;
+  li.ul = li.querySelector(".bundlecard__items");
+  return li;
+}
+
+// Generic grouping: renders `items` into `listEl` with visible family
+// cards wrapping their members (at the first member's position) and
+// everything else flat. makeCard(item) must return the normal <li>.
+function renderWithBundleCards(listEl, items, makeCard) {
+  listEl.innerHTML = "";
+  if (batchBundles === null) loadBatchBundles();
+  const fams = bundleFamilies();
+  const inList = new Set(items.map((i) => i.id));
+  const famAt = new Map();
+  const placed = new Set();
+  fams.forEach((fam) => {
+    const masters = famVisibleMasters(fam);
+    const members = fam.members.filter((m) => inList.has(m.id));
+    if (!masters.length || !members.length) return;
+    famAt.set(members[0].id, { fam, masters, members });
+    members.forEach((m) => placed.add(m.id));
+  });
+  items.forEach((item) => {
+    const f = famAt.get(item.id);
+    if (f) {
+      const card = bundleFamilyCard(f.fam, f.masters);
+      f.members.forEach((m) => {
+        const mli = makeCard(m);
+        if (!bundleUnitsOf(m)) mli.classList.add("bcell--bzero");
+        card.ul.append(mli);
+      });
+      listEl.append(card);
+      return;
+    }
+    if (placed.has(item.id)) return;
+    listEl.append(makeCard(item));
+  });
+}
+
+// One control, one state, a copy per step (the [data-bndlmode] slots).
+const BUNDLE_MODES = [
+  ["started", "Started", "Show every bundle with at least one component box scanned"],
+  ["buildable", "Buildable", "Show only bundles the scanned boxes can completely build"],
+  ["off", "Off", "No bundle cards - components stay plain rows"],
+];
+
+function renderBundleModeControls() {
+  const hasBundles = !!(batchBundles && batchBundles.length);
+  document.querySelectorAll("[data-bndlmode]").forEach((slot) => {
+    if (!hasBundles) {
+      slot.innerHTML = "";
+      return;
+    }
+    slot.innerHTML =
+      `<span class="bndlmode__lab">\u{1F4E6} Bundle cards</span>` +
+      `<span class="bndlseg">` +
+      BUNDLE_MODES.map(
+        ([v, lab, tip]) =>
+          `<button type="button" data-mode="${v}" title="${escapeHtml(tip)}"${
+            bundleCardsMode === v ? ' class="bndlseg--on"' : ""
+          }>${lab}</button>`
+      ).join("") +
+      `</span>`;
+    slot.querySelectorAll("button").forEach((btn) =>
+      btn.addEventListener("click", () => {
+        bundleCardsMode = btn.dataset.mode;
+        localStorage.setItem("bundleCards", bundleCardsMode);
+        renderBundleModeControls();
+        if (batch && !isReceivingBatch()) {
+          renderBatchItems();
+          renderPairItems();
+          if (checkEntries) renderCheckList();
+        }
+      })
+    );
+  });
+}
+
+// ---- the Check step's box walk (round 13's approved flipper) ---------------
+// listing > product > box: bundles first with their components
+// together, then the standalones, one physical box per screen. Ticks
+// are page-local encouragement; "fix count" is the real write path.
+let bwalk = null; // { seq: [{item, box, boxes, fam}], pos, done:Set }
+
+function bwalkBuild() {
+  const seq = [];
+  const fams = bundleFamilies();
+  const placed = new Set();
+  const pushItem = (item, famLabel) => {
+    const boxes = item.qty_scanned + (item.case_count || 0);
+    for (let b = 1; b <= boxes; b++) {
+      seq.push({ item, box: b, boxes, fam: famLabel });
+    }
+  };
+  const famLabel = (masters) =>
+    masters.map((b) => b.title || b.bundle_sku).join(" / ");
+  fams.forEach((fam) => {
+    const masters = famVisibleMasters(fam);
+    if (!masters.length) return;
+    fam.members.forEach((m) => {
+      placed.add(m.id);
+      pushItem(m, famLabel(masters));
+    });
+  });
+  batchItems.forEach((i) => {
+    if (placed.has(i.id) || i.skipped || !i.resolved) return;
+    pushItem(i, null);
+  });
+  return seq;
+}
+
+function bwalkRender() {
+  const el = document.getElementById("bwalk");
+  if (!bwalk || !bwalk.seq.length) {
+    el.hidden = true;
+    return;
+  }
+  const s = bwalk.seq[Math.min(bwalk.pos, bwalk.seq.length - 1)];
+  const item = s.item;
+  const key = `${item.id}|${s.box}`;
+  const prodBoxes = bwalk.seq.filter((x) => x.item.id === item.id);
+  const dots = prodBoxes
+    .map((x) => {
+      const k = `${item.id}|${x.box}`;
+      return `<i class="${
+        x === s ? "bwalk__dot--cur" : bwalk.done.has(k) ? "bwalk__dot--on" : ""
+      }"></i>`;
+    })
+    .join("");
+  el.hidden = false;
+  el.innerHTML = `
+    <div class="bwalk">
+      <div class="bwalk__path">${
+        s.fam
+          ? `<b>\u{1F4E6} ${escapeHtml(s.fam)}</b><span>›</span>`
+          : ""
+      }<span class="bwalk__prod">${escapeHtml(itemDisplayName(item))}</span>
+        <span>›</span><span>boxes</span>
+        <span class="bwalk__grow"></span>
+        <span class="bwalk__meta">${bwalk.pos + 1} of ${bwalk.seq.length} box(es)</span>
+        <button class="reset bwalk__close" type="button" title="Close the walk">✕</button>
+      </div>
+      <div class="bwalk__pager">
+        <button class="bwalk__arrow" type="button" data-d="-1" ${
+          bwalk.pos === 0 ? "disabled" : ""
+        }>◀</button>
+        <div class="bwalk__box">
+          <div class="bwalk__lab">Box</div>
+          <div class="bwalk__count">${s.box} <span>of ${s.boxes}</span></div>
+          <div class="bwalk__lab">${escapeHtml(item.sku || "")}${
+            item.barcode ? " · " + escapeHtml(item.barcode) : ""
+          }</div>
+          <div class="bwalk__dots">${dots}</div>
+        </div>
+        <button class="bwalk__arrow" type="button" data-d="1" ${
+          bwalk.pos >= bwalk.seq.length - 1 ? "disabled" : ""
+        }>▶</button>
+      </div>
+      <div class="bwalk__acts">
+        <button class="print__btn bwalk__check" type="button">${
+          bwalk.done.has(key) ? "✓ Checked - next" : "✓ Box checked"
+        }</button>
+        <button class="reset bwalk__fix" type="button"
+          title="The count is wrong - set how many boxes were really collected">Fix count…</button>
+      </div>
+    </div>`;
+  el.querySelectorAll(".bwalk__arrow").forEach((b) =>
+    b.addEventListener("click", () => {
+      bwalk.pos = Math.max(
+        0,
+        Math.min(bwalk.seq.length - 1, bwalk.pos + Number(b.dataset.d))
+      );
+      bwalkRender();
+    })
+  );
+  el.querySelector(".bwalk__close").addEventListener("click", () => {
+    bwalk = null;
+    el.hidden = true;
+  });
+  el.querySelector(".bwalk__check").addEventListener("click", () => {
+    bwalk.done.add(key);
+    if (bwalk.pos < bwalk.seq.length - 1) {
+      bwalk.pos++;
+      bwalkRender();
+    } else {
+      el.querySelector(".bwalk__box").insertAdjacentHTML(
+        "beforeend",
+        `<div class="bwalk__lab" style="margin-top:6px">✓ Every box walked.</div>`
+      );
+    }
+  });
+  el.querySelector(".bwalk__fix").addEventListener("click", async () => {
+    const v = prompt(
+      `${itemDisplayName(item)}: how many boxes were really collected?`,
+      String(item.qty_scanned)
+    );
+    if (v === null) return;
+    const n = parseInt(v, 10);
+    if (Number.isNaN(n) || n < 0) return;
+    await adjustItemQty(item, n);
+    const done = bwalk ? bwalk.done : new Set();
+    bwalk = { seq: bwalkBuild(), pos: 0, done };
+    // Land back on this product's first box.
+    const at = bwalk.seq.findIndex((x) => x.item.id === item.id);
+    if (at >= 0) bwalk.pos = at;
+    bwalkRender();
+  });
+}
+
+document.getElementById("bcheck-walk").addEventListener("click", () => {
+  if (!batch) return;
+  if (bwalk) {
+    bwalk = null;
+    document.getElementById("bwalk").hidden = true;
+    return;
+  }
+  bwalk = { seq: bwalkBuild(), pos: 0, done: new Set() };
+  bwalkRender();
+});
+
+// Family-first ordering + purple header rows for the Verify table.
+// Answers null when the mode (or the batch) has nothing to group.
+function bundleVerifyGrouping(repItems) {
+  if (bundleCardsMode === "off") return null;
+  const fams = bundleFamilies();
+  if (!fams.length) return null;
+  const bySku = new Map(
+    repItems.map((r) => [(r.sku || "").toUpperCase(), r])
+  );
+  const ordered = [];
+  const headers = new Map();
+  const placed = new Set();
+  fams.forEach((fam) => {
+    const masters = famVisibleMasters(fam);
+    const members = [...fam.skus]
+      .map((s) => bySku.get(s))
+      .filter(Boolean);
+    if (!masters.length || !members.length) return;
+    headers.set(
+      ordered.length,
+      `<tr class="bvx-fam"><td colspan="6">${masters
+        .map((b) => {
+          const st = bundleMasterStat(b, fam.units);
+          return `\u{1F4E6} <b>${escapeHtml(b.title || b.bundle_sku)}</b>
+            <span class="bvx-fam__sku">${escapeHtml(b.bundle_sku)}</span>
+            ${bundleMasterChip(st)}`;
+        })
+        .join(" &nbsp; ")}</td></tr>`
+    );
+    members.forEach((m) => {
+      placed.add(m);
+      ordered.push(m);
+    });
+  });
+  if (!headers.size) return null;
+  repItems.forEach((r) => {
+    if (!placed.has(r)) ordered.push(r);
+  });
+  return { items: ordered, headers };
 }
 
 // --- Bulk bin updates (Nick, 2026-09-01) ------------------------------------
@@ -7498,7 +7924,18 @@ function renderCheckList() {
   list.innerHTML = "";
   empty.hidden = checkEntries.length > 0;
   if (!checkEntries.length) return;
-  checkEntries.forEach((entry) => {
+  // Bundle cards (round 13): flagged components group under their kit
+  // like every other step; visibility follows the shared mode.
+  const entryByItem = new Map(checkEntries.map((e) => [e.item.id, e]));
+  renderWithBundleCards(
+    list,
+    checkEntries.map((e) => e.item),
+    (item) => checkEntryCard(entryByItem.get(item.id))
+  );
+}
+
+function checkEntryCard(entry) {
+  {
     const li = itemCard(entry.item, "collect");
     // Shelf-sweep verdicts tint the whole row, mirroring the gun.
     if (entry.flags.includes("tags-silent")) {
@@ -7578,8 +8015,8 @@ function renderCheckList() {
       row.append(fix);
       li.querySelector(".bcell__info").append(row);
     }
-    list.append(li);
-  });
+    return li;
+  }
 }
 
 // --- Check-item editor (candidates arrows, counts, serial name) -------------
@@ -8937,7 +9374,6 @@ function renderPairCard() {
 }
 
 function renderPairItems() {
-  bEl.pairItems.innerHTML = "";
   const rows = batchItems.filter((i) => i.resolved && i.qty_scanned > 0);
   // "Won't RFID scan" products sink to the bottom, greyed (Nick,
   // 2026-09-09): their tags never answer on the box, so past the
@@ -8947,7 +9383,8 @@ function renderPairItems() {
     (a, b) =>
       (a.rfid_incompatible ? 1 : 0) - (b.rfid_incompatible ? 1 : 0)
   );
-  rows.forEach((item) => {
+  // Bundle cards (round 13): same purple grouping as Collect.
+  renderWithBundleCards(bEl.pairItems, rows, (item) => {
     const li = itemCard(item, "pair");
     if (item.rfid_incompatible) {
       li.classList.add("bcell--noscan");
@@ -8962,7 +9399,7 @@ function renderPairItems() {
       renderPairCard();
       bEl.pairInput.focus();
     });
-    bEl.pairItems.append(li);
+    return li;
   });
 }
 
@@ -9845,6 +10282,10 @@ async function runVerifyCheck(onlyItemId = null) {
   let pairedOk = true;
   let detectedOk = true;
   let yellowCount = 0;
+  // Bundle cards (round 13): family-first order with purple header
+  // rows; null (mode off, no kits here) leaves the table untouched.
+  const vgrp = bundleVerifyGrouping(rep.items);
+  if (vgrp) rep.items = vgrp.items;
   const rows = rep.items
     .map((r) => {
       // "Won't RFID scan" products are expected silent: their detected
@@ -10044,6 +10485,7 @@ async function runVerifyCheck(onlyItemId = null) {
         }</td>
       </tr>${detail}`;
     })
+    .map((h, ri) => ((vgrp && vgrp.headers.get(ri)) || "") + h)
     .join("");
 
   const otherCount = rep.foreign.length + rep.unknown_epcs.length;
@@ -10233,6 +10675,11 @@ function applyVerifyLowFilter(lowCount) {
         // Detail rows manage their own hidden state when the filter is
         // off; the filter forces them closed while on.
         if (verifyLowOnly) tr.hidden = true;
+        return;
+      }
+      if (tr.classList.contains("bvx-fam")) {
+        // Bundle headers follow the filter - no orphaned purple rows.
+        tr.hidden = verifyLowOnly;
         return;
       }
       tr.hidden = verifyLowOnly && tr.dataset.low !== "1";

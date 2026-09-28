@@ -307,6 +307,39 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
               and rows[0].ss_line_qty == 20,
               [(r2.sku, r2.quantity, r2.ss_shipments) for r2 in rows])
 
+    # ---- round 13: batches carry bundle families as box_sets ----------
+    # The C72's dormant multi-box grouping UI drives the kit cards; a
+    # family = every bundle listing sharing components with the batch,
+    # parts carrying the per-kit qty (and a bin for components shelved
+    # elsewhere).
+    cl.post("/api/bundle-contents", json={
+        "bundle_sku": "W9184B-BX",
+        "contents": [{"component_sku": "W9184B", "qty": 5},
+                     {"component_sku": "GHOST-COMP", "qty": 2}]})
+    b = cl.post("/api/batches",
+                json={"bin": "D4-2", "created_by": "Nick"}).json()
+    bs = b.get("box_sets") or []
+    check("the batch carries ONE family for the shared pool",
+          len(bs) == 1 and bs[0]["kind"] == "bundle", bs)
+    check("family header: primary master, every listing's title joined",
+          bs[0]["set_sku"] == "W9184B-B10"
+          and "x10" in bs[0]["set_title"] and "x5" in bs[0]["set_title"],
+          bs[0])
+    parts = {p["sku"]: p for p in bs[0]["parts"]}
+    check("parts carry the per-kit qty (primary master's recipe)",
+          parts["W9184B"]["qty"] == 10 and "bin" not in parts["W9184B"],
+          bs[0]["parts"])
+    check("a component shelved elsewhere rides as a read-only part",
+          parts["GHOST-COMP"]["qty"] == 2
+          and parts["GHOST-COMP"]["known_units"] == 0, bs[0]["parts"])
+    check("listed units ride from the bin map snapshot",
+          bs[0]["expected_units"] == 6, bs[0])
+    g = cl.get(f"/api/batches/{b['id']}").json()
+    check("GET batch carries the same families for the gun's resume",
+          (g["batch"].get("box_sets") or [{}])[0].get("set_sku")
+          == "W9184B-B10", g["batch"].get("box_sets"))
+    cl.post(f"/api/batches/{b['id']}/abandon", json={"remove_ties": False})
+
 print()
 print("FAILED: "+", ".join(fails) if fails else "ALL CHECKS PASSED")
 sys.exit(1 if fails else 0)

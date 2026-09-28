@@ -385,6 +385,7 @@ public class MainActivity extends Activity {
     private Button btnNext;
     private Button btnUndo;
     private Button btnSweep;
+    private Button btnWalk;
     private FrameLayout batchCard;
     private ImageView batchImg;
     private TextView batchName;
@@ -461,6 +462,9 @@ public class MainActivity extends Activity {
         int boxNo;          // remote row: which box of the set
         String remoteBin;   // remote row: the bin it belongs in
         int knownUnits;     // remote row: the count already known for it
+        // Bundle families (round 13): the box-set UI carries kits now.
+        boolean bundleSet;  // header: a bundle family, not a box set
+        int partQty;        // remote row: components per one kit
         // "Part of a set" mark (4.04, Nick's multi-box redo): noted on
         // the gun at collect, resolved on the WEB during verification.
         String markMaster;
@@ -1101,7 +1105,10 @@ public class MainActivity extends Activity {
             return true;
         });
         batchBtnRow.addView(btnUndo, weight());
-        btnNext = smallBtn("NEXT →");
+        btnWalk = smallBtn("WALK");
+        btnWalk.setOnClickListener(x -> walkBoxesDialog());
+        batchBtnRow.addView(btnWalk, weight());
+        btnNext = smallBtn("NEXT \u2192");
         makePrimary(btnNext);   // the one button that advances the flow
         btnNext.setOnClickListener(x -> stepNext());
         batchBtnRow.addView(btnNext, weight());
@@ -1111,8 +1118,22 @@ public class MainActivity extends Activity {
             if (!inBatch() || pos >= displayItems.size()) return;
             // Box-set header/remote rows are labels, not products.
             if (displayItems.get(pos).rowKind != 0) return;
-            if (step == STEP_CHECK && pos < checkEntries.size()) {
-                openItemEditor(checkEntries.get(pos));
+            if (step == STEP_CHECK) {
+                // Grouping reorders the list (round 13), so the entry
+                // is found by item - never by list position.
+                BItem it = displayItems.get(pos);
+                CheckEntry hit = null;
+                for (CheckEntry ce : checkEntries) {
+                    if (ce.item == it) {
+                        hit = ce;
+                        break;
+                    }
+                }
+                if (hit == null) {
+                    hit = new CheckEntry();
+                    hit.item = it;
+                }
+                openItemEditor(hit);
             } else {
                 // Same editor everywhere: fix a count, rename the label,
                 // move a product or skip it — during collect, pair AND
@@ -1124,6 +1145,130 @@ public class MainActivity extends Activity {
         });
 
         return v;
+    }
+
+    /** CHECK's box walk (round 13): the whole batch box by box -
+     *  visible kits first with their components together, then the
+     *  standalones. Ticks are encouragement, not writes; counts are
+     *  fixed through the item editor as always. */
+    private void walkBoxesDialog() {
+        final List<BItem> seqItems = new ArrayList<>();
+        final List<Integer> seqBox = new ArrayList<>();
+        final List<String> seqFam = new ArrayList<>();
+        java.util.HashSet<Integer> placed = new java.util.HashSet<>();
+        for (java.util.Map.Entry<String, JSONObject> e
+                : batchBoxSets.entrySet()) {
+            if (!boxSetVisible(e.getKey())) continue;
+            JSONObject meta = e.getValue();
+            String fam = meta.optString("set_title",
+                    meta.optString("set_sku", "?"));
+            JSONArray parts = meta.optJSONArray("parts");
+            for (int i = 0; parts != null && i < parts.length(); i++) {
+                JSONObject p = parts.optJSONObject(i);
+                BItem it = p == null ? null
+                        : itemBySku(p.optString("sku", null));
+                if (it == null || !placed.add(it.id)) continue;
+                walkAddBoxes(it, fam, seqItems, seqBox, seqFam);
+            }
+        }
+        for (BItem b : bItems) {
+            if (!b.resolved || b.skipped || placed.contains(b.id)) {
+                continue;
+            }
+            walkAddBoxes(b, null, seqItems, seqBox, seqFam);
+        }
+        if (seqItems.isEmpty()) {
+            status.setText("WALK: nothing collected yet - "
+                    + "no boxes to step through.");
+            return;
+        }
+        final int[] pos = {0};
+        final java.util.HashSet<String> done = new java.util.HashSet<>();
+
+        LinearLayout v = new LinearLayout(this);
+        v.setOrientation(LinearLayout.VERTICAL);
+        v.setPadding(dp(18), dp(14), dp(18), dp(6));
+        final TextView fam = new TextView(this);
+        fam.setTextSize(12);
+        fam.setTextColor(C_MUTED);
+        v.addView(fam);
+        final TextView name = new TextView(this);
+        name.setTextSize(16);
+        name.setTypeface(null, Typeface.BOLD);
+        name.setTextColor(C_TEXT);
+        v.addView(name);
+        final TextView big = new TextView(this);
+        big.setTextSize(30);
+        big.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+        big.setTextColor(C_TEXT);
+        big.setGravity(Gravity.CENTER);
+        big.setPadding(0, dp(10), 0, dp(4));
+        v.addView(big);
+        final TextView sub = new TextView(this);
+        sub.setTextSize(12);
+        sub.setTextColor(C_MUTED);
+        sub.setGravity(Gravity.CENTER);
+        v.addView(sub);
+        LinearLayout btns = new LinearLayout(this);
+        btns.setPadding(0, dp(12), 0, 0);
+        final Button prev = smallBtn("\u25c0 PREV");
+        final Button tick = smallBtn("\u2713 CHECKED");
+        makePrimary(tick);
+        final Button next = smallBtn("NEXT \u25b6");
+        btns.addView(prev, weight());
+        btns.addView(tick, weight());
+        btns.addView(next, weight());
+        v.addView(btns);
+
+        final Runnable paint = () -> {
+            BItem it = seqItems.get(pos[0]);
+            String f = seqFam.get(pos[0]);
+            fam.setText(f != null
+                    ? "\ud83d\udce6 " + f + " \u203a boxes"
+                    : "standalone \u203a boxes");
+            name.setText(bundleQtyPrefix(it) + it.name());
+            big.setText("BOX " + seqBox.get(pos[0]) + "/"
+                    + (it.qty + it.caseCount));
+            String key = it.id + "|" + seqBox.get(pos[0]);
+            sub.setText((it.sku != null ? it.sku : "no SKU")
+                    + " \u00b7 box " + (pos[0] + 1) + " of "
+                    + seqItems.size() + " in this walk"
+                    + (done.contains(key) ? " \u00b7 \u2713 checked" : ""));
+            prev.setEnabled(pos[0] > 0);
+            next.setEnabled(pos[0] < seqItems.size() - 1);
+        };
+        prev.setOnClickListener(x -> {
+            if (pos[0] > 0) pos[0]--;
+            paint.run();
+        });
+        next.setOnClickListener(x -> {
+            if (pos[0] < seqItems.size() - 1) pos[0]++;
+            paint.run();
+        });
+        tick.setOnClickListener(x -> {
+            done.add(seqItems.get(pos[0]).id + "|" + seqBox.get(pos[0]));
+            if (pos[0] < seqItems.size() - 1) {
+                pos[0]++;
+                paint.run();
+            } else {
+                sub.setText("\u2713 Every box walked.");
+            }
+        });
+        paint.run();
+        dlg().setTitle("Walk the boxes")
+                .setView(v)
+                .setNegativeButton("CLOSE", null)
+                .show();
+    }
+
+    private void walkAddBoxes(BItem b, String fam, List<BItem> seqItems,
+            List<Integer> seqBox, List<String> seqFam) {
+        int boxes = b.qty + b.caseCount;
+        for (int k = 1; k <= boxes; k++) {
+            seqItems.add(b);
+            seqBox.add(k);
+            seqFam.add(fam);
+        }
     }
 
     private View buildStationView() {
@@ -11366,6 +11511,10 @@ public class MainActivity extends Activity {
         btnSweep.setVisibility(
                 step == STEP_VERIFY || step == STEP_SHELF
                 ? View.GONE : View.VISIBLE);
+        // The box walk lives on CHECK (round 13): kits first, every
+        // physical box confirmed one screen at a time.
+        btnWalk.setVisibility(inBatch() && step == STEP_CHECK
+                && !receivingBatch ? View.VISIBLE : View.GONE);
         // One line at a slightly smaller size (set at build) — the
         // hyphen-newline version read as a typo (Nick, v3.44).
         btnSweep.setText(step == STEP_PAIR ? "SWEEP"
@@ -11944,7 +12093,8 @@ public class MainActivity extends Activity {
                 displayItems.addAll(waiting);
             }
         }
-        if (inBatch() && (step == STEP_COLLECT || step == STEP_PAIR)) {
+        if (inBatch() && (step == STEP_COLLECT || step == STEP_PAIR
+                || step == STEP_CHECK)) {
             groupBoxSetRows();
         }
         batchAdapter.notifyDataSetChanged();
@@ -11991,8 +12141,11 @@ public class MainActivity extends Activity {
             JSONObject p = parts.optJSONObject(i);
             if (p == null) continue;
             BItem it = itemBySku(p.optString("sku", null));
-            int n = it != null ? it.unitsTotal
+            int n = it != null ? it.unitsTotal + it.taggedBefore
                     : p.optInt("known_units", 0);
+            // Bundles take N per kit (the old sets were one box each):
+            // full units = the smallest boxes-per-recipe quotient.
+            n = n / Math.max(1, p.optInt("qty", 1));
             if (min == null || n < min) min = n;
         }
         return min;
@@ -12008,7 +12161,8 @@ public class MainActivity extends Activity {
         java.util.HashSet<String> emitted = new java.util.HashSet<>();
         for (BItem b : displayItems) {
             String setKey = boxSetKeyOf(b.sku);
-            if (setKey == null) {
+            if (setKey == null || !boxSetVisible(setKey)) {
+                // No set - or the bundle-cards mode says flat rows.
                 out.add(b);
                 continue;
             }
@@ -12041,6 +12195,82 @@ public class MainActivity extends Activity {
         displayItems.addAll(out);
     }
 
+    /** Bundle-cards mode (Nick, 2026-09-28 round 13): 0 = show a kit
+     *  once any of its component boxes is scanned, 1 = only kits the
+     *  scans can fully build, 2 = never. Legacy multi-box sets ignore
+     *  the mode and always group. */
+    private boolean boxSetVisible(String setKey) {
+        JSONObject meta = batchBoxSets.get(setKey);
+        if (meta == null) return false;
+        if (!"bundle".equals(meta.optString("kind"))) return true;
+        int mode = prefs.getInt("bundle_cards", 0);
+        if (mode == 2) return false;
+        boolean any = false;
+        JSONArray parts = meta.optJSONArray("parts");
+        for (int i = 0; parts != null && i < parts.length(); i++) {
+            JSONObject p = parts.optJSONObject(i);
+            BItem it = p == null ? null
+                    : itemBySku(p.optString("sku", null));
+            if (it != null && it.unitsTotal + it.taggedBefore > 0) {
+                any = true;
+                break;
+            }
+        }
+        if (!any) return false;
+        if (mode == 0) return true;
+        Integer u = boxSetUnitsHere(setKey);
+        return u != null && u >= 1;
+    }
+
+    private static final String[] BUNDLE_MODE_NAMES = {
+            "STARTED", "BUILDABLE", "OFF"};
+    private static final String[] BUNDLE_MODE_HINTS = {
+            "kits show once any component box is scanned",
+            "only kits the scanned boxes can fully build",
+            "no kit groups - components stay plain rows"};
+
+    /** "2\u00d7 " prefix for a component row shown under its kit. */
+    private String bundleQtyPrefix(BItem b) {
+        if (b.rowKind != 0
+                || !(step == STEP_COLLECT || step == STEP_PAIR
+                     || step == STEP_CHECK)) {
+            return "";
+        }
+        String setKey = boxSetKeyOf(b.sku);
+        if (setKey == null) return "";
+        JSONObject meta = batchBoxSets.get(setKey);
+        if (meta == null || !"bundle".equals(meta.optString("kind"))
+                || !boxSetVisible(setKey)) {
+            return "";
+        }
+        JSONArray parts = meta.optJSONArray("parts");
+        String u = b.sku == null ? ""
+                : b.sku.toUpperCase(java.util.Locale.US);
+        for (int i = 0; parts != null && i < parts.length(); i++) {
+            JSONObject p = parts.optJSONObject(i);
+            if (p != null && u.equals(p.optString("sku", "")
+                    .toUpperCase(java.util.Locale.US))) {
+                return p.optInt("qty", 1) + "\u00d7 ";
+            }
+        }
+        return "";
+    }
+
+    /** The kit recipe line: "10\u00d7 W9184B + 2\u00d7 EP-25". */
+    private String bundleRecipe(JSONObject meta) {
+        StringBuilder sb = new StringBuilder();
+        JSONArray parts = meta == null ? null
+                : meta.optJSONArray("parts");
+        for (int i = 0; parts != null && i < parts.length(); i++) {
+            JSONObject p = parts.optJSONObject(i);
+            if (p == null) continue;
+            if (sb.length() > 0) sb.append(" + ");
+            sb.append(p.optInt("qty", 1)).append("\u00d7 ")
+                    .append(p.optString("sku", "?"));
+        }
+        return sb.toString();
+    }
+
     private BItem makeSetHeader(String setKey, JSONObject meta) {
         BItem h = new BItem();
         h.rowKind = 1;
@@ -12054,6 +12284,8 @@ public class MainActivity extends Activity {
         h.setBoxes = meta != null ? meta.optInt("boxes", 0) : 0;
         h.expected = meta == null || meta.isNull("expected_units")
                 ? null : meta.optInt("expected_units");
+        h.bundleSet = meta != null
+                && "bundle".equals(meta.optString("kind"));
         return h;
     }
 
@@ -12066,8 +12298,11 @@ public class MainActivity extends Activity {
         r.boxNo = pj.optInt("box_no", 0);
         r.knownUnits = pj.optInt("known_units", 0);
         r.remoteBin = pj.isNull("bin") ? null : pj.optString("bin", null);
-        r.title = "Box " + r.boxNo + " of "
-                + (meta != null ? meta.optString("set_sku", "?") : "?");
+        r.partQty = pj.optInt("qty", 1);
+        r.title = meta != null && "bundle".equals(meta.optString("kind"))
+                ? r.partQty + "\u00d7 " + r.sku
+                : "Box " + r.boxNo + " of "
+                  + (meta != null ? meta.optString("set_sku", "?") : "?");
         return r;
     }
 
@@ -12182,7 +12417,9 @@ public class MainActivity extends Activity {
                 h.card.setBackground(rr(remote ? C_PRESS : C_BG,
                         remote ? C_LINE : C_BLUE, 10));
                 h.tracker.setTextColor(remote ? C_MUTED : C_BLUE);
-                h.name.setText(remote ? b.title : "⧉ " + b.title);
+                h.name.setText(remote ? b.title
+                        : (b.bundleSet ? "\ud83d\udce6 " : "\u29c9 ")
+                          + b.title);
                 if (remote) {
                     h.sku.setText("SKU: " + b.sku + " - IN BIN "
                             + (b.remoteBin != null ? b.remoteBin : "?")
@@ -12192,14 +12429,26 @@ public class MainActivity extends Activity {
                             + " box(es)");
                     h.tracker.setText(String.valueOf(b.knownUnits));
                 } else {
-                    h.sku.setText("MULTI-BOX SET · " + b.setBoxes
-                            + " box SKUs = 1 unit");
-                    h.bc.setVisibility(View.VISIBLE);
-                    h.bc.setText("Full units here = smallest box count");
                     Integer units = boxSetUnitsHere(b.sku == null ? ""
                             : b.sku.toUpperCase(java.util.Locale.US));
                     String u = units == null ? "?"
                             : String.valueOf(units);
+                    if (b.bundleSet) {
+                        JSONObject meta = batchBoxSets.get(
+                                b.sku == null ? "" : b.sku.toUpperCase(
+                                        java.util.Locale.US));
+                        h.sku.setText("BUNDLE \u00b7 " + b.sku + " = "
+                                + bundleRecipe(meta));
+                        h.bc.setVisibility(View.VISIBLE);
+                        h.bc.setText("Components carry the tags - "
+                                + "nothing prints for this listing");
+                    } else {
+                        h.sku.setText("MULTI-BOX SET \u00b7 " + b.setBoxes
+                                + " box SKUs = 1 unit");
+                        h.bc.setVisibility(View.VISIBLE);
+                        h.bc.setText(
+                                "Full units here = smallest box count");
+                    }
                     h.tracker.setText(b.expected != null
                             ? u + "/" + b.expected : u);
                 }
@@ -12263,7 +12512,7 @@ public class MainActivity extends Activity {
                 h.card.setBackground(rr(fill, stroke, 10));
             }
             h.tracker.setTextColor(trk);
-            h.name.setText(b.name());
+            h.name.setText(bundleQtyPrefix(b) + b.name());
             h.sku.setText((b.sku != null ? "SKU: " + b.sku
                     : (b.resolved ? "no SKU" : "⚠ unknown barcode"))
                     + (b.taggedBefore > 0
@@ -18796,6 +19045,51 @@ public class MainActivity extends Activity {
         pow.setLayoutParams(powLp);
         pow.setOnClickListener(v -> showScanPowerSettings(refreshPow));
         box.addView(pow);
+
+        // Bundle cards - when batch lists group kit components under
+        // their bundle listing (round 13). Tap cycles the three modes.
+        LinearLayout bnd = new LinearLayout(this);
+        bnd.setOrientation(LinearLayout.HORIZONTAL);
+        bnd.setGravity(Gravity.CENTER_VERTICAL);
+        bnd.setBackground(btnBg(C_CARD, C_LINE, C_PRESS, 8));
+        bnd.setPadding(dp(12), dp(10), dp(12), dp(10));
+        LinearLayout bt = new LinearLayout(this);
+        bt.setOrientation(LinearLayout.VERTICAL);
+        TextView bTitle = new TextView(this);
+        bTitle.setText("\ud83d\udce6 Bundle cards");
+        bTitle.setTextSize(14);
+        bTitle.setTextColor(C_TEXT);
+        bTitle.setTypeface(null, Typeface.BOLD);
+        bt.addView(bTitle);
+        final TextView bSum = new TextView(this);
+        bSum.setTextSize(11);
+        bSum.setTextColor(C_MUTED);
+        bt.addView(bSum);
+        final Runnable refreshBnd = () -> {
+            int m = prefs.getInt("bundle_cards", 0);
+            bSum.setText(BUNDLE_MODE_NAMES[m] + " \u00b7 "
+                    + BUNDLE_MODE_HINTS[m] + " \u00b7 tap to cycle");
+        };
+        refreshBnd.run();
+        bnd.addView(bt, new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        TextView bArrow = new TextView(this);
+        bArrow.setText("\u21bb");
+        bArrow.setTextSize(20);
+        bArrow.setTextColor(C_MUTED);
+        bnd.addView(bArrow);
+        LinearLayout.LayoutParams bndLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        bndLp.topMargin = dp(8);
+        bnd.setLayoutParams(bndLp);
+        bnd.setOnClickListener(v -> {
+            int m = (prefs.getInt("bundle_cards", 0) + 1) % 3;
+            prefs.edit().putInt("bundle_cards", m).apply();
+            refreshBnd.run();
+            if (inBatch()) refreshBatchList();
+        });
+        box.addView(bnd);
 
         // Theme card — mode + the five colour slots live one tap deeper.
         LinearLayout thm = new LinearLayout(this);

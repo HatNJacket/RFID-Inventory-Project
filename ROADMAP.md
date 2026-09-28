@@ -156,6 +156,35 @@ iterated over the "Audits Tab Redesign" preview artifact, 3 rounds):**
   removed (packing goes through an audit sweep; the server's
   /api/packing/* endpoints and the web pane stay).
 
+**ROUND 13 (Nick, 2026-09-28) — ✅ BUILT: bundle cards in the batch
+steps (Design C) + the three-way display setting.**
+- A kit renders as one purple card with its component rows tucked
+  inside - the SAME rows and steppers, so counting never moves and
+  nothing double-counts. Families merge listings sharing a pool
+  (the x10/x5 case is ONE card with both masters). Per-master chip:
+  "covers N listed ✓" / "builds N of M" / "builds 0 - short on X".
+- The "Bundle cards" mode on BOTH terminals: Started (any component
+  box scanned - default), Buildable (only kits the scans complete),
+  Off (flat list). Web: a segmented control per batch step
+  (localStorage); C72: a Settings card that cycles (prefs).
+- Web: collect / check / pair group into cards; verify gets purple
+  family header rows in its table (filter-aware). Check gains the
+  approved BOX WALK flipper (listing > product > box, ◀ ▶, per-box
+  tick, Fix count through the real qty write).
+- Server: batch payloads carry `box_sets` built from bundle
+  families - the C72's DORMANT multi-box grouping UI (2026-09-09)
+  drives the kit cards, with a per-kit `qty` on parts (the gun
+  divides; old sets were one box each). Components shelved in
+  another bin ride as read-only rows naming their bin.
+- C72 4.21 (code 139): bundle-aware headers (📦 + recipe +
+  buildable/listed tracker), per-kit qty prefixes on member rows,
+  grouping extended to CHECK, the Bundle cards Settings row, a
+  WALK button on CHECK opening the box flipper dialog, and the
+  check list's tap now maps by ITEM (the old position mapping
+  broke under reordering).
+- /api/bundles gained the listing's own on_hand snapshot (the
+  "covers N listed" denominator). Covered in test_bundles.py.
+
 **ROUND 12 (Nick, 2026-09-28) — ✅ BUILT: bundles.app bundles as
 first-class RFID records.**
 - POST /api/bundles/pull walks every variant's bundles_app.content

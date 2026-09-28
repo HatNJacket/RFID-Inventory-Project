@@ -862,6 +862,9 @@
           <div class="linkbox__actions">
             <button class="reset" id="batch-baseline" type="button" title="For a shelf that's partly tagged already: sweep it with the C72's SWEEP tab, hit SEND there, then click this - every tag read marks its product as already done, and you only collect the untagged remainder">📶 Use latest C72 sweep as shelf baseline</button>
           </div>
+          <!-- Bundle cards mode (round 13): one shared control, JS
+               renders a copy per step and keeps them in sync. -->
+          <div class="bndlmode" data-bndlmode></div>
           <p class="linkbox__text" id="bcollect-summary" hidden></p>
           <ul class="batch__items" id="batch-items"></ul>
           <button class="print__btn" id="batch-to-labels" type="button">Next step →</button>
@@ -963,9 +966,12 @@
             <span id="bcheck-shelfwarn-text">⚠ This bin was batch tagged before - sweep the shelf on the C72 (the Check step there prompts for it) so stickered boxes are sorted from new ones. This notice clears by itself once the sweep arrives.</span>
           </div>
           <div id="bcheck-strays"></div>
+          <div class="bndlmode" data-bndlmode></div>
+          <div id="bwalk" hidden></div>
           <p class="linkbox__text" id="bcheck-empty" hidden>Nothing needs checking ✓</p>
           <ul class="batch__items" id="bcheck-list"></ul>
           <div class="linkbox__actions">
+            <button class="reset" id="bcheck-walk" type="button" title="Step through the batch box by box - bundles first, each kit's components together, every box ticked on its own">&#128694; Walk the boxes&#8230;</button>
             <button class="reset" id="bcheck-refresh" type="button" title="Run the checks again against Shopify - the list no longer does this by itself every time you close a product">↻ Refresh checks</button>
             <button class="reset" id="bcheck-recheck" type="button" hidden title="Look every unknown barcode up in Shopify again - use it after fixing barcodes there">↻ Re-check unknown barcodes</button>
             <button class="reset" id="bcheck-all" type="button" title="Open every scanned product, not just the flagged ones - edit label names/SKUs here">Review all products…</button>
@@ -1223,6 +1229,7 @@
               <button class="reset" id="bpair-norfid" type="button" title="The tag reads fine in hand but never once it's on the box - sweeps stop expecting an answer">⊘ Won't RFID scan</button>
             </div>
           </div>
+          <div class="bndlmode" data-bndlmode></div>
           <p class="linkbox__text" id="bpair-summary"></p>
           <ul class="batch__items" id="bpair-items"></ul>
           <div class="linkbox__actions">
@@ -1247,6 +1254,7 @@
             <button class="reset" id="bverify-check" type="button">Check bin</button>
             <button class="print__btn" id="batch-complete" type="button">Complete batch</button>
           </div>
+          <div class="bndlmode" data-bndlmode></div>
           <div id="bverify-report"></div>
         </div>
       </div>

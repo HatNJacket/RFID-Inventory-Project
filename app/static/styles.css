@@ -19,6 +19,8 @@
   --ink-dim: #6d7175;
   --accent: #005bd3;          /* focus/blue — the scan rail */
   --accent-soft: rgba(0, 91, 211, 0.12);
+  --bundle: #6f42c1;          /* bundles wear purple everywhere */
+  --bundle-soft: rgba(111, 66, 193, 0.10);
   --chip-bg: #cce5f6;         /* bin chip, like the "F1-2" badge */
   --chip-ink: #00527c;
   --ok-bg: #cdfee1;  --ok-ink: #0c5132;
@@ -42,6 +44,8 @@
     --ink-dim: #9b9ba1;
     --accent: #5c9dff;
     --accent-soft: rgba(92, 157, 255, 0.16);
+    --bundle: #b18aff;
+    --bundle-soft: rgba(177, 138, 255, 0.14);
     --chip-bg: #1f3a52;
     --chip-ink: #9fd1f5;
     --ok-bg: #123c2a;  --ok-ink: #7fe0ae;
@@ -4640,3 +4644,68 @@ button.ph-order:hover { border-color: var(--accent); }
   border: 1px solid var(--line); border-radius: 999px; background: var(--card);
 }
 .pcb__chip:hover { color: var(--accent); border-color: var(--accent); }
+
+/* --- bundle cards in the batch steps (round 13, Design C) ------------- */
+.bndlmode { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 10px; }
+.bndlmode:empty { display: none; }
+.bndlmode__lab { font-size: 12.5px; font-weight: 650; color: var(--ink-dim); }
+.bndlseg { display: inline-flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; background: var(--card); }
+.bndlseg button {
+  border: none; background: none; color: var(--ink-dim); cursor: pointer;
+  padding: 5px 13px; font: inherit; font-size: 12.5px; font-weight: 600;
+  border-right: 1px solid var(--line);
+}
+.bndlseg button:last-child { border-right: none; }
+.bndlseg button.bndlseg--on { background: var(--bundle-soft); color: var(--bundle); }
+
+.bundlecard {
+  list-style: none; background: var(--card); border: 1px solid var(--bundle);
+  border-radius: 12px; padding: 10px 12px; margin: 10px 0;
+}
+.bundlecard__masters { display: grid; gap: 4px; margin-bottom: 4px; }
+.bundlecard__master { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.bundlecard__pkg { color: var(--bundle); }
+.bundlecard__name { font-weight: 700; }
+.bundlecard__sku { font-family: var(--mono); font-size: 12px; color: var(--ink-dim); }
+.bundlecard__items { margin: 0; padding: 0; }
+.bundlecard__items .bcell { background: var(--card-2); }
+.bcell--bzero { opacity: 0.78; }
+.bcell--bzero.bcell { border-style: dashed; }
+.chip--bdim { background: var(--card-2); color: var(--ink-dim); border: 1px solid var(--line); }
+
+tr.bvx-fam td {
+  background: var(--bundle-soft); border-left: 4px solid var(--bundle);
+  font-size: 12.5px; padding: 7px 10px;
+}
+tr.bvx-fam .bvx-fam__sku { font-family: var(--mono); font-size: 11.5px; color: var(--ink-dim); }
+tr.bvx-fam .chip { margin-left: 6px; }
+
+/* the Check step's box walk */
+.bwalk {
+  background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+  padding: 12px 14px; margin: 0 0 12px; max-width: 560px;
+}
+.bwalk__path { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 12px; color: var(--ink-dim); }
+.bwalk__path b { color: var(--bundle); }
+.bwalk__prod { color: var(--ink); font-weight: 650; }
+.bwalk__grow { flex: 1; }
+.bwalk__meta { font-family: var(--mono); font-size: 11.5px; }
+.bwalk__close { font-weight: 700; }
+.bwalk__pager { display: flex; align-items: center; gap: 12px; margin: 10px 0; }
+.bwalk__arrow {
+  width: 42px; height: 42px; border-radius: 10px; border: 1px solid var(--line);
+  background: var(--card-2); color: var(--ink); font-size: 17px; cursor: pointer;
+}
+.bwalk__arrow:disabled { opacity: 0.4; cursor: default; }
+.bwalk__box { flex: 1; text-align: center; }
+.bwalk__lab { font-size: 12px; color: var(--ink-dim); font-family: var(--mono); }
+.bwalk__count { font-family: var(--mono); font-weight: 700; font-size: 24px; }
+.bwalk__count span { color: var(--ink-dim); font-size: 15px; }
+.bwalk__dots { display: flex; gap: 5px; justify-content: center; margin-top: 6px; flex-wrap: wrap; }
+.bwalk__dots i { width: 8px; height: 8px; border-radius: 999px; background: var(--card-2); border: 1px solid var(--line); }
+.bwalk__dots i.bwalk__dot--on { background: var(--ok-ink); border-color: var(--ok-ink); }
+.bwalk__dots i.bwalk__dot--cur { background: var(--accent); border-color: var(--accent); }
+.bwalk__acts { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+/* The kit card stacks header-over-members - the list's flex-li layout
+   must not put them side by side (the round-10 sess lesson). */
+.batch__items li.bundlecard { display: block; }

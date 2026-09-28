@@ -8927,6 +8927,7 @@ def create_batch(payload: BatchIn, session: Session = Depends(get_session)):
     result = batch.as_dict()
     result["items"] = [i.as_dict() for i in items]
     result["covered_bundles"] = covered
+    result["box_sets"] = _bundle_box_sets(session, items)
     return result
 
 
@@ -9261,7 +9262,129 @@ def get_batch(batch_id: int, session: Session = Depends(get_session)):
     b["shelf_swept_at"] = (
         cap.created_at.isoformat() if cap and cap.created_at else None
     )
+    # Bundle families in the C72's box_sets shape (round 13): the
+    # gun's grouping UI lumps each kit's components under one header.
+    b["box_sets"] = _bundle_box_sets(session, items)
     return {"batch": b, "items": payload}
+
+
+def _bundle_box_sets(session: Session, items) -> list[dict]:
+    """Bundle families for a batch, in the C72's box_sets shape - the
+    multi-box grouping UI that went dormant when sets were removed,
+    revived for bundles (Nick, 2026-09-28 round 13). One entry per
+    FAMILY of bundle listings sharing components with this batch
+    (the x10/x5 pool is one header), parts carrying a per-kit `qty`
+    (the old sets were one box each; the gun divides by it now).
+    Components shelved in another bin ride as read-only parts with
+    their bin named. The gun's display mode (started / buildable /
+    off) is its own prefs call - this is just the data."""
+    skus = {_up(i.sku) for i in items if i.sku}
+    if not skus:
+        return []
+    by_bundle: dict[str, list[BundleContent]] = {}
+    for r in session.scalars(
+        select(BundleContent).order_by(
+            BundleContent.bundle_sku, BundleContent.id
+        )
+    ):
+        by_bundle.setdefault(r.bundle_sku.strip().upper(), []).append(r)
+    if not by_bundle:
+        return []
+    excluded = {
+        p.sku.strip().upper()
+        for p in session.scalars(
+            select(ProductKind).where(
+                ProductKind.excluded == True  # noqa: E712
+            )
+        )
+    }
+    touching = {
+        k: v for k, v in by_bundle.items()
+        if k not in excluded
+        and any(_up(c.component_sku) in skus for c in v)
+    }
+    if not touching:
+        return []
+    fams: list[dict] = []
+    by_comp: dict[str, dict] = {}
+    for k, contents in touching.items():
+        hit: list[dict] = []
+        for c in contents:
+            f = by_comp.get(_up(c.component_sku))
+            if f is not None and f not in hit:
+                hit.append(f)
+        fam = hit[0] if hit else None
+        if fam is None:
+            fam = {"masters": [], "comps": {}}
+            fams.append(fam)
+        for other in hit[1:]:
+            # A bundle bridging two families merges them.
+            fam["masters"] += other["masters"]
+            for s2, c2 in other["comps"].items():
+                fam["comps"].setdefault(s2, c2)
+                by_comp[s2] = fam
+            fams.remove(other)
+        fam["masters"].append((k, contents))
+        for c in contents:
+            cu = _up(c.component_sku)
+            fam["comps"].setdefault(
+                cu, {"sku": c.component_sku, "qty": c.qty or 1}
+            )
+            by_comp[cu] = fam
+    infos = {
+        i.bundle_sku.strip().upper(): i
+        for i in session.scalars(select(BundleInfo))
+    }
+    wanted_map = (
+        {m for f in fams for m, _ in f["masters"]}
+        | {s for f in fams for s in f["comps"]}
+    )
+    map_rows: dict[str, BinMapEntry] = {}
+    for e in session.scalars(
+        select(BinMapEntry).where(
+            func.upper(BinMapEntry.sku).in_(sorted(wanted_map))
+        )
+    ):
+        map_rows.setdefault(_up(e.sku), e)
+    out = []
+    for f in fams:
+        first_key, first_contents = f["masters"][0]
+        titles = []
+        for mk, _c in f["masters"]:
+            info = infos.get(mk)
+            e = map_rows.get(mk)
+            titles.append(
+                (info.title if info and info.title else None)
+                or (e.product_title if e else None)
+                or mk
+            )
+        primary = map_rows.get(first_key)
+        parts = []
+        for cu, cd in f["comps"].items():
+            entry = {"sku": cd["sku"], "qty": cd["qty"], "box_no": 0}
+            if cu not in skus:
+                # Shelved elsewhere: the gun shows it read-only with
+                # its bin, using the snapshot count.
+                ce = map_rows.get(cu)
+                entry["bin"] = ce.bin if ce else None
+                entry["known_units"] = (
+                    ce.qty if ce and ce.qty is not None else 0
+                )
+            parts.append(entry)
+        out.append({
+            # Original casing for display; the gun keys on upper.
+            "set_sku": first_contents[0].bundle_sku,
+            "set_title": " / ".join(titles),
+            "image_url": primary.image_url if primary else None,
+            "boxes": len(parts),
+            "expected_units": (
+                primary.qty if primary and primary.qty is not None
+                else None
+            ),
+            "kind": "bundle",
+            "parts": parts,
+        })
+    return out
 
 
 def _prior_tag_counts(
@@ -12448,6 +12571,9 @@ def list_bundles(
             "excluded": bool(pk.excluded) if pk else False,
             "bin": b_map.bin if b_map else None,
             "barcode": b_map.barcode if b_map else None,
+            # The listing's own snapshot stock - what "covers N
+            # listed" checks against on the batch bundle cards.
+            "on_hand": b_map.qty if b_map else None,
             "buildable": buildable,
             "contents": contents,
         })
