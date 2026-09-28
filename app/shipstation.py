@@ -197,3 +197,25 @@ def get_order_line_quantities(ss_order_id) -> dict[str, int]:
         if sku and qty > 0:
             out[sku] = out.get(sku, 0) + qty
     return out
+
+
+def get_awaiting_shipment_orders(max_pages: int = 6) -> list[dict]:
+    """Every order still awaiting shipment - the packing scan's
+    allocation set (phase 6, 2026-09-28). READ ONLY like everything in
+    this module: listing orders never touches labels or postage."""
+    out: list[dict] = []
+    page = 1
+    while page <= max_pages:
+        data = _get("/orders", {
+            "orderStatus": "awaiting_shipment",
+            "pageSize": 500,
+            "sortBy": "OrderDate",
+            "sortDir": "ASC",
+            "page": page,
+        })
+        rows = (data or {}).get("orders") or []
+        out.extend(rows)
+        if page >= int((data or {}).get("pages") or 1):
+            break
+        page += 1
+    return out

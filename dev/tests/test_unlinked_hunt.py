@@ -26,7 +26,6 @@ def check(l,c,x=""):
 KNOWN    = "AAAA0000000000000000000A"
 RETIRED  = "AAAA0000000000000000000B"
 DISMISSED= "AAAA0000000000000000000C"
-COMPANION= "AAAA0000000000000000000D"
 PRINTED  = "AAAA0000000000000000000E"   # label printed, never paired
 MYSTERY  = "AAAA0000000000000000000F"   # nothing anywhere
 MYSTERY2 = "AAAA000000000000000000FF"
@@ -36,7 +35,7 @@ with patch("app.main.oneleft") as ol:
     from sqlalchemy import select
     from sqlalchemy.orm import Session as S
     from app.database import get_engine
-    from app.models import (CompanionTag, LabelDismissal, LocateQueueEntry,
+    from app.models import (LabelDismissal, LocateQueueEntry,
                             PrintJob, RetiredTag, RfidAssignment)
 
     with S(get_engine()) as s:
@@ -45,8 +44,6 @@ with patch("app.main.oneleft") as ol:
                              bin_location="A1-1"))
         s.add(RetiredTag(rfid_id=RETIRED, sku="GONE-1", kind="presumed-sold"))
         s.add(LabelDismissal(epc=DISMISSED, dismissed_by="Nick"))
-        s.add(CompanionTag(epc=COMPANION, sku="BIG-1", box_no=2,
-                           box_count=2))
         s.add(PrintJob(epc=PRINTED, status="done",
                        shopify_variant_id="t:9",
                        product_title="Printed never paired", sku="OWED-1",
@@ -56,7 +53,7 @@ with patch("app.main.oneleft") as ol:
     # ---- a sweep hears everything -------------------------------------
     r = cl.post("/api/epc-captures", json={
         "device": "C72-test",
-        "epcs": [KNOWN, RETIRED, DISMISSED, COMPANION, PRINTED, MYSTERY],
+        "epcs": [KNOWN, RETIRED, DISMISSED, PRINTED, MYSTERY],
     })
     d = r.json()
     check("capture accepted", r.status_code == 201, r.text[:200])

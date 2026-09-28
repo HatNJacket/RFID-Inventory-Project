@@ -166,8 +166,8 @@ with patch("app.shopify.lookup_barcode",
           and claimed and claimed[0]["barcode"] == "55555555",
           (barcode_writes, claimed and claimed[0]["barcode"]))
 
-    # ---- gate: feature off = nothing written, label prints as before --
-    with patch.object(config, "SHOPIFY_WRITE_MODE", "scan_station_only"):
+    # ---- gate: writes off = nothing written, label prints as before --
+    with patch.object(config, "SHOPIFY_WRITE_MODE", "disabled"):
         with S(get_engine()) as s:
             s.add(PrintJob(epc="0B0X000000000000000000A4", status="pending",
                            shopify_variant_id="gid://shopify/ProductVariant/8",

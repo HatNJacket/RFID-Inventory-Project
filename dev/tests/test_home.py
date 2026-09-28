@@ -47,7 +47,8 @@ with patch("app.main._maybe_refresh_bin_map", return_value=False), \
           and 'id="resume-card"' in html, "")
     check("every tile routes to an existing tab",
           all(f'data-go="{t}"' in html
-              for t in ("batch", "scan", "audits", "review")), "")
+              for t in ("batch", "scan", "audits"))
+          and 'data-go="review"' not in html, "")
 
     # ---- typeahead endpoint --------------------------------------------
     with Session(get_engine()) as s:

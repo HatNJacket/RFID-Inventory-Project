@@ -73,7 +73,6 @@
       <button class="tabs__tab" data-tab="batch" role="tab"><span class="tabs__ico" aria-hidden="true">&#127991;</span><span class="tabs__lbl">Batch tagging</span></button>
       <button class="tabs__tab" data-tab="inventory" role="tab"><span class="tabs__ico" aria-hidden="true">&#128451;</span><span class="tabs__lbl">Inventory</span></button>
       <button class="tabs__tab" data-tab="queue" role="tab"><span class="tabs__ico" aria-hidden="true">&#128424;</span><span class="tabs__lbl">Print queue</span></button>
-      <button class="tabs__tab" data-tab="review" role="tab"><span class="tabs__ico" aria-hidden="true">&#128203;</span><span class="tabs__lbl">Review <span class="wip">WIP</span></span></button>
       <button class="tabs__tab" data-tab="audits" role="tab"><span class="tabs__ico" aria-hidden="true">&#9989;</span><span class="tabs__lbl">Audits</span></button>
       <button class="tabs__tab" data-tab="history" role="tab"><span class="tabs__ico" aria-hidden="true">&#128337;</span><span class="tabs__lbl">History</span></button>
       <hr class="tabs__rule" />
@@ -162,7 +161,7 @@
           <span class="tile__name">Inventory checks</span>
           <span class="tile__sub">1-left and 0-left checks. Count the shelf, confirm the number. No tags involved.</span>
         </button>
-        <button class="tile" type="button" data-go="review">
+        <button class="tile" type="button" data-go="audits">
           <span class="tile__badge tile__badge--info" id="tile-badge-rfid" hidden></span>
           <span class="tile__icon" aria-hidden="true">&#128225;</span>
           <span class="tile__name">RFID Inventory</span>
@@ -698,23 +697,13 @@
           <button class="reset" id="sortship-open" type="button"
                   title="A shipment arrived and you're not sure which stock orders the boxes belong to: scan every box and this sorts them into per-order lists (asking the TC-Planner which open orders expect each product), with an extra list for boxes no order explains. Each list then opens pre-filled in the planner, ready to save, update stock and print from there.">📥 Sort a shipment</button>
           <button class="reset" id="fullship-open" type="button"
-                  title="Load a whole TC-Planner stock order, print every remaining label up front, then label and pair the shipment. Whatever didn't physically arrive goes on a held vendor strip; the paired counts open pre-filled in the planner to save and update stock.">📦 Receive entire shipment</button>
-          <button class="reset" id="heldstrips-open" type="button"
-                  title="Every vendor strip with labels still waiting on it - printed at receiving for boxes that didn't arrive. Pairing a strip label onto its box consumes it automatically; this window just shows what's waiting.">🏷 Held label strips</button>
-        </div>
-        <!-- Held label strips (Nick, 2026-09-02): the one legitimate
-             home of printed-but-unapplied labels. Read-only window. -->
-        <div class="linkbox serialbox" id="heldstrips" hidden>
-          <div class="linkbox__title">Held label strips
-            <button class="reset sortship__close" id="heldstrips-exit" type="button" title="Close">✕</button>
-          </div>
-          <p class="linkbox__text" id="heldstrips-status"></p>
-          <div id="heldstrips-list"></div>
+                  title="Load a whole TC-Planner stock order, print every remaining label up front, then label and pair the shipment. Labels for products that didn't physically arrive get peeled and discarded at settle; the paired counts open pre-filled in the planner to save and update stock.">📦 Receive entire shipment</button>
         </div>
         <!-- Receive entire shipment (Nick, 2026-09-01): the RFID-first
              receive. Labels print BEFORE the planner receive is saved;
-             unused labels go on a held vendor strip; paired counts hand
-             off to the planner (its Print labels grays out). -->
+             unused labels get discarded at settle (2026-09-28); paired
+             counts hand off to the planner (its Print labels grays
+             out). -->
         <div class="linkbox serialbox" id="fullship" hidden>
           <div class="linkbox__title">Receive entire shipment
             <button class="reset sortship__close" id="fullship-exit" type="button" title="Close - nothing is created until you confirm a shipment">✕</button>
@@ -758,7 +747,6 @@
           </div>
           <!-- A C72 sort pass waiting to be picked up (the gun scanned
                the pallet; label-match happens here). -->
-          <p class="linkbox__text" id="sortship-handoff" hidden></p>
           <p class="linkbox__text" id="sortship-status"></p>
           <div id="sortship-groups"></div>
         </div>
@@ -1274,48 +1262,6 @@
     </section>
 
     <!-- Review tab (WIP: task inbox only) -->
-    <section class="inventory" id="tab-review" hidden>
-      <div class="recent__head">
-        <h2>Review - task inbox</h2>
-        <select id="review-filter" class="operator" title="Show only one kind of task">
-          <option value="">All types</option>
-        </select>
-        <input id="review-search" class="recent__search" type="search"
-               placeholder="Search SKU or barcode…" autocomplete="off" />
-        <button class="reset" id="review-notesonly" type="button" hidden
-                title="Show only tasks someone has left a note on">📝 With notes</button>
-        <button class="reset" id="review-locate-btn" type="button"
-                title="Products queued for a physical tag hunt on the C72's Locate tab">📡 Locate list</button>
-        <button class="reset" id="review-ordersync" type="button"
-                title="Pull fulfilled orders from Shopify (read-only) and re-check tags vs on-hand + sold. Runs by itself daily at 8 AM.">↻ Sync orders</button>
-      </div>
-      <p class="review-note" id="review-sync-note" hidden></p>
-      <!-- What the selected task type means — shown while a filter is on -->
-      <p class="review-note" id="review-filter-note" hidden></p>
-      <ul class="recent__list" id="review-list"></ul>
-
-      <!-- C72 locate list: the shared to-hunt queue, removable here or
-           on the gun's Locate tab -->
-      <div class="phist-overlay" id="locq-overlay" hidden>
-        <section class="linkbox serialbox phist-modal phist-modal--w560">
-          <div class="linkbox__title">C72 locate list</div>
-          <p class="linkbox__text">Products queued for a physical tag hunt - the gun's LOCATE tab shows this same list, so nobody types an EPC by hand. Where the tags <em>think</em> they live is shown per product.</p>
-          <ul class="recent__list" id="locq-list"></ul>
-          <div class="linkbox__actions u-mt10">
-            <span class="linkbox__text" id="locq-msg"></span>
-            <button class="reset" id="locq-close" type="button">Close</button>
-          </div>
-        </section>
-      </div>
-
-      <!-- Resolve window: per-category actions + note, built by JS -->
-      <div class="phist-overlay" id="resolve-overlay" hidden>
-        <section class="linkbox serialbox phist-modal phist-modal--w520">
-          <div id="resolve-body"></div>
-        </section>
-      </div>
-    </section>
-
     <!-- Audits tab -->
     <section class="inventory" id="tab-audits" hidden>
       <!-- Audit hub: the stat cards ARE the navigation — one tool pane
@@ -1326,6 +1272,13 @@
         <!-- Freshness tag (Nick, 2026-09-08): saved card numbers show
              instantly in yellow; green checkmark once live data lands. -->
         <div id="audhub-fresh" class="freshtag" hidden></div>
+        <div class="linkbox__actions u-mb10">
+          <button class="reset" id="review-locate-btn" type="button"
+                  title="Products queued for a physical tag hunt on the C72's Locate tab">📡 Locate list</button>
+          <button class="reset" id="review-ordersync" type="button"
+                  title="Pull fulfilled orders (read-only) and refresh the sold ledger. Runs by itself hourly.">↻ Sync orders</button>
+        </div>
+        <p class="review-note" id="review-sync-note" hidden></p>
         <div class="audhub-cards">
           <button class="audcard" type="button" data-pane="checks">
             <span class="audcard__label">1-left checks</span>
@@ -1333,19 +1286,19 @@
             <span class="audcard__sub" id="ahc-checks-sub">loading…</span>
           </button>
           <button class="audcard" type="button" data-pane="drift">
-            <span class="audcard__label">Bins out of sync</span>
+            <span class="audcard__label">Audit queue</span>
             <span class="audcard__num" id="ahc-drift-num">–</span>
             <span class="audcard__sub" id="ahc-drift-sub">loading…</span>
+          </button>
+          <button class="audcard" type="button" data-pane="packing">
+            <span class="audcard__label">Packing</span>
+            <span class="audcard__num" id="ahc-pack-num">–</span>
+            <span class="audcard__sub" id="ahc-pack-sub">loading…</span>
           </button>
           <button class="audcard" type="button" data-pane="binaudit">
             <span class="audcard__label">Run an audit</span>
             <span class="audcard__num" id="ahc-sweep-num">–</span>
             <span class="audcard__sub" id="ahc-sweep-sub">loading…</span>
-          </button>
-          <button class="audcard" type="button" data-pane="more">
-            <span class="audcard__label">Product checks</span>
-            <span class="audcard__num" id="ahc-more-num">–</span>
-            <span class="audcard__sub" id="ahc-more-sub">from finished batches</span>
           </button>
         </div>
         <!-- Shopify product cleanup (Nick, 2026-09-14): the cards that
@@ -1361,11 +1314,6 @@
             <span class="audcard__label">Unavailable stock</span>
             <span class="audcard__num" id="ahc-unavail-num">–</span>
             <span class="audcard__sub" id="ahc-unavail-sub">loading…</span>
-          </button>
-          <button class="audcard" type="button" data-pane="boxify">
-            <span class="audcard__label">Missing Boxify dimensions</span>
-            <span class="audcard__num" id="ahc-boxify-num">–</span>
-            <span class="audcard__sub" id="ahc-boxify-sub">loading…</span>
           </button>
         </div>
         <div class="recent__head u-mt18">
@@ -1405,35 +1353,6 @@
         <div id="audsess-detail"></div>
       </div>
 
-      <div class="apane" id="apane-boxify" hidden>
-      <div class="linkbox__actions u-mb10">
-        <button class="reset apane-back" type="button">← Audits</button>
-      </div>
-      <!-- Boxify dimensions (Nick, 2026-09-14): Boxify holds these in
-           its OWN database - no API - so this pane works from its CSV
-           export and lists every variant still shipping as the
-           8-cubic-inch default. -->
-      <div class="recent__head">
-        <h2>Missing Boxify dimensions <span class="recent__note" id="bxf-meta"></span></h2>
-        <input id="bxf-filter" class="recent__search" type="search"
-               placeholder="Filter by SKU or product…" autocomplete="off" />
-      </div>
-      <p class="linkbox__text u-maxw78ch">
-        Boxify picks shipping boxes from these dimensions; a variant
-        without them ships as the 8 cubic inch default. Dimensions are
-        fixed in Boxify's own admin (this app has no write access
-        there) - fix them, re-export the product list CSV from Boxify,
-        and import it here to refresh this list.
-      </p>
-      <div class="linkbox__actions u-mb10">
-        <input type="file" id="bxf-file" accept=".csv" hidden />
-        <button class="reset" id="bxf-import" type="button"
-                title="Pick a fresh Boxify product-list CSV export - it replaces this snapshot wholesale">Import a fresh Boxify export…</button>
-      </div>
-      <div id="bxf-status" class="linkbox__text"></div>
-      <ul class="recent__list binlist u-maxh480" id="bxf-list"></ul>
-      </div>
-
       <div class="apane" id="apane-packed" hidden>
       <div class="linkbox__actions u-mb10">
         <button class="reset apane-back" type="button">← Audits</button>
@@ -1455,6 +1374,21 @@
       <div id="packed-sweeps"></div>
       <div id="packed-report"></div>
       </div>
+
+      <!-- C72 locate list: the shared to-hunt queue, removable here or
+           on the gun's Locate tab -->
+      <div class="phist-overlay" id="locq-overlay" hidden>
+        <section class="linkbox serialbox phist-modal phist-modal--w560">
+          <div class="linkbox__title">C72 locate list</div>
+          <p class="linkbox__text">Products queued for a physical tag hunt - the gun's LOCATE tab shows this same list, so nobody types an EPC by hand. Where the tags <em>think</em> they live is shown per product.</p>
+          <ul class="recent__list" id="locq-list"></ul>
+          <div class="linkbox__actions u-mt10">
+            <span class="linkbox__text" id="locq-msg"></span>
+            <button class="reset" id="locq-close" type="button">Close</button>
+          </div>
+        </section>
+      </div>
+
 
       <div class="apane" id="apane-checks" hidden>
       <div class="linkbox__actions u-mb10">
@@ -1542,6 +1476,8 @@
       </div>
       <div id="binaudit-sweeps" hidden></div>
       <div id="binaudit-report"></div>
+      <div class="recent__head u-mt24"><h2>Recent C72 sweeps</h2></div>
+      <ul class="recent__list" id="sweep-list"></ul>
       </div>
 
       <div class="apane" id="apane-drift" hidden>
@@ -1566,14 +1502,31 @@
       <ul class="recent__list binlist" id="audit-bins"></ul>
       </div>
 
-      <div class="apane" id="apane-more" hidden>
-      <div class="linkbox__actions u-mb10">
-        <button class="reset apane-back" type="button">← Audits</button>
-      </div>
-      <div class="recent__head"><h2>Recommended product checks</h2></div>
-      <ul class="recent__list" id="audit-list"></ul>
-      <div class="recent__head u-mt24"><h2>Recent C72 sweeps</h2></div>
-      <ul class="recent__list" id="sweep-list"></ul>
+      <!-- Packing scan (phase 6, 2026-09-28): boxes scanned while
+           packing, allocated against ShipStation's awaiting-shipment
+           orders; rows flip to shipped as the hourly sync sees labels,
+           and an RFID-scanned row retires its EXACT tag. -->
+      <div class="apane" id="apane-packing" hidden>
+        <div class="linkbox__actions u-mb10">
+          <button class="reset apane-back" type="button">← Audits</button>
+        </div>
+        <div class="recent__head">
+          <h2>Packing scans <span class="recent__note" id="pack-meta"></span></h2>
+        </div>
+        <p class="linkbox__text u-maxw78ch">
+          Scan each box while packing (C72 PACK toggle once the gun
+          updates - until then, LINK a scan or use the box below). A
+          scan allocates against the oldest awaiting-shipment order
+          that wants it; rows flip to shipped on their own, and a
+          shipped RFID scan retires exactly that tag. Tap a row's ✕
+          to remove a mis-scan.
+        </p>
+        <div class="linkbox__form u-mb10">
+          <input id="pack-scan" class="linkbox__input linkbox__short" type="text"
+                 autocomplete="off" spellcheck="false"
+                 placeholder="Scan or type a code…" />
+        </div>
+        <ul class="recent__list" id="pack-list"></ul>
       </div>
 
       <!-- Unavailable stock (Nick, 2026-09-08): every set-aside in one
@@ -1723,22 +1676,6 @@
         <div class="linkbox__actions">
           <button class="print__btn" id="printer-confirm" type="button" disabled>Use this printer</button>
           <button class="reset" id="printer-cancel" type="button">Cancel</button>
-        </div>
-      </section>
-    </div>
-
-    <!-- Full-shipment settle: count the unused labels, hold the strip,
-         hand the paired counts to TC-Planner (Nick, 2026-09-01). -->
-    <div class="phist-overlay" id="fs-overlay" hidden>
-      <section class="linkbox serialbox phist-modal phist-modal--w560">
-        <div class="linkbox__title">Count the unused labels</div>
-        <div id="fs-body"></div>
-        <div class="linkbox__actions u-mt10" id="fs-actions">
-          <button class="print__btn" id="fs-sweep" type="button"
-                  title="Sweep the leftover strip with the C72 (SWEEP tab, SEND), then press this - the strip's tag EPCs become the held pool, so a held label pairs cleanly when its product finally arrives.">📶 Pull latest C72 sweep as the strip</button>
-          <button class="reset" id="fs-nosweep" type="button"
-                  title="Hold the strip by per-product counts only - the labels still work later, the system just can't recognize their tags until they're paired.">Hold by counts only</button>
-          <button class="reset" id="fs-cancel" type="button">Back</button>
         </div>
       </section>
     </div>

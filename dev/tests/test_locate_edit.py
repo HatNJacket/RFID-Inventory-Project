@@ -50,12 +50,12 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
                              bin_location="F1-2"))
         s.commit()
 
-    # ---- unavailable-move: the write gate is its OWN feature ----------
+    # ---- unavailable-move: one write switch since 2026-09-28 ----------
     saved = config.SHOPIFY_WRITE_MODE
-    config.SHOPIFY_WRITE_MODE = "scan_station_only,verify_onhand"
+    config.SHOPIFY_WRITE_MODE = "disabled"
     r = cl.post("/api/products/ZWO-EDIT/unavailable-move", json={
         "bucket": "damaged", "confirmed": True})
-    check("gated behind its own write feature", r.status_code == 403
+    check("gated behind the write switch", r.status_code == 403
           and "unavailable_move" in r.json()["detail"], r.text)
     config.SHOPIFY_WRITE_MODE = saved
 

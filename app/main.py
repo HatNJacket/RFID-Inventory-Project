@@ -29,7 +29,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import AliasChoices, BaseModel, Field, field_validator
 from sqlalchemy import DateTime as SA_DateTime
-from sqlalchemy import delete, func, or_, select, text
+from sqlalchemy import delete, func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from starlette.requests import Request
@@ -55,17 +55,10 @@ from app.models import (
     Batch,
     BatchItem,
     BinMapEntry,
-    BoxifyDim,
     BundleContent,
-    C72Command,
-    CompanionTag,
-    C72DebugEvent,
-    C72Tuning,
     CaseCode,
     EpcCapture,
     FlaggedBin,
-    HeldLabelItem,
-    HeldLabelList,
     HiddenBin,
     LabelDismissal,
     LabelName,
@@ -91,7 +84,6 @@ from app.models import (
     ScanNote,
     SerialPrefix,
     SoldRecord,
-    SortHandoff,
     StockSnapshot,
 )
 
@@ -262,30 +254,20 @@ def _db_not_configured(request: Request, exc: DatabaseNotConfigured):
 
 
 def require_shopify_write(feature: str = "scan_station") -> None:
-    """Server-side Shopify write gate (config.SHOPIFY_WRITE_MODE). Every
-    write endpoint calls this with its own feature name. The mode is
-    either "disabled", "production" (everything confirmed), or a comma
-    list of enabled features — "scan_station_only" enables the Scan
-    Station flows, and specific features can be promoted one at a time
-    ("scan_station_only,verify_onhand") without opening the floodgates."""
-    mode = config.SHOPIFY_WRITE_MODE
-    if mode == "disabled":
+    """Server-side Shopify write gate (config.SHOPIFY_WRITE_MODE). One
+    switch since the 2026-09-28 scope reset: "disabled" (or empty) means
+    every Shopify write 403s, ANY other value means writes are on. The
+    old per-feature comma lists still read as "on", so existing app
+    settings need no change. The per-call `feature` argument remains
+    only so call sites keep naming what they do (useful in the 403 and
+    in logs)."""
+    mode = (config.SHOPIFY_WRITE_MODE or "").strip()
+    if not mode or mode == "disabled":
         raise HTTPException(
-            403, "Shopify writes are disabled (SHOPIFY_WRITE_MODE=disabled)."
+            403,
+            f"Shopify writes are disabled (SHOPIFY_WRITE_MODE=disabled); "
+            f"'{feature}' needs them on.",
         )
-    parts = {p.strip() for p in mode.split(",") if p.strip()}
-    if "production" in parts:
-        return
-    if feature == "scan_station" and "scan_station_only" in parts:
-        return
-    if feature in parts:
-        return
-    raise HTTPException(
-        403,
-        f"Shopify write '{feature}' is not enabled yet "
-        f"(SHOPIFY_WRITE_MODE={mode}). Add '{feature}' to the mode (or "
-        f"promote to 'production') to turn it on.",
-    )
 
 
 def shopify_write_enabled(feature: str) -> bool:
@@ -1367,23 +1349,6 @@ def _overpair_warning(session: Session, sku: str | None) -> str | None:
 def create_assignment(
     payload: AssignmentIn, session: Session = Depends(get_session)
 ):
-    # A companion label (box 2..N of a multi-box unit) never becomes a
-    # counting tie - not even by a deliberate Scan Station link.
-    comp = session.scalar(
-        select(CompanionTag).where(
-            func.upper(CompanionTag.epc)
-            == _up(payload.rfid_id)
-        )
-    )
-    if comp is not None:
-        raise HTTPException(
-            409,
-            f"That tag is the companion label for Box "
-            f"{comp.box_no or '?'} of {comp.box_count or '?'} of "
-            f"{comp.product_title or comp.sku or '?'} - it counts "
-            "nowhere by design (the unit's tag is on Box 1). Nothing "
-            "to link.",
-        )
     assignment = RfidAssignment(**payload.model_dump())
     # Every real tag is a 96-bit EPC = 24 hex chars. Anything else is
     # probably a mangled read (e.g. Bluetooth relay dropping characters):
@@ -1394,20 +1359,14 @@ def create_assignment(
     _seed_condition(assignment)
     session.add(assignment)
     # A pairing answers the oldest open audit find for this SKU (the
-    # tagless-box work queue from the C72 AUDIT tab), and an EPC off a
-    # vendor strip retires its held-label note (the label found its box).
+    # tagless-box work queue from the C72 AUDIT tab), and consumes an
+    # owed printed label wherever one exists (Nick, 2026-09-15): a Scan
+    # Station pair of a batch's stray label credits that batch's pair
+    # step, so the batch's progress agrees.
     _consume_audit_find(session, payload.sku)
-    # ...and consumes an owed printed label wherever one exists (Nick,
-    # 2026-09-15): a Scan Station pair of a batch's stray label credits
-    # that batch's pair step, so every unpaired-labels surface agrees.
-    # BEFORE the held-label consumption on purpose: a label resting on
-    # a held vendor strip is NOT owed (the strip has its own
-    # accounting), and eating the held note first would make it look
-    # owed and double-count the settled shipment's hand-off.
     _consume_unpaired_label(
         session, payload.sku, epcs=[payload.rfid_id], n=1
     )
-    _consume_held_label(session, payload.rfid_id, payload.sku)
     try:
         session.commit()
     except IntegrityError:
@@ -1474,19 +1433,9 @@ def sweep_assign(
         )
     }
     own_sku = _up(payload.sku)
-    # Companion labels answer sweeps like any sticker; they're excluded
-    # by name, never silently tied.
-    _comp_rows, comp_epcs = _companions_heard(session, cleaned)
     assigned: list[RfidAssignment] = []
     duplicates: list[dict] = []
-    companions_skipped: list[dict] = []
     for epc in cleaned:
-        if epc.upper() in comp_epcs:
-            companions_skipped.append(next(
-                c for c in _comp_rows
-                if (c["epc"] or "").upper() == epc.upper()
-            ))
-            continue
         row = existing.get(epc.upper())
         if row is not None:
             duplicates.append({
@@ -1535,7 +1484,9 @@ def sweep_assign(
         "count": len(assigned),
         "assigned": [a.as_dict() for a in assigned],
         "duplicates": duplicates,
-        "companions_skipped": companions_skipped,
+        # Multibox is gone; the key stays [] until the C72 update stops
+        # reading it.
+        "companions_skipped": [],
     }
     warn = _overpair_warning(session, payload.sku)
     if warn:
@@ -1832,28 +1783,6 @@ def tag_info(rfid_id: str, session: Session = Depends(get_session)):
     )
     notes: list[str] = []
     if row is None:
-        # A companion tag (box 2..N of a multi-box unit) is a known
-        # sticker with a name - it counts nowhere on purpose.
-        comp = session.scalar(
-            select(CompanionTag).where(
-                func.upper(CompanionTag.epc) == epc.upper()
-            )
-        )
-        if comp is not None:
-            notes.append(
-                f"Companion label: box {comp.box_no or '?'} of "
-                f"{comp.box_count or '?'} of "
-                f"{comp.product_title or comp.sku or '?'}"
-                + (f", lives in {comp.bin_location}"
-                   if comp.bin_location else "")
-                + ". The unit's counting tag is on box 1 - this one "
-                "counts nowhere, by design."
-            )
-            return {
-                "found": False, "printed_only": False, "epc": epc,
-                "companion": comp.as_dict(), "print_job": None,
-                "notes": notes,
-            }
         # Printed but never paired: the label exists, the tie doesn't.
         job = session.scalar(
             select(PrintJob).where(func.upper(PrintJob.epc) == epc.upper())
@@ -2152,24 +2081,6 @@ def _apply_label_notes(jobs: list) -> list:
 # Filter for every count of a batch's printed labels: companion labels
 # are physical stickers but never counting units.
 _NOT_COMPANION = (PrintJob.kind.is_(None)) | (PrintJob.kind != "companion")
-
-
-def _companions_heard(
-    session: Session, epcs: list[str]
-) -> tuple[list[dict], set[str]]:
-    """Which of these swept EPCs are companion tags: display info plus
-    the EPC set to drop from every unknown list."""
-    if not epcs:
-        return [], set()
-    rows = session.scalars(
-        select(CompanionTag).where(
-            func.upper(CompanionTag.epc).in_(sorted(
-                {(e or "").upper() for e in epcs}
-            ))
-        )
-    ).all()
-    return ([r.as_dict() for r in rows],
-            {(r.epc or "").upper() for r in rows})
 
 
 class PrintJobIn(BaseModel):
@@ -2903,10 +2814,7 @@ def _touch_printer(session: Session, name: str, kind: str | None) -> None:
 
 
 def _openbox_write_enabled() -> bool:
-    parts = {
-        p.strip() for p in config.SHOPIFY_WRITE_MODE.split(",") if p.strip()
-    }
-    return "production" in parts or "openbox_barcode" in parts
+    return shopify_write_enabled("openbox_barcode")
 
 
 def _maybe_openbox_migrate(session: Session, job: PrintJob) -> None:
@@ -3655,31 +3563,6 @@ def complete_print_job(
     job.printed_at = datetime.now(timezone.utc)
     if not create_assignment:
         session.commit()
-        return {"job": job.as_dict(), "assignment": None}
-    if job.kind == "companion":
-        # Box 2..N of a multi-box unit: the tag is live (the printer
-        # encoded it) but it must count NOWHERE - register it in the
-        # companion registry instead of assignments. The box math rides
-        # the bin line's note (label_name covered older jobs).
-        m = (_BOX_NOTE_RE.search(job.bin_location or "")
-             or re.search(r"BOX (\d+) OF (\d+)", job.label_name or ""))
-        session.add(CompanionTag(
-            epc=job.epc,
-            sku=job.sku,
-            product_title=job.product_title,
-            box_no=int(m.group(1)) if m else None,
-            box_count=int(m.group(2)) if m else None,
-            bin_location=_strip_box_note(job.bin_location),
-            created_by=job.requested_by or "printer",
-        ))
-        try:
-            session.commit()
-        except IntegrityError:
-            session.rollback()
-            job = session.get(PrintJob, job_id)
-            job.status = "done"
-            job.printed_at = datetime.now(timezone.utc)
-            session.commit()
         return {"job": job.as_dict(), "assignment": None}
     assignment = RfidAssignment(
         rfid_id=job.epc,
@@ -4724,79 +4607,23 @@ def rebin_tags(payload: RebinTagsIn, session: Session = Depends(get_session)):
     return {"sku": sku, "bin": new_bin, "tags_moved": len(tags)}
 
 
-# ---- C72 live tuning + telemetry (diagnostic plumbing) -------------------
-# Not inventory data: no History rows, no undo. The gun polls tuning and
-# streams locate telemetry so field tuning happens without APK builds.
-
-class C72TuningIn(BaseModel):
-    values: dict
-    merge: bool = True
-    worker: str | None = Field(default=None, max_length=100)
-
+# ---- C72 tuning/telemetry: RETIRED (scope reset, 2026-09-28) --------------
+# The live-tuning, remote-command and debug-stream plumbing did its job
+# (field tuning without APK loops) and is gone. These stubs stay ONLY
+# because the CURRENT APK still polls them every few seconds; the gun's
+# own update removes them for good. The tuning GET keeps one real duty:
+# it is the gun's presence heartbeat for LINK.
 
 class C72DebugIn(BaseModel):
     device: str | None = Field(default=None, max_length=100)
     lines: list[str]
 
 
-def _tuning_row(session: Session) -> C72Tuning:
-    row = session.scalar(select(C72Tuning).limit(1))
-    if row is None:
-        row = C72Tuning(values="{}")
-        session.add(row)
-        session.flush()
-    return row
-
-
 @app.get("/api/c72/tuning", dependencies=[Depends(require_user)])
-def get_c72_tuning(
-    device: str | None = None,
-    tab: str | None = None,
-    session: Session = Depends(get_session),
-):
-    # The gun's ~2s tuning poll doubles as its presence heartbeat: newer
-    # APKs identify themselves and their current tab here (see the LINK
-    # presence block). Old APKs send nothing and simply stay invisible
-    # until their first LINK scan.
+def get_c72_tuning(device: str | None = None, tab: str | None = None):
     if device:
         _stamp_gun(device, tab)
-    row = session.scalar(select(C72Tuning).limit(1))
-    try:
-        values = json.loads(row.values) if row else {}
-    except Exception:
-        values = {}
-    return {
-        "values": values,
-        "updated_by": row.updated_by if row else None,
-        "updated_at": (row.updated_at.isoformat()
-                       if row and row.updated_at else None),
-    }
-
-
-@app.post("/api/c72/tuning", dependencies=[Depends(require_user)])
-def set_c72_tuning(
-    payload: C72TuningIn, session: Session = Depends(get_session)
-):
-    """Set (merge by default) the gun's live parameters. A key set to
-    null deletes it, so the gun falls back to its built-in default."""
-    row = _tuning_row(session)
-    try:
-        current = json.loads(row.values or "{}")
-    except Exception:
-        current = {}
-    if payload.merge:
-        for k, v in payload.values.items():
-            if v is None:
-                current.pop(k, None)
-            else:
-                current[k] = v
-    else:
-        current = {k: v for k, v in payload.values.items()
-                   if v is not None}
-    row.values = json.dumps(current)[:2000]
-    row.updated_by = payload.worker
-    session.commit()
-    return {"values": current}
+    return {"values": {}, "updated_by": None, "updated_at": None}
 
 
 @app.post(
@@ -4804,96 +4631,14 @@ def set_c72_tuning(
     status_code=201,
     dependencies=[Depends(require_user)],
 )
-def post_c72_debug(
-    payload: C72DebugIn, session: Session = Depends(get_session)
-):
-    for line in payload.lines[:100]:
-        session.add(C72DebugEvent(device=payload.device,
-                                  line=str(line)[:400]))
-    # Ring prune: keep the newest ~2000 rows. Flush first so the batch
-    # just added counts toward the cap.
-    session.flush()
-    max_id = session.scalar(select(func.max(C72DebugEvent.id))) or 0
-    if max_id > 2000:
-        session.execute(delete(C72DebugEvent).where(
-            C72DebugEvent.id <= max_id - 2000
-        ))
-    session.commit()
-    return {"ok": True, "stored": min(len(payload.lines), 100)}
-
-
-class C72CommandIn(BaseModel):
-    command: str = Field(min_length=1, max_length=50)
-    arg: str | None = Field(default=None, max_length=500)
-    worker: str | None = Field(default=None, max_length=100)
-
-
-class C72CommandDoneIn(BaseModel):
-    result: str | None = Field(default=None, max_length=400)
-    device: str | None = Field(default=None, max_length=100)
-
-
-@app.post(
-    "/api/c72/commands",
-    status_code=201,
-    dependencies=[Depends(require_user)],
-)
-def create_c72_command(
-    payload: C72CommandIn, session: Session = Depends(get_session)
-):
-    cmd = C72Command(command=payload.command.strip(), arg=payload.arg,
-                     created_by=payload.worker)
-    session.add(cmd)
-    session.commit()
-    return {"id": cmd.id}
+def post_c72_debug(payload: C72DebugIn):
+    # Accepted and dropped: keeps old APKs from erroring on the post.
+    return {"ok": True, "stored": 0}
 
 
 @app.get("/api/c72/commands/pending", dependencies=[Depends(require_user)])
-def pending_c72_commands(session: Session = Depends(get_session)):
-    rows = session.scalars(
-        select(C72Command).where(C72Command.done_at.is_(None))
-        .order_by(C72Command.id).limit(20)
-    ).all()
-    return {"commands": [
-        {"id": r.id, "command": r.command, "arg": r.arg} for r in rows
-    ]}
-
-
-@app.post(
-    "/api/c72/commands/{command_id}/done",
-    dependencies=[Depends(require_user)],
-)
-def ack_c72_command(
-    command_id: int,
-    payload: C72CommandDoneIn,
-    session: Session = Depends(get_session),
-):
-    cmd = session.get(C72Command, command_id)
-    if cmd is None:
-        raise HTTPException(404, "No such command.")
-    cmd.done_at = datetime.now(timezone.utc)
-    cmd.done_by = payload.device
-    cmd.result = payload.result
-    session.commit()
-    return {"ok": True}
-
-
-@app.get("/api/c72/commands", dependencies=[Depends(require_user)])
-def list_c72_commands(
-    limit: int = 30, session: Session = Depends(get_session)
-):
-    rows = session.scalars(
-        select(C72Command).order_by(C72Command.id.desc())
-        .limit(max(1, min(limit, 200)))
-    ).all()
-    return {"commands": [
-        {
-            "id": r.id, "command": r.command, "arg": r.arg,
-            "created_by": r.created_by,
-            "done": r.done_at is not None,
-            "done_by": r.done_by, "result": r.result,
-        } for r in rows
-    ]}
+def pending_c72_commands():
+    return {"commands": []}
 
 
 @app.get("/api/c72/debug-log", dependencies=[Depends(require_user)])
@@ -4956,9 +4701,6 @@ def _still_unlinked(session: Session, epcs: list[str]) -> set[str]:
                 )
             )
         }
-    if left:
-        _, comp = _companions_heard(session, sorted(left))
-        left -= comp
     return left
 
 
@@ -7070,6 +6812,27 @@ class BinCheckIn(BaseModel):
     skus: list[str] = Field(default_factory=list, max_length=500)
 
 
+def _stamp_heard(session: Session, epcs) -> int:
+    """Stamp last_heard_at=now on every KNOWN tag in a sweep (scored
+    audit queue, 2026-09-28). One bulk UPDATE, fail-soft: hearing is
+    bookkeeping and must never break the sweep that carried it. The
+    caller commits (or the next commit on the session carries it)."""
+    ups = sorted({_up(e) for e in epcs if e and str(e).strip()})
+    if not ups:
+        return 0
+    try:
+        result = session.execute(
+            update(RfidAssignment)
+            .where(func.upper(RfidAssignment.rfid_id).in_(ups))
+            .values(last_heard_at=datetime.now(timezone.utc))
+            .execution_options(synchronize_session=False)
+        )
+        return result.rowcount or 0
+    except Exception:  # noqa: BLE001
+        logger.exception("last-heard stamp failed")
+        return 0
+
+
 @app.post("/api/bins/{bin_name}/check", dependencies=[Depends(require_user)])
 def bin_check(
     bin_name: str,
@@ -7091,6 +6854,8 @@ def bin_check(
             e.strip().upper()
             for e in (cap.epcs or "").split("\n") if e.strip()
         }
+    if swept and _stamp_heard(session, swept):
+        session.commit()
     loc = bin_name.strip()
     bin_keys = [loc.lower()]
     rack = False
@@ -7351,11 +7116,6 @@ def bin_check(
                 )
             }
             unknown = [e for e in unknown if e not in dismissed]
-        # Companion tags (box 2..N of a multi-box unit) answer sweeps
-        # like any sticker; they're known by name and count nowhere.
-        companions_heard, _comp_epcs = _companions_heard(session, unknown)
-        if _comp_epcs:
-            unknown = [e for e in unknown if e.upper() not in _comp_epcs]
         if unknown:
             label_jobs = {
                 (j.epc or "").upper(): j
@@ -8188,142 +7948,6 @@ def audit_bins(session: Session = Depends(get_session)):
         "skipped_non_taggable": skipped_non_taggable,
         "onhand_age_minutes": None if age is None else int(age / 60),
         "refreshing": _bin_map_state["running"],
-    }
-
-
-# ---------------------------------------------------- Boxify snapshot ------
-# Shipping dimensions live ONLY in Boxify's own database (no API, no
-# metafields - probed 2026-09-14), so the terminal works from a
-# snapshot of Boxify's CSV export. Fixing dimensions happens in
-# Boxify's admin; a fresh export replaces the snapshot wholesale.
-
-class BoxifyImportIn(BaseModel):
-    csv_text: str = Field(min_length=1, max_length=8_000_000)
-    imported_by: str | None = Field(default=None, max_length=100)
-
-
-@app.post("/api/boxify/import", dependencies=[Depends(require_user)])
-def boxify_import(
-    payload: BoxifyImportIn, session: Session = Depends(get_session)
-):
-    """Replace the Boxify snapshot with a fresh export. A dimension
-    counts as SET only when length, width and height are all positive
-    numbers - anything else ships as Boxify's 8-cubic-inch default."""
-    reader = _csv.DictReader(
-        io.StringIO(payload.csv_text.lstrip("﻿"))
-    )
-    fields = set(reader.fieldnames or [])
-    required = {"VariantSKU", "Length(cm)", "Width(cm)", "Height(cm)"}
-    if not required.issubset(fields):
-        raise HTTPException(
-            422,
-            "That doesn't look like a Boxify product export - expected "
-            "columns like VariantSKU and Length(cm).",
-        )
-
-    def dim(v):
-        try:
-            f = float((v or "").strip())
-        except ValueError:
-            return None
-        return f if f > 0 else None
-
-    rows: list[BoxifyDim] = []
-    for r in reader:
-        ln = dim(r.get("Length(cm)"))
-        wd = dim(r.get("Width(cm)"))
-        ht = dim(r.get("Height(cm)"))
-        rows.append(BoxifyDim(
-            sku=(r.get("VariantSKU") or "").strip()[:100] or None,
-            product_title=(
-                r.get("ProductTitle") or "").strip()[:255] or None,
-            variant_title=(
-                r.get("VariantTitle") or "").strip()[:255] or None,
-            product_id=(
-                r.get("ProductId") or "").strip("[] ")[:64] or None,
-            variant_id=(
-                r.get("VariantId") or "").strip("[] ")[:64] or None,
-            length_cm=ln, width_cm=wd, height_cm=ht,
-            has_dims=(ln is not None and wd is not None
-                      and ht is not None),
-        ))
-    if not rows:
-        raise HTTPException(422, "The export holds no variant rows.")
-    session.execute(delete(BoxifyDim))
-    session.add_all(rows)
-    missing = sum(1 for x in rows if not x.has_dims)
-    _log_change(
-        session,
-        sku=None,
-        title=f"Boxify export imported: {len(rows)} variant(s), "
-            f"{missing} missing dimensions",
-        field="boxify-import",
-        old=f"{len(rows)} variant(s)",
-        new=f"{missing} missing dims",
-        by=(payload.imported_by or "").strip() or None,
-    )
-    session.commit()
-    return {
-        "variants": len(rows),
-        "missing": missing,
-        "message": (
-            f"Imported {len(rows)} variant(s) - {missing} still "
-            f"missing dimensions."
-        ),
-    }
-
-
-@app.get("/api/boxify/status", dependencies=[Depends(require_user)])
-def boxify_status(
-    query: str = "", limit: int = 200,
-    session: Session = Depends(get_session),
-):
-    """The Missing Boxify Dimensions card + pane feed: counts, the
-    import stamp, and the dimensionless variants (filtered, capped)."""
-    total = session.scalar(
-        select(func.count(BoxifyDim.id))
-    ) or 0
-    if not total:
-        return {"imported": False, "total_variants": 0,
-                "missing_variants": 0, "missing_products": 0,
-                "imported_at": None, "items": []}
-    missing_q = select(BoxifyDim).where(
-        BoxifyDim.has_dims == False  # noqa: E712 - SQL Server needs = 0, not IS 0
-    )
-    missing_total = session.scalar(
-        select(func.count(BoxifyDim.id)).where(
-            BoxifyDim.has_dims == False  # noqa: E712 - SQL Server needs = 0, not IS 0
-        )
-    ) or 0
-    missing_products = session.scalar(
-        select(func.count(func.distinct(BoxifyDim.product_id))).where(
-            BoxifyDim.has_dims == False  # noqa: E712 - SQL Server needs = 0, not IS 0
-        )
-    ) or 0
-    stamp = session.scalar(select(func.max(BoxifyDim.imported_at)))
-    q = (query or "").strip()
-    if q:
-        like = f"%{q}%"
-        missing_q = missing_q.where(or_(
-            BoxifyDim.sku.ilike(like),
-            BoxifyDim.product_title.ilike(like),
-            BoxifyDim.variant_title.ilike(like),
-        ))
-    items = session.scalars(
-        missing_q.order_by(BoxifyDim.product_title, BoxifyDim.id)
-        .limit(min(max(limit, 1), 500))
-    ).all()
-    return {
-        "imported": True,
-        "imported_at": stamp.isoformat() if stamp else None,
-        "total_variants": total,
-        "missing_variants": missing_total,
-        "missing_products": missing_products,
-        "items": [{
-            "sku": x.sku,
-            "product_title": x.product_title,
-            "variant_title": x.variant_title,
-        } for x in items],
     }
 
 
@@ -9282,12 +8906,9 @@ def list_batches(
             totals[r.batch_id] = r
     prev_done = _prev_done_map(session, [b.bin_name for b in rows])
     # Receiving batches wear a "not RFID-paired" tag (Nick, 2026-09-09):
-    # labels printed minus tags paired minus labels resting on a held
-    # vendor strip. Coarse per-batch arithmetic - the Review task does
-    # the per-SKU version.
+    # labels printed minus tags paired. Coarse per-batch arithmetic.
     recv_ids = [b.id for b in rows if b.kind == "receiving"]
     printed_by_batch: dict[int, int] = {}
-    held_by_batch: dict[int, int] = {}
     if recv_ids:
         for r in session.execute(
             select(PrintJob.batch_id, func.count())
@@ -9299,13 +8920,6 @@ def list_batches(
             .group_by(PrintJob.batch_id)
         ):
             printed_by_batch[r[0]] = int(r[1] or 0)
-        for r in session.execute(
-            select(HeldLabelList.batch_id, func.sum(HeldLabelItem.count))
-            .join(HeldLabelItem, HeldLabelItem.list_id == HeldLabelList.id)
-            .where(HeldLabelList.batch_id.in_(recv_ids))
-            .group_by(HeldLabelList.batch_id)
-        ):
-            held_by_batch[r[0]] = int(r[1] or 0)
     batches = []
     for b in rows:
         d = b.as_dict()
@@ -9316,9 +8930,7 @@ def list_batches(
         if b.kind == "receiving":
             d["unpaired_labels"] = max(
                 0,
-                printed_by_batch.get(b.id, 0)
-                - d["paired"]
-                - held_by_batch.get(b.id, 0),
+                printed_by_batch.get(b.id, 0) - d["paired"],
             )
         # A bin that already had a FULL tagging session: the C72 list
         # shows the yellow "Previous batch tagging: X ago" line, and the
@@ -9815,6 +9427,8 @@ def batch_shelf_sweep(
     session: Session = Depends(get_session),
 ):
     batch = _get_batch(session, batch_id)
+    if _stamp_heard(session, payload.epcs):
+        session.commit()  # a preview sweep still physically read the shelf
     result = _shelf_reconcile(session, batch, payload.epcs)
     if payload.apply:
         uniq = sorted({
@@ -10187,27 +9801,17 @@ def returns_tag(epc: str, session: Session = Depends(get_session)):
         bin_loc = src.bin_location
         condition = src.condition
     elif state is None:
-        comp = session.scalar(
-            select(CompanionTag).where(
-                func.upper(CompanionTag.epc) == e.upper()
+        job = session.scalar(
+            select(PrintJob).where(
+                func.upper(PrintJob.epc) == e.upper()
             )
         )
-        if comp is not None:
-            state = "companion"
-            sku, title = comp.sku, comp.product_title
-            bin_loc = comp.bin_location
+        if job is not None:
+            state = "printed-only"
+            sku, title = job.sku, job.product_title
+            bin_loc = job.bin_location
         else:
-            job = session.scalar(
-                select(PrintJob).where(
-                    func.upper(PrintJob.epc) == e.upper()
-                )
-            )
-            if job is not None:
-                state = "printed-only"
-                sku, title = job.sku, job.product_title
-                bin_loc = job.bin_location
-            else:
-                state = "unknown"
+            state = "unknown"
     entry = session.scalar(
         select(BinMapEntry).where(func.upper(BinMapEntry.sku) == _up(sku))
     ) if sku else None
@@ -13092,28 +12696,15 @@ def _void_and_requeue(
     unlinked = 0
     for job in old_jobs:
         job.status = "canceled" if job.status == "pending" else "voided"
-        if job.kind == "companion":
-            # A companion label's tag record lives in the companion
-            # registry, not in assignments.
-            c = session.scalar(
-                select(CompanionTag).where(
-                    func.upper(CompanionTag.epc)
-                    == _up(job.epc)
-                )
+        a = session.scalar(
+            select(RfidAssignment).where(
+                func.upper(RfidAssignment.rfid_id)
+                == _up(job.epc)
             )
-            if c is not None:
-                session.delete(c)
-                unlinked += 1
-        else:
-            a = session.scalar(
-                select(RfidAssignment).where(
-                    func.upper(RfidAssignment.rfid_id)
-                    == _up(job.epc)
-                )
-            )
-            if a is not None:
-                session.delete(a)
-                unlinked += 1
+        )
+        if a is not None:
+            session.delete(a)
+            unlinked += 1
         fresh.append(PrintJob(
             epc=_new_epc(),
             status="pending",
@@ -13322,65 +12913,6 @@ def _queue_held_side_trips(
     return all_jobs, trips
 
 
-def _held_available(session: Session, skus: list[str]) -> dict[str, dict]:
-    """Unused held labels per SKU, across every vendor strip: label(s)
-    printed for an order the product never actually shipped with (Nick,
-    2026-09-01). {SKU: {"count": n, "where": "ZWO strip (SO 948)"}}."""
-    wanted = {_up(s) for s in skus if s and s.strip()}
-    if not wanted:
-        return {}
-    out: dict[str, dict] = {}
-    lists = {
-        hl.id: hl for hl in session.scalars(select(HeldLabelList))
-    }
-    for it in session.scalars(
-        select(HeldLabelItem).where(
-            HeldLabelItem.count > 0,
-            func.upper(HeldLabelItem.sku).in_(sorted(wanted)),
-        )
-    ):
-        key = it.sku.strip().upper()
-        hl = lists.get(it.list_id)
-        where = (
-            f"{hl.vendor or 'vendor'} strip"
-            + (f" ({hl.reference})" if hl and hl.reference else "")
-        ) if hl else "held strip"
-        d = out.setdefault(key, {"count": 0, "where": where})
-        d["count"] += it.count
-    return out
-
-
-def _consume_held_label(session: Session, epc: str | None,
-                        sku: str | None) -> None:
-    """A pairing whose EPC came off a held strip: remove it from the
-    pool and decrement its product's unused count - the label found its
-    box at last. Fail-soft: bookkeeping must never break a pairing."""
-    if not epc or not (epc or "").strip():
-        return
-    try:
-        up = epc.strip().upper()
-        for hl in session.scalars(select(HeldLabelList)):
-            pool = hl.epc_set()
-            if up not in pool:
-                continue
-            pool.discard(up)
-            hl.epcs = "\n".join(sorted(pool))
-            if sku:
-                row = session.scalar(
-                    select(HeldLabelItem).where(
-                        HeldLabelItem.list_id == hl.id,
-                        func.upper(HeldLabelItem.sku)
-                        == sku.strip().upper(),
-                        HeldLabelItem.count > 0,
-                    )
-                )
-                if row is not None:
-                    row.count -= 1
-            return
-    except Exception:  # noqa: BLE001
-        logger.exception("held-label consume failed (%s)", epc)
-
-
 def _item_box_slots(item: BatchItem) -> int:
     """Boxes per unit for a receiving row. A multi-box product's bin
     field lists ONE BIN PER BOX (Nick, 2026-09-02 - the 11740's
@@ -13408,9 +12940,8 @@ def _build_receiving_label_jobs(
     each ("take 2 from the ZWO strip (SO 948)")."""
     jobs: list[PrintJob] = []
     skipped_no_bin: list[str] = []
-    held_notes: list[str] = []
+    held_notes: list[str] = []  # always empty since the held-strip removal
     items_all = _items_in_scan_order(session, batch.id)
-    held = _held_available(session, [i.sku for i in items_all if i.sku])
     for item in items_all:
         if not item.resolved or not item.shopify_variant_id:
             continue
@@ -13429,19 +12960,6 @@ def _build_receiving_label_jobs(
         delta = want - have
         if delta <= 0:
             continue
-        h = held.get(_up(item.sku))
-        if h and h["count"] > 0:
-            use = min(h["count"], delta)
-            delta -= use
-            # Reserve locally so two items of one SKU can't both claim
-            # the same held label in one pass.
-            h["count"] -= use
-            held_notes.append(
-                f"{item.sku}: take {use} label(s) from the {h['where']} "
-                "instead of printing"
-            )
-            if delta <= 0:
-                continue
         bin_ = (item.bin_location or "").strip()
         if not bin_ or bin_.lower() == "no bin assigned":
             skipped_no_bin.append(item.product_title or item.sku or "?")
@@ -14265,9 +13783,6 @@ def receiving_order_preview(
             404, f"No open stock order matches '{order_ref}'."
         )
     no_tag = _non_taggable_skus(session)
-    held = _held_available(
-        session, [i.get("sku") for i in out["items"]]
-    )
     nicknames = _nickname_map(
         session, [i.get("sku") for i in out["items"]]
     )
@@ -14317,9 +13832,6 @@ def receiving_order_preview(
                 product.get("bin_location") or ""
             ).strip().lower() == "no bin assigned":
                 line["flag"] = "no home bin - assign one before printing"
-        h = held.get(sku_ci)
-        if h and h["count"] > 0:
-            line["held"] = {"count": h["count"], "where": h["where"]}
     return {**out, "receipt": receipt.as_dict() if receipt else None}
 
 
@@ -14741,119 +14253,6 @@ def receiving_sort_match(
     }
 
 
-@app.get("/api/held-lists", dependencies=[Depends(require_user)])
-def list_held_lists(session: Session = Depends(get_session)):
-    """Every vendor strip with labels still waiting on it (Nick,
-    2026-09-02): the one legitimate home of printed-but-unapplied
-    labels. Strips whose every label has since paired list with zero
-    remaining and are filtered out; pairing consumes entries
-    automatically, so this is a window, never a work queue."""
-    out = []
-    lists = session.scalars(
-        select(HeldLabelList).order_by(HeldLabelList.id.desc())
-    ).all()
-    for hl in lists:
-        items = [
-            {"sku": i.sku, "product_title": i.product_title,
-             "count": i.count}
-            for i in session.scalars(
-                select(HeldLabelItem).where(
-                    HeldLabelItem.list_id == hl.id,
-                    HeldLabelItem.count > 0,
-                )
-            )
-        ]
-        if not items:
-            continue
-        out.append({
-            **hl.as_dict(),
-            "items": items,
-            "remaining": sum(i["count"] for i in items),
-        })
-    return {"count": len(out), "lists": out}
-
-
-class SortHandoffIn(BaseModel):
-    counts: list[SortCountIn] = Field(min_length=1, max_length=200)
-    created_by: str | None = Field(default=None, max_length=100)
-
-
-@app.post(
-    "/api/receiving/sort-handoff",
-    status_code=201,
-    dependencies=[Depends(require_user)],
-)
-def create_sort_handoff(
-    payload: SortHandoffIn, session: Session = Depends(get_session)
-):
-    """The gun's sort pass, handed to the web terminal (Nick,
-    2026-09-02): box labels the gun couldn't resolve get the web
-    sorter's label-match tooling instead. One pending pass at a time -
-    a new hand-off replaces any unconsumed older one."""
-    for old in session.scalars(
-        select(SortHandoff).where(SortHandoff.consumed_at.is_(None))
-    ):
-        old.consumed_at = datetime.now(timezone.utc)
-        old.consumed_by = "superseded"
-    row = SortHandoff(
-        created_by=payload.created_by,
-        payload=json.dumps([
-            {"code": c.code.strip(), "count": c.count}
-            for c in payload.counts
-        ]),
-    )
-    session.add(row)
-    session.commit()
-    session.refresh(row)
-    return {"handoff": row.as_dict(),
-            "message": "Sent - open Batch tab → Sort a shipment on the "
-                       "web terminal to load it."}
-
-
-@app.get(
-    "/api/receiving/sort-handoff/pending",
-    dependencies=[Depends(require_user)],
-)
-def pending_sort_handoff(session: Session = Depends(get_session)):
-    """Newest unconsumed C72 sort pass (fresh passes only - a day-old
-    one is stale pallet history, not work)."""
-    row = session.scalar(
-        select(SortHandoff).where(SortHandoff.consumed_at.is_(None))
-        .order_by(SortHandoff.id.desc())
-    )
-    if row is not None and row.created_at is not None:
-        age = datetime.now(timezone.utc) - (
-            row.created_at if row.created_at.tzinfo
-            else row.created_at.replace(tzinfo=timezone.utc)
-        )
-        if age.total_seconds() > 24 * 3600:
-            row = None
-    return {"handoff": row.as_dict() if row else None}
-
-
-class SortHandoffConsumeIn(BaseModel):
-    consumed_by: str | None = Field(default=None, max_length=100)
-
-
-@app.post(
-    "/api/receiving/sort-handoff/{handoff_id}/consume",
-    dependencies=[Depends(require_user)],
-)
-def consume_sort_handoff(
-    handoff_id: int,
-    payload: SortHandoffConsumeIn,
-    session: Session = Depends(get_session),
-):
-    row = session.get(SortHandoff, handoff_id)
-    if row is None:
-        raise HTTPException(404, "No such sort hand-off.")
-    if row.consumed_at is None:
-        row.consumed_at = datetime.now(timezone.utc)
-        row.consumed_by = payload.consumed_by
-        session.commit()
-    return {"handoff": row.as_dict()}
-
-
 def _planner_paired_items(session: Session, batch_id: int) -> list[dict]:
     """Paired counts for the planner hand-off, in UNITS: a multi-box
     product pairs one tag per CARTON, so its boxes divide back by the
@@ -14900,21 +14299,11 @@ def _unpaired_label_counts(session: Session, batch: Batch) -> list[dict]:
 
 def _receiving_unpaired_net(session: Session, batch: Batch) -> list[dict]:
     """Per SKU for a receiving batch: labels printed minus tags paired,
-    minus labels resting on the batch's held vendor strip, minus
-    operator-dismissed label EPCs. What's left is boxes someone labelled
-    without ever RFID-pairing them (Nick, 2026-09-09)."""
+    minus operator-dismissed label EPCs. What's left is boxes someone
+    labelled without ever RFID-pairing them (Nick, 2026-09-09)."""
     rows = _unpaired_label_counts(session, batch)
     if not rows:
         return []
-    held: dict[str, int] = {}
-    for hl in session.scalars(
-        select(HeldLabelList).where(HeldLabelList.batch_id == batch.id)
-    ):
-        for it in session.scalars(
-            select(HeldLabelItem).where(HeldLabelItem.list_id == hl.id)
-        ):
-            key = _up(it.sku)
-            held[key] = held.get(key, 0) + (it.count or 0)
     dismissed: dict[str, int] = {}
     job_by_epc = {
         (j.epc or "").upper(): j
@@ -14942,7 +14331,7 @@ def _receiving_unpaired_net(session: Session, batch: Batch) -> list[dict]:
     out = []
     for r in rows:
         key = _up(r["sku"])
-        n = r["count"] - held.get(key, 0) - dismissed.get(key, 0)
+        n = r["count"] - dismissed.get(key, 0)
         if n > 0:
             out.append({**r, "count": n})
     return out
@@ -16232,180 +15621,6 @@ def settle_shipment(
     }
 
 
-class HeldListIn(BaseModel):
-    epcs: list[str] = Field(default_factory=list, max_length=5000)
-    created_by: str | None = Field(default=None, max_length=100)
-    # The operator confirmed: swept tags recorded as PAIRED boxes of
-    # this shipment are actually on the strip in hand (a pair sweep
-    # over-heard the strip - Nick, 2026-09-02, SO 941) - roll those
-    # pairings back and hold the labels.
-    unpair_owned: bool = False
-
-
-@app.post(
-    "/api/batches/{batch_id}/held-list",
-    status_code=201,
-    dependencies=[Depends(require_user)],
-)
-def create_held_list(
-    batch_id: int,
-    payload: HeldListIn,
-    session: Session = Depends(get_session),
-):
-    """Sweep of the unused-label strip: the leftover labels stay on the
-    liner, go in a vendor container, and their EPCs become the strip's
-    POOL (product accounting = printed minus paired, per SKU).
-    RE-POSTING REPLACES the batch's strip (a bad sweep is re-swept, not
-    duplicated), and the batch STAYS OPEN - TC-Planner's stock-updated
-    ping is what closes a full-shipment receive (Nick, 2026-09-02).
-    EPCs already assigned or on another strip are excluded, never
-    stolen - but a swept tag paired to THIS shipment's own products is
-    reported as a candidate mis-count, and unpair_owned rolls those
-    pairings back (the sticker is on the liner, not a box)."""
-    batch = _get_batch(session, batch_id)
-    receipt = session.scalar(
-        select(OrderReceipt).where(OrderReceipt.batch_id == batch_id)
-        .order_by(OrderReceipt.id.desc())
-    )
-    if receipt is None:
-        raise HTTPException(
-            422, "This batch didn't come from Receive entire shipment."
-        )
-    if receipt.settled_at is None:
-        receipt.settled_at = datetime.now(timezone.utc)
-    swept = {_up(e) for e in payload.epcs if e}
-
-    # Swept tags recorded as paired boxes of THIS shipment: physically
-    # they answered from the strip in the operator's hand, so they are
-    # almost certainly pair-sweep over-hearings, not shelf boxes.
-    items = _batch_items(session, batch.id)
-    by_sku = {_up(i.sku): i for i in items if i.sku}
-    owned_candidates: list[dict] = []
-    unpaired_rolled_back = 0
-    if swept:
-        for a in session.scalars(
-            select(RfidAssignment).where(
-                func.upper(RfidAssignment.rfid_id).in_(sorted(swept))
-            )
-        ):
-            item = by_sku.get(_up(a.sku))
-            if item is None or (item.paired_count or 0) <= 0:
-                continue
-            if payload.unpair_owned:
-                _log_change(
-                    session,
-                    sku=a.sku,
-                    title=a.product_title,
-                    variant_id=a.shopify_variant_id,
-                    field="tag-unlinked",
-                    old=a.rfid_id or "" or None,
-                    new="strip sweep rollback",
-                    by=payload.created_by or "" or None,
-                )
-                item.paired_count = max(0, (item.paired_count or 0) - 1)
-                session.delete(a)
-                unpaired_rolled_back += 1
-            else:
-                owned_candidates.append({
-                    "epc": a.rfid_id,
-                    "sku": a.sku,
-                    "product_title": a.product_title,
-                })
-    if unpaired_rolled_back:
-        session.flush()
-
-    unpaired = _unpaired_label_counts(session, batch)
-    total = sum(u["count"] for u in unpaired)
-    excluded_assigned = 0
-    excluded_held = 0
-    pool: set[str] = set()
-    if swept:
-        owned = {
-            (e or "").upper() for e in session.scalars(
-                select(RfidAssignment.rfid_id).where(
-                    func.upper(RfidAssignment.rfid_id).in_(sorted(swept))
-                )
-            )
-        }
-        other_pools: set[str] = set()
-        for hl in session.scalars(select(HeldLabelList)):
-            if hl.batch_id == batch.id:
-                continue  # this batch's own strip is being replaced
-            other_pools |= hl.epc_set()
-        for epc in swept:
-            if epc in owned:
-                excluded_assigned += 1
-            elif epc in other_pools:
-                excluded_held += 1
-            else:
-                pool.add(epc)
-    # Replace-on-repost: one strip per shipment, always the newest
-    # sweep's truth.
-    held_list = session.scalar(
-        select(HeldLabelList).where(HeldLabelList.batch_id == batch.id)
-        .order_by(HeldLabelList.id.desc())
-    )
-    if held_list is not None:
-        session.execute(delete(HeldLabelItem).where(
-            HeldLabelItem.list_id == held_list.id
-        ))
-        if total <= 0:
-            session.delete(held_list)
-            held_list = None
-    if total > 0:
-        if held_list is None:
-            held_list = HeldLabelList(
-                batch_id=batch.id,
-                stock_order_id=receipt.stock_order_id,
-                reference=receipt.reference,
-                vendor=receipt.vendor,
-                created_by=payload.created_by,
-            )
-            session.add(held_list)
-        held_list.epcs = "\n".join(sorted(pool))
-        session.flush()
-        for u in unpaired:
-            session.add(HeldLabelItem(
-                list_id=held_list.id,
-                sku=u["sku"],
-                product_title=u["product_title"],
-                count=u["count"],
-            ))
-    session.commit()
-    mismatch = pool and len(pool) != total
-    return {
-        "list": held_list.as_dict() if held_list else None,
-        "items": unpaired,
-        "total_unpaired": total,
-        "pool_count": len(pool),
-        "excluded_assigned": excluded_assigned,
-        "excluded_held": excluded_held,
-        "owned_candidates": owned_candidates,
-        "unpaired_rolled_back": unpaired_rolled_back,
-        "planner": {
-            "order_id": receipt.stock_order_id,
-            "items": _planner_paired_items(session, batch_id),
-        },
-        "message": (
-            (f"{total} unused label(s) held on the "
-             f"{receipt.vendor or 'vendor'} strip"
-             + (f" - {len(pool)} tag(s) in its pool" if pool else
-                " - no sweep captured, the strip still counts by SKU")
-             + (f" ({unpaired_rolled_back} mis-counted pairing(s) "
-                "rolled back)" if unpaired_rolled_back else "")
-             + (f" ({excluded_assigned} swept tag(s) belonged to real "
-                "boxes and were excluded)" if excluded_assigned else "")
-             + (f" (⚠ pool size doesn't match the {total} unused "
-                "label(s) - strays excluded or labels missed)"
-                if mismatch else "")
-             if total > 0 else
-             "Every printed label found its box - nothing to hold")
-            + f". Batch #{batch.id} stays open - it closes itself when "
-            "TC-Planner saves the received stock."
-        ),
-    }
-
-
 class StockUpdatedIn(BaseModel):
     stock_order_id: int
     updated_by: str | None = Field(default=None, max_length=100)
@@ -16943,39 +16158,6 @@ def batch_pair(
     if not item.resolved:
         raise HTTPException(422, "That item never resolved to a product.")
 
-    # A companion label (box 2..N of a multi-box unit) trigger-reads
-    # like any sticker, but it must never become a counting tie (Nick,
-    # 2026-09-02: "I need to pair 2 labels to one product"). Same
-    # product -> confirmed and done, nothing counted; different
-    # product -> the sticker is on the wrong box.
-    comp = session.scalar(
-        select(CompanionTag).where(
-            func.upper(CompanionTag.epc)
-            == _up(payload.epc)
-        )
-    )
-    if comp is not None:
-        if (_up(comp.sku)
-                != _up(item.sku)):
-            raise HTTPException(
-                409,
-                f"That sticker is Box {comp.box_no or '?'} of "
-                f"{comp.box_count or '?'} of "
-                f"{comp.product_title or comp.sku or '?'} - a companion "
-                "label for a DIFFERENT product.",
-            )
-        return {
-            "assignment": None,
-            "companion": comp.as_dict(),
-            "item": item.as_dict(),
-            "receiving_done": False,
-            "message": (
-                f"Box {comp.box_no or '?'} of {comp.box_count or '?'} "
-                f"confirmed ✓ - companion label, the unit counts by "
-                "Box 1's tag."
-            ),
-        }
-
     # Labels were queued loose boxes first, then sealed cases; pairing walks
     # the same order, so once the loose ones are tied the remaining tags are
     # the case labels and each stands for `case_units` units.
@@ -17007,10 +16189,8 @@ def batch_pair(
     _seed_condition(assignment)
     session.add(assignment)
     # A pairing answers the oldest open audit find for this SKU (the
-    # tagless-box work queue from the C72 AUDIT tab), and an EPC off a
-    # vendor strip retires its held-label note (the label found its box).
+    # tagless-box work queue from the C72 AUDIT tab).
     _consume_audit_find(session, item.sku)
-    _consume_held_label(session, payload.epc, item.sku)
     item.paired_count += 1
     if batch.status == "printing":
         batch.status = "pairing"
@@ -17273,15 +16453,6 @@ def batch_item_reprint(
         if _up(job.sku) == sku_ci:
             job.status = "canceled" if job.status == "pending" else "voided"
             voided += 1
-            if job.kind == "companion":
-                c = session.scalar(
-                    select(CompanionTag).where(
-                        func.upper(CompanionTag.epc)
-                        == _up(job.epc)
-                    )
-                )
-                if c is not None:
-                    session.delete(c)
     session.flush()
 
     # 4. Fresh labels, picking up the corrected name. The typed lines
@@ -17458,12 +16629,6 @@ def batch_verify(
                     "bin_location": row.bin_location,
                 }
             )
-
-    # Companion tags (box 2..N of a multi-box unit) are known by name,
-    # not strangers - and they never count.
-    companions_heard, _comp_epcs = _companions_heard(session, unknown)
-    if _comp_epcs:
-        unknown = [e for e in unknown if e.upper() not in _comp_epcs]
 
     # Unknown EPCs that are actually TOMBSTONES get named instead of
     # shrugged at: a replaced/dead sticker still on a box means the peel
@@ -17734,7 +16899,7 @@ def batch_verify(
         "foreign": foreign,
         "retired_heard": retired_heard,
         "unknown_epcs": unknown,
-        "companions_heard": companions_heard,
+        "companions_heard": [],
         # Unresolved codes still in the batch: worth a heads-up at verify
         # (they were counted but match no product), never a blocker —
         # completion drops them without filing Review work (Nick's call,
@@ -19273,6 +18438,7 @@ def create_capture(payload: CaptureIn, session: Session = Depends(get_session)):
         epcs="\n".join(epcs),
     )
     session.add(row)
+    _stamp_heard(session, epcs)
     session.commit()
     session.refresh(row)
     # Every sweep also stashes its ownerless EPCs on the unlinked-

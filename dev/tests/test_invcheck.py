@@ -21,7 +21,7 @@ from app.main import app
 from app import orders_sync
 from app.database import get_engine
 from app.models import (Batch, BatchItem, BinMapEntry, EpcCapture,
-                        HeldLabelItem, HeldLabelList, OnhandLog,
+                        OnhandLog,
                         OrderReceipt, RetiredTag, ReviewTask,
                         RfidAssignment, SoldRecord)
 from sqlalchemy import select
@@ -322,27 +322,6 @@ with patch("app.shopify.lookup_barcode", side_effect=look), \
     check("a now-resolving code offers its product",
           (ctx["resolves_to"] or {}).get("sku") == "REAL-1",
           str(ctx)[:200])
-
-    # ---- held-lists window -------------------------------------------
-    with Session(get_engine()) as s:
-        hl = HeldLabelList(batch_id=1, stock_order_id=9,
-                           reference="SO 9", vendor="ZWO",
-                           created_by="Nick", epcs="H1\nH2")
-        s.add(hl); s.flush()
-        s.add(HeldLabelItem(list_id=hl.id, sku="STRIP-1",
-                            product_title="Strip product", count=2))
-        empty = HeldLabelList(batch_id=2, stock_order_id=10,
-                              reference="SO 10", vendor="ZWO", epcs="")
-        s.add(empty); s.flush()
-        s.add(HeldLabelItem(list_id=empty.id, sku="GONE-1",
-                            product_title="Gone", count=0))
-        s.commit()
-    r = cl.get("/api/held-lists")
-    d = r.json()
-    check("held strips list what is still waiting",
-          d["count"] == 1 and d["lists"][0]["remaining"] == 2
-          and d["lists"][0]["items"][0]["sku"] == "STRIP-1",
-          r.text[:300])
 
     # ---- a fully-confirmed audit clears a stale sold expectation -----
     # Nick's ZWO OAG (2026-09-08): 1 tag on file, the shelf holds 1,

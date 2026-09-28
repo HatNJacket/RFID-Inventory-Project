@@ -18,7 +18,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 from app.main import app
 from app.database import get_engine
-from app.models import (BinMapEntry, HeldLabelItem, HeldLabelList,
+from app.models import (BinMapEntry,
                         OrderReceipt, RfidAssignment)
 from sqlalchemy.orm import Session
 fails=[]
@@ -154,62 +154,11 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
           and body["planner"]["order_id"] == 77,
           str(body["planner"]))
 
-    # ---- held list: strip sweep, strays excluded, batch STAYS OPEN ---
-    r = cl.post(f"/api/batches/{bid}/held-list",
-                json={"epcs": ["HELD00000000000000000001",
-                               "E100000000000000000000A1"],
-                      "created_by": "Nick"})
-    body = r.json()
-    check("held list keeps the pool, excludes the real box's tag",
-          r.status_code == 201 and body["pool_count"] == 1
-          and body["excluded_assigned"] == 1
-          and body["total_unpaired"] == 1, r.text[:300])
-    check("a swept tag paired to THIS shipment is a mis-count candidate",
-          len(body["owned_candidates"]) == 1
-          and body["owned_candidates"][0]["sku"] == "GOOD-1",
-          str(body["owned_candidates"]))
-    r = cl.get(f"/api/batches/{bid}")
-    check("the batch STAYS OPEN with the strip (planner closes it)",
-          r.json()["batch"]["status"] != "done", r.text[:150])
-    with Session(get_engine()) as s:
-        hl = s.query(HeldLabelList).one()
-        hi = s.query(HeldLabelItem).one()
-    check("strip records vendor, order and per-SKU count",
-          hl.vendor == "ZWO" and hl.reference == "SO 948"
-          and hi.sku == "GOOD-2" and hi.count == 1,
-          f"{hl.as_dict()} {hi.as_dict()}")
-
     # ---- the still-open shipment reuses on a re-run ------------------
     r = cl.post("/api/receiving/full-shipment", json={"order": "948"})
     check("a re-run picks the open batch back up, no twin",
           r.status_code == 201 and r.json()["reused"] is True,
           r.text[:200])
-
-    # ---- held-aware printing everywhere ------------------------------
-    r = cl.post("/api/receiving/prints",
-                json={"items": [{"sku": "GOOD-2", "quantity": 2}],
-                      "requested_by": "Nick",
-                      "reference": "SO 999 · ZWO"})
-    body = r.json()
-    check("a later receive prints one FEWER and names the strip",
-          r.status_code == 201 and body["queued"] == 1
-          and body["held_notes"]
-          and "ZWO strip" in body["held_notes"][0]
-          and "take 1" in body["held_notes"][0], r.text[:300])
-
-    # ---- pairing the held label consumes it --------------------------
-    r = cl.post("/api/rfid-assignments", json={
-        "rfid_id": "HELD00000000000000000001",
-        "shopify_variant_id": "t:G2", "product_title": "Good Two",
-        "sku": "GOOD-2", "bin_location": "A1-2", "assigned_by": "C72"})
-    check("the held label pairs like any tag", r.status_code == 201,
-          r.text[:150])
-    with Session(get_engine()) as s:
-        hl = s.query(HeldLabelList).one()
-        hi = s.query(HeldLabelItem).one()
-    check("pairing empties the pool and the per-SKU count",
-          hi.count == 0 and hl.epc_set() == set(),
-          f"count={hi.count} pool={hl.epc_set()}")
 
     # ---- the 1-hour watchdog -----------------------------------------
     with Session(get_engine()) as s:
@@ -324,40 +273,6 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
           r.status_code == 200 and r.json()["total_unpaired"] == 0
           and {i["sku"]: i["qty"] for i in r.json()["planner"]["items"]}
           == {"CLEAN-1": 2}, r.text[:250])
-    r = cl.post(f"/api/batches/{bid2}/held-list",
-                json={"epcs": [], "created_by": "Nick"})
-    check("finishing the full batch holds nothing and hands off",
-          r.status_code == 201 and r.json()["total_unpaired"] == 0
-          and r.json()["list"] is None, r.text[:200])
-
-    # ---- strip sweep reclaims a mis-counted pairing ------------------
-    # (Nick, 2026-09-02, SO 941: a pair sweep over-heard the leftover
-    # strip and counted its labels as boxes. The strip sweep now names
-    # those tags, and unpair_owned rolls them back onto the strip.)
-    r = cl.post(f"/api/batches/{bid2}/held-list",
-                json={"epcs": ["E200000000000000000000C2"],
-                      "created_by": "Nick"})
-    check("re-post names the mis-count candidate",
-          len(r.json()["owned_candidates"]) == 1
-          and r.json()["owned_candidates"][0]["sku"] == "CLEAN-1",
-          r.text[:250])
-    r = cl.post(f"/api/batches/{bid2}/held-list",
-                json={"epcs": ["E200000000000000000000C2"],
-                      "unpair_owned": True, "created_by": "Nick"})
-    body = r.json()
-    check("unpair_owned rolls the pairing back onto the strip",
-          body["unpaired_rolled_back"] == 1
-          and body["total_unpaired"] == 1 and body["pool_count"] == 1
-          and {i["sku"]: i["qty"] for i in body["planner"]["items"]}
-          == {"CLEAN-1": 1}, r.text[:350])
-    with Session(get_engine()) as s:
-        lists2 = s.query(HeldLabelList).filter(
-            HeldLabelList.batch_id == bid2).all()
-    check("re-posts REPLACE the strip, never duplicate it",
-          len(lists2) == 1
-          and lists2[0].epc_set() == {"E200000000000000000000C2"},
-          [(h.id, h.epc_set()) for h in lists2])
-
     # ---- the planner's save closes the fully-arrived batch -----------
     r = cl.post("/api/receiving/stock-updated",
                 json={"stock_order_id": 78, "updated_by": "planner"})

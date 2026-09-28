@@ -698,7 +698,6 @@ const tabSections = {
   batch: [document.getElementById("tab-batch")],
   inventory: [document.getElementById("tab-inventory")],
   queue: [document.getElementById("tab-queue")],
-  review: [document.getElementById("tab-review")],
   audits: [document.getElementById("tab-audits")],
   history: [document.getElementById("tab-history")],
   settings: [document.getElementById("tab-settings")],
@@ -712,7 +711,6 @@ const tabLoaders = {
   batch: () => enterBatchTab(),
   inventory: () => loadInventory(),
   queue: () => loadQueue(),
-  review: () => loadReview(),
   audits: () => loadAudits(),
   history: () => loadHistory(),
 };
@@ -722,7 +720,7 @@ const tabLoaders = {
 // Batch and Queue always reload (they manage live polling state).
 const tabLoadedAt = {};
 const TAB_FRESH_MS = 15000;
-const FRESHNESS_GATED_TABS = ["inventory", "review", "audits", "history"];
+const FRESHNESS_GATED_TABS = ["inventory", "audits", "history"];
 document.querySelectorAll(".tabs__tab").forEach((btn) => {
   btn.addEventListener("click", () => {
     document.querySelectorAll(".tabs__tab").forEach((b) =>
@@ -4719,7 +4717,7 @@ async function renderUnresolvedLabels() {
     const rows = r.products || [];
     if (!rows.length) {
       list.innerHTML =
-        '<li class="inventory__empty">Every receiving label is paired, held or dismissed ✓</li>';
+        '<li class="inventory__empty">Every receiving label is paired or dismissed ✓</li>';
       return;
     }
     list.innerHTML = "";
@@ -10836,1996 +10834,6 @@ async function loadQueue() {
   }
 }
 
-// === Review tab (WIP: task inbox) ==========================================
-let reviewTasks = [];
-let reviewFilter = "";
-let reviewNotesOnly = false;
-let reviewOpenIds = new Set();
-// Tasks whose dismiss is waiting on the notes are-you-sure strip.
-let dismissConfirmIds = new Set();
-
-async function loadReview() {
-  const list = document.getElementById("review-list");
-  renderOrderSyncNote();
-  try {
-    const { tasks } = await apiJson("/api/review-tasks?status=open&limit=100");
-    reviewTasks = tasks;
-    // The type filter offers exactly the categories present right now.
-    const sel = document.getElementById("review-filter");
-    const cats = [...new Set(tasks.map((t) => t.category))].sort();
-    if (reviewFilter && !cats.includes(reviewFilter)) reviewFilter = "";
-    sel.innerHTML =
-      '<option value="">All types</option>' +
-      cats
-        .map(
-          (c) =>
-            `<option value="${escapeHtml(c)}"${c === reviewFilter ? " selected" : ""}>${escapeHtml(evLabel(c))}</option>`
-        )
-        .join("");
-    renderReview();
-  } catch (err) {
-    list.innerHTML =
-      '<li class="recent__empty">Could not load review tasks.</li>';
-  }
-}
-
-// One plain-language paragraph per task type: what the tag means and why
-// products land under it — shown under the filter while it's active.
-const REVIEW_NOTES = {
-  "inventory-check":
-    "The number of units counted on the shelf during batch tagging " +
-    "didn't match Shopify's on-hand. Nothing was changed anywhere - " +
-    "each of these is a recommendation to go count that product " +
-    "properly (the bin audit's Set-to-N button is the sanctioned fix).",
-  "pairing-incomplete":
-    "Labels were printed for these products but not every label got " +
-    "its RFID tag scanned in. An unpaired label is an orphan sticker - " +
-    "pair it at the Scan Station or reprint before it ends up on a box.",
-  "unresolved-barcode":
-    "LEGACY entries - new batches no longer file these (2026-08-08): " +
-    "unresolved codes now show as a heads-up at the verify step and are " +
-    "simply dropped at completion. For these old ones: link the code to " +
-    "its product at the Scan Station, or resolve/dismiss.",
-  "could-not-scan":
-    "Someone physically couldn't scan these during tagging (damaged " +
-    "box, unreachable shelf, dead label). They were NOT counted - " +
-    "each one still needs identifying and tagging by hand.",
-  "bin-check":
-    "These bins received stock (receiving) or were manually marked for " +
-    "a check. Each one wants a quick RFID walk-scan of the shelf - the " +
-    "run audit button opens the Audits tab with the bin loaded.",
-  "bin-mismatch":
-    "The RFID tags for these products were physically placed on a " +
-    "different shelf than the bin Shopify has on file. These entries " +
-    "are LIVE - they clear themselves when either side is fixed: write " +
-    "the tags' shelf to Shopify (the boxes are where the tags say), or " +
-    "move the boxes and update the tags. Nothing to dismiss.",
-  "tag-onhand-mismatch":
-    "System arithmetic, not a human count: the units this product's " +
-    "tags stand for don't equal Shopify on-hand + boxes sold since the " +
-    "last audit. Different from Inventory Check (someone counted a " +
-    "shelf) - this one files AND clears itself as the daily order sync " +
-    "re-checks. The fix is a bin audit: a sweep that hears the " +
-    "remaining tags can mark the sold ones.",
-  "duplicate-product":
-    "Two tagged SKUs share the SAME saved barcode, or are the same SKU " +
-    "written differently (exact evidence only - open-box products are " +
-    "ignored; checked once per sync run, never per scan). Resolve to " +
-    "MERGE the tags into one product - you pick the surviving SKU and " +
-    "which name it keeps - which also files an inventory check for the " +
-    "merged product. Dismiss if they really are two products; a " +
-    "dismissed pair is never re-flagged.",
-};
-
-function renderReview() {
-  const list = document.getElementById("review-list");
-  const note = document.getElementById("review-filter-note");
-  note.hidden = !(reviewFilter && REVIEW_NOTES[reviewFilter]);
-  note.textContent = REVIEW_NOTES[reviewFilter] || "";
-  const q = document
-    .getElementById("review-search")
-    .value.trim()
-    .toLowerCase();
-  // The with-notes filter only exists while some open task carries notes.
-  const anyNotes = reviewTasks.some((t) => (t.notes || []).length);
-  const notesBtn = document.getElementById("review-notesonly");
-  notesBtn.hidden = !anyNotes;
-  if (!anyNotes) reviewNotesOnly = false;
-  notesBtn.textContent = reviewNotesOnly ? "📝 All tasks" : "📝 With notes";
-  notesBtn.classList.toggle("chip-toggle--on", reviewNotesOnly);
-  const tasks = reviewTasks.filter(
-    (t) =>
-      (!reviewFilter || t.category === reviewFilter) &&
-      (!reviewNotesOnly || (t.notes || []).length) &&
-      (!q ||
-        (t.sku || "").toLowerCase().includes(q) ||
-        (t.barcode || "").toLowerCase().includes(q) ||
-        (t.product_title || "").toLowerCase().includes(q) ||
-        (t.detail || "").toLowerCase().includes(q))
-  );
-  list.innerHTML = "";
-  if (!tasks.length) {
-    list.innerHTML = `<li class="recent__empty">${
-      q
-        ? "Nothing matches that search."
-        : reviewFilter
-          ? "No open tasks of that type."
-          : "Inbox zero - nothing needs review."
-    }</li>`;
-    return;
-  }
-  tasks.forEach((t) => {
-    const li = document.createElement("li");
-    li.classList.add("u-block");
-    const open = reviewOpenIds.has(t.id);
-    // The boilerplate recommendation sentence lives behind the expansion,
-    // on its own line — the collapsed row keeps just the facts.
-    const rec = /Recommend[^.]*\.\s*$/.exec(t.detail || "");
-    const short = rec ? t.detail.slice(0, rec.index).trim() : t.detail;
-    // Bin checks carry their bin in the detail ("Bin K3-1: …") — that's
-    // enough to jump straight into the Audits tab with the bin loaded.
-    const checkBin =
-      t.category === "bin-check" && /^Bin\s+(.+?):/.exec(t.detail || "");
-    li.innerHTML =
-      `<div class="rv-row">
-        ${evChip(t.category)}
-        <span class="recent__prod"><b>${escapeHtml(t.product_title || t.sku || "")}</b> ${escapeHtml(short)}</span>
-        <span class="recent__meta recent__when" title="${escapeHtml(fmtWhen(t.created_at))}">${escapeHtml(fmtAgo(t.created_at))}</span>
-        ${
-          checkBin
-            ? `<button class="rv-btn rv-btn--audit" data-act="audit" type="button"
-                 title="Open the Audits tab with ${escapeHtml(checkBin[1])} loaded - runs right away if a fresh C72 sweep is waiting">run audit</button>`
-            : ""
-        }
-        ${
-          (t.notes || []).length
-            ? `<span class="rv-noteflag" data-act="notes" title="${(t.notes || []).length} note(s) - click to read">📝 ${(t.notes || []).length}</span>`
-            : ""
-        }
-        <button class="rv-btn rv-btn--resolve" data-act="resolve" type="button">resolve</button>
-        <button class="rv-btn rv-btn--dismiss" data-act="dismiss" type="button">dismiss</button>
-        <span class="auditrow__chev">${open ? "▾" : "▸"}</span>
-      </div>` +
-      (dismissConfirmIds.has(t.id)
-        ? `<div class="rv-confirm">
-             <span>This task has ${(t.notes || []).length} note(s) - dismiss anyway?</span>
-             <button class="rv-btn rv-btn--dismiss" data-act="dismiss-yes" type="button">YES, DISMISS</button>
-             <button class="rv-btn" data-act="dismiss-no" type="button">Cancel</button>
-           </div>`
-        : "") +
-      (open
-        ? `<div class="rv-detail">
-            ${
-              t.image_url
-                ? `<img class="rv-img" src="${escapeHtml(t.image_url)}" alt="" />`
-                : ""
-            }
-            <div>
-              <div>${
-                t.sku
-                  ? `<b class="prodopen rv-prod" title="Open this product - label editor, RFID flag, full history">${escapeHtml(t.product_title || "")}</b>`
-                  : `<b>${escapeHtml(t.product_title || "")}</b>`
-              }${
-                t.sku
-                  ? ` <span class="mono recent__meta">· ${escapeHtml(t.sku)}</span>`
-                  : ""
-              }</div>
-              <div class="recent__meta u-mt2">${escapeHtml(short)}</div>
-              ${
-                rec
-                  ? `<div class="recent__meta u-mt4"><i>${escapeHtml(rec[0].trim())}</i></div>`
-                  : ""
-              }
-              <div class="rv-timeline"><div class="rv-note__empty">Loading timeline…</div></div>
-              <div class="rv-notes">
-                <div class="rv-notes__title">Notes</div>
-                ${
-                  (t.notes || []).length
-                    ? (t.notes || [])
-                        .map(
-                          (n) => `<div class="rv-note">
-                            <div class="rv-note__meta">${escapeHtml(n.created_by || "?")} · ${escapeHtml(fmtAgo(n.created_at))}</div>
-                            <div>${escapeHtml(n.note)}</div>
-                          </div>`
-                        )
-                        .join("")
-                    : `<div class="rv-note__empty">No notes yet.</div>`
-                }
-                <div class="rv-notes__add">
-                  <input class="rv-notein" type="text" maxlength="500" placeholder="Add a note…" />
-                  <button class="reset rv-notesave" type="button">Save note</button>
-                </div>
-              </div>
-            </div>
-          </div>`
-        : "");
-    li.querySelector(".rv-row").addEventListener("click", (ev) => {
-      if (ev.target.closest("button")) return;
-      if (reviewOpenIds.has(t.id)) reviewOpenIds.delete(t.id);
-      else reviewOpenIds.add(t.id);
-      renderReview();
-    });
-    // The product opens ONLY from the expanded detail — never from the
-    // collapsed row, where the click belongs to expand/resolve/dismiss.
-    const rvProd = li.querySelector(".rv-detail .rv-prod");
-    if (rvProd)
-      rvProd.addEventListener("click", (ev) => {
-        ev.stopPropagation();
-        openProductHistory(t.sku);
-      });
-    // Quick dismiss: instant when the task carries no notes; a note means
-    // someone left context, so closing it takes a second, deliberate press.
-    const quickDismiss = async () => {
-      const operator = operatorEl.value;
-      if (!operator) {
-        alert("Pick who's scanning (top right) first.");
-        return;
-      }
-      try {
-        if (t.synthetic) {
-          await postJson("/api/review/mismatch-dismissals", {
-            sku: t.sku,
-            tag_bin: t.tag_bin,
-            shopify_bin: t.shopify_bin,
-            dismissed_by: operator,
-          });
-        } else {
-          await postJson(`/api/review-tasks/${t.id}/resolve`, {
-            resolved_by: operator,
-            dismissed: true,
-          });
-        }
-        dismissConfirmIds.delete(t.id);
-        reviewTasks = reviewTasks.filter((x) => x.id !== t.id);
-        renderReview();
-      } catch (err) {
-        alert(err.message);
-      }
-    };
-    const resolveBtn = li.querySelector('[data-act="resolve"]');
-    if (resolveBtn)
-      resolveBtn.addEventListener("click", () => openResolveWindow(t));
-    const dismissBtn = li.querySelector('[data-act="dismiss"]');
-    if (dismissBtn)
-      dismissBtn.addEventListener("click", () => {
-        if ((t.notes || []).length && !dismissConfirmIds.has(t.id)) {
-          dismissConfirmIds.add(t.id);
-          renderReview();
-        } else {
-          quickDismiss();
-        }
-      });
-    const dyes = li.querySelector('[data-act="dismiss-yes"]');
-    if (dyes) dyes.addEventListener("click", quickDismiss);
-    const dno = li.querySelector('[data-act="dismiss-no"]');
-    if (dno)
-      dno.addEventListener("click", () => {
-        dismissConfirmIds.delete(t.id);
-        renderReview();
-      });
-    const noteFlag = li.querySelector('[data-act="notes"]');
-    if (noteFlag)
-      noteFlag.addEventListener("click", (ev) => {
-        ev.stopPropagation();
-        reviewOpenIds.add(t.id);
-        renderReview();
-      });
-    const noteIn = li.querySelector(".rv-notein");
-    const noteSave = li.querySelector(".rv-notesave");
-    if (noteIn)
-      noteIn.addEventListener("keydown", (ev) => {
-        if (ev.key === "Enter") noteSave.click();
-      });
-    if (noteSave)
-      noteSave.addEventListener("click", async () => {
-        const input = li.querySelector(".rv-notein");
-        const text = (input.value || "").trim();
-        if (!text) return;
-        const operator = operatorEl.value;
-        if (!operator) {
-          alert("Pick who's scanning (top right) first.");
-          return;
-        }
-        noteSave.disabled = true;
-        try {
-          const saved = await postJson("/api/review-notes", {
-            task_key: String(t.id),
-            note: text,
-            created_by: operator,
-          });
-          t.notes = [...(t.notes || []), saved];
-          renderReview();
-        } catch (err) {
-          noteSave.disabled = false;
-          alert(err.message);
-        }
-      });
-    const auditBtn = li.querySelector('[data-act="audit"]');
-    if (auditBtn)
-      auditBtn.addEventListener("click", () => jumpToBinAudit(checkBin[1]));
-    // (The old inline bin-write chip is gone — the resolve window offers
-    // the same fix with full context.)
-    const tlHost = li.querySelector(".rv-timeline");
-    if (tlHost) loadReviewTimeline(t, tlHost);
-    list.append(li);
-  });
-}
-
-// === Review timelines =======================================================
-// A scoped view of the product's history inside the expanded task — from
-// the noticed discrepancy up to now, only the event types that matter for
-// this category. It's a FILTER over the same events as the product's full
-// History panel: resolving the task simply removes this view; the product
-// history keeps everything.
-const RV_TIMELINE_TYPES = {
-  // Only events that SET or REPORT a bin — the mismatch timeline shows
-  // bin records, never tag-by-tag noise (Nick's note, 2026-08-18).
-  "bin-mismatch": new Set([
-    "shopify-bin-read", "bin-updated", "tags-rebinned", "tag-assigned",
-  ]),
-  "inventory-check": new Set([
-    "tag-assigned", "tag-unlinked", "on-hand-updated", "on-hand-undone",
-    "on-hand-lowered", "on-hand-lower-undone",
-    "batch-counted", "already-tagged-set", "receiving-completed",
-    "inventory-check", "oneleft", "order-sold",
-  ]),
-};
-// The sold-arithmetic category reads the same stock story (with the
-// running tags column) — synthetic-style scoping comes from created_at.
-RV_TIMELINE_TYPES["tag-onhand-mismatch"] = new Set([
-  ...RV_TIMELINE_TYPES["inventory-check"],
-  "tag-sold",
-]);
-const rvHistCache = {}; // sku -> {at, events}
-
-async function rvProductEvents(sku) {
-  const hit = rvHistCache[sku];
-  if (hit && Date.now() - hit.at < 60000) return hit.events;
-  const data = await apiJson(
-    `/api/product-history?term=${encodeURIComponent(sku)}`
-  );
-  const events = (data.events || []).slice();
-  // Oldest first — timelines read downward.
-  events.sort((a, b) => String(a.at || "").localeCompare(String(b.at || "")));
-  rvHistCache[sku] = { at: Date.now(), events };
-  return events;
-}
-
-// Distill events into BIN RECORD rows for the mismatch timeline: which
-// side claimed which bin, when, from where — [event] [when] [Bin X]
-// [source]. Runs of tag assignments to the same bin collapse into one
-// row carrying the tag count; nobody needs the per-tag stream here.
-function rvBinRecordRows(events) {
-  const rows = [];
-  const afterArrow = (e) => {
-    const m = /→\s*(.+)$/.exec(e.detail || "");
-    return m ? m[1].trim() : null;
-  };
-  events.forEach((e) => {
-    let bin = null;
-    let src = null;
-    let count = 0;
-    if (e.type === "shopify-bin-read") {
-      bin = (e.detail || "").split(" · ")[0].trim();
-      src = "Shopify";
-    } else if (e.type === "bin-updated") {
-      bin = afterArrow(e);
-      src = e.worker || "Shopify";
-    } else if (e.type === "tags-rebinned") {
-      bin = afterArrow(e);
-      src = e.worker || "RFID system";
-    } else if (e.type === "tag-assigned") {
-      bin = (/(?:^|· )bin (.+)$/.exec(e.detail || "") || [])[1];
-      src = e.worker || "C72";
-      count = (e.epcs || [null]).length;
-    } else {
-      return;
-    }
-    if (!bin) return;
-    const prev = rows[rows.length - 1];
-    if (prev && prev.type === e.type && prev.bin === bin && prev.src === src) {
-      prev.at = e.at;
-      prev.count += count;
-    } else {
-      rows.push({ type: e.type, at: e.at, bin, src, count });
-    }
-  });
-  return rows;
-}
-
-function rvTimelineRow(e, extra = "") {
-  return (
-    `<div class="rv-tl__row">
-       ${evChip(e.type)}
-       <span class="rv-tl__when" title="${escapeHtml(fmtWhen(e.at))}">${escapeHtml(fmtAgo(e.at))}</span>
-       <span class="rv-tl__detail">${epcsDetailCell(e)}${
-         e.worker ? ` · ${escapeHtml(e.worker)}` : ""
-       }</span>${extra}
-     </div>`
-  );
-}
-
-async function loadReviewTimeline(t, host) {
-  const cat = t.category;
-  // Categories without a meaningful movement history: when it was filed,
-  // during what, and by whom — straight from the task itself.
-  if (!RV_TIMELINE_TYPES[cat] || !t.sku) {
-    host.innerHTML =
-      `<div class="rv-tl__row">
-         ${evChip(cat)}
-         <span class="rv-tl__when">${escapeHtml(fmtAgo(t.created_at))}</span>
-         <span class="rv-tl__detail">filed${
-           t.created_by ? ` by ${escapeHtml(t.created_by)}` : " by the system"
-         }${t.batch_id ? ` · during batch #${t.batch_id}` : ""}</span>
-       </div>`;
-    return;
-  }
-  try {
-    const all = await rvProductEvents(t.sku);
-    const wanted = all.filter((e) => RV_TIMELINE_TYPES[cat].has(e.type));
-    const since = t.synthetic ? null : t.created_at;
-    let rows = wanted;
-    let baseline = null;
-    if (since) {
-      rows = wanted.filter((e) => (e.at || "") >= since);
-      // The last good state right before the discrepancy — the baseline.
-      const before = wanted.filter((e) => (e.at || "") < since);
-      baseline = before.length ? before[before.length - 1] : null;
-    } else {
-      // Live (synthetic) entries have no filed date: recent movement only.
-      rows = wanted.slice(-12);
-    }
-    if (cat === "bin-mismatch") {
-      const recs = rvBinRecordRows(since ? wanted : rows);
-      host.innerHTML =
-        `<div class="rv-tl__title">Bin record</div>` +
-        (recs.length
-          ? recs
-              .map(
-                (r) =>
-                  `<div class="rv-tl__row">
-                     ${evChip(r.type)}
-                     <span class="rv-tl__when" title="${escapeHtml(fmtWhen(r.at))}">${escapeHtml(fmtAgo(r.at))}</span>
-                     <span class="rv-tl__binv">Bin ${escapeHtml(r.bin)}</span>
-                     <span class="rv-tl__src">${escapeHtml(r.src)}</span>
-                     ${r.count > 1 ? `<span class="rv-tl__count">${r.count} tags</span>` : ""}
-                   </div>`
-              )
-              .join("")
-          : `<div class="rv-note__empty">No bin records on file.</div>`);
-      return;
-    }
-    if (cat === "inventory-check" || cat === "tag-onhand-mismatch") {
-      // Running tag count per event, derived backwards from the live
-      // count so each row can say "tags: N".
-      let tags = null;
-      try {
-        const tg = await apiJson(
-          `/api/products/tags?sku=${encodeURIComponent(t.sku)}`
-        );
-        tags = (tg.tags || tg.assignments || []).length;
-      } catch { /* count column just stays blank */ }
-      if (tags != null) {
-        const deltas = rows.map((e) =>
-          e.type === "tag-assigned"
-            ? (e.epcs || [null]).length
-            : e.type === "tag-unlinked" || e.type === "tag-sold"
-              ? -1
-              : 0
-        );
-        let running = tags;
-        const counts = new Array(rows.length);
-        for (let i = rows.length - 1; i >= 0; i--) {
-          counts[i] = running;
-          running -= deltas[i];
-        }
-        host.innerHTML =
-          `<div class="rv-tl__title">Timeline since the discrepancy</div>` +
-          (baseline
-            ? `<div class="rv-tl__baseline">baseline · ${rvTimelineRow(baseline)}</div>`
-            : "") +
-          (rows.length
-            ? rows
-                .map((e, i) =>
-                  rvTimelineRow(
-                    e,
-                    `<span class="rv-tl__count">tags: ${counts[i]}</span>`
-                  )
-                )
-                .join("")
-            : `<div class="rv-note__empty">No stock-relevant events since this was filed.</div>`);
-        return;
-      }
-    }
-    host.innerHTML =
-      `<div class="rv-tl__title">${
-        since ? "Timeline since the discrepancy" : "Recent movement"
-      }</div>` +
-      (baseline
-        ? `<div class="rv-tl__baseline">baseline · ${rvTimelineRow(baseline)}</div>`
-        : "") +
-      (rows.length
-        ? rows.map((e) => rvTimelineRow(e)).join("")
-        : `<div class="rv-note__empty">No movement recorded${
-            since ? " since this was filed" : ""
-          }.</div>`);
-  } catch (err) {
-    host.innerHTML = `<div class="rv-note__empty">Timeline unavailable.</div>`;
-  }
-}
-
-// === Review resolve window ==================================================
-// Resolve never closes a task blind: the window shows live context and
-// the category's actual fixes; every write goes through the existing
-// audited endpoints. Dismiss stays the quick action on the card.
-function closeResolveWindow() {
-  document.getElementById("resolve-overlay").hidden = true;
-}
-document.getElementById("resolve-overlay").addEventListener("click", (e) => {
-  if (e.target === e.currentTarget) closeResolveWindow();
-});
-
-async function commitResolve(t, note) {
-  const operator = operatorEl.value;
-  if (!operator) {
-    alert("Pick who's scanning (top right) first.");
-    return;
-  }
-  try {
-    await postJson(`/api/review-tasks/${t.id}/resolve`, {
-      resolved_by: operator,
-      dismissed: false,
-      note: (note || "").slice(0, 255) || null,
-    });
-    reviewTasks = reviewTasks.filter((x) => x.id !== t.id);
-    closeResolveWindow();
-    renderReview();
-  } catch (err) {
-    alert(err.message);
-  }
-}
-
-function openResolveWindow(t) {
-  const overlay = document.getElementById("resolve-overlay");
-  const body = document.getElementById("resolve-body");
-  // The duplicate resolver freezes this SHARED modal's geometry with
-  // inline min-height/width; the element is reused across opens, so
-  // clear it here or every other category inherits the dupe window's
-  // tall frame (Nick, 2026-08-19).
-  const modalBox = body.closest(".phist-modal");
-  if (modalBox) {
-    modalBox.style.minHeight = "";
-    modalBox.style.width = "";
-  }
-  const binFromDetail = (/^Bin\s+(.+?):/.exec(t.detail || "") || [])[1];
-  const counts = /(\d+)\s+unit\(s\).*?on-hand is (\d+)/.exec(t.detail || "");
-  const counted = counts ? Number(counts[1]) : null;
-  const expectedThen = counts ? Number(counts[2]) : null;
-
-  const notesHtml = (t.notes || []).length
-    ? `<div class="rv-notes u-my10">
-         <div class="rv-notes__title">Notes on this task</div>
-         ${(t.notes || [])
-           .map(
-             (n) => `<div class="rv-note">
-               <div class="rv-note__meta">${escapeHtml(n.created_by || "?")} · ${escapeHtml(fmtAgo(n.created_at))}</div>
-               <div>${escapeHtml(n.note)}</div>
-             </div>`
-           )
-           .join("")}
-       </div>`
-    : "";
-
-  // Category-specific middles; footers differ for synthetic entries
-  // (nothing stored to "mark resolved" — an action or a dismissal IS the
-  // resolution).
-  let middle = "";
-  if (
-    t.category === "inventory-check" ||
-    t.category === "tag-onhand-mismatch"
-  ) {
-    // The merged Inventory Check window (Nick, 2026-09-02): three
-    // tiles that explain themselves on hover, one verdict line saying
-    // what would reconcile the two systems. Legacy tag-onhand tasks
-    // render through the same lens.
-    middle = `
-      <div class="rvw-stats">
-        <div class="rvw-stat" id="rvw-tile-tags"><div class="rvw-stat__l">Active RFID tags</div><div class="rvw-stat__n"><span id="rvw-tags">…</span> <span id="rvw-delta" class="rvw-delta" hidden></span></div></div>
-        <div class="rvw-stat" id="rvw-tile-heard"><div class="rvw-stat__l">Last Heard</div><div class="rvw-stat__n" id="rvw-heard">…</div></div>
-        <div class="rvw-stat rvw-stat--live" id="rvw-tile-oh"><div class="rvw-stat__l">Shopify On-hand</div><div class="rvw-stat__n" id="rvw-live">…</div></div>
-      </div>
-      <div class="recent__meta u-mb8" id="rvw-liveline">Checking the live numbers… (hover a tile for its story)</div>
-      <div class="rvw-verdict" id="rvw-verdict" hidden></div>
-      <div id="rvw-actions"></div>
-      ${counted != null ? `<button class="reset rvw-wide rvw-choice rvw-choice--amber" id="rvw-userfid" type="button">
-        Shopify is wrong → use the RFID count (${counted})
-        <span class="rvw-choice__sub">Writes the counted number to Shopify on-hand. Raises are the normal audited write; a lower must be fully covered by recorded sales. Undoable from History.</span>
-      </button>` : ""}
-      ${binFromDetail ? `<button class="reset rvw-wide" id="rvw-audit" type="button">Sweep the shelf - run ${escapeHtml(binFromDetail)}'s bin audit</button>` : ""}
-      ${counted != null ? `<button class="reset rvw-wide rvw-recount" id="rvw-recount" type="button"
-        title="You KNOW what's on the shelf: build the correction with - and +, then press the middle to apply. The RFID side updates and logs always; Shopify on-hand is only raised when its number differs (audited, undoable). Lowering Shopify stays a bin-audit job.">
-        <span class="rvw-recount__pm" id="rvw-minus">−</span>
-        <span class="rvw-recount__label" id="rvw-recount-label">Manually set the counted number</span>
-        <span class="rvw-recount__pm" id="rvw-plus">+</span>
-      </button>` : `<button class="reset rvw-wide" id="rvw-station" type="button">Open at the Scan Station</button>`}`;
-  } else if (t.category === "labels-not-printed") {
-    // The Update-stock safety net (Nick, 2026-08-26): stock reached
-    // Shopify without labels. One click queues everything the linked
-    // receiving batch is still owed - mechanically the planner's Print
-    // labels pass - and the receiving list takes over from there.
-    middle = `
-      <button class="reset rvw-wide rvw-choice rvw-choice--amber" id="rvw-queuelabels" type="button">
-        Queue the missing labels
-        <span class="rvw-choice__sub">Prints one label per unlabelled box on the receiving batch, each with its home bin - identical to the planner's Print labels. Products without a bin are named and the task stays open until they get one.</span>
-      </button>
-      <button class="reset rvw-wide rvw-choice" id="rvw-unprintedsold" type="button">
-        The unlabelled units were sold or set aside
-        <span class="rvw-choice__sub">They left before anyone could label them. Nothing prints: the batch stops owing the labels, and recorded sales for those SKUs are consumed so the tag arithmetic never waits for tags that were never applied.</span>
-      </button>`;
-  } else if (t.category === "openbox-return") {
-    // The open-box return watch (Nick, 2026-09-15): normally a sweep
-    // hearing the old presumed-sold tag closes this with a prompt on
-    // the spot; the button here is the manual out.
-    middle = `
-      <button class="reset rvw-wide rvw-choice rvw-choice--amber" id="rvw-obxpeeled" type="button">
-        Old sticker peeled and binned
-        <span class="rvw-choice__sub">The unit's old label came off by hand, so no sweep will ever hear it - the watch closes. A known tag's record flips to "replaced" so a later hearing says peel, not return.</span>
-      </button>
-      <div class="recent__meta u-mb8">Or leave this open: the next sweep or audit that hears the old sold tag asks "is this box the open-box unit?" right there, and closes this task with the answer.</div>`;
-  } else if (t.category === "label-unpaired") {
-    // The receiving watchdog, back by request (Nick, 2026-09-09):
-    // boxes were labelled but never RFID-paired. Held vendor strips
-    // (kept label sheets) never trip this - only loose labels do.
-    middle = `
-      <button class="reset rvw-wide rvw-choice rvw-choice--amber" id="rvw-resumebatch" type="button">
-        Resume receiving #${t.batch_id} and pair the boxes
-        <span class="rvw-choice__sub">Opens the batch's receiving list - pair each labelled box with the gun or the two-scan flow. This task closes itself once every label is paired, held on a vendor strip, or dismissed.</span>
-      </button>`;
-  } else if (t.category === "stock-not-updated") {
-    // The full-shipment watchdog (Nick, 2026-09-01): labels paired
-    // over an hour ago but the planner never updated Shopify stock.
-    middle = `
-      <button class="reset rvw-wide rvw-choice rvw-choice--amber" id="rvw-openplanner" type="button">
-        Open the order in TC-Planner (pre-filled)
-        <span class="rvw-choice__sub">Opens the stock order with what actually arrived already filled in - Save the receive there, then Update stock. Print labels stays grayed (the labels are on the boxes). This task closes itself when the planner reports the update.</span>
-      </button>`;
-  } else if (t.category === "unresolved-barcode") {
-    // The link-or-adopt actions live right in the window (Nick,
-    // 2026-09-02): once the code resolves, the context offers closure.
-    middle = `
-      <div class="recent__meta u-mb8" id="rvw-liveline">Re-checking the code…</div>
-      <div id="rvw-actions"></div>
-      <div id="rvw-linkrow" hidden>
-        <input id="rvw-linktarget" class="rv-notein u-mb6" type="text" maxlength="100" placeholder="Known SKU or barcode of the real product…" />
-        <button class="reset rvw-wide rvw-choice rvw-choice--blue" id="rvw-linkalias" type="button">
-          Link the scanned code as an alias
-          <span class="rvw-choice__sub">The code finds that product from now on. Shopify untouched; unlinkable from History.</span>
-        </button>
-        <button class="reset rvw-wide rvw-choice rvw-choice--amber" id="rvw-setbarcode" type="button">
-          Set it as the product's Shopify barcode
-          <span class="rvw-choice__sub">Adopts the scanned code as the REAL barcode in Shopify (audited, undoable).</span>
-        </button>
-      </div>
-      <button class="reset rvw-wide" id="rvw-station" type="button">Open at the Scan Station</button>`;
-  } else if (t.category === "pairing-incomplete") {
-    middle = `
-      <div class="recent__meta u-mb8" id="rvw-liveline">Checking the live pairing state…</div>
-      <div id="rvw-actions"></div>
-      <button class="reset rvw-wide" id="rvw-station" type="button">Open at the Scan Station (pair the stragglers)</button>`;
-  } else if (t.category === "bin-check") {
-    middle = `
-      <div class="recent__meta u-mb8" id="rvw-liveline"></div>
-      ${binFromDetail ? `<button class="reset rvw-wide" id="rvw-audit" type="button">Run ${escapeHtml(binFromDetail)}'s bin audit</button>` : ""}`;
-  } else if (t.category === "bin-mismatch") {
-    middle = `
-      <div class="rvw-bins">
-        <div class="rvw-bins__cell"><div class="rvw-stat__l">Shopify says</div><div class="rvw-bins__b">${escapeHtml(t.shopify_bin || "?")}</div></div>
-        <div class="rvw-bins__arrow">⇢</div>
-        <div class="rvw-bins__cell"><div class="rvw-stat__l">Tags sit at</div><div class="rvw-bins__b">${escapeHtml(t.tag_bin || "?")}</div></div>
-      </div>
-      <button class="reset rvw-wide rvw-choice rvw-choice--amber" id="rvw-shopwrong" type="button">
-        Shopify is wrong → write ${escapeHtml(t.tag_bin || "?")} to Shopify
-        <span class="rvw-choice__sub">The audited bin update - Shopify, map and tags follow. Undoable.</span>
-      </button>
-      <button class="reset rvw-wide rvw-choice rvw-choice--blue" id="rvw-shopright" type="button">
-        Shopify is right → boxes moved to ${escapeHtml(t.shopify_bin || "?")}
-        <span class="rvw-choice__sub">Updates the tag records only - Shopify already says ${escapeHtml(t.shopify_bin || "?")}.</span>
-      </button>`;
-  } else if (t.category === "duplicate-product") {
-    middle = `<div id="rvw-dupe" class="recent__meta">Loading both sides…</div>`;
-  } else {
-    // could-not-scan, legacy unresolved-barcode, anything else: the Scan
-    // Station is where identifying/tagging/linking happens. Bundles get
-    // their component list (or the one-time contents setup) injected
-    // into the actions slot once the context answers.
-    middle = `
-      <div class="recent__meta u-mb8" id="rvw-liveline"></div>
-      <div id="rvw-actions"></div>
-      <button class="reset rvw-wide" id="rvw-station" type="button">Open at the Scan Station</button>`;
-  }
-
-  body.innerHTML = `
-    <div class="rvw-head">
-      ${evChip(t.category)}
-      <span class="rvw-head__title">${escapeHtml(t.product_title || t.sku || t.detail.slice(0, 40))}</span>
-      <span class="rvw-close" id="rvw-close" title="Close">✕</span>
-    </div>
-    <div class="recent__meta u-mb10">${
-      t.sku ? `SKU ${escapeHtml(t.sku)} · ` : ""
-    }${escapeHtml(t.synthetic ? "live entry - clears itself once the bins agree" : `filed ${fmtAgo(t.created_at)}${t.created_by ? ` by ${t.created_by}` : ""}`)}</div>
-    ${
-      // The duplicate resolver writes its own concise reason line — the
-      // raw task detail would repeat the SKUs already on the cards.
-      t.category === "duplicate-product"
-        ? ""
-        : `<div class="recent__meta u-mb10">${escapeHtml(t.detail || "")}</div>`
-    }
-    ${notesHtml}
-    ${middle}
-    <input class="rv-notein rvw-resnote" id="rvw-note" type="text" maxlength="255" placeholder="Resolution note…" />
-    <div class="rvw-foot">
-      ${
-        t.synthetic
-          ? `<button class="rv-btn rv-btn--dismiss rvw-grow" id="rvw-dismiss" type="button" title="Suppressed for this exact disagreement - reappears only if either bin changes">Dismiss this mismatch</button>`
-          : t.category === "duplicate-product"
-            ? // Merge or split IS the resolution — the only other honest
-              // exit is a dismissal (which this pair-flag never re-raises).
-              `<button class="rv-btn rv-btn--dismiss rvw-grow" id="rvw-dupedismiss" type="button" title="They're fine as they are - closes the flag without changing anything, and this pair is never flagged again">Dismiss</button>`
-            : `<button class="rv-btn rv-btn--resolve rvw-grow" id="rvw-resolve" type="button">Mark resolved</button>`
-      }
-      <button class="rv-btn" id="rvw-cancel" type="button">Cancel</button>
-    </div>`;
-  overlay.hidden = false;
-
-  document.getElementById("rvw-close").addEventListener("click", closeResolveWindow);
-  document.getElementById("rvw-cancel").addEventListener("click", closeResolveWindow);
-  const noteVal = () => document.getElementById("rvw-note").value.trim();
-
-  const resolveBtn = document.getElementById("rvw-resolve");
-  if (resolveBtn)
-    resolveBtn.addEventListener("click", () => {
-      if (
-        t.category === "inventory-check" &&
-        !noteVal() &&
-        !resolveBtn.dataset.armed
-      ) {
-        // "Recounted — still off" without a word of context helps nobody.
-        resolveBtn.dataset.armed = "1";
-        document.getElementById("rvw-note").focus();
-        document.getElementById("rvw-note").placeholder =
-          "What did the recount find? (required - press Mark resolved again)";
-        return;
-      }
-      commitResolve(t, noteVal());
-    });
-
-  const auditBtn = document.getElementById("rvw-audit");
-  if (auditBtn)
-    auditBtn.addEventListener("click", () => {
-      closeResolveWindow();
-      jumpToBinAudit(binFromDetail);
-    });
-
-  // Manual recount (Nick, 2026-08-26): − / + build a correction shown
-  // next to Counted as "(+1)" - yellow while it disagrees with Shopify,
-  // green the moment counted+delta equals the live number. The middle
-  // press applies it: the RFID side always (logged, source batch row
-  // corrected), Shopify only when its number differs - raises ride the
-  // audited on-hand endpoint, lowering stays a bin-audit job.
-  const recountBtn = document.getElementById("rvw-recount");
-  if (recountBtn) {
-    let rvwDelta = 0;
-    let rvwCounted = counted;
-    const deltaChip = document.getElementById("rvw-delta");
-    const readLive = () => {
-      const txt = document.getElementById("rvw-live").textContent;
-      return /^\d+$/.test(txt) ? Number(txt) : null;
-    };
-    const refreshRecount = () => {
-      const label = document.getElementById("rvw-recount-label");
-      if (rvwDelta === 0) {
-        deltaChip.hidden = true;
-        label.textContent = "Manually set the counted number";
-        return;
-      }
-      const target = (rvwCounted ?? 0) + rvwDelta;
-      deltaChip.hidden = false;
-      deltaChip.textContent = `(${rvwDelta > 0 ? "+" : ""}${rvwDelta})`;
-      const live = readLive();
-      deltaChip.classList.toggle(
-        "rvw-delta--green",
-        live != null && target === live
-      );
-      label.textContent = `Set counted to ${target}`;
-    };
-    document.getElementById("rvw-minus").addEventListener("click", (ev) => {
-      ev.stopPropagation();
-      if ((rvwCounted ?? 0) + rvwDelta > 0) {
-        rvwDelta--;
-        refreshRecount();
-      }
-    });
-    document.getElementById("rvw-plus").addEventListener("click", (ev) => {
-      ev.stopPropagation();
-      rvwDelta++;
-      refreshRecount();
-    });
-    recountBtn.addEventListener("click", async () => {
-      if (rvwDelta === 0) return;
-      const operator = operatorEl.value;
-      if (!operator) {
-        alert("Pick who's scanning (top right) first.");
-        return;
-      }
-      const target = (rvwCounted ?? 0) + rvwDelta;
-      const live = readLive();
-      const shopifyPart =
-        live == null
-          ? "Shopify's live number couldn't be read - it will NOT be touched."
-          : live === target
-            ? `Shopify already says ${live} - it will NOT be touched.`
-            : target > live
-              ? `Shopify says ${live} - on-hand will be RAISED to ${target} (confirmed, undoable in History).`
-              : `Shopify says ${live}, which is higher - lowering runs through the bin audit path, so Shopify will NOT be touched here.`;
-      if (
-        !confirm(
-          `Set the counted number to ${target} (was ${rvwCounted ?? "?"})?\n\n` +
-            `The RFID side updates and logs always. ${shopifyPart}`
-        )
-      )
-        return;
-      recountBtn.disabled = true;
-      try {
-        const res = await postJson(`/api/review-tasks/${t.id}/recount`, {
-          count: target,
-          changed_by: operator,
-        });
-        let msg = res.message;
-        if (live != null && target > live) {
-          try {
-            const r2 = await postJson("/api/onhand-updates", {
-              sku: t.sku,
-              new_qty: target,
-              confirmed: true,
-              changed_by: operator,
-            });
-            msg += ` ${r2.message || `On-hand raised to ${target}.`}`;
-            document.getElementById("rvw-live").textContent = String(target);
-          } catch (err2) {
-            msg += ` Shopify write FAILED: ${err2.message}`;
-          }
-        }
-        rvwCounted = target;
-        rvwDelta = 0;
-        if (res.task && res.task.detail) t.detail = res.task.detail;
-        document.getElementById("rvw-counted").textContent = String(target);
-        refreshRecount();
-        document.getElementById("rvw-liveline").textContent = msg;
-      } catch (err) {
-        alert(err.message);
-      } finally {
-        recountBtn.disabled = false;
-      }
-    });
-  }
-
-  // Open-box return: the manual "old sticker peeled" resolution. The
-  // watch row is found through openbox-info (keyed by this task's id).
-  const obxPeeledBtn = document.getElementById("rvw-obxpeeled");
-  if (obxPeeledBtn)
-    obxPeeledBtn.addEventListener("click", async () => {
-      obxPeeledBtn.disabled = true;
-      try {
-        const info = await apiJson(
-          `/api/products/openbox-info/${encodeURIComponent(t.sku)}`
-        );
-        const mine = (info.open_returns || []).find(
-          (r) => r.task_id === t.id
-        );
-        if (!mine) {
-          alert("This task's return watch is already closed - mark " +
-            "the task resolved below.");
-        } else {
-          const res = await postJson(
-            `/api/openbox-returns/${mine.id}/resolve`,
-            { answer: "peeled", resolved_by: operatorEl.value || null }
-          );
-          alert(res.message);
-          document.getElementById("resolve-overlay").hidden = true;
-          loadReview();
-          return;
-        }
-      } catch (err) {
-        alert(err.message);
-      } finally {
-        obxPeeledBtn.disabled = false;
-      }
-    });
-
-  // Label-unpaired: jump straight into the receiving batch to pair.
-  const resumeBatchBtn = document.getElementById("rvw-resumebatch");
-  if (resumeBatchBtn)
-    resumeBatchBtn.addEventListener("click", () => {
-      document.getElementById("resolve-overlay").hidden = true;
-      document.querySelector('.tabs__tab[data-tab="batch"]')?.click();
-      resumeBatch(t.batch_id);
-    });
-
-  // Queue-labels: the Update-stock safety net's one-click resolution.
-  const openPlannerBtn = document.getElementById("rvw-openplanner");
-  if (openPlannerBtn)
-    openPlannerBtn.addEventListener("click", async () => {
-      openPlannerBtn.disabled = true;
-      try {
-        const st = await apiJson(
-          `/api/receiving/batch-order-status/${t.batch_id}`
-        );
-        if (!st.printed || !st.planner) {
-          alert("This task's batch has no order receipt on file - " +
-            "open the planner by hand.");
-          return;
-        }
-        await openPlannerReceive(st.planner.order_id, st.planner.items);
-      } catch (err) {
-        alert(err.message);
-      } finally {
-        openPlannerBtn.disabled = false;
-      }
-    });
-
-  const queueLabelsBtn = document.getElementById("rvw-queuelabels");
-  if (queueLabelsBtn)
-    queueLabelsBtn.addEventListener("click", async () => {
-      const operator = operatorEl.value;
-      if (!operator) {
-        alert("Pick who's scanning (top right) first.");
-        return;
-      }
-      if (
-        !confirm(
-          `Queue the missing labels for this receiving batch?\n\n` +
-            `One label per unlabelled box, printed with its home bin - ` +
-            `same as the planner's Print labels. The receiving list ` +
-            `then runs the normal print and pair flow.`
-        )
-      )
-        return;
-      queueLabelsBtn.disabled = true;
-      try {
-        const res = await postJson(
-          `/api/review-tasks/${t.id}/queue-labels`,
-          { changed_by: operator }
-        );
-        alert(res.message);
-        if (res.resolved === false) {
-          // Labels still owed (no-bin products): the task stays OPEN
-          // on the server, so it stays on the board here too, with
-          // the fresh detail naming what needs a bin.
-          if (res.detail) t.detail = res.detail;
-          queueLabelsBtn.disabled = false;
-          closeResolveWindow();
-          renderReview();
-          return;
-        }
-        reviewTasks = reviewTasks.filter((x) => x.id !== t.id);
-        closeResolveWindow();
-        renderReview();
-      } catch (err) {
-        queueLabelsBtn.disabled = false;
-        alert(err.message);
-      }
-    });
-
-  // The OTHER resolution (Nick, 2026-09-15): the unlabelled units
-  // were sold or set aside before anyone could label them - nothing
-  // prints, the batch stops owing labels, matching recorded sales
-  // are consumed.
-  const unprintedSoldBtn = document.getElementById("rvw-unprintedsold");
-  if (unprintedSoldBtn)
-    unprintedSoldBtn.addEventListener("click", async () => {
-      const operator = operatorEl.value;
-      if (!operator) {
-        alert("Pick who's scanning (top right) first.");
-        return;
-      }
-      if (
-        !confirm(
-          `Resolve WITHOUT printing - the unlabelled units were sold ` +
-            `or set aside before labeling?\n\nThe receiving batch ` +
-            `stops owing those labels and recorded sales for the ` +
-            `SKUs are consumed, so nothing keeps expecting tags that ` +
-            `were never applied. Permanent (History keeps a receipt ` +
-            `per product).`
-        )
-      )
-        return;
-      unprintedSoldBtn.disabled = true;
-      try {
-        const res = await postJson(
-          `/api/review-tasks/${t.id}/unprinted-sold`,
-          { changed_by: operator }
-        );
-        alert(res.message);
-        reviewTasks = reviewTasks.filter((x) => x.id !== t.id);
-        closeResolveWindow();
-        renderReview();
-      } catch (err) {
-        unprintedSoldBtn.disabled = false;
-        alert(err.message);
-      }
-    });
-
-  // "Shopify is wrong → use the RFID count" (Nick, 2026-08-26): the
-  // bin-mismatch-style one-click for count disagreements. Reads the
-  // CURRENT counted number (a recount in this window counts) and the
-  // live Shopify figure, then writes counted to on-hand: raises ride
-  // the normal audited write; lowers ride the bin-audit lowering path,
-  // whose guard refuses any drop recorded sales don't fully cover.
-  const useRfid = document.getElementById("rvw-userfid");
-  if (useRfid)
-    useRfid.addEventListener("click", async () => {
-      const operator = operatorEl.value;
-      if (!operator) {
-        alert("Pick who's scanning (top right) first.");
-        return;
-      }
-      const countedNow = Number(
-        document.getElementById("rvw-counted")?.textContent
-      );
-      if (!Number.isFinite(countedNow)) {
-        alert("This task carries no counted number to write.");
-        return;
-      }
-      const liveTxt = document.getElementById("rvw-live").textContent;
-      const live = /^\d+$/.test(liveTxt) ? Number(liveTxt) : null;
-      if (live == null) {
-        alert("Shopify's live number couldn't be read - try again in a moment.");
-        return;
-      }
-      if (live === countedNow) {
-        await commitResolve(t, `Shopify already says ${live} - counts agree.`);
-        return;
-      }
-      useRfid.disabled = true;
-      try {
-        if (countedNow > live) {
-          if (
-            !confirm(
-              `Write on-hand ${live} → ${countedNow} to Shopify for ${t.sku}?\n\nConfirmed, logged, undoable from History.`
-            )
-          ) {
-            useRfid.disabled = false;
-            return;
-          }
-          const r = await postJson("/api/onhand-updates", {
-            sku: t.sku,
-            new_qty: countedNow,
-            confirmed: true,
-            changed_by: operator,
-          });
-          await commitResolve(t, r.message || `On-hand set to ${countedNow}.`);
-        } else {
-          if (!binFromDetail) {
-            alert(
-              "This task names no bin, and lowering a count runs through " +
-                "the bin-audit path - run the bin audit instead."
-            );
-            useRfid.disabled = false;
-            return;
-          }
-          // Two-phase like the other lowering flows: the unconfirmed
-          // call answers with exactly what will happen (including the
-          // sales-coverage arithmetic), and that text IS the prompt.
-          let ask = null;
-          try {
-            await postJson("/api/onhand-updates/lower", {
-              sku: t.sku,
-              bin_name: binFromDetail,
-              new_qty: countedNow,
-              epcs: [],
-              changed_by: operator,
-            });
-          } catch (err) {
-            if (!/Confirm to proceed/.test(err.message)) throw err;
-            ask = err.message;
-          }
-          if (ask && !confirm(ask)) {
-            useRfid.disabled = false;
-            return;
-          }
-          const r = await postJson("/api/onhand-updates/lower", {
-            sku: t.sku,
-            bin_name: binFromDetail,
-            new_qty: countedNow,
-            epcs: [],
-            changed_by: operator,
-            confirmed: true,
-          });
-          await commitResolve(
-            t,
-            r.message || `On-hand lowered to ${countedNow}.`
-          );
-        }
-      } catch (err) {
-        useRfid.disabled = false;
-        alert(err.message);
-      }
-    });
-
-  const stationBtn = document.getElementById("rvw-station");
-  if (stationBtn)
-    stationBtn.addEventListener("click", () => {
-      closeResolveWindow();
-      document.querySelector('.tabs__tab[data-tab="scan"]').click();
-      const code = t.barcode || t.sku;
-      if (code) {
-        el.barcode.value = code;
-        stationBarcodeScan(code);
-      }
-    });
-
-  const dupeDismiss = document.getElementById("rvw-dupedismiss");
-  if (dupeDismiss)
-    dupeDismiss.addEventListener("click", async () => {
-      const operator = operatorEl.value;
-      if (!operator) {
-        alert("Pick who's scanning (top right) first.");
-        return;
-      }
-      dupeDismiss.disabled = true;
-      try {
-        await postJson(`/api/review-tasks/${t.id}/resolve`, {
-          resolved_by: operator,
-          dismissed: true,
-          note: noteVal().slice(0, 255) || null,
-        });
-        reviewTasks = reviewTasks.filter((x) => x.id !== t.id);
-        closeResolveWindow();
-        renderReview();
-      } catch (err) {
-        dupeDismiss.disabled = false;
-        alert(err.message);
-      }
-    });
-
-  const dismissBtn2 = document.getElementById("rvw-dismiss");
-  if (dismissBtn2)
-    dismissBtn2.addEventListener("click", async () => {
-      const operator = operatorEl.value;
-      if (!operator) {
-        alert("Pick who's scanning (top right) first.");
-        return;
-      }
-      try {
-        await postJson("/api/review/mismatch-dismissals", {
-          sku: t.sku,
-          tag_bin: t.tag_bin,
-          shopify_bin: t.shopify_bin,
-          dismissed_by: operator,
-        });
-        reviewTasks = reviewTasks.filter((x) => x.id !== t.id);
-        closeResolveWindow();
-        renderReview();
-      } catch (err) {
-        alert(err.message);
-      }
-    });
-
-  const shopWrong = document.getElementById("rvw-shopwrong");
-  if (shopWrong)
-    shopWrong.addEventListener("click", async () => {
-      const operator = operatorEl.value;
-      if (!operator) {
-        alert("Pick who's scanning (top right) first.");
-        return;
-      }
-      if (
-        !confirm(
-          `Set the Shopify bin for ${t.sku} to ${t.tag_bin}?\n\n` +
-            `Shopify currently says: ${t.shopify_bin}. This is the normal ` +
-            `audited bin write - Shopify, the bin map and this product's ` +
-            `tags all follow, with a History entry.`
-        )
-      )
-        return;
-      shopWrong.disabled = true;
-      try {
-        await postJson("/api/bin-updates", {
-          target: t.sku,
-          bin: t.tag_bin,
-          changed_by: operator,
-        });
-        reviewTasks = reviewTasks.filter((x) => x.id !== t.id);
-        closeResolveWindow();
-        renderReview();
-      } catch (err) {
-        shopWrong.disabled = false;
-        alert(err.message);
-      }
-    });
-
-  const shopRight = document.getElementById("rvw-shopright");
-  if (shopRight)
-    shopRight.addEventListener("click", async () => {
-      const operator = operatorEl.value;
-      if (!operator) {
-        alert("Pick who's scanning (top right) first.");
-        return;
-      }
-      if (
-        !confirm(
-          `Move the TAG RECORDS for ${t.sku} to ${t.shopify_bin}?\n\n` +
-            `For when the boxes physically moved (or are moving) to ` +
-            `Shopify's shelf. Local only - nothing in Shopify changes.`
-        )
-      )
-        return;
-      shopRight.disabled = true;
-      try {
-        await postJson("/api/assignments/rebin", {
-          sku: t.sku,
-          bin: t.shopify_bin,
-          changed_by: operator,
-        });
-        reviewTasks = reviewTasks.filter((x) => x.id !== t.id);
-        closeResolveWindow();
-        renderReview();
-      } catch (err) {
-        shopRight.disabled = false;
-        alert(err.message);
-      }
-    });
-
-  // Live context: quick answers that let stale tasks close in one click.
-  if (!t.synthetic) loadResolveContext(t, counted);
-}
-
-async function loadResolveContext(t, counted) {
-  const line = document.getElementById("rvw-liveline");
-  try {
-    const ctx = await apiJson(`/api/review-tasks/${t.id}/context`);
-    if (
-      t.category === "inventory-check" ||
-      t.category === "tag-onhand-mismatch"
-    ) {
-      // The merged window (Nick, 2026-09-02): tiles + hovers, one
-      // verdict line, and the verdict's own action when there is one.
-      const live = ctx.live_on_hand;
-      const units = ctx.units_on_file;
-      const terms = ctx.terms || {};
-      document.getElementById("rvw-live").textContent = live ?? "—";
-      document.getElementById("rvw-tags").textContent = units ?? "—";
-      const heard = ctx.last_heard;
-      document.getElementById("rvw-heard").textContent = heard
-        ? `${heard.heard}/${heard.total}`
-        : "—";
-      // Hover stories.
-      const parts = [];
-      if (terms.on_hand != null) parts.push(`${terms.on_hand} on-hand`);
-      if (terms.sold_unretired)
-        parts.push(`${terms.sold_unretired} sold but unretired`);
-      if (terms.backorder_debt)
-        parts.push(`${terms.backorder_debt} on customer backorder`);
-      if (terms.unavailable)
-        parts.push(`${terms.unavailable} set as unavailable`);
-      document.getElementById("rvw-tile-tags").title =
-        ctx.expected != null
-          ? `Expected ${ctx.expected}: ${parts.join(", ")}`
-          : "Live expected count unavailable right now.";
-      document.getElementById("rvw-tile-heard").title = heard
-        ? `${heard.heard} of ${heard.total} tags answered ${fmtAgo(heard.at)}` +
-          `${heard.note ? ` (${heard.note})` : ""}` +
-          `${heard.device ? ` from ${heard.device}` : ""}`
-        : "No recent sweep heard this product's tags.";
-      document.getElementById("rvw-tile-oh").title = ctx.onhand_movement
-        ? `${ctx.onhand_movement.text} (${fmtAgo(ctx.onhand_movement.at)})`
-        : "No movement history yet - the nightly sync builds it.";
-      line.textContent = "Hover a tile for its story.";
-      // The verdict.
-      const v = ctx.verdict;
-      const vEl = document.getElementById("rvw-verdict");
-      const actions = document.getElementById("rvw-actions");
-      if (v) {
-        const green =
-          v.kind === "agree" || v.kind === "unavailable" ||
-          v.kind === "retire";
-        vEl.hidden = false;
-        vEl.className =
-          "rvw-verdict " +
-          (green ? "rvw-verdict--green" : "rvw-verdict--yellow");
-        vEl.textContent = (green ? "✓ " : "⚠ ") + v.text;
-        if (v.kind === "retire") {
-          actions.innerHTML = `
-            <button class="reset rvw-wide rvw-choice rvw-choice--amber" id="rvw-retire" type="button">
-              Retire ${v.units} tag(s) presumed sold
-              <span class="rvw-choice__sub">Sales-guarded; unheard tags retire first, each restorable from History. Resolves this check. Shopify is not touched.</span>
-            </button>`;
-          document
-            .getElementById("rvw-retire")
-            .addEventListener("click", async () => {
-              const operator = operatorEl.value;
-              if (!operator) {
-                alert("Pick who's scanning (top right) first.");
-                return;
-              }
-              if (
-                !confirm(
-                  `Retire ${v.units} tag(s) of ${t.sku} presumed sold?\n\n` +
-                    `The sold ledger covers them; unheard tags go first. ` +
-                    `Each is restorable from History. Shopify is not touched.`
-                )
-              )
-                return;
-              const btn = document.getElementById("rvw-retire");
-              btn.disabled = true;
-              try {
-                await postJson(`/api/review-tasks/${t.id}/retire-sold`, {
-                  units: v.units,
-                  changed_by: operator,
-                  confirmed: true,
-                });
-                reviewTasks = reviewTasks.filter((x) => x.id !== t.id);
-                closeResolveWindow();
-                renderReview();
-              } catch (err) {
-                btn.disabled = false;
-                alert(err.message);
-              }
-            });
-        } else if (v.kind === "agree" || v.kind === "unavailable") {
-          actions.innerHTML = `<button class="reset rvw-wide rvw-ok" id="rvw-agree" type="button">Nothing to fix - resolve</button>`;
-          document.getElementById("rvw-agree").addEventListener("click", () =>
-            commitResolve(t, v.text)
-          );
-        }
-      }
-      // The sold-out shortcut survives for the on-hand-0 case the
-      // verdict didn't already cover with a retire button.
-      if (
-        live === 0 &&
-        (units ?? 0) > 0 &&
-        (!v || v.kind !== "retire") &&
-        !actions.innerHTML
-      ) {
-        actions.innerHTML = `
-          <button class="reset rvw-wide rvw-choice rvw-choice--amber" id="rvw-allsold" type="button">
-            Mark all ${ctx.tag_count} tag(s) presumed sold
-            <span class="rvw-choice__sub">Shopify says 0 on hand - every remaining box has sold. Retires the tags (restorable from History) and resolves this task.</span>
-          </button>`;
-        document
-          .getElementById("rvw-allsold")
-          .addEventListener("click", async () => {
-            const operator = operatorEl.value;
-            if (!operator) {
-              alert("Pick who's scanning (top right) first.");
-              return;
-            }
-            if (
-              !confirm(
-                `Mark all ${ctx.tag_count} tag(s) (${units} unit(s)) of ${t.sku} presumed sold?\n\n` +
-                  `Shopify on-hand is 0, so no boxes are expected on the shelf. ` +
-                  `The tags retire (each restorable from History) and this task resolves. ` +
-                  `Shopify is not touched.`
-              )
-            )
-              return;
-            const allSold = document.getElementById("rvw-allsold");
-            allSold.disabled = true;
-            try {
-              await postJson(`/api/review-tasks/${t.id}/retire-all-sold`, {
-                changed_by: operator,
-                confirmed: true,
-              });
-              reviewTasks = reviewTasks.filter((x) => x.id !== t.id);
-              closeResolveWindow();
-              renderReview();
-            } catch (err) {
-              allSold.disabled = false;
-              alert(err.message);
-            }
-          });
-      }
-    } else if (t.category === "unresolved-barcode") {
-      const actions = document.getElementById("rvw-actions");
-      const linkrow = document.getElementById("rvw-linkrow");
-      if (ctx.resolves_to) {
-        line.textContent = "";
-        actions.innerHTML = `<button class="reset rvw-wide rvw-ok" id="rvw-nowresolves" type="button">The code now resolves to ${escapeHtml(
-          ctx.resolves_to.product_title || ctx.resolves_to.sku || "?"
-        )} - resolve</button>`;
-        document
-          .getElementById("rvw-nowresolves")
-          .addEventListener("click", () =>
-            commitResolve(
-              t,
-              `Code now resolves to ${ctx.resolves_to.sku || ctx.resolves_to.product_title}.`
-            )
-          );
-      } else if (ctx.code) {
-        line.textContent = `"${ctx.code}" still matches nothing - link it below, or fix it at the Scan Station.`;
-        linkrow.hidden = false;
-        const doLink = async (asBarcode) => {
-          const target = document
-            .getElementById("rvw-linktarget")
-            .value.trim();
-          if (!target) {
-            alert("Type the real product's SKU or barcode first.");
-            return;
-          }
-          const operator = operatorEl.value;
-          if (!operator) {
-            alert("Pick who's scanning (top right) first.");
-            return;
-          }
-          try {
-            if (asBarcode) {
-              if (
-                !confirm(
-                  `Set "${ctx.code}" as the Shopify barcode of ${target}?\n\nThis WRITES to Shopify (undoable from History).`
-                )
-              )
-                return;
-              await postJson("/api/barcode-overwrites", {
-                new_barcode: ctx.code,
-                target,
-                changed_by: operator,
-                confirmed: true,
-              });
-            } else {
-              await postJson("/api/barcode-aliases", {
-                alias_barcode: ctx.code,
-                target,
-                created_by: operator,
-              });
-            }
-            commitResolve(
-              t,
-              asBarcode
-                ? `Adopted ${ctx.code} as ${target}'s Shopify barcode.`
-                : `Linked ${ctx.code} as an alias of ${target}.`
-            );
-          } catch (err) {
-            alert(err.message);
-          }
-        };
-        document
-          .getElementById("rvw-linkalias")
-          .addEventListener("click", () => doLink(false));
-        document
-          .getElementById("rvw-setbarcode")
-          .addEventListener("click", () => doLink(true));
-      } else {
-        line.textContent = "";
-      }
-    } else if (t.category === "pairing-incomplete") {
-      if (ctx.paired_count != null && ctx.labels_total != null) {
-        if (ctx.paired_count >= ctx.labels_total) {
-          line.textContent = `Pairing has CAUGHT UP since (${ctx.paired_count} of ${ctx.labels_total}).`;
-          document.getElementById("rvw-actions").innerHTML =
-            `<button class="reset rvw-wide rvw-ok" id="rvw-caught" type="button">Pairing complete now - resolve</button>`;
-          document.getElementById("rvw-caught").addEventListener("click", () =>
-            commitResolve(t, `Pairing complete (${ctx.paired_count}/${ctx.labels_total}).`)
-          );
-        } else {
-          line.textContent = `Still ${ctx.labels_total - ctx.paired_count} unpaired (${ctx.paired_count} of ${ctx.labels_total}).`;
-        }
-      } else {
-        line.textContent = "";
-      }
-    } else if (t.category === "could-not-scan") {
-      if (ctx.units_on_file != null)
-        line.textContent = `The RFID system now holds ${ctx.units_on_file} unit(s) for this SKU${ctx.units_on_file > 0 ? " - if that covers this box, resolve below." : "."}`;
-      // The world moved since the skip (Nick, 2026-09-02): tags were
-      // added AFTER this was filed - one-click closure, never auto.
-      if ((ctx.tags_added_since || 0) > 0) {
-        const actions = document.getElementById("rvw-actions");
-        actions.innerHTML = `<button class="reset rvw-wide rvw-ok" id="rvw-tagged" type="button">${ctx.tags_added_since} tag(s) added since this was filed - resolve</button>`;
-        document.getElementById("rvw-tagged").addEventListener("click", () =>
-          commitResolve(
-            t,
-            `${ctx.tags_added_since} tag(s) added after the skip was filed.`
-          )
-        );
-      }
-      if (ctx.kind === "bundle") renderBundleActions(t, ctx);
-    } else if (t.category === "bin-check") {
-      line.textContent = ctx.latest_sweep_at
-        ? `Newest C72 sweep: ${fmtAgo(ctx.latest_sweep_at)} from ${ctx.latest_sweep_device || "the gun"}.`
-        : "No C72 sweeps on file yet.";
-    } else if (t.category === "duplicate-product") {
-      renderDupeMerge(t, ctx);
-    }
-  } catch (err) {
-    if (line) line.textContent = "";
-  }
-}
-
-// The duplicate resolver (Nick's spec, 2026-08-19): a concise reason
-// line up top ("Duplicate barcodes detected."), the two products as
-// fixed preview panels, and the traits that still TELL THEM APART
-// offered as labelled selector pairs — bundle-style broken-outline
-// groups — pick one from each pair, then merge. Split swaps those
-// selector pairs for SKU + Barcode inputs in the same slots. The two
-// action buttons sit on the window's horizontal thirds in BOTH modes,
-// and the window never moves or resizes once open.
-function renderDupeMerge(t, ctx) {
-  const host = document.getElementById("rvw-dupe");
-  if (!host || !ctx.sides || ctx.sides.length !== 2) {
-    if (host) host.textContent = "Couldn't load the two sides.";
-    return;
-  }
-  const S = ctx.sides;
-  const normId = (v) => String(v || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-  // Why the pair was flagged decides which traits are offered: shared
-  // barcode -> pick Name + SKU; shared SKU -> pick Name + Barcode;
-  // both shared -> only the name still tells them apart.
-  const sameBc = !!(
-    S[0].barcode && S[1].barcode &&
-    normId(S[0].barcode) === normId(S[1].barcode)
-  );
-  const sameSku = normId(S[0].sku) === normId(S[1].sku);
-  // "Duplicate barcodes detected: DUMMY-000111" — name the value too
-  // (both saved forms when they differ only in formatting).
-  const joinVals = (a, b) =>
-    String(a || "").toUpperCase() === String(b || "").toUpperCase()
-      ? a
-      : `${a} / ${b}`;
-  const reason =
-    sameBc && sameSku
-      ? `Duplicate SKUs and barcodes detected: ${joinVals(S[0].sku, S[1].sku)} · barcode ${joinVals(S[0].barcode, S[1].barcode)}`
-      : sameBc
-        ? `Duplicate barcodes detected: ${joinVals(S[0].barcode, S[1].barcode)}`
-        : `Duplicate SKUs detected: ${joinVals(S[0].sku, S[1].sku)}`;
-  const identLabel = sameBc && sameSku ? null : sameBc ? "SKU" : "Barcode";
-  const identValue = (s) =>
-    identLabel === "SKU" ? s.sku : s.barcode || "(no barcode)";
-
-  let mode = "merge";
-  let nameSel = null; // {side, idx}
-  let identSel = null; // 0 | 1 — the surviving identity's side
-  if (identLabel && S[0].in_catalog !== S[1].in_catalog)
-    identSel = S[0].in_catalog ? 0 : 1;
-  const survivorSide = () =>
-    identLabel ? identSel : nameSel ? nameSel.side : null;
-
-  const card = (s, i) => `
-      <div class="dupe2__card${
-        mode === "merge" && survivorSide() === i ? " dupe2__card--sel" : ""
-      }">
-        ${
-          s.image_url
-            ? `<img class="dupe2__img" src="${escapeHtml(s.image_url)}" alt="">`
-            : `<div class="dupe2__img dupe2__img--none">📦</div>`
-        }
-        <div class="dupe2__title">${escapeHtml(
-          s.title || (s.titles && s.titles[0]) || s.sku
-        )}</div>
-        <div class="recent__meta mono">${
-          identLabel
-            ? `${identLabel} ${escapeHtml(identValue(s))}`
-            : `SKU ${escapeHtml(s.sku)}`
-        }</div>
-        <div class="recent__meta">${s.units} tag unit(s)${
-          s.bin ? ` · bin ${escapeHtml(s.bin)}` : ""
-        }</div>
-        <span class="dupe2__chip ${
-          s.in_catalog ? "dupe2__chip--ok" : "dupe2__chip--warn"
-        }">${s.in_catalog ? "in the live catalog ✓" : "not in the catalog"}</span>
-      </div>`;
-
-  const nameGroup = () => `
-      <fieldset class="optgroup dupe2__group">
-        <legend class="optgroup__legend">Product Name</legend>
-        <div class="dupe2__pair">
-          ${[0, 1]
-            .map(
-              (i) => `<div class="dupe2__cell">${(S[i].titles.length
-                ? S[i].titles
-                : ["(no recorded name)"]
-              )
-                .map(
-                  (n, j) => `<button type="button" class="dupe2__name${
-                    nameSel && nameSel.side === i && nameSel.idx === j
-                      ? " dupe2__name--sel"
-                      : ""
-                  }" data-side="${i}" data-idx="${j}">${escapeHtml(n)}</button>`
-                )
-                .join("")}</div>`
-            )
-            .join("")}
-        </div>
-      </fieldset>`;
-  const identGroup = () =>
-    identLabel
-      ? `<fieldset class="optgroup dupe2__group">
-          <legend class="optgroup__legend">${identLabel}</legend>
-          <div class="dupe2__pair">
-            ${[0, 1]
-              .map(
-                (i) => `<div class="dupe2__cell">
-                  <button type="button" class="dupe2__name dupe2__ident${
-                    identSel === i ? " dupe2__name--sel" : ""
-                  }" data-side="${i}">${escapeHtml(identValue(S[i]))}</button>
-                </div>`
-              )
-              .join("")}
-          </div>
-        </fieldset>`
-      : // Both traits shared: reserve the second group's space so the
-        // split view (always two groups) doesn't grow the window.
-        `<fieldset class="optgroup dupe2__group dupe2__group--ghost" aria-hidden="true">
-          <legend class="optgroup__legend">&nbsp;</legend>
-          <div class="dupe2__pair">
-            <div class="dupe2__cell"><button type="button" class="dupe2__name" disabled>&nbsp;</button></div>
-            <div class="dupe2__cell"><button type="button" class="dupe2__name" disabled>&nbsp;</button></div>
-          </div>
-        </fieldset>`;
-
-  const skuInputs = () => `
-      <fieldset class="optgroup dupe2__group">
-        <legend class="optgroup__legend">SKU</legend>
-        <div class="dupe2__pair">
-          ${[0, 1]
-            .map(
-              (i) => `<div class="dupe2__cell dupe2__splitrow">
-                <input class="linkbox__input dupe2__in dupe2__insku" data-side="${i}"
-                       placeholder="Enter SKU" value="${escapeHtml(S[i].sku)}"
-                       autocomplete="off" spellcheck="false" />
-                <button type="button" class="reset dupe2__usesku" data-side="${i}"
-                        title="Use this SKU as the barcode.">↴</button>
-              </div>`
-            )
-            .join("")}
-        </div>
-      </fieldset>`;
-  const bcInputs = () => `
-      <fieldset class="optgroup dupe2__group">
-        <legend class="optgroup__legend">Barcode</legend>
-        <div class="dupe2__pair">
-          ${[0, 1]
-            .map(
-              (i) => `<div class="dupe2__cell">
-                <input class="linkbox__input dupe2__in dupe2__inbc" data-side="${i}"
-                       placeholder="Enter Barcode" value="${escapeHtml(S[i].barcode || "")}"
-                       autocomplete="off" spellcheck="false" />
-              </div>`
-            )
-            .join("")}
-        </div>
-      </fieldset>`;
-
-  const validate = () => {
-    const hint = document.getElementById("dupe2-hint");
-    if (mode === "merge") {
-      const merge = document.getElementById("dupe2-merge");
-      const ready = !!nameSel && (identLabel ? identSel != null : true);
-      merge.disabled = !ready;
-      const surv = survivorSide();
-      hint.textContent = !ready
-        ? identLabel
-          ? `Pick the name and the ${identLabel.toLowerCase()} the merged product keeps.`
-          : "Pick the name the merged product keeps."
-        : `Merging ${S[1 - surv].sku} into ${S[surv].sku}, named "${
-            S[nameSel.side].titles[nameSel.idx] || S[surv].sku
-          }".`;
-      return;
-    }
-    const inEl = (cls, i) => host.querySelector(`.${cls}[data-side="${i}"]`);
-    const skuEls = [inEl("dupe2__insku", 0), inEl("dupe2__insku", 1)];
-    const bcEls = [inEl("dupe2__inbc", 0), inEl("dupe2__inbc", 1)];
-    const [sa, sb] = skuEls.map((e) => e.value.trim());
-    const [ba, bb] = bcEls.map((e) => e.value.trim());
-    // Which fields are in a live clash right now (an empty SKU counts —
-    // it can't stand on its own).
-    const clash = { sku: [!sa, !sb], bc: [false, false] };
-    if (sa && sb && normId(sa) === normId(sb)) clash.sku = [true, true];
-    if (ba && bb && normId(ba) === normId(bb)) clash.bc = [true, true];
-    if (ba && sb && normId(ba) === normId(sb)) {
-      clash.bc[0] = true;
-      clash.sku[1] = true;
-    }
-    if (bb && sa && normId(bb) === normId(sa)) {
-      clash.bc[1] = true;
-      clash.sku[0] = true;
-    }
-    // The fields that CAUSED the flag show red while clashing and green
-    // once fixed; innocent fields only ever go red (never green).
-    const offending = { sku: sameSku, bc: sameBc };
-    [["sku", skuEls], ["bc", bcEls]].forEach(([k, els]) =>
-      els.forEach((e, i) => {
-        e.classList.toggle("dupe2__in--bad", clash[k][i]);
-        e.classList.toggle("dupe2__in--ok", offending[k] && !clash[k][i]);
-      })
-    );
-    let problem = null;
-    if (!sa || !sb) problem = "Both products need a SKU.";
-    else if (normId(sa) === normId(sb)) problem = "The two SKUs are still the same.";
-    else if (ba && bb && normId(ba) === normId(bb))
-      problem = "The two barcodes are still the same.";
-    else if (ba && normId(ba) === normId(sb))
-      problem = `${sa}'s barcode equals the other SKU - they'd still collide.`;
-    else if (bb && normId(bb) === normId(sa))
-      problem = `${sb}'s barcode equals the other SKU - they'd still collide.`;
-    document.getElementById("dupe2-splitgo").disabled = !!problem;
-    document.getElementById("dupe2-hint").textContent = problem || "";
-  };
-
-  const draw = () => {
-    host.innerHTML =
-      `<p class="dupe2__reason">${escapeHtml(reason)}</p>` +
-      `<div class="dupe2">${card(S[0], 0)}${card(S[1], 1)}</div>` +
-      `<div class="dupe2__groups">${
-        mode === "merge"
-          ? nameGroup() + identGroup()
-          : skuInputs() + bcInputs()
-      }</div>` +
-      `<div class="dupe2__actions">${
-        mode === "merge"
-          ? `<button class="reset rvw-ok dupe2__act" id="dupe2-merge" type="button" disabled>Merge products into one</button>
-             <button class="reset dupe2__act" id="dupe2-split" type="button"
-               title="They really are two products - give each its own SKU and barcode">Split products into two</button>`
-          : `<button class="reset rvw-ok dupe2__act" id="dupe2-splitgo" type="button" disabled>Confirm split</button>
-             <button class="reset dupe2__act" id="dupe2-splitback" type="button">Back</button>`
-      }</div>` +
-      `<p class="recent__meta" id="dupe2-hint"></p>`;
-
-    host.querySelectorAll(".dupe2__name[data-idx]").forEach((n) =>
-      n.addEventListener("click", () => {
-        nameSel = { side: Number(n.dataset.side), idx: Number(n.dataset.idx) };
-        draw();
-      })
-    );
-    host.querySelectorAll(".dupe2__ident").forEach((n) =>
-      n.addEventListener("click", () => {
-        identSel = Number(n.dataset.side);
-        draw();
-      })
-    );
-    host.querySelectorAll(".dupe2__insku, .dupe2__inbc").forEach((inp) =>
-      inp.addEventListener("input", validate)
-    );
-    const splitBtn = document.getElementById("dupe2-split");
-    if (splitBtn)
-      splitBtn.addEventListener("click", () => {
-        mode = "split";
-        draw();
-      });
-    const backBtn = document.getElementById("dupe2-splitback");
-    if (backBtn)
-      backBtn.addEventListener("click", () => {
-        mode = "merge";
-        draw();
-      });
-    host.querySelectorAll(".dupe2__usesku").forEach((b) =>
-      b.addEventListener("click", () => {
-        const i = b.dataset.side;
-        host.querySelector(`.dupe2__inbc[data-side="${i}"]`).value =
-          host.querySelector(`.dupe2__insku[data-side="${i}"]`).value.trim();
-        validate();
-      })
-    );
-    const mergeBtn = document.getElementById("dupe2-merge");
-    if (mergeBtn)
-      mergeBtn.addEventListener("click", async () => {
-        const operator = operatorEl.value;
-        if (!operator) {
-          alert("Pick who's scanning (top right) first.");
-          return;
-        }
-        const surv = survivorSide();
-        const into = S[surv];
-        const from = S[1 - surv];
-        const title = S[nameSel.side].titles[nameSel.idx] || null;
-        if (
-          !confirm(
-            `Merge ${from.sku} into ${into.sku}?\n\n${from.units} tag ` +
-              `unit(s) move over, the merged product is named ` +
-              `"${title || into.sku}", and an inventory check is filed. ` +
-              `RFID records only - Shopify is not touched.`
-          )
-        )
-          return;
-        mergeBtn.disabled = true;
-        try {
-          const r = await postJson("/api/products/merge", {
-            from_sku: from.sku,
-            into_sku: into.sku,
-            title,
-            changed_by: operator,
-          });
-          reviewTasks = reviewTasks.filter((x) => x.id !== t.id);
-          closeResolveWindow();
-          renderReview();
-          loadReview();
-          alert(
-            `Merged ✓ - ${r.moved_tags} tag(s) now under ${r.into_sku}. ` +
-              `An inventory check was filed for it.`
-          );
-        } catch (err) {
-          mergeBtn.disabled = false;
-          alert(err.message);
-        }
-      });
-    const splitGo = document.getElementById("dupe2-splitgo");
-    if (splitGo)
-      splitGo.addEventListener("click", async () => {
-        const operator = operatorEl.value;
-        if (!operator) {
-          alert("Pick who's scanning (top right) first.");
-          return;
-        }
-        const sideIn = (i) => ({
-          sku: S[i].sku,
-          new_sku: host
-            .querySelector(`.dupe2__insku[data-side="${i}"]`)
-            .value.trim(),
-          new_barcode:
-            host.querySelector(`.dupe2__inbc[data-side="${i}"]`).value.trim() ||
-            null,
-        });
-        const sides = [sideIn(0), sideIn(1)];
-        if (
-          !confirm(
-            `Split them into two distinct products?\n\n` +
-              `${S[0].sku} → SKU ${sides[0].new_sku}` +
-              `${sides[0].new_barcode ? `, barcode ${sides[0].new_barcode}` : ""}\n` +
-              `${S[1].sku} → SKU ${sides[1].new_sku}` +
-              `${sides[1].new_barcode ? `, barcode ${sides[1].new_barcode}` : ""}\n\n` +
-              `Catalog products write to Shopify (History-logged); ` +
-              `RFID-only records update locally. This pair is never ` +
-              `flagged again.`
-          )
-        )
-          return;
-        splitGo.disabled = true;
-        try {
-          const r = await postJson("/api/products/split", {
-            sides,
-            changed_by: operator,
-          });
-          reviewTasks = reviewTasks.filter((x) => x.id !== t.id);
-          closeResolveWindow();
-          renderReview();
-          loadReview();
-          alert(
-            `Split ✓ - ${r.sides.map((s) => s.sku).join(" and ")} are two ` +
-              `distinct products now.`
-          );
-        } catch (err) {
-          splitGo.disabled = false;
-          alert(err.message);
-        }
-      });
-    validate();
-  };
-  draw();
-  // Freeze the window's geometry after the first draw: mode swaps and
-  // hint changes must never move or flex it (Nick, 2026-08-19).
-  // Synchronous, not rAF — getBoundingClientRect forces layout, and rAF
-  // never fires in a hidden tab. Card images are fixed-size, so nothing
-  // late-loading can change the height.
-  const modal = host.closest(".phist-modal");
-  if (modal && !modal.style.minHeight) {
-    const r = modal.getBoundingClientRect();
-    modal.style.minHeight = `${Math.ceil(r.height)}px`;
-    modal.style.width = `${Math.ceil(r.width)}px`;
-  }
-}
-
-// Bundles in the could-not-scan window: bundles are never tagged — their
-// COMPONENTS are. With contents defined (once, reused forever) the window
-// offers each component at the Scan Station; without, it offers the setup.
-function renderBundleActions(t, ctx) {
-  const slot = document.getElementById("rvw-actions");
-  if (!slot) return;
-  const contents = ctx.bundle_contents || [];
-  if (contents.length) {
-    slot.innerHTML =
-      `<div class="recent__meta u-mb6">This is a
-       bundle - bundles aren't tagged, their components are. One bundle
-       contains:</div>` +
-      contents
-        .map(
-          (c, i) =>
-            `<button class="reset rvw-wide" data-comp="${i}" type="button">Tag ${c.qty}× ${escapeHtml(c.component_sku)} at the Scan Station</button>`
-        )
-        .join("") +
-      `<div class="recent__meta u-mt2 u-mb8"><a href="#" id="rvw-bundle-edit">Edit bundle contents…</a></div>`;
-    slot.querySelectorAll("[data-comp]").forEach((btn) =>
-      btn.addEventListener("click", () => {
-        const c = contents[Number(btn.dataset.comp)];
-        closeResolveWindow();
-        document.querySelector('.tabs__tab[data-tab="scan"]').click();
-        el.barcode.value = c.component_sku;
-        stationBarcodeScan(c.component_sku);
-      })
-    );
-    slot
-      .querySelector("#rvw-bundle-edit")
-      .addEventListener("click", (ev) => {
-        ev.preventDefault();
-        renderBundleSetup(t, slot, contents);
-      });
-  } else {
-    renderBundleSetup(t, slot, []);
-  }
-}
-
-function renderBundleSetup(t, slot, existing) {
-  const prefill = existing
-    .map((c) => `${c.component_sku} x ${c.qty}`)
-    .join(", ");
-  slot.innerHTML = `
-    <div class="recent__meta u-mb6">${
-      existing.length
-        ? "Edit what one bundle contains"
-        : "This looks like a bundle. Define what ONE bundle contains - set once, used everywhere (batch collect stops counting it separately)."
-    }</div>
-    <div class="rv-notes__add rv-notes__add--flush">
-      <input class="rv-notein" id="rvw-bundle-in" type="text"
-             placeholder="e.g. W9184B x 10, 51701-1 x 3"
-             value="${escapeHtml(prefill)}" />
-      <button class="reset" id="rvw-bundle-save" type="button">Save contents</button>
-    </div>
-    <button class="reset rvw-wide" id="rvw-bundle-import" type="button"
-            title="Reads the component list straight from Shopify (the Bundles app relationship) - no typing">⇣ Import contents from Shopify</button>`;
-  document
-    .getElementById("rvw-bundle-import")
-    .addEventListener("click", async () => {
-      const btn = document.getElementById("rvw-bundle-import");
-      btn.disabled = true;
-      btn.textContent = "Asking Shopify…";
-      try {
-        const r = await postJson("/api/bundle-contents/import", {
-          sku: t.sku,
-          updated_by: operatorEl.value || null,
-        });
-        renderBundleActions(t, { bundle_contents: r.contents });
-      } catch (err) {
-        btn.disabled = false;
-        btn.textContent = "⇣ Import contents from Shopify";
-        alert(err.message);
-      }
-    });
-  document
-    .getElementById("rvw-bundle-save")
-    .addEventListener("click", async () => {
-      const raw = document.getElementById("rvw-bundle-in").value.trim();
-      const contents = [];
-      for (const part of raw.split(",")) {
-        if (!part.trim()) continue;
-        const m = /^(.+?)\s*[x×]\s*(\d+)$/i.exec(part.trim());
-        if (!m) {
-          alert(
-            `Couldn't read "${part.trim()}" - write each piece as ` +
-              `SKU x QTY, separated by commas.`
-          );
-          return;
-        }
-        contents.push({ component_sku: m[1].trim(), qty: Number(m[2]) });
-      }
-      if (!contents.length) {
-        alert("Nothing to save - write at least one SKU x QTY.");
-        return;
-      }
-      try {
-        const r = await postJson("/api/bundle-contents", {
-          bundle_sku: t.sku,
-          contents,
-          updated_by: operatorEl.value || null,
-        });
-        renderBundleActions(t, { bundle_contents: r.contents });
-      } catch (err) {
-        alert(err.message);
-      }
-    });
-}
-
-document.getElementById("review-notesonly").addEventListener("click", () => {
-  reviewNotesOnly = !reviewNotesOnly;
-  renderReview();
-});
-
 // Orders sync: manual trigger for the daily 8 AM pull. Shares the
 // "orders-sync" refresh kind with the server-side auto run, so this
 // button animates mid-fill when the daily sync happens to be running.
@@ -12841,7 +10849,6 @@ refreshify("review-ordersync", "orders-sync", async () => {
   } catch (err) {
     outcome = "Sync failed";
   }
-  loadReview();
   renderOrderSyncNote();
   return outcome;
 });
@@ -12877,13 +10884,6 @@ async function renderOrderSyncNote() {
     note.hidden = true;
   }
 }
-document.getElementById("review-filter").addEventListener("change", (e) => {
-  reviewFilter = e.target.value;
-  renderReview();
-});
-
-document.getElementById("review-search").addEventListener("input", renderReview);
-
 // Looping ". .. ..." on a button while a slow refresh runs — proof of
 // life, not progress. Returns a stop function that restores the label.
 function startDots(el, base) {
@@ -12946,15 +10946,20 @@ function renderAuditBins() {
     ? "Show only batch-tagged bins"
     : `Show not-yet-tagged bins (${auditData.bin_count - auditData.done_bin_count})`;
 
-  const drift = auditData.bins.filter((b) => b.batch_done && b.score > 0);
-  if (drift.length) {
-    const worst = drift[0];
+  const due = auditData.bins.filter((b) => b.overdue && b.batch_done);
+  if (due.length) {
+    const worst = due[0];
     audSetCard(
-      "ahc-drift", String(drift.length),
-      `worst: ${worst.bin} (score ${worst.score})`, "warn"
+      "ahc-drift", String(due.length),
+      `audit these first - worst: ${worst.bin} (score ${worst.score})`,
+      "warn"
     );
   } else {
-    audSetCard("ahc-drift", "0", "all tagged bins agree ✓", "ok");
+    audSetCard(
+      "ahc-drift", "0",
+      `every tagged bin audited inside ${auditData.threshold_days || 14}d ✓`,
+      "ok"
+    );
   }
 
   const rows = auditData.bins.filter((b) => {
@@ -12974,7 +10979,24 @@ function renderAuditBins() {
     }</li>`;
     return;
   }
-  rows.forEach((b) => {
+  // The queue split (Nick, 2026-09-28): overdue bins first, then the
+  // recently-audited half - each ordered by how loudly the paper
+  // disagrees with the shelf's last physical truth.
+  const overdueRows = rows.filter((b) => b.overdue);
+  const freshRows = rows.filter((b) => !b.overdue);
+  const addHeader = (text) => {
+    const li = document.createElement("li");
+    li.className = "u-block";
+    li.innerHTML = `<div class="ph-day">${escapeHtml(text)}</div>`;
+    list.append(li);
+  };
+  if (overdueRows.length) {
+    addHeader(
+      `Audit these first - last audited over ` +
+      `${auditData.threshold_days || 14} day(s) ago (or never)`
+    );
+  }
+  const renderRow = (b) => {
     const li = document.createElement("li");
     li.classList.add("u-block");
     const clean = b.score === 0;
@@ -12985,7 +11007,11 @@ function renderAuditBins() {
          <span class="auditrow__num ${clean ? "auditrow__num--ok" : ""}" title="sum of |Shopify − RFID| across this bin's products">${
            clean ? "✓" : b.score
          }</span>
-         <span class="binlist__count u-mlauto">${b.product_count} product(s)${
+         <span class="binlist__count u-mlauto">${
+           b.last_audited_at
+             ? `audited ${fmtAgo(b.last_audited_at)}${b.last_audited_by ? " by " + escapeHtml(b.last_audited_by) : ""} · `
+             : "never audited · "
+         }${b.product_count} product(s)${
            clean
              ? " · all match"
              : ` · ${b.mismatched_count} mismatched`
@@ -13040,7 +11066,10 @@ function renderAuditBins() {
       })
     );
     list.append(li);
-  });
+  };
+  overdueRows.forEach(renderRow);
+  if (freshRows.length) addHeader("Recently audited");
+  freshRows.forEach(renderRow);
 }
 
 // === Bin audit: newest C72 sweep vs any bin =================================
@@ -13854,11 +11883,22 @@ function binAuditScoreRow(r) {
   } else if (silent > 0 && (r.sold_unretired || 0) > 0) {
     // Sales explain some or all of the silence: offer MARK SOLD for
     // the covered tags; anything beyond the sold count is still a
-    // real silence (and the daily sync files the mismatch task).
-    if (silent <= r.sold_unretired) {
+    // real silence.
+    if (silent <= r.sold_unretired && r.sales_agree !== false) {
+      // "Sales agree" (Nick, 2026-09-28): each silent tag's last
+      // hearing predates a matching recorded sale - the cleanest
+      // possible explanation.
       flags.push([
-        `${silent} silent - ${r.sold_unretired} sold since last audit`,
+        `Sales agree - ${silent} silent, ${r.sold_unretired} sold since last audit`,
         "chip--ok",
+      ]);
+    } else if (silent <= r.sold_unretired) {
+      // The counts fit but the TIMES don't (a silent tag was heard
+      // AFTER the sale that would explain it) - lowering is still
+      // allowed, this is just honesty about the mismatch.
+      flags.push([
+        `${silent} silent, ${r.sold_unretired} sold - times don't line up; might be a missing, misplaced or mislabeled product`,
+        "chip--warn",
       ]);
     } else if (silent - r.sold_unretired <= (r.pickup_pending || 0)) {
       // Sales reconcile part of the silence and open pickup orders
@@ -13872,7 +11912,7 @@ function binAuditScoreRow(r) {
       ]);
     } else {
       flags.push([
-        `${silent} silent vs ${r.sold_unretired} sold - count off`,
+        `${silent} silent vs ${r.sold_unretired} sold - might be a missing, misplaced or mislabeled product`,
         "chip--warn",
       ]);
     }
@@ -13940,65 +11980,51 @@ function binAuditRowHtml({ r, flags, untagged }) {
   // than Shopify knows about.
   let expCell = "—";
   if (r.expected_qty != null) {
-    // Uncleared backorder debt RAISES what the shelf should hold:
-    // those boxes arrived but Shopify's on-hand ran behind. So does
-    // the Unavailable bucket (Nick, 2026-09-08, the ASI432MM):
-    // expected_qty is the SELLABLE number, but the audit counts
-    // physical units and their tag records - the set-aside unit is
-    // one of them. Without the fold, a product whose only surplus
-    // IS its unavailable stock kept offering a "Set to N" raise
-    // that Shopify already had.
-    const debt = r.backorder_debt || 0;
+    // Expected is a RANGE (Nick, 2026-09-28): the shelf should hold
+    // somewhere between {Shopify on-hand} and {tags here − sold since
+    // the last audit}. The set-aside (unavailable) units are physical
+    // boxes, so they ride on both ends. A sweep outside the range asks
+    // for a thorough re-scan; NOTHING blocks the manual confirm.
     const unav = r.unavailable || 0;
-    // Sold-but-unretired units EXPLAIN tag records whose boxes already
-    // shipped (Nick, 2026-09-24, F9152B: 3 records, 2 known sales -
-    // the row must expect 1 more record than stock, not 3). They fold
-    // into the record-side expectation exactly like backorder debt.
     const soldN = r.sold_unretired || 0;
-    const expTotal = r.expected_qty + debt + unav + soldN;
-    const diff = r.units_here - expTotal;
-    expCell =
-      `${expTotal}` +
-      (debt
-        ? ` <span class="bexp--note">(incl. ${debt} backorder)</span>`
-        : "") +
-      (unav
-        ? ` <span class="bexp--note">(incl. ${unav} unavailable)</span>`
-        : "") +
-      (soldN
-        ? ` <span class="bexp--note">(incl. ${soldN} sold)</span>`
-        : "") +
-      (diff
-        ? ` <span class="bexp--off" title="${diff > 0 ? "Tag records stock cannot explain - a box may have left without a sale on record (a Shopify-side correction?), or a lost sticker was replaced without retiring the old tag" : "Fewer tag records than stock expects"}">(${diff > 0 ? "+" : "−"}${Math.abs(diff)})</span>`
-        : "");
-    // A raise needs PHYSICAL evidence: the sweep actually HEARING more
-    // boxes than Shopify counts. Tag records alone are paper - F9152B
-    // carried 3 records for boxes long gone, and the old
-    // records-based button offered "Set to 3" on a shelf holding 0.
-    const heardOver = r.detected_units - (r.expected_qty + unav);
-    if (heardOver > 0 && r.sku) {
+    const lo = (r.range_lo != null ? r.range_lo
+      : Math.min(r.expected_qty, r.units_here - soldN)) + unav;
+    const hi = (r.range_hi != null ? r.range_hi
+      : Math.max(r.expected_qty, r.units_here - soldN)) + unav;
+    const det = r.detected_units;
+    expCell = lo === hi ? `${lo}` : `${lo}–${hi}`;
+    if (unav) {
+      expCell += ` <span class="bexp--note">(incl. ${unav} unavailable)</span>`;
+    }
+    if (soldN) {
+      expCell += ` <span class="bexp--note">(${soldN} sold since audit)</span>`;
+    }
+    const inRange = det >= lo && det <= hi;
+    if (!inRange) {
+      expCell += ` <span class="bexp--off" title="The sweep heard ${det} unit(s) - outside the expected range. Check the count thoroughly (re-sweep, look behind boxes), then confirm the true value or send the silent tags to the locate list.">(heard ${det})</span>`;
+    }
+    if (r.sku && det > r.expected_qty + unav) {
       expCell += `<div><button class="reset binaudit-fix" type="button"
-        data-sku="${escapeHtml(r.sku)}" data-qty="${r.detected_units}"
-        data-exp="${expTotal}"
-        title="The sweep physically heard ${r.detected_units} box(es) - write that count to Shopify on-hand. Confirmed, logged, undoable from History">Set to ${r.detected_units}</button></div>`;
+        data-sku="${escapeHtml(r.sku)}" data-qty="${det}"
+        data-exp="${r.expected_qty + unav}"
+        title="The sweep physically heard ${det} box(es) - write that count to Shopify on-hand. Confirmed, logged, undoable from History">Set to ${det}</button></div>`;
     } else if (
+      det < r.expected_qty &&
       r.can_lower &&
       binAudit &&
       binAudit.rep &&
       !binAudit.rep.rack
     ) {
-      // Lowering (Nick, 2026-09-15): the audited count is the truth
-      // once the product has completed a tagging before. Kept off rack
-      // zones - lower from the product's own bin. The set-aside units
-      // ride along in the target so they aren't written off.
-      const lowTo = r.detected_units + unav;
-      const drop = Math.max(0, r.expected_qty - r.detected_units);
+      // Lowering: the audited count is the truth once the product has
+      // completed a tagging before (the FIRST-TAGGING ban is the one
+      // guardrail that stays - enforced server-side too). Kept off
+      // rack zones - lower from the product's own bin.
+      const lowTo = det + unav;
+      const drop = Math.max(0, r.expected_qty - det);
       // A shortfall that open pickup orders (after recorded sales)
       // fully explain is NOT shrinkage: the boxes sit staged at the
-      // desk, and the coming "picked up" fulfillment drops on-hand by
-      // itself - lowering now would double-drop (Nick, 2026-09-24,
-      // F9168A). Sales-only coverage keeps its Lower: that flow
-      // consumes the recorded sales on purpose.
+      // desk and the coming fulfillment drops on-hand by itself -
+      // lowering now would double-drop (F9168A).
       const pickupN = r.pickup_pending || 0;
       const pickupExplains =
         pickupN > 0 && drop > soldN && drop <= soldN + pickupN;
@@ -14071,6 +12097,14 @@ function binAuditRowHtml({ r, flags, untagged }) {
              data-sku="${escapeHtml(r.sku)}"
              data-epcs="${escapeHtml((r.silent_epcs || []).join(","))}"
              title="The shelf reads exactly right, so these silent records are leftovers - usually stickers replaced without unlinking. Recorded sales cover the oldest ones (presumed sold); the rest retire as replaced. History-logged, each restorable; Shopify untouched.">CLEAN UP ${silent} GHOST TAG(S)…</button></div>`;
+      // Silent tags can ALWAYS go to the locate list (Nick,
+      // 2026-09-28) - recommended harder when nothing explains them.
+      if (silent > 0 && (r.silent_epcs || []).length && r.sku)
+        return `<div><button class="reset binaudit-locate" type="button"
+             data-sku="${escapeHtml(r.sku)}"
+             data-title="${escapeHtml(r.product_title || "")}"
+             data-epcs="${escapeHtml((r.silent_epcs || []).join(","))}"
+             title="Queue the ${silent} silent tag(s) on the C72 locate list - hunt them before deciding they're gone.">SEND ${silent} TO LOCATE</button></div>`;
       return "";
     })()}</td>
   </tr>`;
@@ -14257,6 +12291,12 @@ function renderBinAudit() {
               : ""
           }.`
     }</p>
+    ${
+      pm
+        ? ""
+        : `<p class="result"><button class="print__btn" id="binaudit-complete" type="button"
+             title="Sign this audit off: the sweep's per-product heard counts become this bin's new anchor - the audit queue and the expected ranges walk forward from here.">✓ Audit complete - record it</button></p>`
+    }
     ${
       pm
         ? ""
@@ -14541,6 +12581,33 @@ document
       }
       return;
     }
+    // Silent tags -> the C72 locate list (Nick, 2026-09-28): hunt
+    // before concluding. Merges with whatever the queue already holds
+    // for the SKU, same as the product card's per-box Locate.
+    const locBtn = e.target.closest(".binaudit-locate");
+    if (locBtn) {
+      const sku = locBtn.dataset.sku;
+      const epcs = (locBtn.dataset.epcs || "").split(",").filter(Boolean);
+      locBtn.disabled = true;
+      try {
+        const q = await apiJson("/api/locate-queue").catch(() => null);
+        const mine = q && (q.entries || []).find(
+          (x) => (x.sku || "").toUpperCase() === (sku || "").toUpperCase());
+        const merged = new Set(mine ? mine.epcs || [] : []);
+        epcs.forEach((x) => merged.add(x));
+        await postJson("/api/locate-queue", {
+          sku,
+          label: locBtn.dataset.title || sku,
+          worker: operatorEl.value || null,
+          epcs: Array.from(merged),
+        });
+        locBtn.textContent = "ON THE LOCATE LIST ✓";
+      } catch (err) {
+        alert(err.message);
+        locBtn.disabled = false;
+      }
+      return;
+    }
     // Open-box return prompt (Nick, 2026-09-15): YES adopts the old
     // tag for the -O twin (or says peel it, when a fresh open-box
     // label already paired); NO stops asking about that EPC.
@@ -14621,6 +12688,32 @@ document
       } catch (err) {
         alert(err.message);
         ghostBtn.disabled = false;
+      }
+      return;
+    }
+    // Audit sign-off (Nick, 2026-09-28): writes the BinAudit anchor.
+    const done = e.target.closest("#binaudit-complete");
+    if (done && binAudit) {
+      const bin = binAudit.rep.bin;
+      const cap = binAudit.cap;
+      done.disabled = true;
+      try {
+        const single = /^\d+$/.test(String(cap.id));
+        const res = await postJson(
+          `/api/bins/${encodeURIComponent(bin)}/audit-complete`,
+          {
+            ...(single
+              ? { capture_id: parseInt(cap.id, 10) }
+              : { epcs: cap.epcs || [] }),
+            worker: operatorEl.value || null,
+          }
+        );
+        done.textContent = "✓ Audit recorded";
+        done.title = res.message || "Recorded.";
+        loadAuditBins();
+      } catch (err) {
+        alert(err.message);
+        done.disabled = false;
       }
       return;
     }
@@ -14715,9 +12808,9 @@ async function loadAudits() {
     loadAuditBins(),
     loadAuditSessions(),
     loadUnavailable(),
-    loadBoxify(),
+    loadPacking(),
   ];
-  Promise.allSettled(slowLoads.concat([auditsChecksLoad()])).then(() =>
+  Promise.allSettled(slowLoads.concat([auditsSweepsLoad()])).then(() =>
     setFreshTag("audhub-fresh", true)
   );
 }
@@ -14838,147 +12931,7 @@ async function loadUnavailable() {
   }
 }
 
-// Missing Boxify dimensions (Nick, 2026-09-14): Boxify keeps these in
-// its own database - no API, nothing in metafields - so the card and
-// pane work from its CSV export, imported below, and list every
-// variant still shipping as the 8-cubic-inch default.
-async function loadBoxify() {
-  try {
-    const d = await apiJson("/api/boxify/status?limit=1");
-    if (!d.imported) {
-      audSetCard("ahc-boxify", "–",
-        "no Boxify export imported yet", null);
-      return;
-    }
-    audSetCard(
-      "ahc-boxify",
-      String(d.missing_products),
-      d.missing_products
-        ? `${d.missing_variants} variant(s) ship as the default box`
-        : "every variant has dimensions ✓",
-      d.missing_products ? "warn" : "ok"
-    );
-  } catch (err) {
-    audSetCard("ahc-boxify", "!", "could not load", "bad");
-  }
-}
-
-let bxfTimer = null;
-async function loadBoxifyPane() {
-  const list = document.getElementById("bxf-list");
-  const meta = document.getElementById("bxf-meta");
-  const q = document.getElementById("bxf-filter").value.trim();
-  try {
-    const d = await apiJson(
-      `/api/boxify/status?limit=300&query=${encodeURIComponent(q)}`
-    );
-    if (!d.imported) {
-      meta.textContent = "";
-      list.innerHTML =
-        '<li class="recent__empty">No Boxify export imported yet - use the button above.</li>';
-      return;
-    }
-    meta.textContent =
-      `${d.missing_products} product(s) · ${d.missing_variants} of ` +
-      `${d.total_variants} variant(s) missing · imported ` +
-      `${fmtAgo(d.imported_at)}`;
-    list.innerHTML = d.items.length
-      ? ""
-      : `<li class="recent__empty">${
-          q
-            ? "No missing-dimension variants match that filter."
-            : "Every variant has dimensions ✓"
-        }</li>`;
-    d.items.forEach((x) => {
-      const li = document.createElement("li");
-      li.innerHTML =
-        `<span class="recent__prod"><b>${escapeHtml(
-          x.product_title || "(unknown)"
-        )}</b>${
-          x.variant_title && x.variant_title !== "Default Title"
-            ? " (" + escapeHtml(x.variant_title) + ")"
-            : ""
-        }</span>` +
-        `<span class="mono">${escapeHtml(x.sku || "no SKU")}</span>`;
-      list.append(li);
-    });
-  } catch (err) {
-    list.innerHTML = `<li class="recent__empty">${escapeHtml(err.message)}</li>`;
-  }
-}
-
-document.getElementById("bxf-filter").addEventListener("input", () => {
-  clearTimeout(bxfTimer);
-  bxfTimer = setTimeout(loadBoxifyPane, 250);
-});
-document
-  .querySelector('#tab-audits .audcard[data-pane="boxify"]')
-  .addEventListener("click", loadBoxifyPane);
-document.getElementById("bxf-import").addEventListener("click", () =>
-  document.getElementById("bxf-file").click()
-);
-document
-  .getElementById("bxf-file")
-  .addEventListener("change", async (e) => {
-    const f = e.target.files && e.target.files[0];
-    e.target.value = "";
-    if (!f) return;
-    const status = document.getElementById("bxf-status");
-    status.textContent = `Importing ${f.name}…`;
-    try {
-      const text = await f.text();
-      const res = await postJson("/api/boxify/import", {
-        csv_text: text,
-        imported_by: operatorEl.value || null,
-      });
-      status.textContent = res.message;
-      loadBoxifyPane();
-      loadBoxify();
-    } catch (err) {
-      status.textContent = "Import failed: " + err.message;
-    }
-  });
-
-async function auditsChecksLoad() {
-  const list = document.getElementById("audit-list");
-  try {
-    const { tasks } = await apiJson("/api/review-tasks?status=open&limit=100");
-    // Biggest single-product mismatch first — the size is parsed out of
-    // the task's own wording ("N unit(s) counted but Shopify on-hand is
-    // M"); anything unparsable sorts last rather than lying.
-    const checks = tasks
-      .filter((t) => t.category === "inventory-check")
-      .map((t) => {
-        const m = /(\d+)\s+unit\(s\).*?on-hand is (\d+)/.exec(t.detail || "");
-        return { ...t, mismatch: m ? Math.abs(+m[1] - +m[2]) : 0 };
-      })
-      .sort(
-        (a, b) =>
-          b.mismatch - a.mismatch ||
-          String(b.created_at || "").localeCompare(String(a.created_at || ""))
-      );
-    audSetCard(
-      "ahc-more", String(checks.length),
-      checks.length ? "from finished batches" : "nothing recommended ✓",
-      checks.length ? "warn" : "ok"
-    );
-    list.innerHTML = checks.length
-      ? ""
-      : '<li class="recent__empty">No product checks recommended right now.</li>';
-    checks.forEach((t) => {
-      // [Bin chip] [Product name] ......... [mismatch chip] [N days ago]
-      const binMatch = /^Bin\s+([^:]+):/.exec(t.detail || "");
-      const li = document.createElement("li");
-      li.innerHTML = `
-        <span class="inventory__bin">${escapeHtml(binMatch ? binMatch[1] : "—")}</span>
-        <span class="recent__prod" title="${escapeHtml(t.detail)}"><b>${escapeHtml(t.product_title || t.sku || "")}</b></span>
-        <span class="audit-mm" title="${escapeHtml(t.detail)}">${t.mismatch || "?"}</span>
-        <span class="recent__meta recent__when" title="${escapeHtml(fmtWhen(t.created_at))}">${escapeHtml(fmtAgo(t.created_at))}</span>`;
-      list.append(li);
-    });
-  } catch (err) {
-    list.innerHTML = '<li class="recent__empty">Could not load.</li>';
-  }
+async function auditsSweepsLoad() {
   const sweeps = document.getElementById("sweep-list");
   try {
     // Batch-tagging sweeps stay out of the big-picture lists (Nick,
@@ -15013,6 +12966,111 @@ async function auditsChecksLoad() {
     sweeps.innerHTML = '<li class="recent__empty">Could not load sweeps.</li>';
   }
 }
+
+// === Packing scans (phase 6, 2026-09-28) ====================================
+// The desk list: what got scanned while packing, allocated against
+// ShipStation's awaiting-shipment orders. Live-ish: reloads on open and
+// every 10s while the pane is visible; rows flip to shipped server-side.
+const PACK_CHIPS = {
+  allocated: ["chip--ok", "packed"],
+  shipped: ["chip--ok", "shipped ✓"],
+  duplicate: ["chip--warn", "duplicate?"],
+  "not-in-shipping": ["chip--warn", "not in shipping"],
+  unknown: ["chip--bad", "unknown code"],
+};
+let packTimer = null;
+
+async function loadPacking() {
+  const list = document.getElementById("pack-list");
+  const meta = document.getElementById("pack-meta");
+  try {
+    const d = await apiJson("/api/packing/scans");
+    const c = d.counts || {};
+    const warn = (c.duplicate || 0) + (c["not-in-shipping"] || 0)
+      + (c.unknown || 0);
+    audSetCard(
+      "ahc-pack",
+      String((c.allocated || 0) + (c.shipped || 0)),
+      d.shipstation
+        ? `${c.shipped || 0} shipped · ${c.allocated || 0} awaiting`
+          + (warn ? ` · ${warn} ⚠` : "")
+        : "ShipStation isn't configured",
+      warn ? "warn" : (c.allocated || c.shipped) ? "ok" : null
+    );
+    meta.textContent = d.shipstation
+      ? `${c.shipped || 0} shipped · ${c.allocated || 0} awaiting`
+        + (warn ? ` · ${warn} warning(s)` : "")
+      : "⚠ ShipStation isn't configured - every scan lands as "
+        + "'not in shipping'.";
+    list.innerHTML = (d.scans || []).length
+      ? ""
+      : '<li class="recent__empty">Nothing scanned yet - the list fills as boxes get packed.</li>';
+    (d.scans || []).forEach((r) => {
+      const [cls, label] = PACK_CHIPS[r.status] || ["chip--na", r.status];
+      const li = document.createElement("li");
+      li.className = "recent__item";
+      li.innerHTML =
+        `<span class="binaudit-chip ${cls}">${escapeHtml(label)}</span>` +
+        `<span class="recent__prod"><b>${escapeHtml(r.product_title || r.sku || r.code)}</b>` +
+        (r.sku ? ` <span class="mono">${escapeHtml(r.sku)}</span>` : "") +
+        (r.order_number ? ` · Order #${escapeHtml(r.order_number)}` : "") +
+        (r.epc ? "" : ' <span class="dim" title="Barcode scan - no tag link, so this row cannot retire a tag when it ships">no tag</span>') +
+        "</span>" +
+        `<span class="recent__meta recent__when">${escapeHtml(fmtAgo(r.scanned_at))}</span>` +
+        (r.status !== "shipped"
+          ? `<button class="reset pack-rm" type="button" data-id="${r.id}" title="Remove this mis-scan">✕</button>`
+          : "");
+      list.append(li);
+    });
+    list.querySelectorAll(".pack-rm").forEach((b) =>
+      b.addEventListener("click", async () => {
+        b.disabled = true;
+        try {
+          await apiJson(`/api/packing/scans/${b.dataset.id}`,
+                        { method: "DELETE" });
+          loadPacking();
+        } catch (err) {
+          alert(err.message);
+          b.disabled = false;
+        }
+      })
+    );
+  } catch (err) {
+    audSetCard("ahc-pack", "!", "could not load", "bad");
+    meta.textContent = err.message;
+  }
+}
+
+document
+  .querySelector('#tab-audits .audcard[data-pane="packing"]')
+  .addEventListener("click", () => {
+    loadPacking();
+    clearInterval(packTimer);
+    packTimer = setInterval(() => {
+      const pane = document.getElementById("apane-packing");
+      if (pane && !pane.hidden && !document.hidden) loadPacking();
+      else { clearInterval(packTimer); packTimer = null; }
+    }, 10000);
+    setTimeout(() => document.getElementById("pack-scan").focus(), 50);
+  });
+
+document.getElementById("pack-scan").addEventListener("keydown", async (e) => {
+  if (e.key !== "Enter") return;
+  const input = e.target;
+  const code = input.value.trim();
+  if (!code) return;
+  input.value = "";
+  try {
+    const res = await postJson("/api/packing/scans", {
+      code,
+      worker: operatorEl.value || null,
+    });
+    document.getElementById("pack-meta").textContent = res.message;
+    loadPacking();
+  } catch (err) {
+    document.getElementById("pack-meta").textContent = err.message;
+  }
+});
 
 // === 1-left stock checks (Audits tab) =======================================
 // The dashboard's verification queue joined against RFID evidence. The
@@ -17623,47 +15681,6 @@ async function undoHistoryEvent(e, btn) {
     }
     return;
   }
-  if (e.undo.kind === "review-reopen") {
-    if (
-      !confirm(
-        `Reopen this review task?\n\n${e.title || e.sku || ""} - it goes ` +
-          `back to the Review inbox, as if it was never closed.`
-      )
-    )
-      return;
-    btn.disabled = true;
-    try {
-      await postJson(`/api/review-tasks/${e.undo.task_id}/reopen`, {});
-      await loadHistory();
-    } catch (err) {
-      btn.disabled = false;
-      alert(err.message);
-    }
-    return;
-  }
-  // Dismissed live bin-mismatches: undo deletes the suppression — the
-  // entry is back on the next Review fetch if the bins still disagree.
-  if (e.undo.kind === "mismatch-undismiss") {
-    if (
-      !confirm(
-        `Un-dismiss this bin mismatch?\n\n${e.sku || ""} - if the bins ` +
-          `still disagree, the entry returns to the Review inbox.`
-      )
-    )
-      return;
-    btn.disabled = true;
-    try {
-      await apiJson(
-        `/api/review/mismatch-dismissals/${e.undo.dismissal_id}`,
-        { method: "DELETE" }
-      );
-      await loadHistory();
-    } catch (err) {
-      btn.disabled = false;
-      alert(err.message);
-    }
-    return;
-  }
   // Bin writes: undo puts the OLD bin back through the normal audited
   // endpoint — a new History entry, nothing erased.
   if (e.undo.kind === "bin") {
@@ -18086,63 +16103,6 @@ async function sortShipFetchSetOrders(defKey) {
 
 function setSortShipStatus(text) {
   document.getElementById("sortship-status").textContent = text || "";
-}
-
-// ---- C72 sort pass hand-off (Nick, 2026-09-02) ------------------------
-// The gun scans a pallet whose box labels its matcher can't resolve and
-// sends the counts here; the sorter loads them through the SAME scan
-// path every wedge scan uses, so label-match, suggestions, bundles and
-// planner buckets all just work.
-async function sortShipCheckHandoff() {
-  const host = document.getElementById("sortship-handoff");
-  host.hidden = true;
-  try {
-    const r = await apiJson("/api/receiving/sort-handoff/pending");
-    const h = r.handoff;
-    if (!h) return;
-    host.innerHTML = "";
-    const span = document.createElement("span");
-    span.textContent =
-      `📥 C72 sort pass${h.created_by ? " from " + h.created_by : ""}` +
-      ` - ${h.boxes} box(es), ${h.products} product(s). `;
-    const btn = document.createElement("button");
-    btn.className = "print__btn";
-    btn.type = "button";
-    btn.textContent = "Load it into the sorter";
-    btn.addEventListener("click", () => sortShipLoadHandoff(h));
-    host.appendChild(span);
-    host.appendChild(btn);
-    host.hidden = false;
-  } catch (err) {
-    /* the banner is decoration - the sorter works without it */
-  }
-}
-
-async function sortShipLoadHandoff(h) {
-  const host = document.getElementById("sortship-handoff");
-  host.hidden = true;
-  setSortShipStatus("Loading the C72 pass…");
-  let boxes = 0;
-  for (const row of h.counts || []) {
-    for (let i = 0; i < (row.count || 0); i++) {
-      await sortShipScan(row.code);
-      boxes++;
-      setSortShipStatus(`Loading the C72 pass… ${boxes} box(es) in.`);
-    }
-  }
-  try {
-    await postJson(`/api/receiving/sort-handoff/${h.id}/consume`, {
-      consumed_by: operatorEl.value || null,
-    });
-  } catch (err) {
-    /* consuming is bookkeeping - the pile is already here */
-  }
-  renderSortShip();
-  setSortShipStatus(
-    `Loaded the C72 pass - ${boxes} box(es) matched. Resolve anything ` +
-      "flagged, then print labels and send each bucket to the planner; " +
-      "the gun pairs once labels print."
-  );
 }
 
 // Returns {ok, text} so the LINK relay can answer the gun; the wedge
@@ -18879,9 +16839,9 @@ document
     }
   });
 
-// --- the settle flow: count unused labels, hold the strip -------------------
-let fsSettleData = null; // {batchId, planner, totalUnpaired}
-
+// --- the settle flow (2026-09-28: held strips are GONE - unused -------
+// labels get peeled and discarded like the blank roll; a discarded
+// label that is ever heard again can be written off from the audit)
 document
   .getElementById("recv-settle")
   .addEventListener("click", async () => {
@@ -18895,18 +16855,9 @@ document
         `/api/batches/${batch.id}/settle-shipment`,
         { created_by: operatorEl.value }
       );
-      fsSettleData = {
-        batchId: batch.id,
-        planner: res.planner,
-        totalUnpaired: res.total_unpaired,
-      };
-      const body = document.getElementById("fs-body");
       if (res.total_unpaired === 0) {
-        // Everything paired = nothing to hold and nothing to ask
-        // (Nick, 2026-09-02): straight to the planner, pre-filled.
-        // The batch stays open and closes itself when the planner
-        // saves the received stock.
-        fsSettleData = null;
+        // Everything paired: straight to the planner, pre-filled. The
+        // batch stays open and closes itself when the planner saves.
         await openPlannerReceive(res.planner.order_id, res.planner.items);
         setBatchResult(
           "Order opened pre-filled in TC-Planner - Save the receive, " +
@@ -18915,133 +16866,39 @@ document
           "ok"
         );
         return;
-      } else {
-        body.innerHTML = `
-          <p class="linkbox__text">These labels printed but never found
-          a box - the order listed products that didn't actually ship.
-          Leave them ON the liner, write
-          <b>${escapeHtml(batch.order_receipt?.vendor || "the vendor")}
-          · ${escapeHtml(batch.order_receipt?.reference || "")}</b> on
-          the strip, and keep it in the vendor container.</p>
-          <ul class="recent__list">${res.unpaired
-            .map(
-              (u) => `<li>${escapeHtml(u.product_title || u.sku)}
-                <span class="mono">${escapeHtml(u.sku)}</span> ·
-                ${u.count} unused label(s)</li>`
-            )
-            .join("")}</ul>
-          <p class="linkbox__text">Best: sweep the strip with the C72
-          (SWEEP tab → SEND) so its tags are recognized when the
-          products finally arrive - then pull it below. The 1-hour
-          Shopify-update clock is running either way.</p>`;
-        document.getElementById("fs-sweep").textContent =
-          "📶 Pull latest C72 sweep as the strip";
-        document.getElementById("fs-nosweep").hidden = false;
       }
-      document.getElementById("fs-overlay").hidden = false;
+      const lines = res.unpaired
+        .map((u) => `  ${u.product_title || u.sku} (${u.sku}): ${u.count}`)
+        .join("\n");
+      alert(
+        `${res.total_unpaired} label(s) printed but never found a box - ` +
+          "the order listed products that didn't actually ship.\n\n" +
+          lines +
+          "\n\nPeel them off the liner and DISCARD them - unapplied " +
+          "labels aren't kept. The 1-hour Shopify-update clock is " +
+          "running; finish the receive in TC-Planner."
+      );
+      await openPlannerReceive(res.planner.order_id, res.planner.items);
+      // The batch STAYS OPEN until the planner saves - locally, back
+      // to the bin board; the open list keeps showing it until then.
+      batch = null;
+      batchItems = [];
+      stopBatchLive();
+      enterBatchTab();
+      setBatchResult(
+        "Shipment settled - finish the receive in TC-Planner (the " +
+          "batch closes itself when the planner saves).",
+        "ok"
+      );
     } catch (err) {
       alert(err.message);
     }
   });
 
-async function fsFinish(epcs) {
-  if (!fsSettleData) return;
-  try {
-    let res = await postJson(
-      `/api/batches/${fsSettleData.batchId}/held-list`,
-      { epcs, created_by: operatorEl.value || null }
-    );
-    // Swept tags recorded as PAIRED boxes of this shipment: the
-    // sticker answered from the strip in hand, so a pair sweep almost
-    // certainly over-heard it (Nick, 2026-09-02, SO 941).
-    if ((res.owned_candidates || []).length) {
-      const names = res.owned_candidates
-        .map((c) => c.product_title || c.sku)
-        .join(", ");
-      if (
-        confirm(
-          `${res.owned_candidates.length} swept tag(s) are recorded ` +
-            `as PAIRED boxes of this shipment (${names}).\n\nIf those ` +
-            "stickers are on the strip in your hand, they were " +
-            "counted by mistake - unpair them and hold the labels?"
-        )
-      ) {
-        res = await postJson(
-          `/api/batches/${fsSettleData.batchId}/held-list`,
-          { epcs, unpair_owned: true, created_by: operatorEl.value || null }
-        );
-      }
-    }
-    document.getElementById("fs-overlay").hidden = true;
-    alert(
-      res.message +
-        "\n\nUpdate Shopify stock in the planner within the hour, or " +
-        "a Review task will chase it."
-    );
-    await openPlannerReceive(res.planner.order_id, res.planner.items);
-    fsSettleData = null;
-    // The batch STAYS OPEN until the planner saves - locally, back to
-    // the bin board; the open list keeps showing it until then.
-    batch = null;
-    batchItems = [];
-    stopBatchLive();
-    enterBatchTab();
-    setBatchResult(
-      "Shipment settled - finish the receive in TC-Planner (the batch " +
-        "closes itself when the planner saves).",
-      "ok"
-    );
-  } catch (err) {
-    alert(err.message);
-  }
-}
-
-document.getElementById("fs-sweep").addEventListener("click", async () => {
-  if (!fsSettleData) return;
-  if (fsSettleData.totalUnpaired === 0) {
-    fsFinish([]);
-    return;
-  }
-  try {
-    const cap = await apiJson("/api/epc-captures/latest");
-    if (
-      !confirm(
-        `Use sweep #${cap.id} (${cap.epc_count} tag(s), ` +
-          `${fmtWhen(cap.created_at)}) as the strip's tags?\n\n` +
-          `Expected about ${fsSettleData.totalUnpaired} unused ` +
-          `label(s). Tags already paired to real boxes are excluded ` +
-          `automatically.`
-      )
-    )
-      return;
-    fsFinish(cap.epcs || []);
-  } catch (err) {
-    alert("No sweep on file yet - sweep the strip with the C72 " +
-      "(SWEEP → SEND) first, or hold by counts only.");
-  }
-});
-
-document.getElementById("fs-nosweep").addEventListener("click", () => {
-  if (!fsSettleData) return;
-  if (
-    !confirm(
-      "Hold the strip by counts only?\n\nThe labels still work later, " +
-        "but their tags answer sweeps as unknown until they're paired."
-    )
-  )
-    return;
-  fsFinish([]);
-});
-
-document.getElementById("fs-cancel").addEventListener("click", () => {
-  document.getElementById("fs-overlay").hidden = true;
-});
-
 document.getElementById("sortship-open").addEventListener("click", async () => {
   document.getElementById("sortship").hidden = false;
   sortShipRestore();
   renderSortShip();
-  sortShipCheckHandoff();
   if (sortShipSeq.length) {
     setSortShipStatus("Picked up the pile from last time - Clear pile starts fresh.");
   }
@@ -19064,62 +16921,6 @@ document.getElementById("sortship-exit").addEventListener("click", () => {
   document.getElementById("sortship").hidden = true;
 });
 
-// --- Held label strips (Nick, 2026-09-02) -----------------------------
-// The one legitimate home of printed-but-unapplied labels: receiving's
-// leftovers, waiting on vendor strips. Read-only - pairing a strip
-// label onto its box consumes it automatically.
-document
-  .getElementById("heldstrips-open")
-  .addEventListener("click", async () => {
-    const panel = document.getElementById("heldstrips");
-    panel.hidden = false;
-    const status = document.getElementById("heldstrips-status");
-    const host = document.getElementById("heldstrips-list");
-    status.textContent = "Loading the strips…";
-    host.innerHTML = "";
-    try {
-      const r = await apiJson("/api/held-lists");
-      if (!r.lists.length) {
-        status.textContent =
-          "No labels waiting on any strip - every printed label found " +
-          "its box.";
-        return;
-      }
-      status.textContent =
-        `${r.lists.length} strip(s) holding ` +
-        `${r.lists.reduce((n, l) => n + l.remaining, 0)} label(s). ` +
-        "Pairing a strip label onto its box consumes it automatically.";
-      host.innerHTML = r.lists
-        .map(
-          (l) => `
-        <div class="recent__head u-mt12"><h2>${escapeHtml(
-          l.vendor || "vendor"
-        )} strip${l.reference ? ` · ${escapeHtml(l.reference)}` : ""} · ${
-          l.remaining
-        } label(s) waiting</h2></div>
-        <ul class="recent__list">${l.items
-          .map(
-            (i) =>
-              `<li class="recent__item"><strong>${escapeHtml(
-                i.product_title || i.sku || "?"
-              )}</strong>${
-                i.sku ? ` · ${escapeHtml(i.sku)}` : ""
-              } · ${i.count} label(s) on the strip</li>`
-          )
-          .join("")}</ul>
-        <p class="recent__meta">Held ${fmtAgo(l.created_at)}${
-          l.created_by ? ` by ${escapeHtml(l.created_by)}` : ""
-        } · ${l.epc_count} tag(s) in the strip's pool</p>`
-        )
-        .join("");
-    } catch (err) {
-      status.textContent = err.message;
-    }
-  });
-
-document.getElementById("heldstrips-exit").addEventListener("click", () => {
-  document.getElementById("heldstrips").hidden = true;
-});
 
 document.getElementById("sortship-clear").addEventListener("click", () => {
   if (
@@ -19399,10 +17200,10 @@ refreshAgentChip();
 async function loadHome() {
   homeLoadSuggest();
   refreshAgentChip();
-  const [batches, tasks, board] = await Promise.all([
+  const [batches, queue, board] = await Promise.all([
     apiFetch("/api/batches?status=open&limit=10")
       .then((r) => (r.ok ? r.json() : null)).catch(() => null),
-    apiFetch("/api/review-tasks?status=open&limit=500")
+    apiFetch("/api/audit/bins")
       .then((r) => (r.ok ? r.json() : null)).catch(() => null),
     apiFetch("/api/oneleft/board")
       .then((r) => (r.ok ? r.json() : null)).catch(() => null),
@@ -19412,10 +17213,10 @@ async function loadHome() {
   homeEls.badgeReceive.hidden = recv.length === 0;
   homeEls.badgeReceive.textContent =
     recv.length === 1 ? "1 open" : `${recv.length} open`;
-  const taskN = Array.isArray(tasks) ? tasks.length
-    : ((tasks && (tasks.tasks || tasks.items)) || []).length;
+  const taskN = (queue && queue.overdue_count) || 0;
   homeEls.badgeRfid.hidden = !taskN;
-  homeEls.badgeRfid.textContent = taskN === 1 ? "1 task" : `${taskN} tasks`;
+  homeEls.badgeRfid.textContent =
+    taskN === 1 ? "1 bin due" : `${taskN} bins due`;
   const checkN = (board && board.ok && board.count) || 0;
   homeEls.badgeChecks.hidden = !checkN;
   homeEls.badgeChecks.textContent =
@@ -19441,7 +17242,7 @@ async function loadHome() {
     homeEls.resumeWhat.textContent = "Nothing to resume";
     homeEls.resumeMeta.textContent = [
       checkN ? `${checkN} inventory check${checkN === 1 ? "" : "s"} waiting` : "",
-      taskN ? `${taskN} review task${taskN === 1 ? "" : "s"} open` : "",
+      taskN ? `${taskN} bin audit${taskN === 1 ? "" : "s"} due` : "",
     ].filter(Boolean).join(" \u00b7 ");
     homeEls.resumeGo.hidden = true;
   } else {

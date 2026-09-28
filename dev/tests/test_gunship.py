@@ -203,33 +203,6 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
                                                    seen_vendors))
     VENDOR_BLIND.clear()
 
-    # ---- C72 -> web sort hand-off -----------------------------------
-    r = cl.post("/api/receiving/sort-handoff", json={
-        "counts": [{"code": "XR-100", "count": 3},
-                   {"code": "605", "count": 1}],
-        "created_by": "C72-Nick"})
-    h1 = r.json()["handoff"]
-    check("hand-off stored with box math", r.status_code == 201
-          and h1["boxes"] == 4 and h1["products"] == 2, r.text[:300])
-    r = cl.get("/api/receiving/sort-handoff/pending")
-    check("pending answers the newest pass",
-          (r.json()["handoff"] or {}).get("id") == h1["id"],
-          r.text[:200])
-    r = cl.post("/api/receiving/sort-handoff", json={
-        "counts": [{"code": "XR-200", "count": 1}]})
-    h2 = r.json()["handoff"]
-    r = cl.get("/api/receiving/sort-handoff/pending")
-    check("a new pass supersedes the old one",
-          (r.json()["handoff"] or {}).get("id") == h2["id"], r.text[:200])
-    r = cl.post(f"/api/receiving/sort-handoff/{h2['id']}/consume",
-                json={"consumed_by": "Nick"})
-    check("consume stamps the pass", r.status_code == 200
-          and r.json()["handoff"]["consumed_at"] is not None,
-          r.text[:200])
-    r = cl.get("/api/receiving/sort-handoff/pending")
-    check("consumed pass leaves pending empty",
-          r.json()["handoff"] is None, r.text[:200])
-
     # ---- scan-order printing ----------------------------------------
     # The pallet was scanned C, A, B -> the label jobs must queue in
     # that order, not the order-line order (A, B, C).

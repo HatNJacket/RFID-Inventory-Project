@@ -27,12 +27,23 @@ suites = sorted(
 
 
 def run_suite(path: str) -> subprocess.CompletedProcess:
-    """One suite in its own interpreter AND its own temp dir."""
+    """One suite in its own interpreter AND its own temp dir. The
+    3-minute timeout (2026-09-28) turns a hung suite - usually an
+    unmocked network call waiting forever - into a named FAIL instead
+    of a battery that never finishes."""
     tmp = tempfile.mkdtemp(prefix="rfid_suite_")
     env = {**os.environ, "TEMP": tmp, "TMP": tmp, "TMPDIR": tmp}
     try:
         return subprocess.run(
-            [sys.executable, path], capture_output=True, env=env
+            [sys.executable, path], capture_output=True, env=env,
+            timeout=180,
+        )
+    except subprocess.TimeoutExpired as t:
+        return subprocess.CompletedProcess(
+            t.cmd, returncode=124,
+            stdout=(t.stdout or b""),
+            stderr=(t.stderr or b"") + b"\nTIMED OUT after 180s "
+                   b"(hung - probably an unmocked network call)",
         )
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

@@ -1,8 +1,7 @@
 """Label-not-paired watchdog, back for receiving (Nick, 2026-09-09):
 workers label boxes without RFID-pairing them. A receiving batch whose
 printed labels are still unpaired 2+ hours after the last print gets
-ONE Review task (category label-unpaired); labels on a held vendor
-strip (kept sheets) and companion labels never count; the task closes
+ONE Review task (category label-unpaired); the task closes
 itself once everything is accounted for. The open-batches list tags
 receiving batches with their unpaired count.
 """
@@ -32,7 +31,7 @@ with TestClient(app) as cl:
     from sqlalchemy import select
     from sqlalchemy.orm import Session as S
     from app.database import get_engine
-    from app.models import (Batch, BatchItem, HeldLabelItem, HeldLabelList,
+    from app.models import (Batch, BatchItem,
                             PrintJob, ReviewTask)
 
     old = datetime.utcnow() - timedelta(hours=3)
@@ -118,27 +117,6 @@ with TestClient(app) as cl:
             ReviewTask.category == "label-unpaired",
             ReviewTask.batch_id == rb2id)).all())
         check("a just-printed batch files nothing (2h grace)", n == 0, n)
-
-    # ---- a held vendor strip accounts for the leftovers ----------------
-    with S(get_engine()) as s:
-        hl = HeldLabelList(batch_id=rbid, created_by="Nick")
-        s.add(hl); s.flush()
-        s.add(HeldLabelItem(list_id=hl.id, sku="ZWO-A",
-                            product_title="A", count=2))
-        s.commit()
-    rearm()
-    cl.get("/api/review-tasks?status=open")
-    with S(get_engine()) as s:
-        t = s.scalar(select(ReviewTask).where(
-            ReviewTask.category == "label-unpaired",
-            ReviewTask.batch_id == rbid))
-        check("held strip (kept sheet) closes the task itself",
-              t is not None and t.status == "resolved"
-              and t.resolved_by == "auto", t.as_dict() if t else None)
-    r = cl.get("/api/batches?status=open")
-    rows = {b["id"]: b for b in r.json()["batches"]}
-    check("the list tag clears once the strip holds the labels",
-          rows.get(rbid, {}).get("unpaired_labels") == 0, rows.get(rbid))
 
 print()
 if fails:

@@ -50,7 +50,7 @@ with patch("app.shopify.lookup_barcode", side_effect=look), \
 
     # Gate: feature must be enabled by name.
     saved = config.SHOPIFY_WRITE_MODE
-    config.SHOPIFY_WRITE_MODE = "scan_station_only"
+    config.SHOPIFY_WRITE_MODE = "disabled"
     r = cl.post("/api/onhand-updates",
                 json={"sku":"ZWO-X","new_qty":5,"confirmed":True})
     check("blocked when verify_onhand not in the mode", r.status_code==403,

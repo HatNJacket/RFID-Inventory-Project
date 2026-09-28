@@ -74,6 +74,16 @@ class RfidAssignment(Base):
     # main.BOX_CONDITIONS. Prod needs dev/alter_add_condition.py.
     condition: Mapped[str | None] = mapped_column(String(20))
 
+    # Scored audit queue (2026-09-28): the moment a sweep last heard
+    # this tag (any ingest - C72 SEND, bin check, shelf sweep). NULL on
+    # tags never swept since the column landed; consumers treat
+    # COALESCE(last_heard_at, assigned_at) as the truth, because the
+    # pairing scan itself physically read the sticker. Added to prod by
+    # init_db's idempotent column upgrade.
+    last_heard_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+
     def as_dict(self) -> dict:
         return {
             "id": self.id,
@@ -93,6 +103,10 @@ class RfidAssignment(Base):
                 self.assigned_at.isoformat() if self.assigned_at else None
             ),
             "assigned_by": self.assigned_by,
+            "last_heard_at": (
+                (self.last_heard_at or self.assigned_at).isoformat()
+                if (self.last_heard_at or self.assigned_at) else None
+            ),
         }
 
 
@@ -483,136 +497,6 @@ class HeldLabelList(Base):
         }
 
 
-class BoxSetPart(Base):
-    """One box identity of a multi-box SET (Nick, 2026-09-08, the
-    S11230): a product sold ONLY as a whole whose N boxes each carry
-    their OWN barcode and SKU - usually draft listings like S11230-1 /
-    S11230-2 that the catalog walk never sees, under an active full
-    listing (S11230). Distinct from BOTH bundles (recipes whose
-    components sell separately) and MultiboxProduct (same SKU on every
-    carton, one counting tag).
-
-    Every box gets its own counted tag under its part SKU. The set's
-    unit count is min(part tag counts) and compares against the FULL
-    product's Shopify on-hand; part SKUs are never audited alone (their
-    draft listings hold no real stock). Each part's audit expectation
-    is the set's own shelf number - every box identity should hold one
-    box per unit. Prod needs dev/alter_add_boxsets.py."""
-
-    __tablename__ = "rfid_boxset_parts"
-    __table_args__ = (
-        UniqueConstraint("set_sku", "box_no", name="uq_boxset_slot"),
-        UniqueConstraint("part_sku", name="uq_boxset_part_sku"),
-    )
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    # The sellable full product (active listing) the boxes make up.
-    set_sku: Mapped[str] = mapped_column(String(100), index=True,
-                                         nullable=False)
-    set_title: Mapped[str | None] = mapped_column(String(255))
-    set_variant_id: Mapped[str | None] = mapped_column(String(64))
-    set_product_id: Mapped[str | None] = mapped_column(String(300))
-    # This box's own identity, as printed on the carton.
-    part_sku: Mapped[str] = mapped_column(String(100), index=True,
-                                          nullable=False)
-    part_barcode: Mapped[str | None] = mapped_column(String(64), index=True)
-    box_no: Mapped[int] = mapped_column(Integer, nullable=False)
-    created_by: Mapped[str | None] = mapped_column(String(100))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-
-    def as_dict(self) -> dict:
-        return {
-            "set_sku": self.set_sku,
-            "set_title": self.set_title,
-            "part_sku": self.part_sku,
-            "part_barcode": self.part_barcode,
-            "box_no": self.box_no,
-            "created_by": self.created_by,
-        }
-
-
-class MultiboxProduct(Base):
-    """One sellable unit that physically ships as SEVERAL cartons (the
-    S11740: two boxes, one telescope, ONE tag). The mark is durable and
-    store-wide so every surface can defend the one-tag-per-unit
-    invariant: labels print per box ("BOX 2 OF 2"), audits recognize
-    the extra cartons instead of flagging them as untagged stock, and
-    receiving says "one label per unit, on box 1". bins holds each
-    box's own shelf when known (JSON list, entries may be null - some
-    get set later); a missing entry falls back to the product's bin."""
-
-    __tablename__ = "rfid_multibox_products"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    sku: Mapped[str] = mapped_column(
-        String(100), unique=True, index=True, nullable=False
-    )
-    boxes_per_unit: Mapped[int] = mapped_column(Integer, nullable=False)
-    # JSON list of per-box bins, index 0 = box 1; null entries unknown.
-    bins: Mapped[str | None] = mapped_column(Text)
-    updated_by: Mapped[str | None] = mapped_column(String(100))
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-
-    def bin_list(self) -> list:
-        import json
-
-        try:
-            rows = json.loads(self.bins or "[]")
-            return rows if isinstance(rows, list) else []
-        except Exception:  # noqa: BLE001 — a bad list reads as empty
-            return []
-
-    def as_dict(self) -> dict:
-        return {
-            "sku": self.sku,
-            "boxes_per_unit": self.boxes_per_unit,
-            "bins": self.bin_list(),
-            "updated_by": self.updated_by,
-            "updated_at": (
-                self.updated_at.isoformat() if self.updated_at else None
-            ),
-        }
-
-
-class CompanionTag(Base):
-    """The RFID tag on box 2..N of a multi-box unit. Our label stock is
-    all RFID inlays, so a "BOX 2 OF 2" label is a live tag - this
-    registry is where those live so they count NOWHERE (they are never
-    RfidAssignments) but are RECOGNIZED everywhere a sweep would
-    otherwise call them unknown. Created automatically when a companion
-    print job completes (the printer encodes the EPC)."""
-
-    __tablename__ = "rfid_companion_tags"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    epc: Mapped[str] = mapped_column(
-        String(128), unique=True, index=True, nullable=False
-    )
-    sku: Mapped[str | None] = mapped_column(String(100), index=True)
-    product_title: Mapped[str | None] = mapped_column(String(255))
-    box_no: Mapped[int | None] = mapped_column(Integer)
-    box_count: Mapped[int | None] = mapped_column(Integer)
-    bin_location: Mapped[str | None] = mapped_column(String(100))
-    created_by: Mapped[str | None] = mapped_column(String(100))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-
-    def as_dict(self) -> dict:
-        return {
-            "epc": self.epc,
-            "sku": self.sku,
-            "product_title": self.product_title,
-            "box_no": self.box_no,
-            "box_count": self.box_count,
-            "bin_location": self.bin_location,
-        }
-
-
 class OnhandLog(Base):
     """One row per SKU per on-hand CHANGE the nightly sync observed
     (Nick, 2026-09-02): the memory behind "raised from 0 to 2 at
@@ -639,58 +523,6 @@ class OnhandLog(Base):
                 self.observed_at.isoformat() if self.observed_at else None
             ),
             "source": self.source,
-        }
-
-
-class SortHandoff(Base):
-    """A C72 sort-a-shipment scan pass handed to the web terminal
-    (Nick, 2026-09-02): the gun's matcher couldn't place the pallet
-    (vendor box labels often aren't catalog barcodes), so the counted
-    codes travel here and the web sorter - with its label-match and
-    near-miss tooling - picks them up pre-filled. Payload is the JSON
-    counts list; consumed_at stamps the web pickup so the banner only
-    ever offers a pass once."""
-
-    __tablename__ = "rfid_sort_handoffs"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    created_by: Mapped[str | None] = mapped_column(String(100))
-    # JSON: [{"code": str, "count": int}, ...] in scan order.
-    payload: Mapped[str] = mapped_column(
-        Text, nullable=False, default="", server_default=""
-    )
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    consumed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True)
-    )
-    consumed_by: Mapped[str | None] = mapped_column(String(100))
-
-    def counts(self) -> list:
-        import json
-
-        try:
-            rows = json.loads(self.payload or "[]")
-            return rows if isinstance(rows, list) else []
-        except Exception:  # noqa: BLE001 — a bad payload reads as empty
-            return []
-
-    def as_dict(self) -> dict:
-        rows = self.counts()
-        return {
-            "id": self.id,
-            "created_by": self.created_by,
-            "created_at": (
-                self.created_at.isoformat() if self.created_at else None
-            ),
-            "counts": rows,
-            "products": len(rows),
-            "boxes": sum(int(r.get("count") or 0) for r in rows
-                         if isinstance(r, dict)),
-            "consumed_at": (
-                self.consumed_at.isoformat() if self.consumed_at else None
-            ),
         }
 
 
@@ -1149,6 +981,36 @@ class StockSnapshot(Base):
     committed: Mapped[int | None] = mapped_column(Integer)
     on_hand: Mapped[int | None] = mapped_column(Integer)
     unavailable: Mapped[int | None] = mapped_column(Integer)
+
+
+class BinAudit(Base):
+    """One COMPLETED audit of a bin (scored-queue anchor, 2026-09-28):
+    the moment the shelf was last squared with the records, and the
+    per-SKU heard counts at that moment. The audit queue's per-product
+    diff walks forward from here - |on-hand − (heard here − sold since
+    + received since)| - and "sold since" always means "since this
+    row". One row per completed audit, newest wins; never edited."""
+
+    __tablename__ = "rfid_bin_audits"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    bin: Mapped[str] = mapped_column(String(100), index=True, nullable=False)
+    audited_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    audited_by: Mapped[str | None] = mapped_column(String(100))
+    # JSON {"SKU": heard_count} for every product the audit covered.
+    baseline: Mapped[str | None] = mapped_column(Text)
+
+    def baseline_map(self) -> dict:
+        import json as _json
+        try:
+            return {
+                (k or "").upper(): int(v)
+                for k, v in _json.loads(self.baseline or "{}").items()
+            }
+        except Exception:  # noqa: BLE001 — a bad row anchors nothing
+            return {}
 
 
 class Batch(Base):
@@ -1690,59 +1552,6 @@ class MismatchDismissal(Base):
     )
 
 
-class C72Tuning(Base):
-    """Live-tunable C72 parameters, one JSON row. The gun polls this
-    every ~2 s while its Locate tab is up and applies changes without an
-    APK build — field tuning happens as a conversation instead of a
-    deploy loop. Diagnostic plumbing, not inventory data."""
-
-    __tablename__ = "rfid_c72_tuning"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    values: Mapped[str] = mapped_column(String(2000), nullable=False,
-                                        default="{}")
-    updated_by: Mapped[str | None] = mapped_column(String(100))
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(),
-        onupdate=func.now(), nullable=False
-    )
-
-
-class C72DebugEvent(Base):
-    """One telemetry line from the gun (locate ticks, applied tuning),
-    kept as a pruned ring so the table can't grow unbounded."""
-
-    __tablename__ = "rfid_c72_debug"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    device: Mapped[str | None] = mapped_column(String(100))
-    line: Mapped[str] = mapped_column(String(400), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-
-
-class C72Command(Base):
-    """One remote command for the gun (get_state, set_pref, set_power,
-    say, beep, recreate…). The C72 polls pending commands every ~2 s,
-    executes, and acks with a result — so field debugging can reach
-    INTO the app without an APK build. Diagnostic plumbing, not
-    inventory data."""
-
-    __tablename__ = "rfid_c72_commands"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    command: Mapped[str] = mapped_column(String(50), nullable=False)
-    arg: Mapped[str | None] = mapped_column(String(500))
-    created_by: Mapped[str | None] = mapped_column(String(100))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    done_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    done_by: Mapped[str | None] = mapped_column(String(100))
-    result: Mapped[str | None] = mapped_column(String(400))
-
-
 class LocateQueueEntry(Base):
     """A product queued for a physical tag hunt. Added from any product
     preview on the web terminal (Review is the usual source — mismatched
@@ -1963,33 +1772,6 @@ class EpcCapture(Base):
         if with_epcs:
             d["epcs"] = self.epcs.split("\n") if self.epcs else []
         return d
-
-
-class BoxifyDim(Base):
-    """Snapshot of Boxify's CSV export (Nick, 2026-09-14): shipping
-    dimensions live ONLY in Boxify's own database - no API, no
-    metafields - so this table is how the terminal lists which
-    products still ship as the 8-cubic-inch default. Read-only
-    mirror: dimensions are FIXED in Boxify's own admin, then a fresh
-    export replaces this table wholesale on import."""
-
-    __tablename__ = "rfid_boxify_dims"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    sku: Mapped[str | None] = mapped_column(String(100), index=True)
-    product_title: Mapped[str | None] = mapped_column(String(255))
-    variant_title: Mapped[str | None] = mapped_column(String(255))
-    product_id: Mapped[str | None] = mapped_column(String(64))
-    variant_id: Mapped[str | None] = mapped_column(String(64))
-    length_cm: Mapped[float | None] = mapped_column(Float)
-    width_cm: Mapped[float | None] = mapped_column(Float)
-    height_cm: Mapped[float | None] = mapped_column(Float)
-    has_dims: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, index=True
-    )
-    imported_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
 
 
 class ReviewTask(Base):

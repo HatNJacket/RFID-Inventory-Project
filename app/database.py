@@ -96,6 +96,9 @@ _COLUMN_UPGRADES = [
     ("rfid_label_names", "barcode_mode", "VARCHAR(10) NULL"),
     ("rfid_label_names", "bin_text", "VARCHAR(100) NULL"),
     ("rfid_label_names", "barcode_text", "VARCHAR(64) NULL"),
+    # Scored audit queue (2026-09-28): when a sweep last heard each tag.
+    # DATETIMEOFFSET on Azure SQL; sqlite accepts the name as-is.
+    ("rfid_assignments", "last_heard_at", "DATETIMEOFFSET NULL"),
 ]
 
 
