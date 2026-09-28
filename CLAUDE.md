@@ -62,8 +62,10 @@ change log; commit messages here are written to be read later.
   `py c72-app/build.py` → signed APK lands in `app/static/tc-rfid-sweep.apk`
   (served to the gun). Bump `versionCode`/`versionName` in
   `c72-app/AndroidManifest.xml` every release.
-- `print_agent.py` — runs on the warehouse PC (scheduled task); needs a
-  process restart to pick up changes.
+- `print_agent.py` — runs on the warehouse PC via a Startup-folder
+  runner (`C:\rfid\run_agent.cmd`, looping cmd), so a REBOOT leaves it
+  down until someone logs into Windows there. v6+ self-updates from the
+  server; the web restart button only works while the process is alive.
 - `dev/` — session tooling: `mkdeploy.py`, `run_local.py` (seeded browser-
   verify server, port 8123), `tests/` (self-contained suites + `run_all.py`).
 
