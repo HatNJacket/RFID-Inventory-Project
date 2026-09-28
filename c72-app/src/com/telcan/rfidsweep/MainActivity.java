@@ -96,26 +96,24 @@ public class MainActivity extends Activity {
     private static final int SOUND_OTHER = 1;
     private static final int SOUND_ERR = 2;
 
-    private static final int TAB_BATCH = 0;
-    private static final int TAB_STATION = 1;
-    private static final int TAB_SWEEP = 2;
-    private static final int TAB_FIND = 3;
-    private static final int TAB_LOCATE = 4;
-    private static final int TAB_LINK = 5;
-    private static final int TAB_AUDIT = 6;
-    private static final int TAB_RETURNS = 7;
+    // Tab order 4.19 (Nick, 2026-09-28): LINK leads - the gun's main
+    // job is feeding the web terminal. SWEEP and FIND BIN are gone
+    // (sweeping lives in AUDIT; lookups live in Station / the web).
+    private static final int TAB_LINK = 0;
+    private static final int TAB_BATCH = 1;
+    private static final int TAB_STATION = 2;
+    private static final int TAB_LOCATE = 3;
+    private static final int TAB_AUDIT = 4;
+    private static final int TAB_RETURNS = 5;
     private static final String[] TAB_NAMES =
-            {"BATCH", "STATION", "SWEEP", "FIND BIN", "LOCATE", "LINK",
-             "AUDIT", "RETURNS"};
+            {"LINK", "BATCH", "STATION", "LOCATE", "AUDIT", "RETURNS"};
     // ActionBar titles (title case) and the lowercase names the server's
-    // presence endpoint receives (tuning-poll heartbeat).
+    // presence endpoint receives (heartbeat).
     private static final String[] TAB_TITLES =
-            {"Batch", "Station", "Sweep", "Find Bin", "Locate", "Link",
-             "Audit", "Returns"};
+            {"Link", "Batch", "Station", "Locate", "Audit", "Returns"};
     private static final String[] TAB_KEYS =
-            {"batch", "station", "sweep", "find", "locate", "link", "audit",
-             "returns"};
-    private static final int TAB_COUNT = 8;
+            {"link", "batch", "station", "locate", "audit", "returns"};
+    private static final int TAB_COUNT = 6;
 
     // ------------------------------------------------------------ colors ----
     // NOT constants any more: the whole palette is derived in
@@ -368,7 +366,7 @@ public class MainActivity extends Activity {
     private TextView loadingText;
     private LinearLayout drawerPanel;
     private TextView tabTitle;
-    private int activeTab = TAB_BATCH;
+    private int activeTab = TAB_LINK;
     private EditText btInput;
     private TextView status;
     private final View[] tabViews = new View[TAB_COUNT];
@@ -411,9 +409,6 @@ public class MainActivity extends Activity {
     private TextView stationHint;
 
     // sweep widgets
-    private TextView sweepCount;
-    private Button sweepToggle;
-    private ArrayAdapter<String> sweepAdapter;
 
     // ------------------------------------------------------------- state ----
     private static class BItem {
@@ -781,12 +776,10 @@ public class MainActivity extends Activity {
 
         // ---- content -------------------------------------------------------
         FrameLayout content = new FrameLayout(this);
+        tabViews[TAB_LINK] = buildLinkView();
         tabViews[TAB_BATCH] = buildBatchView();
         tabViews[TAB_STATION] = buildStationView();
-        tabViews[TAB_SWEEP] = buildSweepView();
-        tabViews[TAB_FIND] = buildFindView();
         tabViews[TAB_LOCATE] = buildLocateView();
-        tabViews[TAB_LINK] = buildLinkView();
         tabViews[TAB_AUDIT] = buildAuditView();
         tabViews[TAB_RETURNS] = buildReturnsView();
         for (View v : tabViews) content.addView(v);
@@ -913,9 +906,14 @@ public class MainActivity extends Activity {
         setContentView(outer);
 
         restoreMap("saved_tags", tags);
-        // Land on LINK: with batch tagging winding down, the gun's main
-        // job is feeding the web terminal (Nick, 2026-08-18).
-        selectTab(TAB_LINK);
+        // Land where the operator last was (Nick, 2026-09-28): the BT
+        // scanner connecting recreates the activity, and always landing
+        // on LINK kept throwing people off their tab mid-job. First run
+        // still opens LINK - the gun\u2019s main job is feeding the web
+        // terminal.
+        int lastTab = prefs.getInt("last_tab", TAB_LINK);
+        selectTab(lastTab >= 0 && lastTab < TAB_COUNT ? lastTab
+                : TAB_LINK);
         initReader();
         myTickGen = ++tickGen; // retire any loop a recreated activity left
         ui.postDelayed(this::refreshTick, 400);
@@ -1466,168 +1464,6 @@ public class MainActivity extends Activity {
         }).start();
     }
 
-    private View buildSweepView() {
-        LinearLayout v = new LinearLayout(this);
-        v.setOrientation(LinearLayout.VERTICAL);
-
-        sweepCount = new TextView(this);
-        sweepCount.setText("0 unique tags");
-        sweepCount.setTextSize(22);
-        sweepCount.setTypeface(null, Typeface.BOLD);
-        sweepCount.setTextColor(C_BLUE);
-        v.addView(tabHeader(null, sweepCount));
-
-        LinearLayout row = new LinearLayout(this);
-        sweepToggle = smallBtn("START SCAN");
-        sweepToggle.setOnClickListener(x -> toggleScan());
-        row.addView(sweepToggle, weight());
-        Button send = smallBtn("SEND SWEEP");
-        send.setOnClickListener(x -> sendSweep());
-        row.addView(send, weight());
-        Button clear = smallBtn("CLEAR");
-        clear.setOnClickListener(x -> confirmClearSweep());
-        row.addView(clear, weight());
-        v.addView(row);
-
-        ListView list = new ListView(this);
-        // simple_list_item_1 takes the SYSTEM theme's text colour (black
-        // on this unit), which vanished in dark mode — the EPC rows paint
-        // the app palette instead (Nick, v3.46).
-        sweepAdapter = new ArrayAdapter<String>(this,
-                android.R.layout.simple_list_item_1) {
-            @Override
-            public View getView(int pos, View convertView,
-                                android.view.ViewGroup parent) {
-                TextView t = (TextView) super.getView(
-                        pos, convertView, parent);
-                t.setTextColor(C_TEXT);
-                return t;
-            }
-        };
-        list.setAdapter(sweepAdapter);
-        v.addView(list, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
-        return v;
-    }
-
-    // FIND BIN: scan anything, see where it's supposed to live.
-    private TextView findResult;
-    private ImageView findImg;
-
-    private View buildFindView() {
-        LinearLayout v = new LinearLayout(this);
-        v.setOrientation(LinearLayout.VERTICAL);
-        v.addView(tabHeader("Where does this live?"));
-        TextView hint = new TextView(this);
-        hint.setText("Scan a barcode or SKU — the bin comes back.");
-        hint.setTextSize(13);
-        hint.setTextColor(C_MUTED);
-        hint.setPadding(0, 0, 0, dp(8));
-        v.addView(hint);
-        findImg = new ImageView(this);
-        findImg.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        findImg.setBackgroundColor(C_BG);
-        v.addView(findImg, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(120)));
-        findResult = new TextView(this);
-        findResult.setTextSize(15);
-        findResult.setTextColor(C_TEXT);
-        findResult.setPadding(0, dp(8), 0, 0);
-        v.addView(findResult, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
-        return v;
-    }
-
-    private void findLookup(String code) {
-        status.setText("Looking up " + code + "…");
-        new Thread(() -> {
-            try {
-                JSONObject raw = api("GET", "/api/products/by-barcode/"
-                        + encPath(code), null);
-                ui.post(() -> maybeMislabelPicker(raw,
-                        this::showFindResult));
-            } catch (Exception e) {
-                findLookupFallback(code, e);
-            }
-        }).start();
-    }
-
-    /** Render the FIND tab's answer for a (picker-resolved) product. */
-    private void showFindResult(JSONObject p) {
-        {
-            {
-                final String bin = p.optString("bin_location", "");
-                final String title = p.optString("product_title", "(unknown)");
-                final String variant = p.isNull("variant_title") ? ""
-                        : p.optString("variant_title");
-                final String sku = p.isNull("sku") ? "—" : p.optString("sku");
-                final String img = p.isNull("image_url") ? null
-                        : p.optString("image_url");
-                // The product's standing scan note (set in Edit product):
-                // warning-coloured line + its own double beep, so a box
-                // that needs special handling announces itself.
-                final String note = p.isNull("scan_note") ? ""
-                        : p.optString("scan_note", "");
-                ui.post(() -> {
-                    boolean has = !bin.isEmpty()
-                            && !bin.equalsIgnoreCase("No bin assigned");
-                    String base = (has ? "BIN  " + bin : "NO BIN ASSIGNED")
-                            + "\n\n" + title
-                            + (variant.isEmpty() ? "" : " (" + variant + ")")
-                            + "\nSKU: " + sku;
-                    if (note.isEmpty()) {
-                        beep(has ? SOUND_OK : SOUND_OTHER);
-                        findResult.setText(base);
-                    } else {
-                        beepScanNote();
-                        android.text.SpannableStringBuilder sb =
-                                new android.text.SpannableStringBuilder(
-                                        base + "\n\n⚠ " + note);
-                        // C_WARN themes itself: amber-on-light,
-                        // gold-on-dark.
-                        sb.setSpan(new android.text.style
-                                        .ForegroundColorSpan(C_WARN),
-                                base.length(), sb.length(), 0);
-                        sb.setSpan(new android.text.style.StyleSpan(
-                                        Typeface.BOLD),
-                                base.length(), sb.length(), 0);
-                        findResult.setText(sb);
-                    }
-                    findResult.setTextSize(has ? 20 : 16);
-                    loadImage(img, findImg);
-                    status.setText(has ? "Found ✓" : "This product has no "
-                            + "bin set in Shopify.");
-                    btInput.requestFocus();
-                });
-            }
-        }
-    }
-
-    /** findLookup's not-a-listing path (runs on the lookup thread). */
-    private void findLookupFallback(String code, Exception e) {
-        // Not a listing — but it may be a CASE code (a box of N of
-        // one product). That is exactly the scan that used to come
-        // back empty and leave someone holding an unplaceable box.
-        JSONObject c = null;
-        try {
-            c = api("GET", "/api/cases/"
-                    + encPath(code), null);
-        } catch (Exception ignored) {
-            // genuinely unknown; fall through to the error below
-        }
-        if (c != null) {
-            final JSONObject box = c;
-            ui.post(() -> showCaseFind(box));
-            return;
-        }
-        ui.post(() -> {
-            beep(SOUND_ERR);
-            findResult.setText("Not found:\n" + e.getMessage());
-            loadImage(null, findImg);
-            btInput.requestFocus();
-        });
-    }
-
     /** Mis-label picker (3.89, Nick): a flagged product whose payload
      *  lists what the label might ACTUALLY be asks the operator to name
      *  the product physically in hand before anything proceeds. A pick
@@ -1761,29 +1597,6 @@ public class MainActivity extends Activity {
     }
 
     /** A case code in FIND BIN: where the contents live, plus the note. */
-    private void showCaseFind(JSONObject c) {
-        JSONObject p = c.optJSONObject("product");
-        String bin = p == null ? "" : p.optString("bin_location", "");
-        boolean has = !bin.isEmpty()
-                && !bin.equalsIgnoreCase("No bin assigned");
-        int units = c.optInt("units", 0);
-        String sku = c.optString("sku", "—");
-        String title = c.isNull("product_title") ? ""
-                : c.optString("product_title");
-        String note = c.isNull("scan_note") ? "" : c.optString("scan_note");
-        beep(SOUND_OTHER);
-        findResult.setText(
-                (has ? "BIN  " + bin : "NO BIN ASSIGNED")
-                + "\n\nBOX OF " + units + "\n" + units + " x " + sku
-                + (title.isEmpty() ? "" : "\n" + title)
-                + (note.isEmpty() ? "" : "\n\n! " + note));
-        findResult.setTextSize(has ? 20 : 16);
-        loadImage(p == null || p.isNull("image_url") ? null
-                : p.optString("image_url"), findImg);
-        status.setText("That barcode is a box of " + units + ".");
-        btInput.requestFocus();
-    }
-
     // ---- LOCATE tab (design settled with Nick 2026-08-06): pick a
     // product by barcode/SKU, then hunt its tags by signal strength.
     // FAR/NEAR/TOUCH power presets, geiger audio, tap-to-narrow to one
@@ -6936,6 +6749,9 @@ public class MainActivity extends Activity {
 
     private void selectTab(int tab) {
         activeTab = tab;
+        // Survives activity recreation (BT scanner connect, theme
+        // change) - onCreate restores it.
+        prefs.edit().putInt("last_tab", tab).apply();
         // The system ActionBar names the current tab; the drawer keeps
         // the app name ("TC RFID Sweep").
         setTitle(TAB_TITLES[tab]);
@@ -6961,7 +6777,7 @@ public class MainActivity extends Activity {
             auditMergeTags();
         }
         boolean needsInput = tab == TAB_BATCH || tab == TAB_STATION
-                || tab == TAB_FIND || tab == TAB_LOCATE || tab == TAB_LINK
+                || tab == TAB_LOCATE || tab == TAB_LINK
                 || tab == TAB_AUDIT || tab == TAB_RETURNS;
         btInput.setVisibility(needsInput ? View.VISIBLE : View.GONE);
         tabTitle.setVisibility(needsInput ? View.GONE : View.VISIBLE);
@@ -6974,15 +6790,9 @@ public class MainActivity extends Activity {
             status.setText(stationProduct == null
                     ? "Scan a product barcode."
                     : "Trigger to link tags to the shown product.");
-        } else if (tab == TAB_SWEEP) {
-            refreshSweepList();
-            status.setText("Trigger or START to sweep tags; SEND when done.");
         } else if (tab == TAB_LINK) {
-            status.setText(packMode
-                    ? "PACK: scan each box as it goes into its parcel."
-                    : "LINK: barcode scans and trigger reads go to the "
-                      + "web terminal (turn its C72 LINK toggle on). "
-                      + "PACK up top for the packing desk.");
+            status.setText("LINK: barcode scans and trigger reads go to "
+                    + "the web terminal (turn its C72 LINK toggle on).");
         } else if (tab == TAB_AUDIT) {
             auditEnterTab();
         } else if (tab == TAB_RETURNS) {
@@ -7026,8 +6836,6 @@ public class MainActivity extends Activity {
     private boolean tabVisible(int tab) {
         if (tab == TAB_BATCH) return true;
         String key = tab == TAB_STATION ? "tab_station"
-                : tab == TAB_SWEEP ? "tab_sweep"
-                : tab == TAB_FIND ? "tab_find"
                 : tab == TAB_LINK ? "tab_link"
                 : tab == TAB_RETURNS ? "tab_returns" : "tab_locate";
         return prefs.getBoolean(key, true);
@@ -7078,18 +6886,15 @@ public class MainActivity extends Activity {
             } else {
                 stationLookup(code);
             }
-        } else if (activeTab == TAB_FIND) {
-            findLookup(code);
         } else if (activeTab == TAB_LINK) {
-            if (packMode) packSend(code);
-            else linkSend("barcode", code, null);
+            linkSend("barcode", code, null);
         } else if (activeTab == TAB_AUDIT) {
             auditBarcode(code);
         } else if (activeTab == TAB_RETURNS) {
             returnsBarcode(code);
         } else {
-            status.setText("Scanned " + code + " — switch to BATCH, "
-                    + "STATION or FIND BIN to use barcodes.");
+            status.setText("Scanned " + code + " - switch to BATCH, "
+                    + "STATION or AUDIT to use barcodes.");
         }
     }
 
@@ -7297,15 +7102,12 @@ public class MainActivity extends Activity {
             // checked without clearing the product that's loaded.
             if (identifyArmed) identifyTagRead();
             else stationReadTag();
-        } else if (activeTab == TAB_SWEEP) {
-            toggleScan();
         } else if (activeTab == TAB_LOCATE) {
             if (unpairedHunt && upArmedProduct != null) upReadAndPair();
             else if (locMode == 1 && radarEngine == 2) toggleChainwayRadar();
             else toggleLocate();
         } else if (activeTab == TAB_LINK) {
-            if (packMode) packReadTag();
-            else linkReadTag();
+            linkReadTag();
         } else if (activeTab == TAB_AUDIT) {
             // Pair mode pairs one sticker per pull; otherwise the
             // trigger toggles the continuous audit sweep (SWEEP-tab
@@ -7430,11 +7232,13 @@ public class MainActivity extends Activity {
     // A default of 0 means "no default: keep whatever power is set".
     // Resolution order while a batch is open with per-step defaults on:
     // step default → tab default → leave the power alone.
+    // Indexed by tab (LINK first since 4.19). The retired sweep/find
+    // keys just sit unused in prefs.
     private static final String[] TAB_POWER_KEYS = {
-            "pow_tab_batch", "pow_tab_station", "pow_tab_sweep",
-            "pow_tab_find", "pow_tab_locate", "pow_tab_link"};
+            "pow_tab_link", "pow_tab_batch", "pow_tab_station",
+            "pow_tab_locate"};
     private static final String[] TAB_POWER_NAMES = {
-            "Batch", "Station", "Sweep", "Find bin", "Locate", "Link"};
+            "Link", "Batch", "Station", "Locate"};
     // Display order for the settings list only. Power RESOLUTION goes
     // through stepPowerKey()'s explicit switch, never a step-indexed
     // array: inserting STEP_SHELF shifted every index once and Verify
@@ -14271,29 +14075,10 @@ public class MainActivity extends Activity {
                     + "Shopify both.\n"
                     + "• ⊘ means the product is flagged \"won't RFID "
                     + "scan\": pair the sticker BEFORE applying it.");
-        } else if (activeTab == TAB_SWEEP) {
-            helpDialog("Sweep",
-                    "Free-scan any shelf: hold the trigger and walk. "
-                    + "Every unique tag is collected with a read count.\n\n"
-                    + "• SEND uploads the sweep; the web terminal's "
-                    + "Verify step and shelf tools can pull it.\n"
-                    + "• CLEAR starts over. Higher power reads farther.");
-        } else if (activeTab == TAB_FIND) {
-            helpDialog("Find Bin",
-                    "Where does this live? Scan any product barcode and "
-                    + "the screen shows its product, bin and details — "
-                    + "for putting strays back where they belong.");
-        } else if (activeTab == TAB_LINK) {
+        } else if (activeTab == TAB_LINK) {        } else if (activeTab == TAB_LINK) {
             helpDialog("Link",
-                    "Two modes, picked with the buttons up top:\n\n"
-                    + "PACK - scan each box as it goes into its parcel "
-                    + "(barcode or trigger on the sticker). The server "
-                    + "matches it against awaiting-shipment orders and "
-                    + "the web's Packing pane (under Audits) fills "
-                    + "live. Ding = matched; buzz = duplicate / not in "
-                    + "shipping / unknown.\n\n"
-                    + "LINK - the gun becomes an input device for the "
-                    + "web terminal — no Bluetooth pairing to the PC:\n\n"
+                    "The gun becomes an input device for the web "
+                    + "terminal — no Bluetooth pairing to the PC:\n\n"
                     + "• On the PC, open the Scan station tab and turn "
                     + "ON its C72 LINK toggle.\n"
                     + "• Every barcode scan and trigger read on THIS tab "
@@ -15870,6 +15655,9 @@ public class MainActivity extends Activity {
     }
 
     // -------------------------------------------------------------- sweep ---
+    /** Bulk collect into the shared tags map - the batch steps
+     *  (collect baseline, verify) drive this; the standalone SWEEP tab
+     *  it once served is gone (4.19 - sweeping lives in AUDIT). */
     private void toggleScan() {
         if (!readerReady) {
             Toast.makeText(this, "Reader not ready", Toast.LENGTH_SHORT).show();
@@ -15878,80 +15666,15 @@ public class MainActivity extends Activity {
         if (scanning) {
             reader.stopInventory();
             scanning = false;
-            sweepToggle.setText("START SCAN");
-            status.setText("Paused — SEND when the shelf is done.");
+            int n;
+            synchronized (tags) { n = tags.size(); }
+            status.setText("Paused - " + n + " unique tag(s) collected.");
         } else if (reader.startInventoryTag()) {
             scanning = true;
-            sweepToggle.setText("STOP SCAN");
-            status.setText("Sweeping… walk the shelf.");
+            status.setText("Sweeping… trigger to stop.");
         } else {
-            status.setText("Could not start the scan — try again.");
+            status.setText("Could not start the scan - try again.");
         }
-    }
-
-    private void refreshSweepList() {
-        List<String> rows = new ArrayList<>();
-        synchronized (tags) {
-            sweepCount.setText(tags.size() + " unique tags");
-            for (Map.Entry<String, Integer> e : tags.entrySet()) {
-                rows.add(e.getKey() + "   ×" + e.getValue());
-            }
-        }
-        sweepAdapter.clear();
-        sweepAdapter.addAll(rows);
-    }
-
-    private void confirmClearSweep() {
-        int n;
-        synchronized (tags) { n = tags.size(); }
-        if (n == 0) return;
-        dlg()
-                .setMessage("Clear " + n + " collected tags?")
-                .setPositiveButton("Clear", (d, w) -> {
-                    synchronized (tags) { tags.clear(); }
-                    refreshSweepList();
-                    status.setText("Cleared — ready for the next shelf.");
-                })
-                .setNegativeButton("Cancel", null)
-                .show();
-    }
-
-    private void sendSweep() {
-        final List<String> epcs = new ArrayList<>();
-        synchronized (tags) { epcs.addAll(tags.keySet()); }
-        if (epcs.isEmpty()) {
-            Toast.makeText(this, "Nothing scanned yet", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        if (scanning) toggleScan();
-        status.setText("Sending " + epcs.size() + " tags…");
-        new Thread(() -> {
-            String result;
-            boolean ok = false;
-            try {
-                JSONObject body = new JSONObject();
-                body.put("device", prefs.getString("device", "C72"));
-                body.put("epcs", new JSONArray(epcs));
-                JSONObject resp = api("POST", "/api/epc-captures", body);
-                ok = true;
-                int unl = resp.optInt("unlinked_stashed", 0);
-                result = "Sent ✓ sweep #" + resp.optInt("id") + " ("
-                        + epcs.size() + " tags). Pull it on the PC's verify "
-                        + "screen. CLEAR before the next shelf."
-                        + (unl > 0 ? " " + unl + " sticker(s) linked to "
-                           + "nothing went to the locate list." : "");
-            } catch (Exception e) {
-                result = "Send FAILED (" + e.getMessage() + ") — tags kept; "
-                        + "get Wi-Fi coverage and press SEND again.";
-            }
-            final String msg = result;
-            final boolean sent = ok;
-            ui.post(() -> {
-                status.setText(msg);
-                if (sent) Toast.makeText(this, "Sweep sent ✓",
-                        Toast.LENGTH_LONG).show();
-            });
-        }).start();
     }
 
     // -------------------------------------------------------------- UI ------
@@ -15970,7 +15693,6 @@ public class MainActivity extends Activity {
         if (myTickGen != tickGen) return; // orphaned loop - stop here
         if (listDirty) {
             listDirty = false;
-            if (activeTab == TAB_SWEEP) refreshSweepList();
             if (sweepRunning) {
                 int n;
                 synchronized (tags) { n = tags.size(); }
@@ -17915,16 +17637,6 @@ public class MainActivity extends Activity {
     // normal input paths and posts the outcome back — ding for accepted,
     // buzz for refused. No Bluetooth pairing to the PC, ever.
     private LinearLayout linkFeed;
-    // PACK mode (Nick, phase 6, 2026-09-28): the LINK tab doubles as
-    // the packing-desk scanner. ON, every barcode scan and trigger
-    // read POSTs to /api/packing/scans - the server allocates it
-    // against ShipStation's awaiting-shipment orders and the web's
-    // Packing pane (under Audits) fills live. Off at every app start
-    // so a forgotten toggle can't eat normal scans.
-    private boolean packMode = false;
-    private Button linkModeBtn;
-    private Button packModeBtn;
-    private TextView linkHint;
 
     private View buildLinkView() {
         ScrollView scroll = new ScrollView(this);
@@ -17935,32 +17647,21 @@ public class MainActivity extends Activity {
 
         root.addView(tabHeader("Gun → web terminal"));
 
-        LinearLayout modes = new LinearLayout(this);
-        linkModeBtn = smallBtn("LINK - web terminal");
-        linkModeBtn.setOnClickListener(x -> setPackMode(false));
-        modes.addView(linkModeBtn, weight());
-        packModeBtn = smallBtn("PACK - packing desk");
-        LinearLayout.LayoutParams pl = weight();
-        pl.leftMargin = dp(6);
-        packModeBtn.setOnClickListener(x -> setPackMode(true));
-        modes.addView(packModeBtn, pl);
-        LinearLayout.LayoutParams ml = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT);
-        ml.bottomMargin = dp(8);
-        root.addView(modes, ml);
-
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setBackground(rr(C_CARD, C_LINE, 10));
         card.setPadding(dp(12), dp(10), dp(12), dp(12));
-        linkHint = new TextView(this);
-        linkHint.setTextSize(12);
-        linkHint.setTextColor(C_MUTED);
-        linkHint.setPadding(0, dp(6), 0, 0);
-        card.addView(linkHint);
+        TextView hint = new TextView(this);
+        hint.setText("Scans on this tab don't act here - every barcode "
+                + "scan and trigger read is sent straight to the web "
+                + "terminal's Scan station (turn its C72 LINK toggle ON)."
+                + "\n\nDing = the terminal accepted it. Buzz = it refused "
+                + "(the reason shows below and over there).");
+        hint.setTextSize(12);
+        hint.setTextColor(C_MUTED);
+        hint.setPadding(0, dp(6), 0, 0);
+        card.addView(hint);
         root.addView(card);
-        setPackMode(false);
 
         root.addView(sectionLabel("RECENT SCANS"));
         linkFeed = new LinearLayout(this);
@@ -17971,154 +17672,6 @@ public class MainActivity extends Activity {
         linkFeed.addView(none);
         root.addView(linkFeed);
         return scroll;
-    }
-
-    private void setPackMode(boolean on) {
-        packMode = on;
-        if (linkModeBtn != null) {
-            if (on) {
-                linkModeBtn.setBackground(btnBg(C_CARD, C_LINE, C_PRESS, 8));
-                linkModeBtn.setTextColor(C_TEXT);
-                linkModeBtn.setTypeface(null, Typeface.NORMAL);
-                makePrimary(packModeBtn);
-            } else {
-                packModeBtn.setBackground(btnBg(C_CARD, C_LINE, C_PRESS, 8));
-                packModeBtn.setTextColor(C_TEXT);
-                packModeBtn.setTypeface(null, Typeface.NORMAL);
-                makePrimary(linkModeBtn);
-            }
-        }
-        if (linkHint != null) {
-            linkHint.setText(on
-                    ? "PACK: scan each box as it goes into its parcel - "
-                      + "barcode or trigger on the sticker. The server "
-                      + "matches it to an awaiting-shipment order "
-                      + "(oldest first); the web's Packing pane under "
-                      + "Audits fills live.\n\nDing = matched to an "
-                      + "order. Buzz = duplicate, not in shipping, or "
-                      + "unknown - read the row below."
-                    : "Scans on this tab don't act here - every barcode "
-                      + "scan and trigger read is sent straight to the "
-                      + "web terminal's Scan station (turn its C72 LINK "
-                      + "toggle ON).\n\nDing = the terminal accepted "
-                      + "it. Buzz = it refused (the reason shows below "
-                      + "and over there).");
-        }
-        // Announce only a live switch - this also runs while the tab
-        // is first built, before the operator is even looking.
-        if (activeTab == TAB_LINK) {
-            status.setText(on
-                    ? "PACK mode: scan boxes as you pack them."
-                    : "LINK mode: scans relay to the web terminal.");
-        }
-    }
-
-    /** One packing-desk scan (barcode or EPC) -> /api/packing/scans.
-     *  The verdict comes straight back - no terminal involved. */
-    private void packSend(final String code) {
-        final LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setBackground(rr(C_CARD, C_LINE, 10));
-        row.setPadding(dp(10), dp(7), dp(10), dp(7));
-        final TextView mark = new TextView(this);
-        mark.setText("…");
-        mark.setTextSize(15);
-        mark.setTypeface(null, Typeface.BOLD);
-        mark.setTextColor(C_MUTED);
-        mark.setPadding(0, 0, dp(9), 0);
-        row.addView(mark);
-        LinearLayout col = new LinearLayout(this);
-        col.setOrientation(LinearLayout.VERTICAL);
-        final TextView main = new TextView(this);
-        main.setText(code);
-        main.setTextSize(12);
-        main.setTypeface(null, Typeface.BOLD);
-        main.setTextColor(C_TEXT);
-        main.setSingleLine();
-        main.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
-        col.addView(main);
-        final TextView sub = new TextView(this);
-        sub.setText("checking against shipping…");
-        sub.setTextSize(11);
-        sub.setTextColor(C_MUTED);
-        col.addView(sub);
-        row.addView(col, weight());
-        ui.post(() -> {
-            if (linkFeed == null) return;
-            if (linkFeed.getChildCount() == 1
-                    && "empty".equals(linkFeed.getChildAt(0).getTag())) {
-                linkFeed.removeAllViews();
-            }
-            LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT);
-            rl.bottomMargin = dp(5);
-            linkFeed.addView(row, 0, rl);
-            while (linkFeed.getChildCount() > 10) {
-                linkFeed.removeViewAt(linkFeed.getChildCount() - 1);
-            }
-        });
-        new Thread(() -> {
-            try {
-                JSONObject resp = api("POST", "/api/packing/scans",
-                        new JSONObject()
-                                .put("code", code)
-                                .put("device",
-                                        prefs.getString("device", "C72"))
-                                .put("worker",
-                                        prefs.getString("device", "C72")));
-                final boolean ok = resp.optBoolean("ok");
-                final String msg = resp.optString("message",
-                        ok ? "matched" : "not matched");
-                ui.post(() -> {
-                    beep(ok ? SOUND_OK : SOUND_ERR);
-                    mark.setText(ok ? "✓" : "✕");
-                    mark.setTextColor(ok ? C_OK : C_OVER);
-                    sub.setText(msg);
-                    sub.setTextColor(ok ? C_MUTED : C_OVER);
-                    if (ok) status.setText(msg);
-                    else alertStatus(msg);
-                });
-            } catch (Exception e) {
-                ui.post(() -> {
-                    beep(SOUND_ERR);
-                    mark.setText("✕");
-                    mark.setTextColor(C_OVER);
-                    sub.setText("NOT SENT - " + e.getMessage());
-                    sub.setTextColor(C_OVER);
-                    alertStatus("Couldn't reach the server: "
-                            + e.getMessage());
-                });
-            }
-        }).start();
-    }
-
-    /** Trigger pull in PACK mode: one strongest-tag read, sent as a
-     *  packing scan (the server retires EXACTLY this EPC when the
-     *  order ships). */
-    private void packReadTag() {
-        if (!readerReady) {
-            beep(SOUND_ERR);
-            status.setText("RFID reader not ready.");
-            return;
-        }
-        if (tagReadBusy) return;
-        tagReadBusy = true;
-        status.setText("Reading tag… hold the antenna near ONE sticker");
-        new Thread(() -> {
-            final TagRead read = readStrongestTag(600);
-            ui.post(() -> tagReadBusy = false);
-            if (read == null || read.epc == null || read.epc.isEmpty()) {
-                ui.post(() -> {
-                    beep(SOUND_ERR);
-                    status.setText("No tag read - get closer and "
-                            + "trigger again.");
-                });
-                return;
-            }
-            packSend(read.epc);
-        }).start();
     }
 
     /** Trigger pull on the LINK tab: one strongest-tag read, relayed. */
@@ -18700,10 +18253,6 @@ public class MainActivity extends Activity {
         final Switch swStation =
                 mkToggle(prefs.getBoolean("tab_station", true));
         box.addView(toggleRow("Station", null, swStation));
-        final Switch swSweep = mkToggle(prefs.getBoolean("tab_sweep", true));
-        box.addView(toggleRow("Sweep", null, swSweep));
-        final Switch swFind = mkToggle(prefs.getBoolean("tab_find", true));
-        box.addView(toggleRow("Find bin", null, swFind));
         final Switch swLocate =
                 mkToggle(prefs.getBoolean("tab_locate", true));
         box.addView(toggleRow("Locate", null, swLocate));
@@ -18727,8 +18276,6 @@ public class MainActivity extends Activity {
                             .putBoolean("up_autonarrow",
                                     swUpNarrow.isChecked())
                             .putBoolean("tab_station", swStation.isChecked())
-                            .putBoolean("tab_sweep", swSweep.isChecked())
-                            .putBoolean("tab_find", swFind.isChecked())
                             .putBoolean("tab_locate", swLocate.isChecked())
                             .putBoolean("tab_link", swLink.isChecked())
                             .putBoolean("tab_returns",

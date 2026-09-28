@@ -131,6 +131,31 @@ iterated over the "Audits Tab Redesign" preview artifact, 3 rounds):**
 - Web-only: every action maps to existing endpoints (the one new
   wiring is DELETE /api/rfid-assignments/{epc} surfaced as Unpair).
 
+**ROUND 9 (Nick's list, 2026-09-28) — ✅ BUILT + ON PROD:**
+- Boxes & Tags: condition chip removed; the paired line says who
+  paired the tag and through what work (server-derived source:
+  Receiving / Batch tagging (bin) / Printed label / Manually
+  scanned). Unpair button (light red) with a note popover (24ch box,
+  hint "Optional Note", 200 max, Cancel/Submit below) - the note
+  rides the tag-unlinked History event. Locate re-tinted light blue.
+- Product preview card: "Set to N (tags)" button under On hand -
+  one confirmed write aligning Shopify to the tag records' units
+  (raises via the normal write, lowers via the guarded path).
+- Card lookup speed: /api/product-history now accepts
+  sku/barcode/pid from the caller and SKIPS its second full product
+  lookup (which could hit the live Shopify API again);
+  /api/products/tags?light=1 skips the live on-hand + label
+  decorations for the open-box twin call; the client keeps a 5-min
+  in-memory cache of resolved products. Net: one product resolve
+  and one live on-hand fetch per card, repeats instant.
+- C72 4.19 (code 137): FIND BIN and SWEEP tabs removed (sweeping
+  lives in AUDIT; toggleScan stays for the batch steps); LINK is
+  the FIRST tab; the gun restores its last tab on recreate and the
+  manifest ignores keyboard config changes, so the BT scanner
+  connecting no longer dumps the operator onto LINK; PACK mode
+  removed (packing goes through an audit sweep; the server's
+  /api/packing/* endpoints and the web pane stay).
+
 **C72 UPDATE — ✅ BUILT 2026-09-28 (C72 4.18, code 136), Nick's
 five asks + the queued cleanup, one session. ✅ ON PROD 2026-09-28:
 prod serves the 4.18 APK, so the gun self-updates on its next app

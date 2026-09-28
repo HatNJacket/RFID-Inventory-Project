@@ -110,11 +110,17 @@
           <div class="pcard__name" id="pcard-name"></div>
           <div class="pcard__codes" id="pcard-codes"></div>
           <div class="pcard__stats">
-            <button class="pstat" id="pcard-onhand" type="button" hidden
-                    title="Open this product in Shopify admin">
-              <span class="pstat__num" id="pcard-onhand-num"></span>
-              <span class="pstat__lbl">On hand</span>
-            </button>
+            <div class="pstat__col">
+              <button class="pstat" id="pcard-onhand" type="button" hidden
+                      title="Open this product in Shopify admin">
+                <span class="pstat__num" id="pcard-onhand-num"></span>
+                <span class="pstat__lbl">On hand</span>
+              </button>
+              <!-- Align Shopify to the tag records in one confirmed,
+                   undoable write (Nick, 2026-09-28). -->
+              <button class="reset pstat__set" id="pcard-onhand-set"
+                      type="button" hidden></button>
+            </div>
             <button class="pstat" id="pcard-tagcount" type="button"
                     title="Open the Boxes &amp; tags tab" hidden>
               <span class="pstat__num" id="pcard-tagcount-num"></span>

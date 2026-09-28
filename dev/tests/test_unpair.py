@@ -58,6 +58,36 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
           and ph["tags"][0]["assigned_by"] == "Nick", ph["tags"][0])
     check("tag_count agrees with the list", ph["tag_count"] == 2, ph)
 
+    # Boxes & Tags provenance (2026-09-28): every tag says what work
+    # paired it - these two were hand-added, so "Manually scanned".
+    tg = cl.get("/api/products/tags?sku=UNPAIR-1").json()
+    check("tags carry a paired-through source",
+          all(a.get("source") == "Manually scanned"
+              for a in tg["assignments"]), tg["assignments"])
+    tg_light = cl.get("/api/products/tags?light=1&sku=UNPAIR-1").json()
+    check("light=1 skips the decorations but keeps the tags",
+          len(tg_light["assignments"]) == len(tg["assignments"])
+          and "on_hand" not in tg_light, tg_light)
+
+    # DELETE unpair with the optional note (Boxes & Tags, 2026-09-28):
+    # the note rides the History event's new-value slot.
+    r = cl.request("DELETE",
+        f"/api/rfid-assignments/{EPC2}?by=Nick&note=wrong+box+entirely")
+    check("unpair with a note answers 204", r.status_code == 204, r.text)
+    hist = cl.get("/api/history").json()
+    ev_un = next((e for e in hist["events"]
+                  if e["type"] == "tag-unlinked"), None)
+    check("the unlink event carries the note",
+          ev_un is not None
+          and "wrong box entirely" in (ev_un.get("detail") or ""),
+          ev_un)
+    with Session(get_engine()) as s:
+        s.add(RfidAssignment(
+            rfid_id=EPC2, shopify_variant_id="t:UNPAIR-1",
+            product_title="Lone Telescope", sku="unpair-1",
+            bin_location="K1-1", assigned_by="Nick"))
+        s.commit()
+
     r = cl.post("/api/assignments/retire", json={
         "epcs": [EPC1], "kind": "dead", "changed_by": "Nick",
         "note": "manual unpair, Inventory tab"})

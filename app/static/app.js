@@ -18292,6 +18292,30 @@ function pcardRenderStats() {
   const tagRows = (st.tags && st.tags.assignments) || [];
   document.getElementById("pcard-tagcount-num").textContent = tagRows.length;
   tagsBtn.hidden = false;
+  // "Set on-hand to the tags number" (Nick, 2026-09-28): one confirmed
+  // write that aligns Shopify with the tag records - shown only when
+  // the two disagree. Case tags count their units.
+  const setBtn = document.getElementById("pcard-onhand-set");
+  if (setBtn) {
+    const tagUnits = tagRows.reduce(
+      (a, t) => a + (t.case_units || 1), 0
+    );
+    const show =
+      onHand != null && st.sku && tagUnits !== onHand;
+    setBtn.hidden = !show;
+    if (show) {
+      setBtn.textContent = `Set to ${tagUnits} (tags)`;
+      setBtn.title =
+        `Write Shopify on-hand to ${tagUnits} - the units the tag ` +
+        `records carry. Confirmed, History-logged, one Undo.` +
+        (tagUnits < onHand
+          ? " Lowering runs through the guarded path (sales-backed, " +
+            "or a previously batch-tagged product)."
+          : "");
+      setBtn.dataset.qty = String(tagUnits);
+      setBtn.dataset.cur = String(onHand);
+    }
+  }
   const chips = [];
   if (st.tags && st.tags.rfid_incompatible) {
     chips.push('<span class="pchip pchip--warn">Won’t RFID scan</span>');
@@ -18302,6 +18326,60 @@ document.getElementById("pcard-onhand").addEventListener("click", () => {
   const url = pcardState && pcardState.adminUrl;
   if (url) window.open(url, "_blank", "noopener");
 });
+document
+  .getElementById("pcard-onhand-set")
+  .addEventListener("click", async (e) => {
+    const btn = e.currentTarget;
+    const st = pcardState;
+    if (!st || !st.sku) return;
+    const qty = parseInt(btn.dataset.qty, 10);
+    const cur = parseInt(btn.dataset.cur, 10);
+    if (!Number.isFinite(qty) || qty === cur) return;
+    const lowering = qty < cur;
+    if (
+      !confirm(
+        `Set Shopify ON-HAND for ${st.sku} to ${qty}?\n\n` +
+          `Shopify carries ${cur}; the tag records carry ${qty} ` +
+          `unit(s).` +
+          (lowering
+            ? `\n\nLowering runs through the guarded path - sales ` +
+              `cover what they can, and a product that never ` +
+              `completed a batch tagging only lowers as far as ` +
+              `recorded sales cover (the server enforces it).`
+            : ``) +
+          `\n\nThis WRITES the number to Shopify. Undo stays ` +
+          `available in History.`
+      )
+    )
+      return;
+    btn.disabled = true;
+    try {
+      const res = lowering
+        ? await postJson("/api/onhand-updates/lower", {
+            sku: st.sku,
+            bin_name:
+              (st.product && st.product.bin_location) || "unknown",
+            new_qty: qty,
+            epcs: [],
+            changed_by: operatorEl.value || null,
+            confirmed: true,
+          })
+        : await postJson("/api/onhand-updates", {
+            sku: st.sku,
+            new_qty: qty,
+            changed_by: operatorEl.value || null,
+            confirmed: true,
+          });
+      alert(res.message);
+      document.getElementById("pcard-onhand-num").textContent = qty;
+      btn.dataset.cur = String(qty);
+      btn.hidden = true;
+      if (st.tags) st.tags.on_hand = qty;
+    } catch (err) {
+      alert(err.message);
+    }
+    btn.disabled = false;
+  });
 document.getElementById("pcard-tagcount").addEventListener("click", () =>
   pcardShowTab("tags"));
 
@@ -18555,26 +18633,37 @@ function pcardRenderHistory() {
 }
 
 // ---------- boxes & tags pane (open-box twin folded in) ----------
-function pcardTagRow(t, forceCond) {
-  const cond = (forceCond || t.condition || "New").trim();
-  const condChip = cond.toLowerCase() === "new"
-    ? '<span class="pchip pchip--ok">New</span>'
-    : `<span class="pchip pchip--warn">${escapeHtml(cond)}</span>`;
+// Condition chip removed (Nick, 2026-09-28); the paired line says who
+// paired the tag and through what work (Manually scanned, Receiving,
+// Batch tagging, Printed label - server-derived per tag).
+function pcardTagRow(t) {
   const loc = t.bin_location
     ? `<span class="pchip">${escapeHtml(t.bin_location)}</span>`
     : '<span class="dim">no bin</span>';
   const extra = [];
   if (t.case_units && t.case_units > 1) extra.push(`case of ${t.case_units}`);
-  if (t.assigned_at) extra.push("paired " + pcardWhen(t.assigned_at));
+  if (t.assigned_at) {
+    extra.push(
+      "paired " + pcardWhen(t.assigned_at) +
+      (t.assigned_by ? " by " + t.assigned_by : "") +
+      (t.source ? " · " + t.source : "")
+    );
+  } else if (t.source) {
+    extra.push(t.source);
+  }
   return (
     '<div class="prow">' +
     `<span class="epc">${escapeHtml(t.rfid_id)}</span>` +
-    condChip + loc +
+    loc +
     `<span class="dim">${escapeHtml(extra.join(" · "))}</span>` +
     `<button class="prow__locate" type="button" ` +
     `data-epc="${escapeHtml(t.rfid_id || "")}" ` +
     `data-lsku="${escapeHtml(t.sku || "")}" ` +
     `title="Queue this sticker on the C72 locate list (open LOCATE on the gun and tap LIST)">Locate</button>` +
+    `<button class="prow__unpair" type="button" ` +
+    `data-epc="${escapeHtml(t.rfid_id || "")}" ` +
+    `data-usku="${escapeHtml(t.sku || "")}" ` +
+    `title="Remove this tag record - the sticker is gone, damaged, or on the wrong box. History-logged as Tag Unlinked; Shopify untouched.">Unpair</button>` +
     "</div>"
   );
 }
@@ -18590,7 +18679,7 @@ function pcardRenderTags() {
   if (obRows.length) {
     html +=
       `<div class="pdivider">Open box (${escapeHtml(st.obSku)})</div>` +
-      obRows.map((t) => pcardTagRow(t, t.condition || "Open box")).join("");
+      obRows.map((t) => pcardTagRow(t)).join("");
   }
   pane.innerHTML = html;
   // Un-bundling (Nick, 2026-09-28): bundles are moving to per-
@@ -18695,6 +18784,69 @@ function pcardRenderTags() {
         btn.textContent = "Failed";
         btn.disabled = false;
       }
+    });
+  });
+  // Unpair (Nick, 2026-09-28): the button opens a small note popover
+  // under the row - an optional note (rides the History event), with
+  // Cancel / Submit below the box.
+  pane.querySelectorAll(".prow__unpair").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const row = btn.closest(".prow");
+      const open = row.nextElementSibling;
+      if (open && open.classList.contains("unpair-pop")) {
+        open.remove();
+        return;
+      }
+      pane.querySelectorAll(".unpair-pop").forEach((p) => p.remove());
+      const pop = document.createElement("div");
+      pop.className = "unpair-pop";
+      pop.innerHTML =
+        `<input type="text" maxlength="200" placeholder="Optional Note"
+           class="unpair-pop__note" />
+         <div class="unpair-pop__btns">
+           <button class="reset unpair-pop__cancel" type="button">Cancel</button>
+           <button class="reset unpair-pop__go" type="button">Submit</button>
+         </div>`;
+      row.after(pop);
+      const noteEl = pop.querySelector(".unpair-pop__note");
+      noteEl.focus();
+      pop.querySelector(".unpair-pop__cancel")
+        .addEventListener("click", () => pop.remove());
+      pop.querySelector(".unpair-pop__go")
+        .addEventListener("click", async () => {
+          const go = pop.querySelector(".unpair-pop__go");
+          go.disabled = true;
+          try {
+            await apiJson(
+              `/api/rfid-assignments/${encodeURIComponent(btn.dataset.epc)}` +
+                `?by=${encodeURIComponent(operatorEl.value || "")}` +
+                `&note=${encodeURIComponent(noteEl.value.trim())}`,
+              { method: "DELETE" }
+            );
+            // Fresh tag list, quietly - the pane repaints itself.
+            const qs = st.sku
+              ? "sku=" + encodeURIComponent(st.sku)
+              : "barcode=" + encodeURIComponent(st.barcode || st.term);
+            const [fresh, freshOb] = await Promise.all([
+              apiFetch(`/api/products/tags?${qs}`)
+                .then((r) => (r.ok ? r.json() : null)).catch(() => null),
+              st.ob
+                ? apiFetch(
+                    `/api/products/tags?light=1&sku=${encodeURIComponent(st.obSku)}`
+                  ).then((r) => (r.ok ? r.json() : null)).catch(() => null)
+                : null,
+            ]);
+            if (pcardState !== st) return;
+            if (fresh) st.tags = fresh;
+            st.ob =
+              freshOb && (freshOb.assignments || []).length ? freshOb : null;
+            pcardRenderStats();
+            pcardRenderTags();
+          } catch (err) {
+            go.disabled = false;
+            alert("Unpair failed: " + err.message);
+          }
+        });
     });
   });
 }
@@ -19448,6 +19600,13 @@ function renderLabTuner(pane) {
 }
 
 // ---------- the lookup itself ----------
+// Repeat lookups skip the product-resolve round trip (which can hit
+// the live Shopify API when the term isn't in the bin map): the last
+// few resolved products are kept for 5 minutes. Tags and history are
+// always re-fetched - they're the fast, local calls.
+const pcardLookupCache = new Map();
+const PCARD_CACHE_MS = 5 * 60 * 1000;
+
 async function openProductCard(term) {
   goTab("home");
   homeEls.pcard.hidden = false;
@@ -19458,21 +19617,33 @@ async function openProductCard(term) {
   homeEls.pcardChips.innerHTML = "";
   document.getElementById("pcard-onhand").hidden = true;
   document.getElementById("pcard-tagcount").hidden = true;
+  const setBtn = document.getElementById("pcard-onhand-set");
+  if (setBtn) setBtn.hidden = true;
   ["history", "tags", "shopify", "rfid"].forEach((n) =>
     (pcardPane(n).innerHTML = ""));
   pcardShowTab("rfid");
   homeRememberLookup(term);
   let product = null;
-  try {
-    const res = await apiFetch(
-      `/api/products/by-barcode/${encodeURIComponent(term)}`
-    );
-    if (res.ok) product = await res.json();
-    else if (res.status !== 404) throw new Error("lookup " + res.status);
-  } catch (err) {
-    homeEls.pcardName.textContent =
-      "Lookup failed - is the network okay? " + (err.message || "");
-    return;
+  const cacheKey = term.trim().toUpperCase();
+  const hit = pcardLookupCache.get(cacheKey);
+  if (hit && Date.now() - hit.ts < PCARD_CACHE_MS) {
+    product = hit.product;
+  } else {
+    try {
+      const res = await apiFetch(
+        `/api/products/by-barcode/${encodeURIComponent(term)}`
+      );
+      if (res.ok) product = await res.json();
+      else if (res.status !== 404) throw new Error("lookup " + res.status);
+    } catch (err) {
+      homeEls.pcardName.textContent =
+        "Lookup failed - is the network okay? " + (err.message || "");
+      return;
+    }
+    if (product) {
+      if (pcardLookupCache.size > 40) pcardLookupCache.clear();
+      pcardLookupCache.set(cacheKey, { ts: Date.now(), product });
+    }
   }
   if (!product) {
     homeEls.pcardName.textContent = `No product found for "${term}"`;
@@ -19492,15 +19663,25 @@ async function openProductCard(term) {
   pcardState = st;
   pcardRenderIdentity();
   const isOpenBox = st.sku.toUpperCase().endsWith("-O");
+  // The history call passes what was just resolved, so the server
+  // skips its own second product lookup; the open-box tags ride
+  // light=1 (no second live on-hand fetch). Both were most of the
+  // card's fill time (Nick, 2026-09-28).
+  const histQs =
+    `term=${encodeURIComponent(st.sku || term)}` +
+    (st.sku ? `&sku=${encodeURIComponent(st.sku)}` : "") +
+    (st.barcode ? `&barcode=${encodeURIComponent(st.barcode)}` : "") +
+    (product.shopify_product_id
+      ? `&pid=${encodeURIComponent(product.shopify_product_id)}`
+      : "");
   const [tagsBody, histBody, obBody] = await Promise.all([
     apiFetch(
       `/api/products/tags?${st.sku ? "sku=" + encodeURIComponent(st.sku) : "barcode=" + encodeURIComponent(st.barcode || term)}`
     ).then((r) => (r.ok ? r.json() : null)).catch(() => null),
-    apiFetch(
-      `/api/product-history?term=${encodeURIComponent(st.sku || term)}`
-    ).then((r) => (r.ok ? r.json() : null)).catch(() => null),
+    apiFetch(`/api/product-history?${histQs}`)
+      .then((r) => (r.ok ? r.json() : null)).catch(() => null),
     st.sku && !isOpenBox
-      ? apiFetch(`/api/products/tags?sku=${encodeURIComponent(st.obSku)}`)
+      ? apiFetch(`/api/products/tags?light=1&sku=${encodeURIComponent(st.obSku)}`)
           .then((r) => (r.ok ? r.json() : null)).catch(() => null)
       : null,
   ]);

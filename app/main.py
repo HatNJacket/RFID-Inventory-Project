@@ -1243,11 +1243,16 @@ def product_stock_breakdown(
 def tags_for_product(
     sku: str | None = None,
     barcode: str | None = None,
+    light: bool = False,
     session: Session = Depends(get_session),
 ):
     """All RFID tags on file for a product, matched by exact SKU or barcode.
     (Anchored on SKU/barcode because TELCAN and the Shopify API identify
-    variants differently; these two fields both sources agree on.)"""
+    variants differently; these two fields both sources agree on.)
+
+    light=1 skips the decorations (live on-hand, label lines) - for
+    side lookups like the open-box twin, where the extra Shopify
+    round trip was pure page latency (Nick, 2026-09-28)."""
     if not sku and not barcode:
         raise HTTPException(422, "Provide sku or barcode.")
     conditions = []
@@ -1260,11 +1265,56 @@ def tags_for_product(
         .where(or_(*conditions))
         .order_by(RfidAssignment.assigned_at.desc())
     ).all()
+    # Provenance per tag (Nick, 2026-09-28): what kind of work paired
+    # it. A batch pairing names its batch (receiving vs shelf tagging),
+    # a printed label auto-paired on the printer, the rest were scanned
+    # by hand (station or gun).
+    batches: dict[int, Batch] = {}
+    b_ids = sorted({r.batch_id for r in rows if r.batch_id})
+    if b_ids:
+        batches = {
+            b.id: b
+            for b in session.scalars(
+                select(Batch).where(Batch.id.in_(b_ids))
+            )
+        }
+    printed: set[str] = set()
+    epcs = sorted({(r.rfid_id or "").upper() for r in rows if r.rfid_id})
+    if epcs:
+        printed = {
+            (e or "").upper()
+            for e in session.scalars(
+                select(PrintJob.epc).where(
+                    func.upper(PrintJob.epc).in_(epcs)
+                )
+            )
+            if e
+        }
+
+    def _source(r: RfidAssignment) -> str:
+        b = batches.get(r.batch_id) if r.batch_id else None
+        if b is not None:
+            return (
+                "Receiving" if _is_receiving(b)
+                else f"Batch tagging ({b.bin_name})" if b.bin_name
+                else "Batch tagging"
+            )
+        if (r.rfid_id or "").upper() in printed:
+            return "Printed label"
+        return "Manually scanned"
+
+    assignments = []
+    for r in rows:
+        d = r.as_dict()
+        d["source"] = _source(r)
+        assignments.append(d)
     # Piggybacked flag: both scan stations already make this call right
     # after a product lookup, so the "won't scan" chip needs no extra trip.
     look = (sku or "").strip() or next(
         ((r.sku or "").strip() for r in rows if r.sku), ""
     )
+    if light:
+        return {"count": len(rows), "assignments": assignments}
     # Saved label lines + on-hand ride along: the Scan Station card makes
     # this call right after every lookup, so its label preview and the
     # "Shopify onhand" line need no extra round trips.
@@ -1281,7 +1331,7 @@ def tags_for_product(
             on_hand = None
     return {
         "count": len(rows),
-        "assignments": [r.as_dict() for r in rows],
+        "assignments": assignments,
         "rfid_incompatible": bool(
             look and session.get(RfidIncompatible, look) is not None
         ),
@@ -1943,6 +1993,7 @@ def set_tag_condition(
 def unassign(
     rfid_id: str,
     by: str | None = None,
+    note: str | None = None,
     session: Session = Depends(get_session),
 ):
     row = session.scalar(
@@ -1952,7 +2003,11 @@ def unassign(
         raise HTTPException(404, "No assignment for that RFID tag.")
     # The tie IS the record — deleting it used to erase the fact that it
     # ever existed, so an unlink left no trace anywhere. History keeps the
-    # receipt: which tag, which product, who pulled it.
+    # receipt: which tag, which product, who pulled it - and the
+    # operator's optional note (Nick, 2026-09-28) rides the new-value
+    # slot next to the bin.
+    note = (note or "").strip()[:200]
+    where = row.bin_location or ""
     _log_change(
         session,
         sku=row.sku,
@@ -1960,7 +2015,7 @@ def unassign(
         variant_id=row.shopify_variant_id,
         field="tag-unlinked",
         old=row.rfid_id or "" or None,
-        new=row.bin_location or "" or None,
+        new=(f"{where} · note: {note}" if note else where) or None,
         by=(by or "").strip() or None,
     )
     session.delete(row)
@@ -18700,21 +18755,39 @@ _CHANGE_TYPE_LABELS = {
 
 
 @app.get("/api/product-history", dependencies=[Depends(require_user)])
-def product_history(term: str, session: Session = Depends(get_session)):
+def product_history(
+    term: str,
+    sku: str | None = None,
+    barcode: str | None = None,
+    pid: str | None = None,
+    session: Session = Depends(get_session),
+):
     """One product's complete paper trail, newest first. Every event says
     whether it touched Shopify ("shopify": true) or only this system's
     records — count observations from batches are always local; nothing
-    in the RFID system writes stock numbers to Shopify today."""
+    in the RFID system writes stock numbers to Shopify today.
+
+    sku/barcode/pid, when the caller just resolved the product itself
+    (the landing card does), skip the SECOND full product lookup this
+    endpoint used to run - that lookup could hit the live Shopify API
+    again and was half the card's load time (Nick, 2026-09-28)."""
     term = term.strip()
     if not term:
         raise HTTPException(422, "Provide a SKU or barcode.")
 
     product = None
-    try:
-        product = product_by_barcode(term)
-    except HTTPException as error:
-        if error.status_code != 404:
-            raise
+    if sku or barcode or pid:
+        product = {
+            "sku": (sku or "").strip() or None,
+            "barcode": (barcode or "").strip() or None,
+            "shopify_product_id": (pid or "").strip() or None,
+        }
+    else:
+        try:
+            product = product_by_barcode(term)
+        except HTTPException as error:
+            if error.status_code != 404:
+                raise
     # The preview window's title links here (Nick, 2026-08-26).
     if product is not None:
         product["admin_url"] = _admin_product_url(
