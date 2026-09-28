@@ -81,6 +81,20 @@ barcode. Normal confirm on the trigger. Dummy name format:
    review inbox and internal 1-left marking).
 4. Scan-station thinning + returns-assist.
 5. Draft-listing fix + un-bundling workflow.
+6. Packing scan (planned 2026-09-28, Nick's personal tool, lives as
+   a subset of Audit): C72 PACK toggle POSTs every read to
+   /api/packing/scans; server resolves SKU/EPC and allocates against
+   ShipStation's awaiting-shipment orders (cached, oldest first) →
+   "scanned not fulfilled" / "duplicate" / "not part of shipping",
+   and rows flip to "shipped" live when the hourly sync sees the
+   label. Web: live Packing panel (rows + summary, tap to remove a
+   mis-scan, rows swept after days like LINK). One pack_scans table.
+   KEY: the EPC↔order link makes tag retirement EXACT for anything
+   scanned at packing - no silent-tag inference. Gun answers with
+   good/warn beeps only. OPEN: auto-retire linked tag on shipment
+   confirm (lean yes - internal + undoable); rolling-day list vs
+   explicit sessions (lean rolling); barcode scans allowed but
+   badged "no tag" (no retirement precision).
 
 ## 🏠 Home landing page + sidebar navigation — ✅ BUILT + ON DEV 2026-09-24, ⏳ PROD WAITS FOR NICK'S UPDATE BUNDLE
 
