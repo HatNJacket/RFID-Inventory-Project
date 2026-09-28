@@ -89,19 +89,20 @@ with zipfile.ZipFile(OUT) as z:
     assert "app/main.py" in names, "app/main.py missing -> cannot import app"
     assert "app/__init__.py" in names, "app/__init__.py missing -> no package"
     # Belt and braces: every module app/main.py imports from app must be
-    # in the package, or gunicorn dies on ImportError at boot.
+    # in the package, or gunicorn dies on ImportError at boot. Walked
+    # with ast (2026-09-28): the old regex choked on a parenthesized
+    # multi-line "from app import (...)" and refused a good build.
+    import ast
     with open(os.path.join(ROOT, "app", "main.py"), encoding="utf-8") as fh:
-        main_src = fh.read()
-    import re
-    imported = re.findall(r"^from app import (.+)$", main_src, re.M)
-    for group in imported:
-        for mod in group.split(","):
-            mod = mod.strip()
-            if mod and f"app/{mod}.py" not in names:
-                raise SystemExit(
-                    f"app/{mod}.py is imported by app/main.py but missing "
-                    f"from the package"
-                )
+        tree = ast.parse(fh.read())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "app":
+            for alias in node.names:
+                if f"app/{alias.name}.py" not in names:
+                    raise SystemExit(
+                        f"app/{alias.name}.py is imported by app/main.py "
+                        f"but missing from the package"
+                    )
 
 print(f"OK  {OUT}")
 print(f"    {len(names)} entries, all POSIX paths, app/ package intact")
