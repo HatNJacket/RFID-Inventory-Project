@@ -128,61 +128,18 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
           "agreement", prods["INV-3"]["bin_differs"] is False,
           prods.get("INV-3"))
 
-    # Review inbox: live "Mismatched Bins" entries ride along — the
-    # disagreeing product only, synthetic, with both bins named.
-    rv = cl.get("/api/review-tasks?status=open").json()["tasks"]
-    mms = {t["sku"]: t for t in rv if t["category"] == "bin-mismatch"}
-    check("Review lists the live bin disagreement",
-          "INV-1" in mms and mms["INV-1"]["synthetic"] is True, mms)
-    check("the entry names both shelves",
-          mms.get("INV-1", {}).get("tag_bin") == "K4-1"
-          and mms.get("INV-1", {}).get("shopify_bin") == "J2-2",
-          mms.get("INV-1"))
-    check("agreement and split-shelf agreement stay OUT of Review",
-          "INV-2" not in mms and "INV-3" not in mms, sorted(mms))
-
-    # Notes stick to synthetic entries by their stable string id.
-    r = cl.post("/api/review-notes",
-                json={"task_key": "binmm:INV-1",
-                      "note": "waiting on Steve's restock call",
-                      "created_by": "Nick"})
-    check("a note lands on a synthetic entry", r.status_code == 201, r.text)
-    rv = cl.get("/api/review-tasks?status=open").json()["tasks"]
-    mm1 = next(t for t in rv if t["id"] == "binmm:INV-1")
-    check("the entry carries its notes on the next fetch",
-          len(mm1["notes"]) == 1
-          and mm1["notes"][0]["note"].startswith("waiting on Steve"),
-          mm1.get("notes"))
-
-    # Dismissal suppresses the exact disagreement; History records it
-    # with an undo that deletes the suppression.
-    r = cl.post("/api/review/mismatch-dismissals",
-                json={"sku": "INV-1", "tag_bin": "K4-1",
-                      "shopify_bin": "J2-2", "dismissed_by": "Nick"})
-    check("mismatch dismissal accepted", r.status_code == 201, r.text)
-    did = r.json()["id"]
-    rv = cl.get("/api/review-tasks?status=open").json()["tasks"]
-    check("the dismissed disagreement leaves the inbox",
-          not any(t["id"] == "binmm:INV-1" for t in rv), None)
-    ev = [e for e in cl.get("/api/history").json()["events"]
-          if e["type"] == "review-dismissed"
-          and e.get("undo", {}).get("kind") == "mismatch-undismiss"]
-    check("History carries the dismissal with an un-dismiss undo",
-          len(ev) == 1 and ev[0]["undo"]["dismissal_id"] == did, ev)
-    r = cl.delete(f"/api/review/mismatch-dismissals/{did}")
-    rv = cl.get("/api/review-tasks?status=open").json()["tasks"]
-    check("undoing the dismissal brings the live entry back",
-          r.status_code == 200
-          and any(t["id"] == "binmm:INV-1" for t in rv), r.text)
+    # (The Review "Mismatched Bins" inbox is gone, 2026-09-28 - the
+    # inventory summary's bin_differs flags are the live surface.)
 
     # "Shopify is right": local-only retag moves every tag record.
     r = cl.post("/api/assignments/rebin",
                 json={"sku": "INV-1", "bin": "J2-2", "changed_by": "Nick"})
     check("rebin moves the tag records locally",
           r.status_code == 201 and r.json()["tags_moved"] == 1, r.text)
-    rv = cl.get("/api/review-tasks?status=open").json()["tasks"]
+    prods2 = {p["sku"]: p for p in
+              cl.get("/api/inventory/summary").json()["products"]}
     check("the mismatch clears itself once the records agree",
-          not any(t["id"] == "binmm:INV-1" for t in rv), None)
+          prods2["INV-1"]["bin_differs"] is False, prods2.get("INV-1"))
     ev = [e for e in cl.get("/api/history").json()["events"]
           if e["type"] == "tags-rebinned"]
     check("the retag leaves a History receipt",

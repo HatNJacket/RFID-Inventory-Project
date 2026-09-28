@@ -2,7 +2,7 @@
 source of truth - /api/products/refresh re-reads the exact variant by
 gid and the catalog row, tag records and open-batch rows all follow
 (a tag's physical bin stays its own). Code clashes with another local
-product ask to confirm and file a Review task, never block.
+product ask to confirm and land in History, never block.
 """
 import os, sys, tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(
@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 from app.main import app
 from app.database import get_engine
 from app.models import (BarcodeChange, Batch, BatchItem, BinMapEntry,
-                        ReviewTask, RfidAssignment)
+                        RfidAssignment)
 fails=[]
 def check(l,c,x=""):
     print(("PASS  " if c else "FAIL  ")+l+("" if c else f"  <- {x}"))
@@ -113,11 +113,11 @@ with patch("app.main.oneleft"):
         check("confirmed refresh applies", r.status_code == 200
               and "clash" in r.json()["message"].lower(), r.text[:250])
     with Session(get_engine()) as s:
-        clash = s.scalars(select(ReviewTask).where(
-            ReviewTask.detail.like("Operator-confirmed%"))).all()
-        check("the clash landed as a Review task",
-              len(clash) == 1 and "RIVAL-1" in clash[0].detail,
-              [t.detail[:90] for t in clash])
+        clash = s.scalars(select(BarcodeChange).where(
+            BarcodeChange.changed_field.like("%-clash"))).all()
+        check("the clash landed in History",
+              len(clash) == 1 and "RIVAL-1" in clash[0].new_barcode,
+              [c.new_barcode[:90] for c in clash])
 
     # ---- gone from Shopify --------------------------------------------
     with patch("app.shopify.lookup_variant_by_gid", return_value=None):
@@ -147,9 +147,9 @@ with patch("app.main.oneleft"):
         check("forced sku clash writes + files Review",
               r.status_code == 201, r.text[:200])
     with Session(get_engine()) as s:
-        n = len(s.scalars(select(ReviewTask).where(
-            ReviewTask.detail.like("Operator-confirmed%"))).all())
-        check("second clash task filed", n == 2, n)
+        n = len(s.scalars(select(BarcodeChange).where(
+            BarcodeChange.changed_field.like("%-clash"))).all())
+        check("second clash recorded", n == 2, n)
 
 print()
 if fails:

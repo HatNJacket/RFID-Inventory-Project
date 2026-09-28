@@ -53,7 +53,7 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
     from sqlalchemy.orm import Session as S
     from app.database import get_engine
     from app.models import (BarcodeChange, BinMapEntry, OpenboxReturn,
-                            RetiredTag, ReviewTask, RfidAssignment)
+                            RetiredTag, RfidAssignment)
 
     EPC1 = "0BX0000000000000000000A1"
     EPC2 = "0BX0000000000000000000B2"
@@ -98,11 +98,10 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
           and d["return"]["openbox_sku"] == "OBX1-O", d)
     ret1 = d["return"]["id"]
     with S(get_engine()) as s:
-        task = s.scalar(select(ReviewTask).where(
-            ReviewTask.category == "openbox-return"))
-        check("review task opened", task is not None
-              and task.sku == "OBX1" and task.status == "open",
-              task.as_dict() if task else None)
+        ret_row = s.get(OpenboxReturn, ret1)
+        check("the return watch row is open",
+              ret_row is not None and ret_row.status == "open"
+              and ret_row.sku == "OBX1", ret_row.as_dict() if ret_row else None)
 
     # ---- sweep decoration ---------------------------------------------
     r = cl.post("/api/bins/B1-1/check", json={"epcs": [EPC1]})
@@ -154,9 +153,7 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
         ret = s.get(OpenboxReturn, ret1)
         check("watch closed as adopted", ret.status == "done"
               and ret.resolution == "adopted", ret.as_dict())
-        task = s.get(ReviewTask, ret.task_id)
-        check("task resolved with it", task.status == "resolved",
-              task.as_dict())
+        # (the review inbox is gone - the watch row IS the record)
 
     # ---- YES with a fresh -O label = PEEL -----------------------------
     r = cl.post("/api/openbox-returns", json={

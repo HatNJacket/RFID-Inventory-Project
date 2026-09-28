@@ -1,11 +1,9 @@
 """TC-Planner streamlining round (Nick, 2026-08-26, built NOT deployed):
-- /api/receiving/unprinted: the Update-stock safety net. Stock pushed to
-  Shopify without labels books into the stock order's receiving batch
-  (same rows and problem handling as Print labels) with NO labels
-  queued, and ONE open Review task per batch tracks what's owed; repeat
-  pushes fold into it.
-- /api/review-tasks/{id}/queue-labels: resolution queues the missing
-  labels exactly like a print pass (home bins, no-bin items held out).
+- /api/receiving/unprinted: the Update-stock safety net. Stock pushed
+  to Shopify without labels books into the stock order's receiving
+  batch with NO labels queued; the waiting work shows on the batch
+  itself (the review inbox is gone, 2026-09-28) and the batch's own
+  print pass queues it, no-bin items held out.
 - /api/epc-captures/latest-summary: the bulk-link chip's feed - the
   newest sweep's UNTAGGED count, counted like batch tagging counts a
   sweep."""
@@ -24,8 +22,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.database import get_engine
 from app.models import (BarcodeChange, BatchItem, BinMapEntry, PrintJob,
-                        ReviewNote, ReviewTask, RfidAssignment,
-                        SoldRecord)
+                        RfidAssignment)
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 fails=[]
@@ -62,22 +59,19 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
     bid = out["batch"]["id"]
     check("it counts the labels a print pass WOULD queue",
           out["labels_waiting"] == 3, out)
+    check("the message names the waiting work and the bin-less product",
+          "3 waiting label(s)" in out["message"]
+          and "Binless Thing" in out["message"], out["message"])
     with Session(get_engine()) as s:
         jobs = s.scalars(select(PrintJob).where(
             PrintJob.batch_id == bid)).all()
         check("no labels were actually queued", jobs == [],
               [j.sku for j in jobs])
-        tasks = s.scalars(select(ReviewTask).where(
-            ReviewTask.category == "labels-not-printed",
-            ReviewTask.status == "open")).all()
-        check("one safety-net task tracks the batch and NAMES the "
-              "bin-less product",
-              len(tasks) == 1 and tasks[0].batch_id == bid
-              and "3 label(s)" in tasks[0].detail
-              and "can't print until a bin is assigned" in tasks[0].detail
-              and "Binless Thing" in tasks[0].detail,
-              [t.detail for t in tasks])
-        task_id = tasks[0].id
+        evs = s.scalars(select(BarcodeChange).where(
+            BarcodeChange.changed_field == "labels-not-printed")).all()
+        check("History keeps the safety-net record",
+              len(evs) == 1 and f"#{bid}" in evs[0].new_barcode,
+              [e.new_barcode for e in evs])
 
     # --- 2) a second push folds into the SAME task --------------------
     r = cl.post("/api/receiving/unprinted", json={
@@ -87,41 +81,15 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
           r.json()["batch"]["id"] == bid, r.json()["batch"])
     check("the owed-label count accumulates",
           r.json()["labels_waiting"] == 5, r.json())
-    with Session(get_engine()) as s:
-        tasks = s.scalars(select(ReviewTask).where(
-            ReviewTask.category == "labels-not-printed",
-            ReviewTask.status == "open")).all()
-        check("still exactly one open task",
-              len(tasks) == 1 and tasks[0].id == task_id
-              and "5 label(s)" in tasks[0].detail,
-              [t.detail for t in tasks])
-        notes = s.scalars(select(ReviewNote).where(
-            ReviewNote.task_key == str(task_id))).all()
-        check("each push leaves a unit-count note",
-              len(notes) == 2
-              and any("5 unit(s) across 2 product(s)" in n.note
-                      for n in notes)
-              and any("2 unit(s) across 1 product(s)" in n.note
-                      for n in notes),
-              [n.note for n in notes])
-
-    # --- 3) resolution queues what it CAN; a no-bin product keeps the
-    # task OPEN (Nick, 2026-09-23, SO 968: resolving a fully bin-blocked
-    # task closed it with nothing printed - the debt just vanished) -----
-    r = cl.post("/api/review-tasks/9999/queue-labels",
-                json={"changed_by": "Nick"})
-    check("a missing task 404s", r.status_code == 404, r.text[:100])
-    r = cl.post(f"/api/review-tasks/{task_id}/queue-labels",
-                json={"changed_by": "Nick"})
-    check("resolving queues every printable label",
-          r.status_code == 200 and r.json()["queued"] == 5,
-          r.text[:250])
-    check("no-bin products are named and the task STAYS OPEN",
-          r.json()["resolved"] is False
-          and r.json()["skipped_no_bin"] == ["Binless Thing"]
-          and "NO BIN" in r.json()["message"]
-          and "Binless Thing" in r.json()["message"],
-          r.text[:300])
+    # --- 3) the batch's OWN print pass queues what it can; no-bin
+    # products are held out and named -----------------------------------
+    r = cl.post(f"/api/batches/{bid}/queue-labels",
+                json={"requested_by": "Nick"})
+    d = r.json()
+    check("the print pass queues every printable label",
+          r.status_code in (200, 201) and d["count"] == 5, r.text[:250])
+    check("no-bin products are held out and named",
+          d["skipped_no_bin"] == ["Binless Thing"], r.text[:250])
     with Session(get_engine()) as s:
         jobs = s.scalars(select(PrintJob).where(
             PrintJob.batch_id == bid)).all()
@@ -129,57 +97,30 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
               len(jobs) == 5 and all(j.bin_location == "I5-1"
                                      for j in jobs),
               [(j.sku, j.bin_location) for j in jobs])
-        t = s.get(ReviewTask, task_id)
-        check("the open task's detail tells the operator what to do",
-              t.status == "open" and "Binless Thing" in t.detail
-              and "bin chip" in t.detail, (t.status, t.detail))
-    r = cl.post(f"/api/review-tasks/{task_id}/queue-labels",
-                json={"changed_by": "Nick"})
-    check("a second press double-queues nothing and stays open",
-          r.status_code == 200 and r.json()["queued"] == 0
-          and r.json()["resolved"] is False, r.text[:250])
-    # Assign the bin (exactly what /api/bin-updates propagates onto
-    # open batches' item snapshots), then resolve for real.
+    # Assign the bin, then a second pass queues the remainder.
     with Session(get_engine()) as s:
         for it in s.scalars(select(BatchItem).where(
                 BatchItem.batch_id == bid)):
             if it.sku == "NOBIN-2":
                 it.bin_location = "J9-9"
         s.commit()
-    r = cl.post(f"/api/review-tasks/{task_id}/queue-labels",
-                json={"changed_by": "Nick"})
-    check("with the bin assigned, resolve queues the rest and closes",
-          r.status_code == 200 and r.json()["queued"] == 2
-          and r.json()["resolved"] is True, r.text[:250])
+    r = cl.post(f"/api/batches/{bid}/queue-labels",
+                json={"requested_by": "Nick"})
+    check("with the bin assigned, the next pass queues the rest",
+          r.status_code in (200, 201) and r.json()["count"] == 2,
+          r.text[:250])
     with Session(get_engine()) as s:
-        t = s.get(ReviewTask, task_id)
-        check("the task resolved with the queue receipt",
-              t.status == "resolved" and t.resolved_by == "Nick"
-              and "2 label(s) queued" in (t.resolution_note or ""),
-              (t.status, t.resolution_note))
         jobs = s.scalars(select(PrintJob).where(
             PrintJob.batch_id == bid)).all()
         check("the once-binless labels queued to the new bin",
               sorted(j.bin_location for j in jobs
                      if j.sku == "NOBIN-2") == ["J9-9", "J9-9"],
               [(j.sku, j.bin_location) for j in jobs])
-    r = cl.post(f"/api/review-tasks/{task_id}/queue-labels",
-                json={"changed_by": "Nick"})
-    check("a resolved task refuses a second queue",
-          r.status_code == 409, r.text[:120])
 
     # --- 4) a later label-less push files a FRESH task ----------------
     cl.post("/api/receiving/unprinted", json={
         "items": [{"sku": "AG-KIT", "quantity": 1}],
         "requested_by": "Nick", "reference": "SO 900 · AG"})
-    with Session(get_engine()) as s:
-        open_now = s.scalars(select(ReviewTask).where(
-            ReviewTask.category == "labels-not-printed",
-            ReviewTask.status == "open")).all()
-        check("after resolution a new push opens a new task",
-              len(open_now) == 1 and open_now[0].id != task_id,
-              [t.id for t in open_now])
-
     # --- 5) the bulk-link chip's sweep summary ------------------------
     r = cl.get("/api/epc-captures/latest-summary").json()
     check("no sweep yet reads exists=False",
@@ -200,64 +141,6 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
           r)
     check("the summary carries freshness", r["age_seconds"] is not None
           and r["age_seconds"] < 60, r.get("age_seconds"))
-
-    # --- 6) "the unlabelled units were sold" (Nick, 2026-09-15) -------
-    # Products leave (sold or set aside) before anyone labels them: the
-    # OTHER resolution writes the owed labels off instead of printing -
-    # counts drop to what was labelled, matching recorded sales are
-    # consumed, History gets a receipt per SKU.
-    with Session(get_engine()) as s:
-        open_t = s.scalars(select(ReviewTask).where(
-            ReviewTask.category == "labels-not-printed",
-            ReviewTask.status == "open")).first()
-        sold_task_id = open_t.id
-        s.add(SoldRecord(order_id="gid://o/sold1", order_name="#900",
-                         sku="AG-KIT", quantity=1))
-        s.commit()
-    r = cl.post(f"/api/review-tasks/{sold_task_id}/unprinted-sold",
-                json={"changed_by": "Nick"})
-    d = r.json()
-    # NOBIN-2's boxes are covered by the labels queued in step 3, so
-    # only AG-KIT's one unlabelled unit is owed here.
-    check("sold write-off answers with the write-off list",
-          r.status_code == 200
-          and sorted((w["sku"], w["units"]) for w in d["written_off"])
-          == [("AG-KIT", 1)], r.text[:300])
-    check("matching recorded sales consumed (AG-KIT only had one)",
-          d["sales_consumed"] == 1
-          and "1 recorded sale(s) consumed" in d["message"],
-          str(d)[:300])
-    with Session(get_engine()) as s:
-        items = {(i.sku or ""): i for i in s.scalars(
-            select(BatchItem).where(BatchItem.batch_id == bid))}
-        check("counts drop to what was actually labelled",
-              items["AG-KIT"].qty_scanned == 5
-              and items["NOBIN-2"].qty_scanned == 2,
-              [(k, v.qty_scanned) for k, v in items.items()])
-        sr = s.scalars(select(SoldRecord).where(
-            SoldRecord.sku == "AG-KIT")).first()
-        check("the ledger row is retired", sr.retired == 1, sr.retired)
-        t = s.get(ReviewTask, sold_task_id)
-        check("task resolved with the write-off story",
-              t.status == "resolved"
-              and "sold/set aside" in (t.resolution_note or "")
-              and "1x AG-KIT" in t.resolution_note,
-              (t.status, t.resolution_note))
-        evs = s.scalars(select(BarcodeChange).where(
-            BarcodeChange.changed_field == "unprinted-sold")).all()
-        check("History receipt per written-off SKU",
-              sorted(e.sku for e in evs) == ["AG-KIT"]
-              and all("unlabelled unit(s) sold" in e.new_barcode
-                      for e in evs),
-              [(e.sku, e.new_barcode) for e in evs])
-    r = cl.post(f"/api/review-tasks/{sold_task_id}/unprinted-sold",
-                json={"changed_by": "Nick"})
-    check("a resolved task refuses a second write-off",
-          r.status_code == 409, r.text[:120])
-    r = cl.get("/api/product-history?term=AG-KIT")
-    check("the receipt reads in product history",
-          any(e["type"] == "unprinted-sold"
-              for e in r.json()["events"]), r.text[:300])
 
 print()
 print("FAILED: "+", ".join(fails) if fails else "ALL CHECKS PASSED")

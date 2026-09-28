@@ -173,23 +173,12 @@ with patch("app.shopify.lookup_barcode", side_effect=look), \
           r.status_code == 200, r.text)
     done = r.json()
     check("batch is done", done["batch"]["status"] == "done", done["batch"])
-    tasks = done["review_tasks"]
-    cats = sorted(t["category"] for t in tasks)
-    bin_checks = [t for t in tasks if t["category"] == "bin-check"]
-    check("one bin-check per bin that received stock (I1-5, J2-3, K3-1)",
-          sorted(t["detail"].split(":")[0] for t in bin_checks)
-          == ["Bin I1-5", "Bin J2-3", "Bin K3-1"], bin_checks)
-    check("box counts ride the bin-check details",
-          any("3 box(es)" in t["detail"] and "I1-5" in t["detail"]
-              for t in bin_checks), bin_checks)
-    # Category retired (Nick, 2026-09-02): printed-but-unused labels
-    # are normal; receiving leftovers live on held vendor strips.
-    check("no pairing-incomplete task any more",
-          "pairing-incomplete" not in cats, cats)
-    check("the unknown barcode flags as unresolved-barcode",
-          "unresolved-barcode" in cats, cats)
-    check("no shelf-count inventory-check tasks from receiving",
-          "inventory-check" not in cats, cats)
+    # The review inbox is gone (2026-09-28): the audit queue owns the
+    # follow-up; the unknown barcode leaves a History record.
+    h = cl.get("/api/history").json()["events"]
+    check("the unknown barcode records as unresolved-barcode in History",
+          any(e["type"] == "unresolved-barcode" for e in h),
+          [e["type"] for e in h][:8])
     check("bins_touched sums boxes per bin",
           done["bins_touched"] == {"I1-5": 3, "J2-3": 1, "K3-1": 1},
           done["bins_touched"])
@@ -204,24 +193,6 @@ with patch("app.shopify.lookup_barcode", side_effect=look), \
           not any(e["type"] in ("batch-started","batch-completed")
                   and f"#{bid}" in (e.get("detail") or "")
                   for e in hist.get("events", [])), None)
-
-    # ---- manual mark-for-check ------------------------------------------
-    r = cl.post("/api/review/bin-checks",
-                json={"bins":["Z9-9"],"created_by":"Nick","note":"dusty"})
-    check("manual bin marks file a bin-check task",
-          r.status_code == 201 and r.json()["count"] == 1, r.text)
-    r = cl.post("/api/review/bin-checks",
-                json={"bins":["I1-5"],"created_by":"Nick"})
-    check("a bin with an OPEN check isn't double-filed",
-          r.status_code == 201 and r.json()["count"] == 0
-          and r.json()["already_open"] == 1, r.text)
-    r = cl.post("/api/review/bin-checks",
-                json={"rack":"I1","created_by":"Nick"})
-    check("rack prefix expands via the bin map, minus open dupes",
-          r.status_code == 201 and r.json()["count"] == 1
-          and "I1-2" in r.json()["tasks"][0]["detail"], r.text)
-    r = cl.post("/api/review/bin-checks", json={"created_by":"Nick"})
-    check("no bins and no rack is refused", r.status_code == 422, r.text)
 
 print()
 print("FAILED: "+", ".join(fails) if fails else "ALL CHECKS PASSED")

@@ -19,7 +19,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 from app.main import app
 from app.database import get_engine
-from app.models import (AuditFind, BackorderDebt, Batch, BinMapEntry,
+from app.models import (AuditFind, Batch, BinMapEntry,
                         PrintJob, RetiredTag, RfidAssignment)
 from sqlalchemy.orm import Session
 fails=[]
@@ -61,8 +61,6 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
         s.add(RetiredTag(rfid_id="EPCGHOST", sku="BBB-1",
                          product_title="Beta", kind="presumed-sold",
                          retired_by="tester"))
-        # Backorder debt raises BBB's shelf expectation.
-        s.add(BackorderDebt(sku="BBB-1", units=1, source="test"))
         # A printed-label EPC nobody paired (answers as productless).
         s.add(PrintJob(epc="EPCLABEL", status="done", sku="BBB-1",
                        product_title="Beta", shopify_variant_id="t:B",
@@ -101,8 +99,6 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
           and rows["BBB-1"]["ghosts"][0]["epc"] == "EPCGHOST"
           and rows["BBB-1"]["ghosts"][0]["kind"] == "presumed-sold",
           str(rows.get("BBB-1")))
-    check("backorder debt rides the product row",
-          rows["BBB-1"]["backorder_debt"] == 1, str(rows.get("BBB-1")))
     check("unavailable stock rides the row too (over-count explainer)",
           rows["BBB-1"]["unavailable"] == 1
           and rows["AAA-1"]["unavailable"] == 0,

@@ -2,7 +2,6 @@
 
 The ledger (rfid_sold_ledger) records fulfilled-order lines for tracked
 SKUs; expected tags = live on-hand + sold-unretired. The sync files ONE
-tag-onhand-mismatch review task per SKU whose numbers don't add up and
 closes it again itself; audits get MARK SOLD when a sweep's silence is
 fully explained by sales. Shopify is never written to."""
 import os, sys, tempfile
@@ -21,7 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.main import app
 from app.database import get_engine
-from app.models import (BarcodeChange, BinMapEntry, ReviewTask,
+from app.models import (BarcodeChange, BinMapEntry,
                         RfidAssignment, SoldRecord)
 from app import orders_sync
 fails=[]
@@ -70,7 +69,6 @@ with TestClient(app) as cl:
     check("run reports ok", r.get("ok") is True, r)
     check("untracked SKU ignored, tracked recorded",
           r.get("recorded")==2, r)
-    check("one mismatch task opened", r.get("tasks_opened")==1, r)
 
     with Session(get_engine()) as s:
         rows = s.scalars(select(SoldRecord)).all()
@@ -85,25 +83,8 @@ with TestClient(app) as cl:
     with Session(get_engine()) as s:
         check("no duplicate ledger rows",
               len(s.scalars(select(SoldRecord)).all())==2, "")
-        open_tasks = s.scalars(select(ReviewTask).where(
-            ReviewTask.category=="inventory-check",
-            ReviewTask.status=="open")).all()
-        check("still exactly one open mismatch task",
-              len(open_tasks)==1 and open_tasks[0].sku.upper()=="CAM-2",
-              [(t.sku,t.status) for t in open_tasks])
-        check("task explains the arithmetic",
-              "on-hand 2" in open_tasks[0].detail
-              and "2 sold" in open_tasks[0].detail, open_tasks[0].detail)
-
-    # The task closes itself once the world adds up (found a lost tag).
-    with Session(get_engine()) as s:
-        tag(s,"BB04","CAM-2","Astro Cam","B2-2"); s.commit()
-    cl.post("/api/orders-sync/run")
-    with Session(get_engine()) as s:
-        t = s.scalars(select(ReviewTask).where(
-            ReviewTask.category=="inventory-check")).first()
-        check("mismatch task auto-resolved when numbers agree",
-              t.status=="resolved" and t.resolved_by=="orders-sync", t.status)
+        # (Mismatch tasks are gone since the 2026-09-28 scope reset -
+        # the audit queue carries disagreements now.)
 
     # Bin audit: sweep hears AA01+AA02 but not AA03; 1 sold -> MARK SOLD
     # material: silent_epcs named, sold_unretired attached.

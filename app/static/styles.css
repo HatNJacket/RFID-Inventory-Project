@@ -4240,3 +4240,14 @@ button.ph-order:hover { border-color: var(--accent); }
 .labtuner input[type="range"] { flex: 1; }
 .labtuner .val { flex: 0 0 34px; text-align: right; font-family: var(--mono); }
 .labtuner .out { font-family: var(--mono); font-size: 10px; color: var(--ink-dim); user-select: all; }
+
+/* ============ scope-reset build 2 (2026-09-28) ============ */
+/* un-bundle form on the Boxes & tags pane */
+.unbundle { margin-top: 14px; }
+.unbundle__row { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 13px; }
+.unbundle__row input {
+  width: 64px; border: 1px solid var(--line); border-radius: 7px;
+  background: var(--card); color: var(--ink); font: inherit;
+  font-size: 13px; padding: 4px 7px;
+}
+.unbundle #unbundle-go { margin-top: 8px; }

@@ -14,11 +14,14 @@ change log; commit messages here are written to be read later.
 
 - **NEVER auto-write inventory counts** to Shopify. On-hand writes are
   operator-confirmed, logged with undo, and gated by `SHOPIFY_WRITE_MODE`
-  (comma list; prod enables them feature by feature). Raises are offered
-  freely; LOWERING only as far as recorded sales cover it, or - beyond
-  sales - for products with a completed batch tagging on file (never a
-  first tagging; Nick, 2026-09-15). On-hand *sync* is blocked until the
-  whole store is batch tagged.
+  (ONE switch since 2026-09-28: "disabled"/empty = off, anything else =
+  on; old comma lists read as on). Audits are the source of truth
+  (scope reset, 2026-09-28): raises and lowers are offered from the
+  audited count, and the one lowering guardrail left is the
+  FIRST-TAGGING ban (a product that never completed a batch tagging
+  lowers only as far as recorded sales cover; Nick kept this rule).
+  On-hand *sync* stays blocked - writes happen at operator
+  confirmation only, never in the background.
 - **Deploy ONLY via `py dev/deploy.py`** (runs mkdeploy's Python
   zipfile build, deploys prod AND the dev twin, then mirrors prod's
   data into dev - dev must always duplicate prod, Nick 2026-09-23).
@@ -56,8 +59,9 @@ change log; commit messages here are written to be read later.
   review, history, on-hand). `app/models.py` — schema (Azure SQL prod,
   sqlite for tests; new columns need a one-off ALTER script for prod).
 - `app/static/app.js` + `app/templates/index.html` — the whole web
-  terminal (vanilla JS, tabs: Scan / Batch / Inventory / Queue / Review /
-  Audits / History). Event chips: `EVENT_META` in app.js.
+  terminal (vanilla JS, tabs: Home / Scan / Batch / Inventory / Queue /
+  Audits / History / Settings; the Review inbox was removed in the
+  2026-09-28 scope reset). Event chips: `EVENT_META` in app.js.
 - `c72-app/` — Android source (one MainActivity). Build:
   `py c72-app/build.py` → signed APK lands in `app/static/tc-rfid-sweep.apk`
   (served to the gun). Bump `versionCode`/`versionName` in

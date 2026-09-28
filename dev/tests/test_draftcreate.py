@@ -54,8 +54,9 @@ with patch("app.main.oneleft"), \
         "sku": "NEW-2", "title": "Big Set Box 2", "ingredient": True,
         "worker": "C72-test"})
     check("ingredient draft created", r.status_code == 201, r.text[:200])
-    check("title wears INGREDIENT",
-          made_calls[-1][0] == "INGREDIENT Big Set Box 2", made_calls)
+    check("title wears the settled dummy format (suffix-derived main)",
+          made_calls[-1][0] == "NEW-2 DRAFT BUNDLE COMPONENT -> NEW",
+          made_calls)
     check("message names the bundle purpose",
           "INGREDIENT" in r.json().get("message", ""), r.json())
 
@@ -77,7 +78,7 @@ with patch("app.main.oneleft"), \
     check("two draft-created history events", len(ev) == 2, h[:4])
     check("event carries sku + title",
           ev and ev[0]["sku"] == "NEW-2"
-          and "INGREDIENT" in (ev[0].get("title") or ""), ev)
+          and "DRAFT BUNDLE COMPONENT" in (ev[0].get("title") or ""), ev)
 
 print()
 if fails:

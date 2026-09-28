@@ -115,35 +115,6 @@ with patch("app.shopify.lookup_barcode", side_effect=fake_lookup), \
           and d["sold_tags"][0]["epc"] == "AA000000000000000000AA02"
           and d["sold_tags"][0]["retired_at"], d.get("sold_tags"))
 
-    # 3) Zero live tags = no tag-onhand-mismatch (the ANTI-DEW case:
-    # on-hand 0, one old unretired ledger row, nothing tagged).
-    with Session(get_engine()) as s:
-        s.add(SoldRecord(order_id="o1", order_name="#1", sku="ANTI-DEW",
-                         quantity=1,
-                         fulfilled_at=datetime.now(timezone.utc)))
-        s.commit()
-        out = orders_sync.refresh_mismatch_tasks(s)
-        open_now = s.scalars(select(ReviewTask).where(
-            ReviewTask.category == "inventory-check",
-            ReviewTask.status == "open")).all()
-    check("an untagged SKU with old sales files NO mismatch task",
-          not any((t.sku or "").upper() == "ANTI-DEW" for t in open_now),
-          [(t.sku, t.detail[:60]) for t in open_now])
-
-    # An existing stale task for a now-untagged SKU auto-closes.
-    with Session(get_engine()) as s:
-        s.add(ReviewTask(category="inventory-check", sku="ANTI-DEW",
-                         detail="stale", created_by="orders-sync"))
-        s.commit()
-        orders_sync.refresh_mismatch_tasks(s)
-        stale = s.scalar(select(ReviewTask).where(
-            ReviewTask.sku == "ANTI-DEW",
-            ReviewTask.category == "inventory-check"))
-        check("a stale mismatch task for an untagged SKU auto-closes",
-              stale.status == "resolved"
-              and "No live tags" in (stale.resolution_note or ""),
-              (stale.status, stale.resolution_note))
-
     # 4) Wrong-bin accidental scan, zeroed: asserts nothing. Batch on
     # P1-1 counts ALPHA (2 of 2 expected); FOREIGN-1 (home Z9-9) gets
     # scanned by mistake and decremented to 0.
@@ -164,34 +135,12 @@ with patch("app.shopify.lookup_barcode", side_effect=fake_lookup), \
     done = cl.post(f"/api/batches/{bid}/complete",
                    json={"finalize": True, "created_by": "Nick"})
     check("complete succeeds", done.status_code == 200, done.text[:200])
-    tasks = cl.get("/api/review-tasks?status=open").json()["tasks"]
-    check("no inventory check filed against the foreign product",
-          not any(t["sku"] == "FOREIGN-1" for t in tasks),
-          [(t["sku"], t["category"]) for t in tasks])
-
-    # 5) Manual recount on an inventory-check task.
-    with Session(get_engine()) as s:
-        s.add(ReviewTask(category="inventory-check", sku="ALPHA-1",
-                         product_title="Alpha Adapter",
-                         detail="Bin P1-1: 0 unit(s) counted but Shopify "
-                                "on-hand is 1. Recommend a product check.",
-                         created_by="batch"))
-        s.commit()
-        tid = s.scalars(select(ReviewTask).where(
-            ReviewTask.category == "inventory-check")).all()[-1].id
-    r = cl.post(f"/api/review-tasks/{tid}/recount",
-                json={"count": 1, "changed_by": "Nick"})
-    out = r.json()
-    check("manual recount rewrites the counted figure",
-          r.status_code == 200 and "1 unit(s) counted" in out["task"]["detail"]
-          and out["old_count"] == 0, out)
     hist = cl.get("/api/history").json()["events"]
-    ev = next((e for e in hist if e["type"] == "manual-recount"), None)
-    check("the recount is logged to History",
-          ev is not None and "0 → 1" in (ev["detail"] or ""), ev)
-    r = cl.post(f"/api/review-tasks/{tid}/recount", json={"count": 3})
-    check("recounting an open task again keeps working",
-          r.status_code == 200 and r.json()["old_count"] == 1, r.text[:200])
+    check("no could-not-scan record filed against the foreign product",
+          not any(e["type"] == "could-not-scan"
+                  and (e.get("sku") or "") == "FOREIGN-1"
+                  for e in hist),
+          [e["type"] for e in hist][:8])
 
 print()
 print("FAILED: "+", ".join(fails) if fails else "ALL CHECKS PASSED")

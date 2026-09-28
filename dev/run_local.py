@@ -24,7 +24,7 @@ from app.main import app  # noqa: E402  (env must be set first)
 from app.database import get_engine  # noqa: E402
 from app.models import (  # noqa: E402
     AuditFind, Base, Batch, BatchItem, BinMapEntry, EpcCapture,
-    PrintJob, RetiredTag, ReviewTask, RfidAssignment, RfidIncompatible,
+    PrintJob, RetiredTag, RfidAssignment, RfidIncompatible,
 )
 from sqlalchemy.orm import Session  # noqa: E402
 
@@ -87,25 +87,6 @@ with Session(get_engine()) as s:
     s.add_all([normal, flagged, surplus, surplus2, pretag, mis])
     # Recommended checks with different mismatch sizes, for the sort.
     s.add_all([
-        ReviewTask(category="inventory-check", sku="SMALL-1",
-                   product_title="Small mismatch",
-                   detail="Bin A1-1: 3 unit(s) counted but Shopify "
-                          "on-hand is 4. Recommend a product check."),
-        ReviewTask(category="inventory-check", sku="BIG-1",
-                   product_title="Big mismatch",
-                   detail="Bin B2-2: 1 unit(s) counted but Shopify "
-                          "on-hand is 9. Recommend a product check."),
-        ReviewTask(category="inventory-check", sku="MID-1",
-                   product_title="Middle mismatch",
-                   detail="Bin C3-3: 8 unit(s) counted but Shopify "
-                          "on-hand is 5. Recommend a product check."),
-        # Sold-out shortcut demo (Nick, 2026-08-26): fake on-hand 0 with
-        # 2 live tags -> the resolve window offers Mark-all-presumed-sold.
-        ReviewTask(category="tag-onhand-mismatch", sku="SOLDOUT-1",
-                   product_title="Askar 71F (sold-out demo)",
-                   detail="RFID tags stand for 2 unit(s) but the "
-                          "expected count is 0 (Shopify on-hand 0). "
-                          "Recommend a bin audit."),
     ])
     s.add(RfidIncompatible(sku="OPTO-LPRO", set_by="Steve"))
     # A plain collecting batch on T2-1 (was the box-set demo until
@@ -384,22 +365,6 @@ with Session(get_engine()) as s:
                   shopify_variant_id="t:U2", qty_scanned=2,
                   expected_qty=2, bin_location="I5-2"),
     ])
-    unprinted_task = ReviewTask(
-        category="labels-not-printed",
-        product_title="TC-Planner · SO 940 · AirGradient",
-        detail=("TC-Planner · SO 940 · AirGradient: stock was updated in "
-                f"Shopify without printing labels. 5 label(s) are waiting "
-                f"on receiving batch #{ub.id}. Resolve to queue them - "
-                "the normal receiving print and pair flow takes over."),
-        batch_id=ub.id, created_by="Nick",
-    )
-    s.add(unprinted_task)
-    s.flush()
-    from app.models import ReviewNote
-    s.add(ReviewNote(task_key=str(unprinted_task.id),
-                     note="Stock push without labels: 5 unit(s) across "
-                          "2 product(s).",
-                     created_by="Nick"))
     # --- Sold-out shortcut demo tags (fake on-hand for SOLDOUT-1 is 0) --
     for epc in ("50FD0000000000000000000A", "50FD0000000000000000000B"):
         s.add(RfidAssignment(rfid_id=epc, shopify_variant_id="t:SO",
@@ -428,17 +393,6 @@ with Session(get_engine()) as s:
                   shopify_variant_id="t:SD", qty_scanned=1,
                   expected_qty=1, bin_location="Z8-8"),
     ])
-    # --- Backorder Noted history demo (undo = clear the note) -----------
-    from app.models import BackorderDebt
-    bd = BackorderDebt(sku="ZWO FL-HLDR-M54x15", units=1,
-                       source="receiving · TC-Planner · SO 935 · ZWO")
-    s.add(bd)
-    s.flush()
-    s.add(BarcodeChange(sku="ZWO FL-HLDR-M54x15",
-                        product_title="ZWO Filter Holder M54x15",
-                        changed_field="backorder-debt",
-                        old_barcode=str(bd.id), new_barcode="1",
-                        changed_by="TC-Planner · SO 935 · ZWO"))
     s.commit()
     print(f"seeded batch {b.id} on T1-1 + receiving batch {rb.id} "
           f"+ audit data")

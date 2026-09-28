@@ -294,45 +294,6 @@ class ReleasedTag(Base):
         }
 
 
-class BackorderDebt(Base):
-    """Units Shopify's on-hand runs BEHIND the shelf because stock went
-    negative before a delivery arrived (Nick, 2026-08-26, AirGradient:
-    on-hand sat at -1 for a customer backorder, 48 boxes arrived, so
-    Shopify counts 47 while 48 tagged boxes stand on the shelf — and the
-    daily tag arithmetic would flag that one unit forever). Noted
-    automatically when a receiving batch closes, capped at the committed
-    (promised-to-customers) units so a plain mistag can never hide here.
-    The expected-tag math adds uncleared rows; any operator on-hand
-    write supersedes them (that write IS the fresh shelf truth), and
-    History's Backorder Noted event can clear one by hand. New table
-    needs dev/alter_add_backorder_debt.py on prod."""
-
-    __tablename__ = "rfid_backorder_debt"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    sku: Mapped[str] = mapped_column(String(100), index=True, nullable=False)
-    units: Mapped[int] = mapped_column(Integer, nullable=False)
-    noted_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-    source: Mapped[str | None] = mapped_column(String(120))
-    cleared_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    cleared_by: Mapped[str | None] = mapped_column(String(100))
-
-    def as_dict(self) -> dict:
-        return {
-            "id": self.id,
-            "sku": self.sku,
-            "units": self.units,
-            "noted_at": self.noted_at.isoformat() if self.noted_at else None,
-            "source": self.source,
-            "cleared_at": (
-                self.cleared_at.isoformat() if self.cleared_at else None
-            ),
-            "cleared_by": self.cleared_by,
-        }
-
-
 class AuditFind(Base):
     """A tagless box barcode-scanned during an audit walk (Nick,
     2026-09-01). A find is a WORK ITEM, never audit evidence: it counts
@@ -1533,25 +1494,6 @@ class ReviewNote(Base):
         }
 
 
-class MismatchDismissal(Base):
-    """A dismissed live bin-mismatch. The synthetic entries have no row to
-    mark dismissed, so the exact disagreement is recorded instead: the
-    entry stays suppressed while (sku, tags' bin, Shopify's bin) all still
-    match — if either shelf changes, that's a NEW disagreement and it
-    reappears. Undoable from History (deleting the row un-dismisses)."""
-
-    __tablename__ = "rfid_mismatch_dismissals"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    sku: Mapped[str] = mapped_column(String(100), index=True, nullable=False)
-    tag_bin: Mapped[str] = mapped_column(String(100), nullable=False)
-    shopify_bin: Mapped[str] = mapped_column(String(255), nullable=False)
-    dismissed_by: Mapped[str | None] = mapped_column(String(100))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
-    )
-
-
 class LocateQueueEntry(Base):
     """A product queued for a physical tag hunt. Added from any product
     preview on the web terminal (Review is the usual source — mismatched
@@ -1818,6 +1760,55 @@ class ReviewTask(Base):
                 self.resolved_at.isoformat() if self.resolved_at else None
             ),
             "resolution_note": self.resolution_note,
+        }
+
+
+class PackScan(Base):
+    """One box scanned at the packing desk (phase 6, 2026-09-28):
+    allocated against ShipStation's awaiting-shipment orders, flipped
+    to shipped when the hourly sync sees the label - at which point an
+    RFID-scanned row retires its EXACT tag (no last-heard inference).
+    A working surface, not history: rows sweep after a few days, and
+    the retirements they trigger do their own History logging."""
+
+    __tablename__ = "rfid_pack_scans"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(200), nullable=False)
+    epc: Mapped[str | None] = mapped_column(String(128), index=True)
+    sku: Mapped[str | None] = mapped_column(String(100), index=True)
+    product_title: Mapped[str | None] = mapped_column(String(255))
+    # allocated / duplicate / not-in-shipping / unknown / shipped
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    ss_order_id: Mapped[str | None] = mapped_column(String(32), index=True)
+    order_number: Mapped[str | None] = mapped_column(String(32))
+    scanned_by: Mapped[str | None] = mapped_column(String(100))
+    device: Mapped[str | None] = mapped_column(String(100))
+    scanned_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    shipped_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+
+    def as_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "code": self.code,
+            "epc": self.epc,
+            "sku": self.sku,
+            "product_title": self.product_title,
+            "status": self.status,
+            "ss_order_id": self.ss_order_id,
+            "order_number": self.order_number,
+            "scanned_by": self.scanned_by,
+            "device": self.device,
+            "scanned_at": (
+                self.scanned_at.isoformat() if self.scanned_at else None
+            ),
+            "shipped_at": (
+                self.shipped_at.isoformat() if self.shipped_at else None
+            ),
         }
 
 

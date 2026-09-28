@@ -73,6 +73,31 @@ box 1 is confirmed with that pattern by hand, even if the scan was a
 barcode. Normal confirm on the trigger. Dummy name format:
 "[INGREDIENT SKU] DRAFT BUNDLE COMPONENT -> [MAIN SKU]".
 
+**BUILD STATUS (2026-09-28, one session, dev-only): phases 1-3, 5, 6
+BUILT; phase 4 delivered light (see note).** Detail in the two
+scope-reset commits. Notes that survive the session:
+- Held-strip removal kept LabelDismissal + the write-off flows on
+  purpose: they silence blank/test labels in sweeps and power the
+  unlinked hunt - removing them would resurface every discarded label
+  forever.
+- ReviewTask/ReviewNote MODELS stay read-only so History keeps every
+  past event; all endpoints, creation sites and UI are gone. The
+  mismatch/dupe checkers in orders_sync went with them.
+- Phase 4 judgment call: the scan station kept its daily-driver flows
+  (LINK, case/set/alias/edit boxes, print panel) and gained a
+  one-click "Product card" jump; the WHOLESALE replacement of its
+  legacy product panel by the card is deferred to the C72-update
+  session - breaking the daily station mid-queue was the wrong risk.
+  Nick can overrule.
+- Run dev/backfill_last_heard.py once against each DB so old sweeps
+  seed last_heard_at (consumers already fall back to assigned_at).
+- C72-update cleanup list: remove the tuning/debug/commands stubs,
+  the companions_skipped/companions_heard [] response keys, the gun's
+  sort-handoff sender, multibox_ok field; add the PACK toggle
+  (/api/packing/scans) and the draft dialog's two autofilled boxes.
+- The audit threshold lives in AppSetting "audit_threshold_days"
+  (default 14); no Settings UI yet - say the word.
+
 **Build order (one session per phase, Nick fires each):**
 1. Removals (independent; shrink everything after).
 2. last_heard_at + last_audited_at dataset (can run parallel with 1;

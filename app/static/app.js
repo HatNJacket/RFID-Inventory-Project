@@ -75,6 +75,7 @@ const el = {
   prefixSave: document.getElementById("prefix-save"),
   binInput: document.getElementById("bin-input"),
   productEdit: document.getElementById("product-edit"),
+  productCardJump: document.getElementById("product-card-jump"),
   setbox: document.getElementById("setbox"),
   setScanInput: document.getElementById("set-scan-input"),
   setboxChoose: document.getElementById("setbox-choose"),
@@ -435,6 +436,9 @@ const EVENT_META = {
   oneleft: ["1-left Check", "#b07d00"],
   "audit-session": ["Audit Session", "#0e7a8a"],
   "bin-audited": ["Audit Done", "#0b6e99"],
+  "barcode-clash": ["Barcode Clash", "#8e1f0b"],
+  "sku-clash": ["SKU Clash", "#8e1f0b"],
+  "unbundled": ["Un-Bundled", "#6f42c1"],
   multibox: ["Multi-box", "#0b6e99"],
   "mislabel-flag": ["Mis-label Flag", "#b07d00"],
   "unavailable-move": ["Set Aside", "#6b21a8"],
@@ -1875,6 +1879,12 @@ function openEditbox() {
   el.linkbox.hidden = false;
 }
 
+el.productCardJump.addEventListener("click", () => {
+  const p = pendingProduct;
+  if (!p) return;
+  goTab("home");
+  openProductCard(p.sku || p.barcode || "");
+});
 el.productEdit.addEventListener("click", openEditbox);
 
 // --- Edit-window rows: inputs, ✕ resets, dynamic-grey saves ------------------
@@ -10112,7 +10122,6 @@ bEl.complete.addEventListener("click", async () => {
       created_by: operatorEl.value || null,
       finalize: true,
     });
-    const n = data.review_tasks.length;
     batch = null;
     batchItems = [];
     pairHistory = [];
@@ -10120,9 +10129,7 @@ bEl.complete.addEventListener("click", async () => {
     stopBatchLive();
     enterBatchTab();
     setBatchResult(
-      n
-        ? `Batch done. ${n} item(s) sent to Review (count/pairing follow-ups).`
-        : "Batch done - no follow-ups. Clean bin ✓",
+      "Batch done ✓ - any count mismatch shows on the audit queue.",
       "ok"
     );
   } catch (err) {
@@ -10875,9 +10882,7 @@ async function renderOrderSyncNote() {
     }
     note.textContent = last.ok
       ? `Order sync: last ran ${fmtAgo(last.at)} · ${last.orders ?? 0} ` +
-        `fulfilled order(s) seen · ${last.recorded ?? 0} new sale(s) ` +
-        `recorded · mismatch tasks +${last.tasks_opened ?? 0} / ` +
-        `−${last.tasks_closed ?? 0}`
+        `fulfilled order(s) seen · ${last.recorded ?? 0} new sale(s) recorded`
       : `⚠ Order sync failed ${fmtAgo(last.at)}: ${last.error || "unknown"}`;
     note.hidden = false;
   } catch {
@@ -15748,36 +15753,6 @@ async function undoHistoryEvent(e, btn) {
   }
   // Backorder notes: "undo" clears the note by hand — the expected
   // count drops back and the daily check may flag the SKU again.
-  if (e.undo.kind === "backorder-debt") {
-    const operator = operatorEl.value;
-    if (!operator) {
-      alert("Pick who's scanning (top right) first.");
-      return;
-    }
-    if (
-      !confirm(
-        `Clear this backorder note?\n\n${e.sku || ""} - the expected tag ` +
-          `count drops by ${e.undo.units} unit(s), and the Tags vs ` +
-          `On-hand check may flag this product again.`
-      )
-    )
-      return;
-    btn.disabled = true;
-    try {
-      await postJson(`/api/backorder-debts/${e.undo.debt_id}/clear`, {
-        changed_by: operator,
-      });
-      await loadHistory();
-    } catch (err) {
-      btn.disabled = false;
-      alert(err.message);
-    }
-    return;
-  }
-  // On-hand corrections: two-phase undo. The unconfirmed call answers
-  // with exactly what will happen — including the CURRENT live value, in
-  // case something else moved the number since — and that text IS the
-  // confirmation prompt.
   if (e.undo.kind === "on-hand" || e.undo.kind === "on-hand-lower") {
     // A lowering's undo also restores the retired tags and the consumed
     // sales; the endpoint's 409 text describes exactly what will happen.
@@ -17854,6 +17829,81 @@ function pcardRenderTags() {
       obRows.map((t) => pcardTagRow(t, t.condition || "Open box")).join("");
   }
   pane.innerHTML = html;
+  // Un-bundling (Nick, 2026-09-28): bundles are moving to per-
+  // component SKUs. A product with defined bundle contents offers the
+  // split here: confirm the contents and the box count, the bundle's
+  // tags retire as "unbundled", and component labels print.
+  (async () => {
+    if (!st.sku) return;
+    const bc = await apiFetch(
+      `/api/bundle-contents?sku=${encodeURIComponent(st.sku)}`
+    ).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+    if (pcardState !== st) return;
+    const contents = (bc && bc.contents) || [];
+    if (!contents.length) return;
+    const box = document.createElement("div");
+    box.className = "unbundle";
+    box.innerHTML =
+      '<div class="pdivider">Un-bundle into components</div>' +
+      '<div class="pcard__note">Confirm what one bundle box holds, say ' +
+      "how many bundle boxes there are, and this retires the bundle's " +
+      "tags (peel the stickers) and prints labels for every component " +
+      "box.</div>" +
+      contents.map((c, i) =>
+        `<div class="unbundle__row"><span class="mono">${escapeHtml(c.component_sku)}</span>` +
+        `<input type="number" min="0" max="50" value="${c.qty || 1}" data-ub="${i}" /> per bundle</div>`
+      ).join("") +
+      '<div class="unbundle__row">Bundle boxes on hand: ' +
+      '<input type="number" min="1" max="100" value="1" id="unbundle-units" /></div>' +
+      '<button class="reset" id="unbundle-go" type="button">Un-bundle…</button>' +
+      '<span class="pcard__note" id="unbundle-msg"></span>';
+    pane.append(box);
+    box.querySelector("#unbundle-go").addEventListener("click", async () => {
+      const msg = box.querySelector("#unbundle-msg");
+      const units = Math.max(1, parseInt(
+        box.querySelector("#unbundle-units").value, 10) || 1);
+      const picked = contents
+        .map((c, i) => ({
+          sku: c.component_sku,
+          qty: Math.max(0, parseInt(
+            box.querySelector(`[data-ub="${i}"]`).value, 10) || 0),
+        }))
+        .filter((c) => c.qty > 0);
+      if (!picked.length) {
+        msg.textContent = "Nothing to print - every component is 0.";
+        return;
+      }
+      const body = {
+        units,
+        contents: picked,
+        printer: (typeof selectedPrinter !== "undefined" && selectedPrinter) || null,
+        worker: operatorEl.value || null,
+      };
+      try {
+        let res = await apiFetch(
+          `/api/bundles/${encodeURIComponent(st.sku)}/unbundle`,
+          { method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body) }
+        );
+        if (res.status === 409) {
+          const q = (await res.json()).detail;
+          if (!confirm(q)) return;
+          res = await apiFetch(
+            `/api/bundles/${encodeURIComponent(st.sku)}/unbundle`,
+            { method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ ...body, confirmed: true }) }
+          );
+        }
+        const d = await res.json();
+        if (!res.ok) throw new Error(d.detail || res.status);
+        msg.textContent = d.message;
+      } catch (err) {
+        msg.textContent = err.message;
+      }
+    });
+  })();
   // Locate (Nick, 2026-09-24): each sticker rides the existing C72
   // locate queue. Re-queuing a SKU replaces its specific-EPC list, so
   // the click merges this EPC with whatever the queue already holds.

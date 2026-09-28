@@ -160,39 +160,15 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
           r.status_code == 201 and r.json()["reused"] is True,
           r.text[:200])
 
-    # ---- the 1-hour watchdog -----------------------------------------
-    with Session(get_engine()) as s:
-        rec = s.query(OrderReceipt).one()
-        rec.settled_at = datetime.utcnow() - timedelta(hours=2)
-        rec.stock_updated_at = None
-        s.commit()
-    r = cl.get("/api/review-tasks")
-    tasks = [t for t in r.json()["tasks"]
-             if t.get("category") == "stock-not-updated"]
-    check("the watchdog files ONE task after an hour",
-          len(tasks) == 1 and "948" in tasks[0]["product_title"]
-          and "TC-Planner" in tasks[0]["detail"], str(tasks)[:300])
-    r = cl.get("/api/review-tasks")
-    tasks2 = [t for t in r.json()["tasks"]
-              if t.get("category") == "stock-not-updated"]
-    check("re-reading the inbox never duplicates it",
-          len(tasks2) == 1, len(tasks2))
-
-    # ---- planner's stock-update ping resolves it ---------------------
+    # ---- planner's stock-update ping closes the batch ----------------
     r = cl.post("/api/receiving/stock-updated",
                 json={"stock_order_id": 77, "updated_by": "planner"})
-    check("stock-updated stamps and closes the task",
-          r.status_code == 200 and r.json()["tasks_closed"] == 1
-          and r.json()["batches_closed"] == 1, r.text[:200])
+    check("stock-updated stamps the receipt and closes the batch",
+          r.status_code == 200 and r.json()["batches_closed"] == 1,
+          r.text[:200])
     r = cl.get(f"/api/batches/{bid}")
     check("the planner check-off is what closes the batch",
           r.json()["batch"]["status"] == "done", r.text[:150])
-    r = cl.get("/api/review-tasks?status=all")
-    t = next(t for t in r.json()["tasks"]
-             if t.get("category") == "stock-not-updated")
-    check("the closure is an auto-close by the planner update",
-          t["status"] == "resolved"
-          and t["resolved_by"] == "planner-update", str(t)[:200])
 
     # ---- order-status (the planner's gray-out feed) ------------------
     r = cl.get("/api/receiving/order-status/77")
@@ -312,11 +288,10 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
         batches_after = s.query(_B).count()
     check("no duplicate batch was booked", batches_after == batches_before,
           f"{batches_before} -> {batches_after}")
-    r = cl.get("/api/review-tasks")
-    check("no labels-not-printed task filed",
-          not [t for t in r.json()["tasks"]
-               if t.get("category") == "labels-not-printed"],
-          str([t.get("category") for t in r.json()["tasks"]])[:200])
+    h = cl.get("/api/history").json()["events"]
+    check("no labels-not-printed record filed",
+          not any(e["type"] == "labels-not-printed" for e in h),
+          [e["type"] for e in h][:8])
 
     # ---- the picker annotates printed orders -------------------------
     r = cl.get("/api/receiving/orders")

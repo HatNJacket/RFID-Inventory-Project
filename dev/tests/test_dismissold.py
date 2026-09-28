@@ -31,7 +31,7 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
     from sqlalchemy import select
     from sqlalchemy.orm import Session as S
     from app.database import get_engine
-    from app.models import (Batch, BatchItem, LabelDismissal, PrintJob,
+    from app.models import (BarcodeChange, Batch, BatchItem, LabelDismissal, PrintJob,
                             ReviewTask)
 
     with S(get_engine()) as s:
@@ -149,13 +149,12 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
     cl.post(f"/api/batches/{rb2id}/items/{s2id}/dismiss-sold", json={})
     cl.post(f"/api/batches/{rb2id}/complete", json={})
     with S(get_engine()) as s:
-        tasks = s.scalars(select(ReviewTask).where(
-            ReviewTask.batch_id == rb2id,
-            ReviewTask.category == "could-not-scan")).all()
-        check("completion: ordinary skip files a task, sold dismissal "
-              "files NOTHING",
-              len(tasks) == 1 and tasks[0].sku == "SKIP-2",
-              [t.sku for t in tasks])
+        evs = s.scalars(select(BarcodeChange).where(
+            BarcodeChange.changed_field == "could-not-scan")).all()
+        check("completion: ordinary skip logs History, sold dismissal "
+              "logs NOTHING extra",
+              len(evs) == 1 and evs[0].sku == "SKIP-2",
+              [e.sku for e in evs])
 
 print()
 if fails:

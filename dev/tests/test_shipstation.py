@@ -25,7 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.main import app
 from app.database import get_engine
-from app.models import ReviewTask, RfidAssignment, SoldRecord
+from app.models import RfidAssignment, SoldRecord
 from app import orders_sync
 fails=[]
 def check(l,c,x=""):
@@ -165,14 +165,6 @@ with TestClient(app) as cl:
     r8 = rows.get(("#8008","PICKUP-8"))
     check("gap-filler row is Shopify-sourced",
           r8 is not None and r8.source=="shopify", r8 and r8.as_dict())
-    task = s.scalars(select(ReviewTask).where(
-        ReviewTask.category=="inventory-check",
-        ReviewTask.status=="open")).all()
-    check("exactly the manual-store SKU mismatches (Shopify on-hand "
-          "never dropped): tags 2 vs expected 3",
-          len(task)==1 and task[0].sku=="LENS-5"
-          and "1 sold or shipped" in task[0].detail,
-          [(t.sku, t.detail) for t in task])
 
   # ---- second run: nothing doubles -------------------------------------
   line_calls.clear()

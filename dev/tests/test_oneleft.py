@@ -233,7 +233,7 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
     check("listed employees still attribute as themselves",
           oneleft.employee_for("Danielle") == "Danielle",
           oneleft.employee_for("Danielle"))
-    from app.models import ReviewTask as _RT
+    from app.models import BarcodeChange as _BC
     from sqlalchemy import select as _sel
     with patch("app.shopify.get_quantity_breakdown",
                return_value={"available": 3, "committed": 2,
@@ -245,11 +245,13 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
     from app.database import get_engine as _ge
     from sqlalchemy.orm import Session as _S
     with _S(_ge()) as _s:
-        t = _s.scalars(_sel(_RT).where(
-            _RT.category == "inventory-check", _RT.sku == "GONE")).first()
-        check("low count files an inventory-check (nothing writes down)",
-              t is not None and "3 unit(s) counted" in t.detail
-              and "on-hand is 5" in t.detail, t.detail if t else None)
+        t = _s.scalars(_sel(_BC).where(
+            _BC.changed_field == "inventory-check",
+            _BC.sku == "GONE")).first()
+        check("low count leaves a History record (nothing writes down)",
+              t is not None and "counted 3" in t.new_barcode
+              and "on-hand 5" in t.new_barcode,
+              t.new_barcode if t else None)
 
     # ---- a re-queue pins the check for a human -----------------------
     # SWEPT's walk-scan evidence would re-clear it on the next pass;
