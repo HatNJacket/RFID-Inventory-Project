@@ -11154,14 +11154,87 @@ async function jumpToBinAudit(bin) {
       document.getElementById("binaudit-run").click();
       return;
     }
-    out.innerHTML = `<p class="result">${escapeHtml(bin)} has no saved audit
-      sweep yet. Sweep it on the C72's AUDIT tab, then hit RUN - the
-      newest unclaimed sweep on file is
-      ${escapeHtml(fmtAgo(cap.created_at))}.</p>`;
   } catch (err) {
-    out.innerHTML = `<p class="result">${escapeHtml(bin)} has no saved audit
-      sweep yet. Sweep it on the C72's AUDIT tab, then hit RUN.</p>`;
+    /* no sweeps anywhere - the expected list stands on its own */
   }
+  await renderBinAuditExpected(bin);
+}
+
+// No sweep at all (Nick, round 11): opening a bin still shows every
+// item the shelf is supposed to hold - the walk starts from the paper,
+// not from a blank pane. A rack token lists each of its bins.
+async function renderBinAuditExpected(bin) {
+  const out = document.getElementById("binaudit-report");
+  const up = (bin || "").trim().toUpperCase();
+  out.innerHTML = `<p class="result">Loading what ${escapeHtml(up)} should hold…</p>`;
+  // The instant-paint cache is slim (no product arrays) - pull the
+  // live queue once when the per-product lists are missing.
+  if (
+    !auditData ||
+    auditData._cached ||
+    !(auditData.bins || []).some((b) => Array.isArray(b.products))
+  ) {
+    try {
+      await loadAuditBins();
+    } catch (err) {
+      /* the not-found message below covers it */
+    }
+  }
+  const isRack = !up.includes("-");
+  const bins = ((auditData && auditData.bins) || []).filter((b) => {
+    const n = (b.bin || "").toUpperCase();
+    return n === up || (isRack && n.startsWith(up + "-"));
+  });
+  if (!bins.length) {
+    out.innerHTML = `<p class="result">No products are mapped to
+      ${escapeHtml(up)} and it has no saved sweep. Check the bin name,
+      or sweep it on the C72's AUDIT tab and hit Run.</p>`;
+    return;
+  }
+  const table = (b) => {
+    const rows = (b.products || [])
+      .map(
+        (p) => `<tr>
+          <td>${escapeHtml(p.product_title || "")}</td>
+          <td class="mono"><span class="skulink" data-sku="${escapeHtml(p.sku || "")}">${escapeHtml(p.sku || "—")}</span></td>
+          <td class="num">${p.on_hand == null ? "—" : p.on_hand}</td>
+          <td class="num">${p.unlabelable ? "—" : p.rfid_units}</td>
+          <td class="num${p.diff ? " bexp--off" : ""}">${
+            p.diff > 0 ? "+" + p.diff : p.diff
+          }</td>
+        </tr>`
+      )
+      .join("");
+    return `<div class="ba-expected">
+      <div class="ba-expected__head"><b>${escapeHtml(b.bin)}</b>
+        <span class="binlist__count">${
+          b.last_audited_at
+            ? `audited ${escapeHtml(fmtAgo(b.last_audited_at))}`
+            : "never audited"
+        } · ${b.product_count} product(s)${
+          b.score === 0
+            ? " · all match"
+            : ` · ${b.mismatched_count} mismatched`
+        }</span></div>
+      ${
+        rows
+          ? `<div class="inventory__scroll inventory__scroll--inset"><table class="inventory__table">
+              <thead><tr><th>Product</th><th>SKU</th><th class="num">Shopify</th><th class="num">RFID tags</th><th class="num">Diff</th></tr></thead>
+              <tbody>${rows}</tbody></table></div>`
+          : `<p class="result">Nothing is mapped to this bin.</p>`
+      }
+    </div>`;
+  };
+  out.innerHTML =
+    `<p class="result">No sweep is saved for ${escapeHtml(up)} yet - this
+      is what the shelf should hold. Sweep it on the C72's AUDIT tab,
+      then hit Run to compare shelf against paper.</p>` +
+    bins.map(table).join("");
+  out.querySelectorAll(".skulink").forEach((s) =>
+    s.addEventListener("click", () => {
+      if (s.dataset.sku) openProductHistory(s.dataset.sku);
+    })
+  );
 }
 
 // Selected sweep (Nick, 2026-09-08; reworked 2026-09-14): pick a sweep
@@ -11275,6 +11348,12 @@ document.getElementById("binaudit-run").addEventListener("click", async () => {
     const cap = own || (await apiJson("/api/epc-captures/latest?pickable=1"));
     await runBinAudit(cap);
   } catch (err) {
+    if (bin) {
+      // Nothing swept anywhere yet - show the expected list instead
+      // of a dead end (round 11).
+      await renderBinAuditExpected(bin);
+      return;
+    }
     out.innerHTML = `<p class="result result--err">${escapeHtml(err.message)}</p>`;
   }
 });
@@ -13134,6 +13213,9 @@ document
         done.textContent = "✓ Audit recorded";
         done.title = res.message || "Recorded.";
         loadAuditBins();
+        // The sign-off just ticked this bin in any open walk session
+        // (server-side) - redraw the cards to show it.
+        loadAuditSessions();
       } catch (err) {
         alert(err.message);
         done.disabled = false;
@@ -14028,6 +14110,99 @@ function audBinPillHtml(i) {
     )} <i>${mark}</i></button>`;
 }
 
+// The In-progress card IS the walk's view (Nick, 2026-09-28 round 11):
+// the rack ring, drift facts and worst-open-bin note sit on the card
+// with Finish/Abandon under them, the progress bar and bin chips move
+// right to make room, and Resume opens the bin audit on the first bin
+// still standing. The old Rack/Bins detail toggle is gone; finished
+// walks reuse this card read-only.
+function audSessCardHtml(sn, readonly) {
+  const pct = sn.total ? Math.round((sn.done / sn.total) * 100) : 0;
+  const next = (sn.items || []).find((i) => !i.done) || null;
+  let drift = 0;
+  let mism = 0;
+  let known = 0;
+  let worst = null;
+  (sn.items || []).forEach((i) => {
+    const b = audBinInfo(i.key);
+    if (!b) return;
+    known++;
+    drift += b.score;
+    mism += b.mismatched_count;
+    if (!i.done && (!worst || b.score > worst.b.score)) {
+      worst = { key: i.key, b };
+    }
+  });
+  const C = 2 * Math.PI * 36;
+  const ring = `<div class="ring ring--sm"><svg width="88" height="88" viewBox="0 0 88 88">
+      <circle class="ring__trk" cx="44" cy="44" r="36" fill="none" stroke-width="9"/>
+      <circle class="ring__val" cx="44" cy="44" r="36" fill="none" stroke-width="9"
+        stroke-dasharray="${C.toFixed(1)}" stroke-dashoffset="${(
+          C * (1 - pct / 100)
+        ).toFixed(1)}"/></svg>
+    <div class="ring__pct">${pct}%</div></div>`;
+  const facts = `<div class="rackview__facts">
+      <div><span class="rackview__lab">Bins</span><br>${sn.done} of ${sn.total} walked</div>
+      <div><span class="rackview__lab">Drift</span><br>${
+        known
+          ? `score ${drift} across ${mism} mismatched product(s)`
+          : "open the Audit queue once for live scores"
+      }</div>
+      ${
+        worst && worst.b.score > 0
+          ? `<div class="rackview__worst">Worst open bin: <b>${escapeHtml(
+              worst.key
+            )}</b> - score ${worst.b.score}${
+              worst.b.last_audited_at
+                ? `, audited ${escapeHtml(fmtAgo(worst.b.last_audited_at))}`
+                : ", never audited"
+            }.</div>`
+          : !readonly && !next
+            ? `<div class="rackview__worst rackview__worst--ok">\u2713 Every bin walked - finish the audit.</div>`
+            : ""
+      }</div>`;
+  const strip = (sn.items || []).length
+    ? `<div class="binstrip">${sn.items.map(audBinPillHtml).join("")}</div>`
+    : "";
+  const acts = readonly
+    ? ""
+    : `<div class="sess__acts">
+         <button class="reset audsess-finish" type="button" data-sid="${sn.id}">Finish audit</button>
+         <button class="reset audsess-abandon" type="button" data-sid="${sn.id}">Abandon</button>
+       </div>`;
+  return `
+    <div class="sess__row">
+      <span class="sess__name">${escapeHtml(sn.name)}</span>
+      <span class="sess__meta">bin walk \u00b7 ${
+        readonly
+          ? escapeHtml(sn.status) +
+            " " +
+            escapeHtml(fmtAgo(sn.finished_at || sn.created_at))
+          : `started ${escapeHtml(fmtAgo(sn.created_at))}${
+              sn.created_by ? " by " + escapeHtml(sn.created_by) : ""
+            }`
+      }</span>
+      <span class="sess__grow"></span>
+      ${
+        !readonly && next
+          ? `<button class="print__btn audsess-resume" type="button" data-sid="${sn.id}"
+               title="Open the bin audit on ${escapeHtml(next.key)}, the first bin not walked yet">Resume</button>`
+          : ""
+      }
+    </div>
+    <div class="sess__body">
+      <div class="sess__left">
+        <div class="sess__rackview">${ring}${facts}</div>
+        ${acts}
+      </div>
+      <div class="sess__side">
+        <div class="audsess__bar"><div class="audsess__fill" style="width:${pct}%"></div></div>
+        <div class="audsess__nums"><span>${sn.done} of ${sn.total} walked</span><span>${pct}%</span></div>
+        ${strip}
+      </div>
+    </div>`;
+}
+
 function renderAuditSessions() {
   const list = document.getElementById("audsess-list");
   document.getElementById("audsess-meta").textContent = audSessions.length
@@ -14037,29 +14212,27 @@ function renderAuditSessions() {
   if (lab) lab.hidden = !audSessions.length;
   list.innerHTML = "";
   audSessions.forEach((sn) => {
-    const pct = sn.total ? Math.round((sn.done / sn.total) * 100) : 0;
     const card = document.createElement("div");
     card.className = "sess";
-    const strip =
-      sn.kind === "bins" && (sn.items || []).length
-        ? `<div class="binstrip">${sn.items
-            .map(audBinPillHtml)
-            .join("")}</div>`
-        : "";
-    card.innerHTML = `
-      <div class="sess__row">
-        <span class="sess__name audsess-open" data-sid="${sn.id}">${escapeHtml(sn.name)}</span>
-        <span class="sess__meta">${
-          sn.kind === "bins" ? `${sn.total} bin(s)` : `${sn.total} check(s)`
-        } \u00b7 started ${escapeHtml(fmtAgo(sn.created_at))}${
-          sn.created_by ? " by " + escapeHtml(sn.created_by) : ""
-        }</span>
-        <span class="sess__grow"></span>
-        <button class="print__btn audsess-open" type="button" data-sid="${sn.id}">Resume</button>
-      </div>
-      <div class="audsess__bar"><div class="audsess__fill" style="width:${pct}%"></div></div>
-      <div class="audsess__nums"><span>${sn.done} of ${sn.total} done</span><span>${pct}%</span></div>
-      ${strip}`;
+    if (sn.kind === "bins") {
+      card.classList.add("sess--walk");
+      card.innerHTML = audSessCardHtml(sn, false);
+    } else {
+      // 1-left walks keep the compact card: their tick-list still
+      // lives behind Resume.
+      const pct = sn.total ? Math.round((sn.done / sn.total) * 100) : 0;
+      card.innerHTML = `
+        <div class="sess__row">
+          <span class="sess__name audsess-open" data-sid="${sn.id}">${escapeHtml(sn.name)}</span>
+          <span class="sess__meta">${sn.total} check(s) \u00b7 started ${escapeHtml(
+            fmtAgo(sn.created_at)
+          )}${sn.created_by ? " by " + escapeHtml(sn.created_by) : ""}</span>
+          <span class="sess__grow"></span>
+          <button class="print__btn audsess-open" type="button" data-sid="${sn.id}">Resume</button>
+        </div>
+        <div class="audsess__bar"><div class="audsess__fill" style="width:${pct}%"></div></div>
+        <div class="audsess__nums"><span>${sn.done} of ${sn.total} done</span><span>${pct}%</span></div>`;
+    }
     list.append(card);
   });
 }
@@ -14290,10 +14463,10 @@ async function audStartRackAudit(rack, btn) {
         : audSessions.find(
             (x) => x.status === "open" && x.name === `Rack ${rack}`
           );
-    if (sn) {
-      renderAuditSessionDetail(sn);
-      audShowPane("session");
-    }
+    // Straight into the walk (round 11): the first bin's audit opens
+    // with its expected list, sweep or no sweep.
+    const next = sn && (sn.items || []).find((i) => !i.done);
+    if (next) jumpToBinAudit(next.key);
   } catch (err) {
     alert(err.message);
   }
@@ -14326,8 +14499,6 @@ document.getElementById("aud-onebin").addEventListener("keydown", (e) => {
   }
 });
 
-let audSessView = "rack";
-
 function renderAuditSessionDetail(sn) {
   audSessOpenId = sn.id;
   const el = document.getElementById("audsess-detail");
@@ -14341,168 +14512,50 @@ function renderAuditSessionDetail(sn) {
          </div>`
       : "";
   if (sn.kind === "bins") {
-    // Rack facts from the scored queue, when it has loaded.
-    let drift = 0;
-    let mism = 0;
-    let known = 0;
-    let worst = null;
-    (sn.items || []).forEach((i) => {
-      const b = audBinInfo(i.key);
-      if (!b) return;
-      known++;
-      drift += b.score;
-      mism += b.mismatched_count;
-      if (!i.done && (!worst || b.score > worst.b.score)) {
-        worst = { key: i.key, b };
-      }
-    });
-    const C = 2 * Math.PI * 46;
-    const rackview = `<div class="rackview">
-      <div class="ring"><svg width="108" height="108" viewBox="0 0 108 108">
-        <circle class="ring__trk" cx="54" cy="54" r="46" fill="none" stroke-width="10"/>
-        <circle class="ring__val" cx="54" cy="54" r="46" fill="none" stroke-width="10"
-          stroke-dasharray="${C.toFixed(1)}" stroke-dashoffset="${(
-            C * (1 - pct / 100)
-          ).toFixed(1)}"/></svg>
-        <div class="ring__pct">${pct}%</div></div>
-      <div class="rackview__facts">
-        <div><span class="rackview__lab">Bins</span><br>${sn.done} of ${sn.total} walked</div>
-        <div><span class="rackview__lab">Drift</span><br>${
-          known
-            ? `score ${drift} across ${mism} mismatched product(s)`
-            : "open the Audit queue once for live scores"
-        }</div>
-        ${
-          worst && worst.b.score > 0
-            ? `<div class="rackview__worst">Worst open bin: <b>${escapeHtml(
-                worst.key
-              )}</b> - score ${worst.b.score}${
-                worst.b.last_audited_at
-                  ? `, audited ${escapeHtml(fmtAgo(worst.b.last_audited_at))}`
-                  : ", never audited"
-              }. Start there.</div>`
-            : openCount === 0
-              ? `<div>\u2713 Every bin walked - finish the audit below.</div>`
-              : ""
-        }
-      </div></div>`;
-    const bincards = `<div class="bingrid">${(sn.items || [])
-      .map((i) => {
-        const b = audBinInfo(i.key);
-        const score = b ? b.score : null;
-        const cls = i.done
-          ? "binc--ok"
-          : score == null
-            ? ""
-            : score >= 5
-              ? "binc--bad"
-              : score > 0
-                ? "binc--warn"
-                : "binc--ok";
-        return `<div class="binc ${cls}">
-          ${
-            i.done
-              ? `<span class="binc__done">\u2713 done${
-                  i.done_by ? " \u00b7 " + escapeHtml(i.done_by) : ""
-                }</span>`
-              : ""
-          }
-          <div class="binc__row"><span class="binc__name">${escapeHtml(i.key)}</span>
-            ${
-              !i.done && score != null
-                ? `<span class="binc__score">${score === 0 ? "\u2713" : score}</span>`
-                : ""
-            }</div>
-          <div class="binc__sub">${
-            b
-              ? (b.last_audited_at
-                  ? `audited ${escapeHtml(fmtAgo(b.last_audited_at))}${
-                      b.last_audited_by
-                        ? " by " + escapeHtml(b.last_audited_by)
-                        : ""
-                    }`
-                  : "never audited") +
-                ` \u00b7 ${b.mismatched_count} mismatched of ${b.product_count}`
-              : escapeHtml(i.note || "")
-          }</div>
-          <div class="binc__act">
-            <button class="reset audsess-jump" type="button"
-              data-bin="${escapeHtml(i.key)}"
-              title="Open the bin audit with ${escapeHtml(i.key)} loaded">Audit</button>
-            ${
-              sn.status === "open"
-                ? `<button class="reset audsess-done" type="button"
-                     data-item="${i.id}" data-done="${i.done ? 1 : 0}"
-                     title="${i.done ? "Un-tick this bin" : "Mark this bin walked"}">${
-                       i.done ? "un-tick" : "mark done"
-                     }</button>`
-                : ""
-            }
-          </div></div>`;
-      })
-      .join("")}</div>`;
-    el.innerHTML = `
-      <div class="sessdetail__head"><h2>${escapeHtml(sn.name)}</h2>
-        <span class="recent__note">bin walk \u00b7 ${escapeHtml(sn.status)}</span>
-        <span class="sessdetail__spacer"></span>
-        <div class="seg" id="audsess-seg">
-          <button type="button" data-view="rack"${
-            audSessView === "rack" ? ' class="seg--on"' : ""
-          }>Rack</button>
-          <button type="button" data-view="bins"${
-            audSessView === "bins" ? ' class="seg--on"' : ""
-          }>Bins</button>
-        </div></div>
-      <div id="audsess-view-rack"${audSessView === "bins" ? " hidden" : ""}>${rackview}</div>
-      <div id="audsess-view-bins"${audSessView === "rack" ? " hidden" : ""}>${bincards}</div>
-      ${actions}`;
-    document.querySelectorAll("#audsess-seg button").forEach((btn) =>
-      btn.addEventListener("click", () => {
-        audSessView = btn.dataset.view;
-        renderAuditSessionDetail(sn);
-      })
-    );
-  } else {
-    const rows = (sn.items || [])
-      .map((i) => {
-        const doneBtn =
-          sn.status === "open"
-            ? `<button class="binlist__go audsess-done" type="button"
-                 data-item="${i.id}" data-done="${i.done ? 1 : 0}"
-                 title="${i.done ? "Un-tick this item" : "Mark this item accounted for"}">${
-                   i.done ? "\u2713 done" : "mark done"
-                 }</button>`
-            : i.done
-              ? `<span class="binlist__check">\u2713</span>`
-              : "";
-        const sub = [
-          i.done && i.done_by ? `by ${i.done_by}` : "",
-          i.done && i.done_at ? fmtAgo(i.done_at) : "",
-          i.note || "",
-        ]
-          .filter(Boolean)
-          .join(" \u00b7 ");
-        return `
-          <li class="olrow${i.done ? " olrow--done" : ""}">
-            <div class="olrow__main">
-              <span class="binlist__name ol-sku"
-                    data-sku="${escapeHtml(i.key)}">${escapeHtml(i.key)}</span>
-              <span class="olrow__title">${escapeHtml(i.label || "")}</span>
-              ${sub ? `<div class="olrow__sub">${escapeHtml(sub)}</div>` : ""}
-            </div>
-            ${doneBtn}
-          </li>`;
-      })
-      .join("");
-    el.innerHTML = `
-      <div class="sessdetail__head"><h2>${escapeHtml(sn.name)}</h2>
-        <span class="recent__note">1-left checks \u00b7 ${escapeHtml(sn.status)}</span></div>
-      <div class="audsess__bar u-maxw420"><div class="audsess__fill" style="width:${pct}%"></div></div>
-      <div class="audsess__nums u-maxw420"><span>${sn.done} of ${sn.total} done</span><span>${pct}%</span></div>
-      <p class="linkbox__text u-maxw70ch">Items tick themselves when their 1-left check clears (auto or manual confirm); anything left needs a walk.</p>
-      ${actions}
-      <ul class="recent__list binlist u-maxh480">${rows}</ul>`;
+    // Only finished walks land here (round 11): the In-progress card
+    // on the hub carries the live view. This is the read-only record.
+    el.innerHTML = `<div class="sess sess--walk">${audSessCardHtml(sn, true)}</div>`;
+    return;
   }
+  const rows = (sn.items || [])
+    .map((i) => {
+      const doneBtn =
+        sn.status === "open"
+          ? `<button class="binlist__go audsess-done" type="button"
+               data-item="${i.id}" data-done="${i.done ? 1 : 0}"
+               title="${i.done ? "Un-tick this item" : "Mark this item accounted for"}">${
+                 i.done ? "\u2713 done" : "mark done"
+               }</button>`
+          : i.done
+            ? `<span class="binlist__check">\u2713</span>`
+            : "";
+      const sub = [
+        i.done && i.done_by ? `by ${i.done_by}` : "",
+        i.done && i.done_at ? fmtAgo(i.done_at) : "",
+        i.note || "",
+      ]
+        .filter(Boolean)
+        .join(" \u00b7 ");
+      return `
+        <li class="olrow${i.done ? " olrow--done" : ""}">
+          <div class="olrow__main">
+            <span class="binlist__name ol-sku"
+                  data-sku="${escapeHtml(i.key)}">${escapeHtml(i.key)}</span>
+            <span class="olrow__title">${escapeHtml(i.label || "")}</span>
+            ${sub ? `<div class="olrow__sub">${escapeHtml(sub)}</div>` : ""}
+          </div>
+          ${doneBtn}
+        </li>`;
+    })
+    .join("");
+  el.innerHTML = `
+    <div class="sessdetail__head"><h2>${escapeHtml(sn.name)}</h2>
+      <span class="recent__note">1-left checks \u00b7 ${escapeHtml(sn.status)}</span></div>
+    <div class="audsess__bar u-maxw420"><div class="audsess__fill" style="width:${pct}%"></div></div>
+    <div class="audsess__nums u-maxw420"><span>${sn.done} of ${sn.total} done</span><span>${pct}%</span></div>
+    <p class="linkbox__text u-maxw70ch">Items tick themselves when their 1-left check clears (auto or manual confirm); anything left needs a walk.</p>
+    ${actions}
+    <ul class="recent__list binlist u-maxh480">${rows}</ul>`;
 
   const finish = document.getElementById("audsess-finish");
   if (finish)
@@ -14543,10 +14596,53 @@ function renderAuditSessionDetail(sn) {
     });
 }
 
+// Finish/Abandon straight from the In-progress card (round 11).
+async function audSessClose(sid, verb, btn) {
+  const sn = audSessions.find((x) => x.id === sid);
+  if (!sn) return;
+  const left = sn.total - sn.done;
+  const msg =
+    verb === "finish"
+      ? left > 0
+        ? `${left} bin(s) are still open - finish anyway?`
+        : null
+      : "Abandon this audit? Its ticks are kept for the record.";
+  if (msg && !window.confirm(msg)) return;
+  btn.disabled = true;
+  try {
+    await postJson(`/api/audit-sessions/${sid}/${verb}`, {
+      worker: operatorEl.value || null,
+    });
+    if (audSessOpenId === sid) audSessOpenId = null;
+    loadAuditSessions();
+  } catch (err) {
+    alert(err.message);
+    btn.disabled = false;
+  }
+}
+
 document.getElementById("audsess-list").addEventListener("click", (e) => {
   const pill = e.target.closest(".aud-binjump");
   if (pill) {
     jumpToBinAudit(pill.dataset.bin);
+    return;
+  }
+  // Resume = the first bin in the list not walked yet (Nick, round 11).
+  const res = e.target.closest(".audsess-resume");
+  if (res) {
+    const sn = audSessions.find((x) => x.id === Number(res.dataset.sid));
+    const next = sn && (sn.items || []).find((i) => !i.done);
+    if (next) jumpToBinAudit(next.key);
+    return;
+  }
+  const fin = e.target.closest(".audsess-finish");
+  if (fin) {
+    audSessClose(Number(fin.dataset.sid), "finish", fin);
+    return;
+  }
+  const ab = e.target.closest(".audsess-abandon");
+  if (ab) {
+    audSessClose(Number(ab.dataset.sid), "abandon", ab);
     return;
   }
   const open = e.target.closest(".audsess-open");
@@ -14574,9 +14670,9 @@ document.getElementById("audsess-detail").addEventListener("click", async (e) =>
     openProductHistory(sku.dataset.sku);
     return;
   }
-  const jump = e.target.closest(".audsess-jump");
-  if (jump) {
-    jumpToBinAudit(jump.dataset.bin);
+  const pill = e.target.closest(".aud-binjump");
+  if (pill) {
+    jumpToBinAudit(pill.dataset.bin);
     return;
   }
   const done = e.target.closest(".audsess-done");
@@ -14662,8 +14758,15 @@ document.getElementById("audsess-create").addEventListener("click", async (ev) =
     audsessScopeEl.value = "";
     audSessShowDone = false;
     await loadAuditSessions();
-    renderAuditSessionDetail(s);
-    audShowPane("session");
+    if (s.kind === "bins") {
+      // Straight into the walk (round 11): first bin, expected list
+      // ready even before any sweep.
+      const next = (s.items || []).find((i) => !i.done);
+      if (next) jumpToBinAudit(next.key);
+    } else {
+      renderAuditSessionDetail(s);
+      audShowPane("session");
+    }
   } catch (err) {
     alert(err.message);
   }

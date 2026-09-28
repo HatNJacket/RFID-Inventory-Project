@@ -89,6 +89,31 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
         "name": "Nothing", "kind": "bins", "rack": "ZZZ9"})
     check("empty bins scope -> 422", r.status_code == 422, r.text)
 
+    # ---- an audit sign-off ticks the walk (round 11) ------------------
+    # The per-rack grid's "mark done" button is gone: recording a bin
+    # audit (web button or C72 LOG) is the tick now.
+    r = cl.post("/api/bins/I1-1/audit-complete",
+                json={"epcs": [], "worker": "Nick"})
+    check("bin sign-off accepted", r.status_code == 201, r.text)
+    mine = [x for x in cl.get("/api/audit-sessions?status=open")
+            .json()["sessions"] if x["id"] == sid][0]
+    by_key = {i["key"]: i for i in mine["items"]}
+    check("sign-off ticked its bin in the open walk",
+          by_key["I1-1"]["done"] is True
+          and by_key["I1-1"]["done_by"] == "Nick", str(by_key["I1-1"]))
+    check("the other bins stay open",
+          by_key["I1-2"]["done"] is False
+          and by_key["B2-1"]["done"] is False, str(mine["items"]))
+    # A RACK sign-off anchors every bin under it - and ticks them all.
+    r = cl.post("/api/bins/I1/audit-complete", json={"epcs": []})
+    check("rack sign-off accepted", r.status_code == 201, r.text)
+    mine = [x for x in cl.get("/api/audit-sessions?status=open")
+            .json()["sessions"] if x["id"] == sid][0]
+    by_key = {i["key"]: i for i in mine["items"]}
+    check("rack sign-off ticks its remaining bins",
+          by_key["I1-2"]["done"] is True and mine["done"] == 2,
+          str(mine["items"]))
+
     # ---- 1-left session: vendor slice + self-ticking ------------------
     r = cl.post("/api/audit-sessions", json={
         "name": "Celestron 1-left blitz", "kind": "oneleft",

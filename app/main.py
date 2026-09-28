@@ -6915,6 +6915,25 @@ def bin_audit_complete(
         )
         session.add(row)
         made.append(bkey.upper())
+    # The sign-off ticks its bin in any open walk session (round 11:
+    # the per-rack grid's "mark done" button is gone - auditing the
+    # bin IS the tick, from the web button and the C72 LOG alike). A
+    # rack-level sign-off covers every bin it just anchored.
+    covered = sorted(set(made) | {loc.upper()})
+    for item in session.scalars(
+        select(AuditSessionItem)
+        .join(AuditSession, AuditSession.id == AuditSessionItem.session_id)
+        .where(
+            AuditSession.status == "open",
+            AuditSession.kind == "bins",
+            AuditSessionItem.done == False,  # noqa: E712
+            func.upper(AuditSessionItem.key).in_(covered),
+        )
+    ):
+        item.done = True
+        item.done_at = now
+        item.done_by = (payload.worker or "").strip()[:100] or None
+        item.note = "audit signed off"
     _log_change(
         session,
         sku=None,

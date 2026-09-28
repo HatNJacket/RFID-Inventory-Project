@@ -4384,44 +4384,35 @@ button.ph-order:hover { border-color: var(--accent); }
 .fin__meta { color: var(--ink-dim); font-size: 12px; }
 .fin__view { margin-left: auto; }
 
-.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; background: var(--card); }
-.seg button {
-  border: none; background: none; color: var(--ink-dim);
-  padding: 6px 16px; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
-}
-.seg button.seg--on { background: var(--accent-soft); color: var(--accent); }
-
 .sessdetail__head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
-.sessdetail__head .sessdetail__spacer { flex: 1; }
-.rackview { display: flex; gap: 20px; align-items: center; flex-wrap: wrap; }
 .ring { position: relative; width: 108px; height: 108px; flex: none; }
 .ring svg { transform: rotate(-90deg); }
 .ring .ring__trk { stroke: var(--card-2); }
 .ring .ring__val { stroke: var(--accent); stroke-linecap: round; transition: stroke-dashoffset 0.6s ease; }
 .ring .ring__pct { position: absolute; inset: 0; display: grid; place-items: center; font-size: 20px; font-weight: 700; }
+.ring--sm { width: 88px; height: 88px; }
+.ring--sm .ring__pct { font-size: 16px; }
 .rackview__facts { display: grid; gap: 6px; font-size: 13px; }
 .rackview__facts .rackview__lab { color: var(--ink-dim); font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; }
 .rackview__worst { border-left: 4px solid var(--bad-ink); background: var(--card-2); border-radius: 8px; padding: 8px 12px; font-size: 12.5px; }
+.rackview__worst--ok { border-left-color: var(--ok-ink); }
 
-.bingrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
-.binc {
-  position: relative; background: var(--card-2); border: 1px solid var(--line);
-  border-radius: 10px; padding: 10px 12px 10px 16px;
-}
-.binc::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 5px; border-radius: 10px 0 0 10px; background: var(--line); }
-.binc--bad::before { background: var(--bad-ink); }
-.binc--warn::before { background: var(--warn-ink); }
-.binc--ok::before { background: var(--ok-ink); }
-.binc__row { display: flex; align-items: baseline; gap: 8px; }
-.binc__name { font-family: var(--mono); font-weight: 700; font-size: 15px; }
-.binc__score { margin-left: auto; font-weight: 700; font-size: 14px; }
-.binc--bad .binc__score { color: var(--bad-ink); }
-.binc--warn .binc__score { color: var(--warn-ink); }
-.binc--ok .binc__score { color: var(--ok-ink); }
-.binc__sub { font-size: 11.5px; color: var(--ink-dim); margin-top: 3px; }
-.binc__act { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
-.binc__act .reset { padding: 3px 9px; font-size: 12px; border-radius: 6px; }
-.binc__done { position: absolute; top: 8px; right: 10px; color: var(--ok-ink); font-weight: 700; font-size: 12px; }
+/* Round 11 (Nick, 2026-09-28): the In-progress card carries the rack
+   view - ring + facts + Finish/Abandon on the left, progress bar and
+   bin chips on the right. */
+.sess__body { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; margin-top: 10px; }
+.sess__left { display: flex; flex-direction: column; gap: 10px; flex: 0 1 360px; min-width: 260px; }
+.sess__rackview { display: flex; gap: 14px; align-items: center; }
+.sess__side { flex: 1 1 260px; min-width: 220px; }
+.sess__side .audsess__bar { margin-top: 4px; }
+.sess__acts { display: flex; gap: 8px; }
+.sess--walk .sess__name { cursor: default; }
+.sess--walk .sess__name:hover { color: inherit; }
+
+/* The expected list a sweepless bin opens with (round 11). */
+.ba-expected { margin-top: 12px; }
+.ba-expected__head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 5px; }
+.ba-expected__head b { font-family: var(--mono); font-size: 15px; }
 
 /* --- bin audit pane --- */
 .ba-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }

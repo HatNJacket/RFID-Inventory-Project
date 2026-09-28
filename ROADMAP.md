@@ -156,6 +156,27 @@ iterated over the "Audits Tab Redesign" preview artifact, 3 rounds):**
   removed (packing goes through an audit sweep; the server's
   /api/packing/* endpoints and the web pane stay).
 
+**ROUND 11 (Nick's list, 2026-09-28) — ✅ BUILT + ON PROD: the
+In-progress card IS the walk.**
+- The In-progress session card carries the rack view itself: ring +
+  bins-walked + drift + worst-open-bin on the left with Finish
+  audit / Abandon under them, progress bar and bin chips moved
+  right. The Rack/Bins detail pane for walks is GONE (the per-rack
+  bin grid entirely removed); a finished walk's View shows the same
+  card read-only. 1-left sessions keep their tick-list detail.
+- Resume opens the bin audit on the FIRST bin not walked yet; Start
+  audit and the + New audit form (bins kind) land there too instead
+  of on the old detail pane.
+- A bin with NO sweep at all opens as its expected list (product /
+  SKU / Shopify / RFID tags / diff, rack token = each of its bins)
+  with a sweep-and-Run prompt - never a dead-end message. Fresh
+  captures (<5 min) still auto-run the real check first.
+- An audit sign-off (web ✓ button or C72 LOG - both post
+  /api/bins/{bin}/audit-complete) now TICKS that bin in every open
+  bin-walk session server-side; a rack sign-off ticks all its bins.
+  That replaces the grid's "mark done" button. Covered in
+  test_audit_sessions.py.
+
 **ROUND 10 (Nick's list, 2026-09-28) — ✅ BUILT + ON PROD:**
 - Web: the session cards were being flattened by recent__list's
   row styling (Nick's screenshot) - the list is a plain div now and
