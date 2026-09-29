@@ -41,8 +41,9 @@ Usage (PowerShell on the printer PC):
     # See the ZPL without touching a printer (testing):
     py print_agent.py --app http://127.0.0.1:8000 --dry-run --once
 
-Options: --poll N (seconds between checks, default 3), --once (single
-pass), --agent-key KEY (must match the app's PRINT_AGENT_KEY env var, if
+Options: --poll N (seconds between checks, default 3; skipped while
+full batches keep coming), --batch N (labels per burst, default 10,
+max 20), --once (single pass), --agent-key KEY (must match the app's PRINT_AGENT_KEY env var, if
 set), --transport auto|usb|spooler|network, --log-file PATH (agent-owned
 log with rotation - don't ALSO shell-redirect), --no-auto-update.
 
@@ -75,7 +76,7 @@ import requests
 # confirmed label-by-label from the odometer's order (no more per-label
 # pauses). Bump on behavior changes - the server compares this against
 # its own copy to drive auto-update.
-AGENT_VERSION = "7"
+AGENT_VERSION = "8"
 
 
 def _count(n, one, many=None):
@@ -1624,8 +1625,9 @@ class Agent:
 
             self._pulse(status=status)
 
+            batch = max(1, min(20, int(getattr(self.args, "batch", 10))))
             try:
-                jobs = self.client.claim()
+                jobs = self.client.claim(limit=batch)
             except requests.RequestException as error:
                 log(f"! can't reach app: {error}")
                 jobs = []
@@ -1656,6 +1658,11 @@ class Agent:
 
             if self.args.once:
                 break
+            # v8 (Nick, 2026-09-29: the gap between batches of 5): a FULL
+            # claim means more are probably waiting - go straight back for
+            # them instead of sleeping the poll interval.
+            if len(jobs) >= batch and not self.fault:
+                continue
             time.sleep(self.args.poll)
 
 
@@ -1706,6 +1713,9 @@ def build_parser() -> argparse.ArgumentParser:
              '"ZD621R · RFID encoder"',
     )
     parser.add_argument("--poll", type=float, default=3.0)
+    # Labels claimed per burst (v8: 10, was a fixed 5 - fewer gaps
+    # between bursts; the server caps a claim at 20).
+    parser.add_argument("--batch", type=int, default=10)
     parser.add_argument("--once", action="store_true", help="Single pass")
     parser.add_argument(
         "--dry-run", action="store_true",

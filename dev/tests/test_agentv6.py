@@ -290,6 +290,39 @@ except (SystemExit, AssertionError) as e:
 finally:
     print_agent.os.replace = _real_replace
 
+# v8 (2026-09-29): bursts of 10, and no poll sleep while FULL batches
+# keep coming - the gap between batches was the 3 s poll every time.
+class _StopLoop(Exception):
+    pass
+
+class LoopClient(FakeClient):
+    def __init__(self, batches):
+        super().__init__(); self.batches = list(batches); self.limits = []
+    def claim(self, limit=5):
+        self.limits.append(limit)
+        if not self.batches:
+            raise _StopLoop()
+        return self.batches.pop(0)
+
+ag = mk_agent(FakeTr([HS_OK], [100]))
+ag.client = LoopClient([[mk_job(i) for i in range(10)],
+                        [mk_job(i) for i in range(10, 20)],
+                        [mk_job(i) for i in range(20, 23)]])
+ag._print_burst = lambda jobs: None
+_sleeps = []
+_real_sleep = print_agent.time.sleep
+print_agent.time.sleep = lambda s: _sleeps.append(s)
+try:
+    ag.run()
+except _StopLoop:
+    pass
+finally:
+    print_agent.time.sleep = _real_sleep
+check("v8 claims 10 labels per burst",
+      ag.client.limits[:3] == [10, 10, 10], ag.client.limits)
+check("v8 skips the poll sleep after a full batch, sleeps after a short one",
+      _sleeps.count(ag.args.poll) == 1, _sleeps)
+
 print()
 print(f"{'FAIL' if fails else 'OK'}  {len(fails)} failing")
 sys.exit(1 if fails else 0)
