@@ -2195,14 +2195,30 @@ def create_print_jobs(
     lines apply — the batch flows always consulted the store but this
     endpoint trusted the client, so a Scan Station print quietly ignored
     an updated SKU line (Nick, 2026-08-25, ZWO Softbag1)."""
+    # A bundle MASTER prints its components (Nick, 2026-09-29, S11800 =
+    # S11800-1 + S11800-2): N bundles queue N x (per-kit qty) labels of
+    # each component, never a label for the master itself.
+    comps = _bundle_print_components(session, payload.sku)
+    if comps:
+        return _print_bundle_components(session, payload, comps)
     fields = payload.model_dump(exclude={"quantity"})
+    jobs = _make_label_jobs(session, fields, payload.quantity)
+    session.add_all(jobs)
+    session.commit()
+    for job in jobs:
+        session.refresh(job)
+    return {"count": len(jobs), "jobs": [j.as_dict() for j in jobs]}
+
+
+def _make_label_jobs(session: Session, fields: dict, n: int) -> list:
+    """N pending label jobs for one product. The SAVED label lines apply
+    unless the caller sent an explicit label_name."""
     if not (fields.get("label_name") or "").strip() and (
-        payload.sku or ""
+        fields.get("sku") or ""
     ).strip():
-        custom = session.get(LabelName, payload.sku.strip()) or session.scalar(
-            select(LabelName).where(
-                func.upper(LabelName.sku) == payload.sku.strip().upper()
-            )
+        sku = fields["sku"].strip()
+        custom = session.get(LabelName, sku) or session.scalar(
+            select(LabelName).where(func.upper(LabelName.sku) == sku.upper())
         )
         if custom is not None:
             fields["label_name"] = custom.label_name
@@ -2210,16 +2226,93 @@ def create_print_jobs(
             fields["label_sku"] = custom.sku_text
     jobs = [
         PrintJob(epc=_new_epc(), status="pending", **fields)
-        for _ in range(payload.quantity)
+        for _ in range(n)
     ]
-    # Multi-box units: per-box labels ride along ("BOX 2 OF 2", its own
-    # bin) as companion jobs - physical stickers, counting nowhere.
-    jobs = _apply_label_notes(jobs)
+    return _apply_label_notes(jobs)
+
+
+def _bundle_print_components(
+    session: Session, sku: str | None
+) -> list[tuple[str, int]]:
+    """[(component_sku, qty per kit)] when sku is a bundle master whose
+    contents are something OTHER than itself; [] otherwise."""
+    key = _up(sku)
+    if not key:
+        return []
+    rows = session.scalars(
+        select(BundleContent).where(func.upper(BundleContent.bundle_sku) == key)
+        .order_by(BundleContent.id)
+    ).all()
+    comps = [(r.component_sku.strip(), max(1, r.qty or 1)) for r in rows
+             if r.component_sku and _up(r.component_sku) != key]
+    return comps
+
+
+_BUNDLE_PRINT_MAX = 500
+
+
+def _print_bundle_components(
+    session: Session, payload: "PrintJobIn", comps: list[tuple[str, int]]
+) -> dict:
+    """Queue the components' labels for payload.quantity bundles. Each
+    component resolves like any scan (bin map, then Shopify) and wears
+    its OWN saved label lines and bin. All or nothing: a component that
+    can't be found stops the print before anything queues."""
+    total = sum(q for _, q in comps) * payload.quantity
+    if total > _BUNDLE_PRINT_MAX:
+        raise HTTPException(
+            422,
+            f"{payload.sku} x{payload.quantity} would print {total} "
+            f"component labels - over {_BUNDLE_PRINT_MAX}. Print fewer.",
+        )
+    keep = {k: v for k, v in payload.model_dump(exclude={"quantity"}).items()
+            if k in ("requested_by", "printer", "print_session")}
+    plan = []
+    for comp_sku, per_kit in comps:
+        try:
+            product = _product_lookup(comp_sku)
+        except HTTPException:
+            product = None
+        if not product or not product.get("shopify_variant_id"):
+            raise HTTPException(
+                422,
+                f"{payload.sku} is a bundle, but its component {comp_sku} "
+                f"wasn't found - fix the bundle in Inventory > Bundles.",
+            )
+        fields = {
+            "shopify_variant_id": product.get("shopify_variant_id"),
+            "shopify_product_id": product.get("shopify_product_id"),
+            "product_title": product.get("product_title") or comp_sku,
+            "variant_title": product.get("variant_title"),
+            "sku": product.get("sku") or comp_sku,
+            "barcode": product.get("barcode"),
+            "bin_location": product.get("bin_location"),
+            "other_bins": product.get("other_bins"),
+            **keep,
+        }
+        plan.append((comp_sku, per_kit, fields))
+    jobs: list = []
+    parts = []
+    for comp_sku, per_kit, fields in plan:
+        n = per_kit * payload.quantity
+        jobs.extend(_make_label_jobs(session, fields, n))
+        parts.append({"sku": fields["sku"], "qty_per_kit": per_kit,
+                      "labels": n})
     session.add_all(jobs)
     session.commit()
     for job in jobs:
         session.refresh(job)
-    return {"count": len(jobs), "jobs": [j.as_dict() for j in jobs]}
+    return {
+        "count": len(jobs),
+        "jobs": [j.as_dict() for j in jobs],
+        "bundle": {"sku": payload.sku, "quantity": payload.quantity,
+                   "components": parts},
+        "message": (
+            f"{payload.sku} is a bundle - queued "
+            + ", ".join(f"{p['labels']} x {p['sku']}" for p in parts)
+            + " (component labels, no bundle label)."
+        ),
+    }
 
 
 @app.get("/api/print-jobs", dependencies=[Depends(require_user)])

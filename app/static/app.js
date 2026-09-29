@@ -2853,6 +2853,7 @@ async function queueLabels(quantity, confirmedBig = false) {
       return;
     }
     const data = await res.json();
+    if (data.bundle) el.printStatus.textContent = data.message;
     bulkPrinted += (data.jobs || []).length;
     // A multi-label run IS a bulk visit: turn the printed-vs-tagged ledger
     // on so it decides when this product is done. Auto-reset is a bulk
@@ -17214,7 +17215,11 @@ document.getElementById("phist-print").addEventListener("click", async () => {
       const body = await res.json().catch(() => ({}));
       msg.textContent = body.detail || "Queueing failed.";
     } else {
-      msg.textContent = `${countNoun(qty, "label", "labels")} queued ✓ - collect at the printer (Print queue tab tracks them).`;
+      const done = await res.clone().json().catch(() => ({}));
+      // A bundle master prints its components instead (2026-09-29).
+      msg.textContent = done.bundle
+        ? `${done.message} ✓`
+        : `${countNoun(qty, "label", "labels")} queued ✓ - collect at the printer (Print queue tab tracks them).`;
     }
   } catch (err) {
     msg.textContent = err.message;
@@ -20466,7 +20471,7 @@ async function pcardEnsureLabelEditor() {
     const n = Math.max(1, Math.min(200, parseInt(els.qty.value, 10) || 1));
     els.print.disabled = true;
     try {
-      await postJson("/api/print-jobs", {
+      const done = await postJson("/api/print-jobs", {
         quantity: n,
         sku: st.sku || null,
         barcode: st.barcode || null,
@@ -20479,10 +20484,12 @@ async function pcardEnsureLabelEditor() {
         printer: (typeof selectedPrinter !== "undefined" && selectedPrinter) || null,
         requested_by: operatorEl.value || null,
       });
-      els.msg.textContent =
-        `${n} label${n === 1 ? "" : "s"} queued ✓ - they print with ` +
-        "the SAVED settings (save first if the preview shows unsaved " +
-        "changes).";
+      // A bundle master prints its components (2026-09-29).
+      els.msg.textContent = done && done.bundle
+        ? `${done.message} ✓`
+        : `${n} label${n === 1 ? "" : "s"} queued ✓ - they print with ` +
+          "the SAVED settings (save first if the preview shows unsaved " +
+          "changes).";
     } catch (err) {
       els.msg.textContent = "Could not queue the labels: " + err.message;
     } finally {
@@ -20673,6 +20680,11 @@ async function openProductCard(term) {
   };
   pcardState = st;
   pcardRenderIdentity();
+  // The label editor (and its Print button) needs only the product -
+  // open it NOW instead of after tags/history/bundles land (Nick,
+  // 2026-09-29: 10-20 s waits to print when the database was busy).
+  if (document.querySelector(".pcard__tabbtn--active")?.dataset.ptab === "rfid")
+    pcardEnsureLabelEditor();
   const isOpenBox = st.sku.toUpperCase().endsWith("-O");
   // The history call passes what was just resolved, so the server
   // skips its own second product lookup; the open-box tags ride

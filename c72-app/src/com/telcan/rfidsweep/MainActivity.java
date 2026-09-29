@@ -20092,9 +20092,17 @@ public class MainActivity extends Activity {
                                     .put("requested_by",
                                             prefs.getString("device",
                                                     "C72"));
-                            api("POST", "/api/print-jobs", body);
+                            final JSONObject pr = api("POST",
+                                    "/api/print-jobs", body);
                             ui.post(() -> {
                                 beep(SOUND_OK);
+                                // A bundle master prints its components
+                                // (2026-09-29) - say which.
+                                if (pr.has("bundle")) {
+                                    status.setText("✓ " + pr.optString(
+                                            "message"));
+                                    return;
+                                }
                                 status.setText("✓ " + plural(nF, "label", "labels") + " "
                                         + "queued for " + sku + ". Stick "
                                         + (nF == 1 ? "it" : "them")
