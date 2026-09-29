@@ -247,6 +247,31 @@ def receiving_sync(
             r.product_title for r in rows
             if r.sku and M._up(r.sku) in row_skus
         }
+        # A bin added AFTER the line was booked (the planner now makes the
+        # user add one before printing, 2026-09-29) lives only in Shopify
+        # so far - the booked row still says "no bin". Re-read the live
+        # bin for just those rows so the label carries it.
+        live_bins: dict[str, str] = {}
+        for r in rows:
+            if not r.sku or M._up(r.sku) not in row_skus or r.skip_reason:
+                continue
+            cur = (r.bin_location or "").strip()
+            if cur and cur.lower() != "no bin assigned":
+                continue
+            key = M._up(r.sku)
+            if key not in live_bins:
+                live_bins[key] = ""
+                try:
+                    p = M.shopify.lookup_barcode(r.sku) or (
+                        M.shopify.lookup_barcode(r.barcode) if r.barcode else None)
+                    fresh = ((p or {}).get("bin_location") or "").strip()
+                    if fresh and fresh.lower() != "no bin assigned":
+                        live_bins[key] = fresh[:100]
+                except Exception:  # noqa: BLE001 - stays held, named below
+                    pass
+            if live_bins[key]:
+                r.bin_location = live_bins[key]
+        session.flush()
         for b in batches:
             if b.status in ("done", "abandoned"):
                 continue

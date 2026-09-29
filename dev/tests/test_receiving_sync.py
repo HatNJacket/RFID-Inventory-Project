@@ -116,6 +116,20 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
     check("so-labels reports the whole order",
           st["labels_owed"] == 4 and sku_row(st, "81035")["labels_queued"] == 15, st)
 
+    # The bin gets added in Shopify (the planner insists before printing):
+    # the print re-reads it live and the held labels go out with it.
+    with patch("app.shopify.lookup_barcode",
+               return_value={"bin_location": "C3-3", "sku": "93704"}):
+        out = cl.post("/api/receiving/sync", json={
+            "reference": ref, "items": items, "print": True,
+            "print_skus": ["93704"]}).json()
+    with Session(get_engine()) as s:
+        bins = {j.bin_location for j in s.scalars(
+            select(PrintJob).where(PrintJob.sku == "93704"))}
+    check("a bin added after booking reaches the labels",
+          out["queued"] == 4 and out["skipped_no_bin"] == [] and bins == {"C3-3"},
+          (out["queued"], out["skipped_no_bin"], bins))
+
     # The batch closes, then a late unit arrives: count the closed batch.
     with Session(get_engine()) as s:
         for bb in s.scalars(select(Batch).where(Batch.kind == "receiving")):
