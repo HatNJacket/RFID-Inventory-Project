@@ -57,6 +57,11 @@ class ReceivingSyncIn(BaseModel):
     # ...for just these SKUs (the planner's per-line buttons). None = all
     # the lines in this call.
     print_skus: list[str] | None = Field(default=None, max_length=300)
+    # The planner's Undo receive (2026-09-29, SO 977): a total BELOW
+    # what's booked lowers the booking to match (open batches only) and
+    # takes the labels with it. Only the undo path sends it - a plain
+    # sync never lowers.
+    allow_lower: bool = False
 
 
 def _so_ref(reference: str) -> tuple[str, str]:
@@ -173,6 +178,99 @@ def _so_status(session: Session, batches: list[Batch]) -> list[dict]:
     return list(per.values())
 
 
+def _lower_bookings(session: Session, payload: ReceivingSyncIn,
+                    batches: list[Batch], rows: list[BatchItem],
+                    by: str | None) -> tuple[list[dict], int]:
+    """The undo half of the sync: for each line whose planner total is
+    now BELOW what's booked, take the difference off the OPEN batches'
+    rows (newest batch first), never below the boxes already paired to
+    a tag. Labels go with the units: waiting ones are canceled, printed
+    ones voided (the sticker is spare - discard it). A row left with
+    nothing on it is removed. Returns (unbooked lines, labels voided)."""
+    open_ids = [b.id for b in batches if b.status not in ("done", "abandoned")]
+    unbooked: list[dict] = []
+    voided_total = 0
+    for it in payload.items:
+        mine = [r for r in rows if _row_matches(r, it.sku, it.barcode)]
+        excess = sum(_row_units(r) for r in mine) - it.received_total
+        if excess <= 0:
+            continue
+        took_line = 0
+        for r in sorted((r for r in mine if r.batch_id in open_ids),
+                        key=lambda r: (r.batch_id, r.id), reverse=True):
+            if excess <= 0:
+                break
+            slots = 1 if r.skip_reason else M._item_box_slots(r)
+            tagged = 0
+            if r.shopify_variant_id:
+                tagged = session.scalar(
+                    select(func.count()).select_from(M.RfidAssignment).where(
+                        M.RfidAssignment.batch_id == r.batch_id,
+                        M.RfidAssignment.shopify_variant_id
+                        == r.shopify_variant_id,
+                    )
+                ) or 0
+            # Boxes already tagged stay booked - they physically exist.
+            floor_units = -(-tagged // max(1, slots))
+            can = max(0, _row_units(r) - floor_units)
+            take = min(can, excess)
+            if take <= 0:
+                continue
+            boxes = take * slots
+            r.expected_qty = max(0, (r.expected_qty or 0) - boxes)
+            r.qty_scanned = max(0, (r.qty_scanned or 0) - boxes)
+            excess -= take
+            took_line += take
+            # Labels beyond what the row still wants: waiting ones are
+            # canceled first, then printed ones voided, newest first.
+            if r.shopify_variant_id and not r.skip_reason:
+                want = (r.qty_scanned or 0) + (r.case_count or 0)
+                live = session.scalars(
+                    select(PrintJob).where(
+                        PrintJob.batch_id == r.batch_id,
+                        PrintJob.shopify_variant_id == r.shopify_variant_id,
+                        PrintJob.status.in_(("pending", "done")),
+                    ).order_by(PrintJob.id.desc())
+                ).all()
+                over = len(live) - want
+                for j in sorted(live, key=lambda j: j.status != "pending"):
+                    if over <= 0:
+                        break
+                    if j.status == "done":
+                        voided_total += 1
+                    j.status = "canceled" if j.status == "pending" else "voided"
+                    over -= 1
+            session.flush()   # the label changes above must count
+            has_jobs = session.scalar(
+                select(func.count()).select_from(PrintJob).where(
+                    PrintJob.batch_id == r.batch_id,
+                    PrintJob.shopify_variant_id == r.shopify_variant_id,
+                    PrintJob.status.in_(("pending", "printing", "done")),
+                )
+            ) if r.shopify_variant_id else 0
+            if (r.qty_scanned or 0) == 0 and (r.expected_qty or 0) == 0 \
+                    and not (r.case_count or 0) and not has_jobs and not tagged:
+                session.delete(r)
+        if took_line:
+            unbooked.append({"sku": it.sku, "quantity": took_line})
+    if unbooked:
+        units = sum(u["quantity"] for u in unbooked)
+        M._log_change(
+            session,
+            sku=None,
+            title=next((b.created_by for b in batches if b.id in open_ids),
+                       payload.reference),
+            field="receiving-unbooked",
+            old=None,
+            new=(f"{M._count(units, 'unit', 'units')} undone in TC-Planner"
+                 + (f"; {M._count(voided_total, 'printed label', 'printed labels')} "
+                    "voided" if voided_total else "")),
+            by=by,
+        )
+        session.flush()
+    return unbooked, voided_total
+
+
 @app.post(
     "/api/receiving/sync",
     dependencies=[Depends(M.require_user)],
@@ -228,6 +326,13 @@ def receiving_sync(
         )
         session.flush()
         batches = _so_batches(session, so_part)
+        rows = _rows(session, batches)
+
+    # 1b) Undo: lower the booking to the planner's total and take the
+    # labels with it.
+    unbooked, voided = _lower_bookings(session, payload, batches, rows, by) \
+        if payload.allow_lower else ([], 0)
+    if unbooked:
         rows = _rows(session, batches)
 
     # 2) Queue the owed labels - only for the asked lines.
@@ -287,6 +392,13 @@ def receiving_sync(
     if units_booked:
         msg.append(f"{M._count(units_booked, 'unit', 'units')} booked on "
                    f"{so_part}'s receiving batch")
+    if unbooked:
+        n_un = sum(u["quantity"] for u in unbooked)
+        msg.append(f"{M._count(n_un, 'unit', 'units')} taken off {so_part}'s "
+                   "receiving batch with the undo"
+                   + (f" - {M._count(voided, 'printed label', 'printed labels')} "
+                      "voided, discard "
+                      + ("it" if voided == 1 else "them") if voided else ""))
     if payload.print:
         msg.append(f"{M._count(len(queued), 'label', 'labels')} queued")
     if no_bin:
@@ -295,6 +407,8 @@ def receiving_sync(
     return {
         "full_shipment": False,
         "booked": booked,
+        "unbooked": unbooked,
+        "labels_voided": voided,
         "queued": len(queued),
         "skipped_no_bin": no_bin,
         "skus": status,

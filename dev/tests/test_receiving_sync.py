@@ -51,6 +51,9 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
         s.add(BinMapEntry(sku="93704", product_title="Moon Map",
                           bin="", qty=0, barcode="050234937047",
                           shopify_variant_id="t:M"))
+        s.add(BinMapEntry(sku="104988", product_title="Moon Atlas",
+                          bin="F5-1", qty=0, barcode="9780228104988",
+                          shopify_variant_id="t:ATLAS"))
         s.commit()
     ref = "SO 964 · Celestron"
     items = [
@@ -156,6 +159,69 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
           out["full_shipment"] is True and out["queued"] == 0)
     bad = cl.post("/api/receiving/sync", json={"reference": "PO 12", "items": items})
     check("a reference without an SO number is refused", bad.status_code == 422)
+
+    # ---- the planner's Undo receive (SO 977's case; SO 978 here) ----
+    ref2 = "SO 978 · Firefly Books"
+    atlas = lambda n: [{"sku": "104988", "barcode": "9780228104988",
+                        "received_total": n}]
+    def atlas_row():
+        with Session(get_engine()) as s:
+            from app.models import BatchItem
+            return s.scalars(select(BatchItem).where(BatchItem.sku == "104988")).first()
+    def atlas_jobs():
+        with Session(get_engine()) as s:
+            return sorted(j.status for j in s.scalars(
+                select(PrintJob).where(PrintJob.sku == "104988")))
+    cl.post("/api/receiving/sync", json={"reference": ref2, "items": atlas(3)})
+    out = cl.post("/api/receiving/sync", json={"reference": ref2, "items": atlas(2)}).json()
+    check("a plain sync never lowers a booking",
+          out.get("unbooked") == [] and atlas_row().qty_scanned == 3, out.get("unbooked"))
+    out = cl.post("/api/receiving/sync", json={
+        "reference": ref2, "items": atlas(2), "allow_lower": True}).json()
+    check("the undo lowers the booking to the planner's total",
+          out["unbooked"] == [{"sku": "104988", "quantity": 1}]
+          and atlas_row().qty_scanned == 2 and atlas_row().expected_qty == 2,
+          out["unbooked"])
+    cl.post("/api/receiving/sync", json={
+        "reference": ref2, "items": atlas(2), "print": True})
+    check("  two labels queued for the two left", atlas_jobs() == ["pending", "pending"])
+    out = cl.post("/api/receiving/sync", json={
+        "reference": ref2, "items": atlas(1), "allow_lower": True}).json()
+    check("undoing a unit cancels its waiting label",
+          atlas_jobs() == ["canceled", "pending"] and out["labels_owed"] == 0
+          and out["labels_voided"] == 0, atlas_jobs())
+    with Session(get_engine()) as s:
+        for j in s.scalars(select(PrintJob).where(PrintJob.sku == "104988",
+                                                   PrintJob.status == "pending")):
+            j.status = "done"
+        s.commit()
+    out = cl.post("/api/receiving/sync", json={
+        "reference": ref2, "items": atlas(0), "allow_lower": True}).json()
+    check("undoing a printed unit voids its label and says so",
+          atlas_jobs() == ["canceled", "voided"] and out["labels_voided"] == 1
+          and "discard" in out["message"], (atlas_jobs(), out["message"]))
+    check("  ...and the emptied row is gone", atlas_row() is None)
+    st = cl.get("/api/receiving/so-labels", params={"reference": "SO 978"}).json()
+    check("nothing is owed for the undone order", st["labels_owed"] == 0, st)
+
+    # A tagged box stays booked however far the undo goes.
+    cl.post("/api/receiving/sync", json={"reference": ref2, "items": atlas(2)})
+    with Session(get_engine()) as s:
+        from app.models import RfidAssignment
+        r = atlas_row()
+        s.add(RfidAssignment(rfid_id="E0000000000000000000A7A5",
+                             shopify_variant_id="t:ATLAS", product_title="Moon Atlas",
+                             sku="104988", bin_location="F5-1", batch_id=r.batch_id))
+        s.commit()
+    cl.post("/api/receiving/sync", json={
+        "reference": ref2, "items": atlas(0), "allow_lower": True})
+    check("the undo never goes below the boxes already tagged",
+          atlas_row() is not None and atlas_row().qty_scanned == 1,
+          atlas_row() and atlas_row().qty_scanned)
+    with Session(get_engine()) as s:
+        n = len(s.scalars(select(BarcodeChange).where(
+            BarcodeChange.changed_field == "receiving-unbooked")).all())
+    check("every undo is History-logged", n == 4, n)
 
 print()
 if fails:
