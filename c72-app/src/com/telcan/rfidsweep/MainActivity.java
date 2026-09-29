@@ -16153,6 +16153,8 @@ public class MainActivity extends Activity {
     private LinearLayout auditCtx;
     private EditText auditRackIn;
     private TextView auditCtxRack, auditCtxPos;
+    private android.widget.ProgressBar auditCtxBar;
+    private boolean auditLoading = false;
     // Did the shown report come from real sweep evidence (a live set or
     // a saved sweep)? Silence means nothing until something was swept.
     private boolean auditRepSwept = false;
@@ -16280,6 +16282,21 @@ public class MainActivity extends Activity {
         auditCtxPos.setGravity(Gravity.CENTER);
         auditCtxPos.setSingleLine(true);
         mid.addView(auditCtxPos);
+        // Replaces the line above while the rack loads (real progress).
+        auditCtxBar = new android.widget.ProgressBar(this, null,
+                android.R.attr.progressBarStyleHorizontal);
+        auditCtxBar.setProgressTintList(
+                android.content.res.ColorStateList.valueOf(C_BLUE));
+        auditCtxBar.setProgressBackgroundTintList(
+                android.content.res.ColorStateList.valueOf(C_LINE));
+        auditCtxBar.setVisibility(View.GONE);
+        LinearLayout.LayoutParams barLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(6));
+        barLp.topMargin = dp(6);
+        barLp.bottomMargin = dp(5);
+        barLp.leftMargin = dp(10);
+        barLp.rightMargin = dp(10);
+        mid.addView(auditCtxBar, barLp);
         LinearLayout.LayoutParams midLp = new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
         midLp.leftMargin = dp(4);
@@ -16489,6 +16506,7 @@ public class MainActivity extends Activity {
         auditLandingShown = true;
         setStatusPopup(false);
         auditBusyMsg = null;
+        auditLoading = false;
         if (auditLanding == null) return;
         auditLanding.setVisibility(View.VISIBLE);
         auditWork.setVisibility(View.GONE);
@@ -16920,10 +16938,23 @@ public class MainActivity extends Activity {
         auditCtxRack.setText(cur.isEmpty()
                 ? (auditRack == null ? "-" : auditRack) : cur);
         if (auditBusyMsg != null) {
+            auditCtxBar.setVisibility(View.GONE);
+            auditCtxPos.setVisibility(View.VISIBLE);
             auditCtxPos.setText(auditBusyMsg);
             auditCtxPos.setTextColor(C_BLUE);
             return;
         }
+        // Loading: the bar, filled by bins actually checked so far.
+        if (auditLoading || !auditInFlight.isEmpty()) {
+            int total = Math.max(1, auditRackBins.size());
+            auditCtxBar.setMax(total);
+            auditCtxBar.setProgress(Math.min(total, auditRackLoaded()));
+            auditCtxPos.setVisibility(View.GONE);
+            auditCtxBar.setVisibility(View.VISIBLE);
+            return;
+        }
+        auditCtxBar.setVisibility(View.GONE);
+        auditCtxPos.setVisibility(View.VISIBLE);
         auditCtxPos.setTextColor(C_MUTED);
         if (auditRack == null) {
             auditCtxPos.setText("");
@@ -17147,11 +17178,34 @@ public class MainActivity extends Activity {
         auditCache.clear();
     }
 
-    /** "Checking…" on the strip in place of the bin position - the
-     *  popup stays for things worth reading. null clears it. */
+    /** A load is running (msg != null) or done (null). While the rack
+     *  loads, the strip trades its position line for a bar that fills
+     *  one step per bin checked against the evidence in hand (Nick,
+     *  2026-09-29: real counts, no time estimate). */
     private void auditBusy(String msg) {
+        auditLoading = msg != null;
+        auditBusyMsg = null;
+        auditCtxUpdate();
+    }
+
+    /** The sweep's own line on the strip ("Sweeping - trigger to stop
+     *  and check"); cleared by the next load. */
+    private void auditSweepText(String msg) {
         auditBusyMsg = msg;
         auditCtxUpdate();
+    }
+
+    /** Bins of the open rack already checked against the evidence in
+     *  hand - the bar's real progress. */
+    private int auditRackLoaded() {
+        if (auditRackBins.isEmpty()) return auditLoading ? 0 : 1;
+        int key = auditEvidenceKey();
+        int done = 0;
+        for (String b : auditRackBins) {
+            AuditCached c = auditCache.get(auditCacheKey(b));
+            if (c != null && c.key == key) done++;
+        }
+        return done;
     }
 
     /** Worker thread: one location's report against the evidence in
@@ -17392,7 +17446,10 @@ public class MainActivity extends Activity {
                 } catch (Exception ignored) {
                     // The arrow will just ask again.
                 } finally {
-                    ui.post(() -> auditInFlight.remove(flight));
+                    ui.post(() -> {
+                        auditInFlight.remove(flight);
+                        auditCtxUpdate();   // one more step on the bar
+                    });
                 }
             });
         }
@@ -17435,7 +17492,7 @@ public class MainActivity extends Activity {
                 if (auditLandingShown) {
                     status.setText("Sweeping… walk the shelf. Trigger to stop.");
                 } else {
-                    auditBusy("Sweeping - trigger to stop and check");
+                    auditSweepText("Sweeping - trigger to stop and check");
                 }
             } else {
                 status.setText("Could not start the sweep - try again.");
