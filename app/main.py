@@ -14111,7 +14111,7 @@ def receiving_prints(
         "message": (
             f"{_count(len(jobs), 'label', 'labels')} queued on receiving batch {batch.id}"
             + (f" ({tag})" if payload.reference else "")
-            + (f"; {len(skipped_unknown)} unknown SKU(s) skipped"
+            + (f"; {_count(len(skipped_unknown), 'unknown SKU', 'unknown SKUs')} skipped"
                if skipped_unknown else "")
             + (f"; {len(skipped_non_taggable)} non-taggable skipped"
                if skipped_non_taggable else "")
@@ -14442,7 +14442,7 @@ def receiving_full_shipment(
                if intake["held_notes"] else "")
             + (f"; held for a bin: {', '.join(intake['skipped_no_bin'])}"
                if intake["skipped_no_bin"] else "")
-            + (f"; {len(intake['skipped_unknown'])} unknown SKU(s) "
+            + (f"; {_count(len(intake['skipped_unknown']), 'unknown SKU', 'unknown SKUs')} "
                "flagged" if intake["skipped_unknown"] else "")
             + ". Label and pair the shipment, then press "
             "\"All boxes labelled\" to count what didn't arrive."

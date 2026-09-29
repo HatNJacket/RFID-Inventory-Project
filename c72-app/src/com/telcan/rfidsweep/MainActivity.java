@@ -346,6 +346,49 @@ public class MainActivity extends Activity {
         return l;
     }
 
+    // Popup status (audit window): the box hides and messages float.
+    private TextView statusPop;
+    private boolean statusAsPopup = false;
+    private final Runnable statusPopHide = () -> {
+        if (statusPop == null || statusPop.getVisibility() != View.VISIBLE) {
+            return;
+        }
+        statusPop.animate().alpha(0f).setDuration(180)
+                .withEndAction(() -> statusPop.setVisibility(View.GONE))
+                .start();
+    };
+
+    /** Float one status message at the top. Progress chatter ("Opening
+     *  I1-2…") stays quiet - the list redrawing is the answer. */
+    private void statusPopShow(String msg, boolean alert) {
+        if (statusPop == null) return;
+        String m = msg == null ? "" : msg.trim();
+        if (m.isEmpty() || m.endsWith("…")) return;
+        ui.removeCallbacks(statusPopHide);
+        statusPop.animate().cancel();
+        statusPop.setText(m);
+        statusPop.setTextColor(alert ? C_OVER : C_TEXT);
+        statusPop.setBackground(rr(alert ? C_OVER_BG : C_CARD,
+                alert ? C_OVER : C_LINE, 18));
+        statusPop.setAlpha(1f);
+        statusPop.setVisibility(View.VISIBLE);
+        ui.postDelayed(statusPopHide, alert ? 6000 : 3500);
+    }
+
+    /** Status as a popup (audit window) or the usual box (everywhere
+     *  else). */
+    private void setStatusPopup(boolean on) {
+        statusAsPopup = on;
+        if (status != null) {
+            status.setVisibility(on ? View.GONE : View.VISIBLE);
+        }
+        if (!on && statusPop != null) {
+            ui.removeCallbacks(statusPopHide);
+            statusPop.animate().cancel();
+            statusPop.setVisibility(View.GONE);
+        }
+    }
+
     /** One error message with the Alert-coloured edge; the next ordinary
      *  status.setText() flips the edge back automatically. */
     private void alertStatus(String msg) {
@@ -770,11 +813,13 @@ public class MainActivity extends Activity {
 
             @Override
             public void afterTextChanged(Editable s) {
+                boolean alert = statusAlertOnce;
                 if (statusAlertOnce) {
                     statusAlertOnce = false;
                 } else {
                     status.setBackground(statusBg(C_BLUE));
                 }
+                if (statusAsPopup) statusPopShow(s.toString(), alert);
             }
         });
         LinearLayout.LayoutParams sl = new LinearLayout.LayoutParams(
@@ -799,6 +844,25 @@ public class MainActivity extends Activity {
         // ---- drawer overlay ------------------------------------------------
         FrameLayout outer = new FrameLayout(this);
         outer.addView(root);
+
+        // The status line as a popup (Nick, 2026-09-29): inside an audit
+        // the box is hidden and each message floats in at the top for a
+        // few seconds instead of holding a row of the screen.
+        statusPop = new TextView(this);
+        statusPop.setTextSize(13);
+        statusPop.setMaxLines(4);
+        statusPop.setPadding(dp(14), dp(8), dp(14), dp(8));
+        statusPop.setElevation(dp(8));
+        statusPop.setVisibility(View.GONE);
+        statusPop.setOnClickListener(v -> statusPopHide.run());
+        FrameLayout.LayoutParams spl = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+        spl.topMargin = dp(6);
+        spl.leftMargin = dp(12);
+        spl.rightMargin = dp(12);
+        outer.addView(statusPop, spl);
 
         drawerScrim = new FrameLayout(this);
         drawerScrim.setBackgroundColor(Color.parseColor("#88000000"));
@@ -3102,7 +3166,7 @@ public class MainActivity extends Activity {
         final java.util.ArrayList<String> epcs =
                 new java.util.ArrayList<>(locTags.keySet());
         dlg()
-                .setTitle("WRITE OFF " + epcs.size() + " STICKER(S)?")
+                .setTitle("WRITE OFF " + plural(epcs.size(), "STICKER", "STICKERS") + "?")
                 .setMessage("Every unpaired sticker heard in this hunt "
                         + "leaves the locate list and stays ignored on "
                         + "future sweeps. Meant for the blank roll and "
@@ -3272,7 +3336,7 @@ public class MainActivity extends Activity {
         hint.setPadding(0, dp(6), 0, 0);
         hint.setText("Received here, labelled, never RFID-paired."
                 + (added > 0
-                    ? " Their " + added + " label EPC(s) joined the "
+                    ? " Their " + plural(added, "label EPC", "label EPCs") + " joined the "
                       + "hunt - walk to " + bin + " and trigger; 100% "
                       + "opens the pair window."
                     : " Their labels are already hunt targets - walk "
@@ -3355,7 +3419,7 @@ public class MainActivity extends Activity {
 
     private String pinBtnText(String bin, int labels) {
         return labels > 0
-                ? "⧉ " + bin + " · " + labels + " LABEL(S) TO PAIR"
+                ? "⧉ " + bin + " · " + plural(labels, "LABEL", "LABELS") + " TO PAIR"
                 : "⧉ " + bin + " · ALL PAIRED";
     }
 
@@ -6058,7 +6122,7 @@ public class MainActivity extends Activity {
                 if (v != null && v == it.id) joined++;
             }
             editBundleBtn.setText(joined > 0
-                    ? "✓ " + joined + " BOX(ES) BUNDLED - ADD MORE…"
+                    ? "✓ " + plural(joined, "BOX", "BOXES") + " BUNDLED - ADD MORE…"
                     : "BUNDLE OTHER BOXES ONTO THIS…");
         }
         // Only a real product can be skipped; an unknown barcode already has
@@ -6087,7 +6151,7 @@ public class MainActivity extends Activity {
         editCaseBtn.setVisibility(!it.skipped && step <= STEP_CHECK
                 ? View.VISIBLE : View.GONE);
         editCaseBtn.setText(it.caseCount > 0
-                ? "✓ " + it.caseCount + " SEALED CASE(S) OF "
+                ? "✓ " + plural(it.caseCount, "SEALED CASE", "SEALED CASES") + " OF "
                   + it.caseUnits + " - CHANGE…"
                 : "BOX OF MULTIPLE PRODUCTS…");
         editDblBtn.setVisibility(it.resolved && it.qty > 0
@@ -6896,6 +6960,8 @@ public class MainActivity extends Activity {
         // The system ActionBar names the current tab; the drawer keeps
         // the app name ("TC RFID Sweep").
         setTitle(TAB_TITLES[tab]);
+        // The popup status belongs to the audit window only.
+        if (tab != TAB_AUDIT) setStatusPopup(false);
         for (int i = 0; i < TAB_COUNT; i++) {
             tabViews[i].setVisibility(i == tab ? View.VISIBLE : View.GONE);
         }
@@ -10109,7 +10175,7 @@ public class MainActivity extends Activity {
     private void recvPrintWait(final int id, final int queued) {
         final boolean[] live = {true};
         final AlertDialog d = dlg()
-                .setTitle("PRINTING " + queued + " LABEL(S)")
+                .setTitle("PRINTING " + plural(queued, "LABEL", "LABELS"))
                 .setMessage("Waiting for the printer… grab the stack "
                         + "when it's done - the screen continues on its "
                         + "own.")
@@ -10251,8 +10317,8 @@ public class MainActivity extends Activity {
 
     private void showStripResult() {
         dlg()
-                .setTitle("STRIP SWEEP - " + stripEpcs.size()
-                        + " TAG(S)")
+                .setTitle("STRIP SWEEP - " + plural(stripEpcs.size(),
+                        "TAG", "TAGS"))
                 .setMessage(plural(stripEpcs.size(), "unique tag", "unique tags") + " heard. "
                         + "Tags already paired to real boxes are "
                         + "excluded automatically - hold the strip and "
@@ -14367,10 +14433,12 @@ public class MainActivity extends Activity {
                     + "\u2022 The tab opens on the rack list - the web's audit "
                     + "order, with each rack's drift and open checks. Tap a "
                     + "rack, or type a rack or bin, to audit it; \u25c0 \u25b6 "
-                    + "then walk only that rack's bins, worst product first "
-                    + "(red, yellow, green). \u25c0 RACKS comes back here.\n"
+                    + "beside the bin name then walk only that rack's bins "
+                    + "(tap the bin name to jump), worst product first "
+                    + "(red, yellow, green). \u25c0 RACKS (bottom left) comes back here.\n"
                     + "• TRIGGER sweeps; stopping re-checks by itself. "
-                    + "CHECK re-runs it any time.\n"
+                    + "CHECK re-runs it any time. Silence verdicts and "
+                    + "MARK ALL SOLD wait until something was swept.\n"
                     + "• Barcode any box WITHOUT a sticker - it's noted "
                     + "and its label prints from the banner.\n"
                     + "• Tap a product row for fixes: print missing "
@@ -16084,7 +16152,10 @@ public class MainActivity extends Activity {
     private LinearLayout auditLanding, auditWork, auditSuggest, auditRackList;
     private LinearLayout auditCtx;
     private EditText auditRackIn;
-    private TextView auditCtxRack, auditCtxPos, auditCtxDrift;
+    private TextView auditCtxRack, auditCtxPos;
+    // Did the shown report come from real sweep evidence (a live set or
+    // a saved sweep)? Silence means nothing until something was swept.
+    private boolean auditRepSwept = false;
     private JSONObject auditRacksData = null;   // /api/audit/racks
     private boolean auditRacksLoading = false;
     private boolean auditLandingShown = true;
@@ -16172,63 +16243,55 @@ public class MainActivity extends Activity {
         auditWork.setOrientation(LinearLayout.VERTICAL);
         auditWork.setVisibility(View.GONE);
 
+        // The rack strip IS the location row (Nick, 2026-09-29, 4.25):
+        // ◀ [bin · RACK I1 · bin 2 of 5] ▶ in one card, so the list
+        // gets the height. The arrows walk the rack's bins; tapping the
+        // middle jumps straight to any bin of the rack.
         auditCtx = new LinearLayout(this);
         auditCtx.setOrientation(LinearLayout.HORIZONTAL);
         auditCtx.setGravity(Gravity.CENTER_VERTICAL);
         auditCtx.setBackground(rr(C_CARD, C_LINE, 8));
-        auditCtx.setPadding(dp(8), dp(6), dp(10), dp(6));
-        Button back = chipBtn("◀ RACKS");
-        back.setOnClickListener(x -> auditShowLanding());
-        auditCtx.addView(back);
+        auditCtx.setPadding(dp(4), dp(4), dp(4), dp(4));
+        Button prev = smallBtn("◀");
+        prev.setOnClickListener(x -> auditStep(-1));
+        auditCtx.addView(prev, new LinearLayout.LayoutParams(dp(56),
+                LinearLayout.LayoutParams.MATCH_PARENT));
+        LinearLayout mid = new LinearLayout(this);
+        mid.setOrientation(LinearLayout.VERTICAL);
+        mid.setGravity(Gravity.CENTER);
+        mid.setPadding(dp(6), dp(2), dp(6), dp(2));
+        mid.setBackground(btnBg(C_CARD, 0, C_PRESS, 6));
+        mid.setOnClickListener(x -> auditJumpSheet());
+        // The bin field stays as the location's holder (every load reads
+        // it); it just doesn't take the room of its own row any more.
+        auditBin = themedEdit();
+        auditBin.setVisibility(View.GONE);
+        mid.addView(auditBin);
         auditCtxRack = new TextView(this);
-        auditCtxRack.setTextSize(15);
+        auditCtxRack.setTextSize(18);
         auditCtxRack.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
         auditCtxRack.setTextColor(C_BLUE_DK);
-        LinearLayout.LayoutParams crl = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT);
-        crl.leftMargin = dp(10);
-        auditCtx.addView(auditCtxRack, crl);
+        auditCtxRack.setGravity(Gravity.CENTER);
+        auditCtxRack.setSingleLine(true);
+        mid.addView(auditCtxRack);
         auditCtxPos = new TextView(this);
         auditCtxPos.setTextSize(12);
         auditCtxPos.setTextColor(C_MUTED);
-        LinearLayout.LayoutParams cpl = new LinearLayout.LayoutParams(
+        auditCtxPos.setGravity(Gravity.CENTER);
+        auditCtxPos.setSingleLine(true);
+        mid.addView(auditCtxPos);
+        LinearLayout.LayoutParams midLp = new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
-        cpl.leftMargin = dp(8);
-        auditCtx.addView(auditCtxPos, cpl);
-        auditCtxDrift = auditChip("", C_MUTED, C_PRESS);
-        auditCtx.addView(auditCtxDrift);
-        LinearLayout.LayoutParams ctxLp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT);
-        ctxLp.bottomMargin = dp(6);
-        auditWork.addView(auditCtx, ctxLp);
-
-        // Location row: ◀ bin ▶ - the arrows walk the rack's
-        // bins (Nick, 2026-09-01: LOAD is gone - Enter on the field or
-        // an arrow tap loads the location).
-        LinearLayout locRow = new LinearLayout(this);
-        Button prev = smallBtn("◀");
-        prev.setOnClickListener(x -> auditStep(-1));
-        locRow.addView(prev);
-        auditBin = themedEdit();
-        auditBin.setHint("Bin or rack (F1-2, F1)");
-        auditBin.setTextSize(15);
-        auditBin.setInputType(InputType.TYPE_CLASS_TEXT
-                | InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS);
-        auditBin.setImeOptions(
-                android.view.inputmethod.EditorInfo.IME_ACTION_GO);
-        auditBin.setOnEditorActionListener((tv, actionId, ev) -> {
-            auditLoad();
-            auditCtxUpdate();
-            hideSoftKeyboard();
-            return true;
-        });
-        locRow.addView(auditBin, weight());
+        midLp.leftMargin = dp(4);
+        midLp.rightMargin = dp(4);
+        auditCtx.addView(mid, midLp);
         Button next = smallBtn("▶");
         next.setOnClickListener(x -> auditStep(1));
-        locRow.addView(next);
-        auditWork.addView(locRow);
+        auditCtx.addView(next, new LinearLayout.LayoutParams(dp(56),
+                LinearLayout.LayoutParams.MATCH_PARENT));
+        auditWork.addView(auditCtx, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
 
         // Contextual banner: PRINT while labels are owed, the pair-mode
         // exit while pairing, hidden otherwise (Nick, 2026-09-01).
@@ -16255,18 +16318,29 @@ public class MainActivity extends Activity {
         // Bottom bar: sweep plumbing behind ⋯, CHECK refreshes the live
         // report, LOG signs the audit off (anchors the bin). Sweeping
         // itself is trigger-only.
+        // ◀ RACKS leads it (Nick, 2026-09-29, 4.25: off the top strip).
         LinearLayout bottom = new LinearLayout(this);
+        Button back = smallBtn("◀ RACKS");
+        back.setTextColor(C_BLUE);
+        back.setTypeface(null, Typeface.BOLD);
+        back.setOnClickListener(x -> auditShowLanding());
+        bottom.addView(back, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.MATCH_PARENT));
         Button tools = smallBtn("⋯");
         tools.setOnClickListener(x -> auditToolsSheet());
         LinearLayout.LayoutParams tl = new LinearLayout.LayoutParams(
-                dp(56), LinearLayout.LayoutParams.MATCH_PARENT);
+                dp(48), LinearLayout.LayoutParams.MATCH_PARENT);
+        tl.leftMargin = dp(6);
         bottom.addView(tools, tl);
         Button check = smallBtn("CHECK ✓");
         check.setTextSize(16);
         check.setTextColor(C_BLUE);
         check.setPadding(dp(8), dp(12), dp(8), dp(12));
         check.setOnClickListener(x -> auditCheck());
-        bottom.addView(check, weight());
+        LinearLayout.LayoutParams ckl = weight();
+        ckl.leftMargin = dp(6);
+        bottom.addView(check, ckl);
         Button logBtn = smallBtn("LOG AUDIT");
         logBtn.setTextSize(13);
         logBtn.setTextColor(C_OK);
@@ -16413,6 +16487,7 @@ public class MainActivity extends Activity {
      *  An audit in progress is one tap away - its card says where. */
     private void auditShowLanding() {
         auditLandingShown = true;
+        setStatusPopup(false);
         if (auditLanding == null) return;
         auditLanding.setVisibility(View.VISIBLE);
         auditWork.setVisibility(View.GONE);
@@ -16820,6 +16895,7 @@ public class MainActivity extends Activity {
         auditRack = rack;
         auditRackBins = bins;
         auditLandingShown = false;
+        setStatusPopup(true);
         auditLanding.setVisibility(View.GONE);
         auditWork.setVisibility(View.VISIBLE);
         auditSuggest.setVisibility(View.GONE);
@@ -16828,41 +16904,39 @@ public class MainActivity extends Activity {
         auditLoad();
     }
 
-    /** The strip under the header: which rack, which bin of how many,
-     *  the rack's drift. */
+    /** The strip under the header, between the arrows: the open bin,
+     *  then which rack and which bin of how many. */
     private void auditCtxUpdate() {
         if (auditCtx == null) return;
-        if (auditRack == null) {
-            auditCtx.setVisibility(View.GONE);
-            return;
-        }
-        auditCtx.setVisibility(View.VISIBLE);
-        auditCtxRack.setText("RACK " + auditRack);
         String cur = auditBin.getText().toString().trim();
-        int idx = indexOfIgnoreCase(auditRackBins, cur);
-        auditCtxPos.setText(auditRackBins.isEmpty() ? "whole rack"
-                : idx < 0 ? plural(auditRackBins.size(), "bin", "bins")
-                : "bin " + (idx + 1) + " of " + auditRackBins.size());
-        JSONObject info = auditRackInfo(auditRack);
-        if (info == null) {
-            auditCtxDrift.setVisibility(View.GONE);
+        auditCtxRack.setText(cur.isEmpty()
+                ? (auditRack == null ? "-" : auditRack) : cur);
+        if (auditRack == null) {
+            auditCtxPos.setText("");
             return;
         }
-        int score = info.optInt("score");
-        auditCtxDrift.setVisibility(View.VISIBLE);
-        if (score == 0) {
-            auditCtxDrift.setText("All match ✓");
-            auditCtxDrift.setTextColor(C_OK);
-            auditCtxDrift.setBackground(rr(C_OK_BG, 0, 10));
-        } else if (info.optBoolean("overdue") || score >= 5) {
-            auditCtxDrift.setText("Drift: " + score);
-            auditCtxDrift.setTextColor(C_OVER);
-            auditCtxDrift.setBackground(rr(C_OVER_BG, 0, 10));
-        } else {
-            auditCtxDrift.setText("Drift: " + score);
-            auditCtxDrift.setTextColor(C_WARN);
-            auditCtxDrift.setBackground(rr(C_WARN_BG, 0, 10));
-        }
+        int idx = indexOfIgnoreCase(auditRackBins, cur);
+        auditCtxPos.setText("Rack " + auditRack + " · "
+                + (auditRackBins.isEmpty() ? "whole rack"
+                : idx < 0 ? plural(auditRackBins.size(), "bin", "bins")
+                : "bin " + (idx + 1) + " of " + auditRackBins.size()));
+    }
+
+    /** Tap the strip's middle: jump to any bin of the rack. */
+    private void auditJumpSheet() {
+        if (auditRack == null || auditRackBins.isEmpty()) return;
+        final String[] names = auditRackBins.toArray(new String[0]);
+        int cur = indexOfIgnoreCase(auditRackBins,
+                auditBin.getText().toString().trim());
+        dlg().setTitle("RACK " + auditRack)
+                .setSingleChoiceItems(names, cur, (d, which) -> {
+                    d.dismiss();
+                    auditBin.setText(names[which]);
+                    auditCtxUpdate();
+                    auditLoad();
+                })
+                .setNegativeButton("CLOSE", null)
+                .show();
     }
 
     /** LOG signed a bin off: remember the rack's next bin (its card
@@ -17058,6 +17132,8 @@ public class MainActivity extends Activity {
     private void auditFetchBody(final String loc, final String busyMsg,
             final Integer capId, final JSONObject shownSweep) {
         status.setText(busyMsg);
+        final boolean swept = (capId != null && capId > 0)
+                || !auditTagSet.isEmpty();
         new Thread(() -> {
             try {
                 JSONObject body;
@@ -17082,6 +17158,7 @@ public class MainActivity extends Activity {
                         capId != null && capId > 0 ? shownSweep : null);
                 ui.post(() -> {
                     auditRep = rep;
+                    auditRepSwept = swept;
                     auditLoc = loc;
                     auditItemEpcs.clear();
                     JSONArray items = rep.optJSONArray("items");
@@ -17101,16 +17178,9 @@ public class MainActivity extends Activity {
                     }
                     auditRender();
                     auditCtxUpdate();
-                    int n = items == null ? 0 : items.length();
-                    String where = rep.optBoolean("rack")
-                            ? "Rack " + loc + " ("
-                              + rep.optJSONArray("bins_covered").length()
-                              + " bins)"
-                            : "Bin " + loc;
+                    // No note on success (Nick, 2026-09-29): the strip
+                    // names the bin and the list is the answer.
                     beep(SOUND_OK);
-                    status.setText(where + " - " + plural(n, "product", "products") + ". "
-                            + "Trigger to sweep, tap a row for fixes, "
-                            + "LOG AUDIT to sign the shelf off.");
                 });
             } catch (Exception e) {
                 ui.post(() -> {
@@ -17305,8 +17375,8 @@ public class MainActivity extends Activity {
                 auditBanner.setTextColor(C_BLUE);
             } else if (openTotal > 0) {
                 auditBanner.setVisibility(View.VISIBLE);
-                auditBanner.setText("\ud83c\udff7 PRINT " + openTotal
-                        + " LABEL(S) FOR TAGLESS BOXES");
+                auditBanner.setText("\ud83c\udff7 PRINT " + plural(openTotal,
+                        "LABEL", "LABELS") + " FOR TAGLESS BOXES");
                 auditBanner.setTextColor(C_WARN);
             } else {
                 auditBanner.setVisibility(View.GONE);
@@ -17347,6 +17417,10 @@ public class MainActivity extends Activity {
     private void auditRenderReport() {
         final String loc = auditLoc;
         final JSONObject rep = auditRep;
+        // Nothing swept yet (Nick, 2026-09-29): every tag is "silent"
+        // only because nobody listened - no silence verdicts, no range
+        // flags, no MARK ALL SOLD, no ALL CLEAR until a sweep is checked.
+        final boolean swept = auditRepSwept;
         JSONArray items = rep.optJSONArray("items");
         JSONArray foreign = rep.optJSONArray("foreign");
         JSONArray unknown = rep.optJSONArray("unknown_epcs");
@@ -17434,7 +17508,7 @@ public class MainActivity extends Activity {
                     && silent <= unavail;
             boolean pickupOk = silent > 0 && !salesCover && !unavailOk
                     && silent <= sold + unavail + pickup && pickup > 0;
-            boolean rangeOff = !it.isNull("in_range")
+            boolean rangeOff = swept && !it.isNull("in_range")
                     && !it.optBoolean("in_range") && newly == 0;
 
             String bins = auditBinsText(it);
@@ -17490,7 +17564,7 @@ public class MainActivity extends Activity {
                         () -> auditActUnretire(ghostEpcs)));
                 red = true;
             }
-            if (silent > 0) {
+            if (silent > 0 && swept) {
                 if (salesCover) {
                     // MARK-ALL-SOLD feed: the still-unheard covered
                     // tags, same rule as before the flag-row rework.
@@ -17609,7 +17683,7 @@ public class MainActivity extends Activity {
             }
             int rank = red ? 0 : warn ? 1 : untagged ? 3 : 2;
             int color = red ? C_OVER : warn ? C_WARN
-                    : untagged ? C_MUTED : C_OK;
+                    : untagged || !swept ? C_MUTED : C_OK;
             if (red || warn) flagged++;
             LinearLayout row = auditCard(
                     it.optString("product_title", sku), sub,
@@ -17650,11 +17724,15 @@ public class MainActivity extends Activity {
         strip.setBackground(rr(C_CARD, C_LINE, 10));
         strip.setPadding(dp(12), dp(8), dp(12), dp(8));
         strip.setGravity(Gravity.CENTER_VERTICAL);
-        String[][] stats = {
+        String[][] stats = swept ? new String[][]{
                 {String.valueOf(cards.size()), "products", null},
                 {String.valueOf(nOk), "all match", "ok"},
                 {String.valueOf(nBad), "flagged", nBad > 0 ? "bad" : null},
                 {String.valueOf(strays), "strays", null},
+        } : new String[][]{
+                {String.valueOf(cards.size()), "products", null},
+                {"0", "tags heard", null},
+                {String.valueOf(nBad), "flagged", nBad > 0 ? "bad" : null},
         };
         for (String[] st : stats) {
             LinearLayout cell = new LinearLayout(this);
@@ -17676,7 +17754,11 @@ public class MainActivity extends Activity {
         }
         auditList.addView(strip, auditRowLp());
 
-        if (flagged == 0) {
+        if (!swept) {
+            auditList.addView(auditRowView("Not swept yet - pull the "
+                    + "trigger to sweep this shelf; the verdicts fill in "
+                    + "when you stop.", C_MUTED), auditRowLp());
+        } else if (flagged == 0) {
             auditList.addView(auditRowView("\u2713 ALL CLEAR - every "
                     + "product is exactly as the system expects. LOG "
                     + "AUDIT signs the shelf off.", C_OK), auditRowLp());
@@ -18238,7 +18320,8 @@ public class MainActivity extends Activity {
             epcs.add(o.optString("epc"));
             msg.append("\n· ").append(o.optString("sku", "?"));
         }
-        dlg().setTitle("DISMISS " + epcs.size() + " LABEL WARNING(S)?")
+        dlg().setTitle("DISMISS " + plural(epcs.size(), "LABEL WARNING",
+                "LABEL WARNINGS") + "?")
                 .setMessage("These printed labels answered the sweep "
                         + "but were never paired:" + msg
                         + "\n\nDismissing tells the system they're "
@@ -18286,7 +18369,8 @@ public class MainActivity extends Activity {
             msg.append("\n· ").append(e[0]).append(" × ").append(n);
         }
         final int totalUnits = units;
-        dlg().setTitle("MARK " + units + " TAG(S) PRESUMED SOLD")
+        dlg().setTitle("MARK " + plural(units, "TAG", "TAGS")
+                + " PRESUMED SOLD")
                 .setMessage("Fulfilled orders account for every one of "
                         + "these silent tags:" + msg
                         + "\n\nRetire them all? Shopify is untouched; "
@@ -18710,7 +18794,8 @@ public class MainActivity extends Activity {
                 ghostEpcs.add(ghostsArr.optJSONObject(i)
                         .optString("epc"));
             }
-            labels.add("UN-RETIRE " + gh + " ANSWERED TAG(S) - box "
+            labels.add("UN-RETIRE " + plural(gh, "ANSWERED TAG", "ANSWERED TAGS")
+                    + " - box "
                     + "never left");
             acts.add(() -> auditActUnretire(ghostEpcs));
         }
@@ -18735,7 +18820,8 @@ public class MainActivity extends Activity {
                             Math.min(sold, silentEpcs.size()),
                             silentEpcs.size()));
             labels.add("\u21bb UNPAIR " + unexplained.size()
-                    + " + PRINT REPLACEMENT(S)");
+                    + (unexplained.size() == 1 ? " + PRINT REPLACEMENT"
+                       : " + PRINT REPLACEMENTS"));
             acts.add(() -> auditActUnpairPrint(sku, firstBin,
                     unexplained));
         }
@@ -18743,7 +18829,8 @@ public class MainActivity extends Activity {
         // than tag records get stickers - the neutral path.
         if (exp >= 0 && unitsHere < exp && !sku.isEmpty()) {
             final int owedLabels = exp - unitsHere;
-            labels.add("PRINT " + owedLabels + " LABEL(S) - expected "
+            labels.add("PRINT " + plural(owedLabels, "LABEL", "LABELS")
+                    + " - expected "
                     + "but not paired");
             acts.add(() -> auditPrintMissingLabels(sku, firstBin,
                     owedLabels));

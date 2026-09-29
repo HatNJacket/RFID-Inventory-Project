@@ -12570,7 +12570,7 @@ async function packedCheckWindow(cid) {
   go.type = "button";
   go.className = "reset packed-go";
   go.textContent = plan.retire_total
-    ? `RETIRE ${plan.retire_total} TAG(S) AS SOLD`
+    ? `RETIRE ${countNoun(plan.retire_total, "TAG", "TAGS")} AS SOLD`
     : "Nothing retirable";
   go.disabled = !plan.retire_total;
   go.addEventListener("click", async () => {

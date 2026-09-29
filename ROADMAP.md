@@ -174,6 +174,14 @@ a rack picker; the audit window is scoped to one rack (C72 4.24).**
   (batch-done bins only, same as the web), open 1-left checks per
   rack (fail-soft), open walk sessions, and EVERY mapped rack's
   bins in natural order for the arrows. dev/tests/test_auditracks.py.
+- 4.25 (same day, Nick): the list gets the room. One strip now:
+  ◀ [bin · "Rack I1 · bin 2 of 5"] ▶ (tap the middle to jump to any
+  bin); drift chip gone; ◀ RACKS moved to the bottom bar left of ⋯.
+  The status box hides inside an audit - messages float in as a
+  timed popup at the top (progress "…" chatter stays silent). Silence
+  verdicts, range flags, MARK ALL SOLD and ALL CLEAR wait until the
+  report came from a real sweep (live set or saved sweep).
+  test_plurals.py went case-blind and caught 15 uppercase "(S)" leftovers.
 
 **ROUND 14 (Nick, 2026-09-29) — ✅ BUILT: the Audits hub tightened
 (iterated over live previews, approved). Web only.**

@@ -31,7 +31,9 @@ check("a non-number count falls back to plural without raising",
 # The scan: a word(s)/(es)/(ies) inside a quoted string, outside
 # comments. The helpers' own docstrings quote the banned form on
 # purpose ('never "tag(s)"') and are allowed.
-QUOTED = re.compile(r"""["'`][^"'`\n]*(?<![.\w])[a-z]+\((s|es|ies)\)""")
+# Case-blind: "LABEL(S)" on a C72 banner slipped the first sweep.
+QUOTED = re.compile(r"""["'`][^"'`\n]*(?<![.\w])[a-z]+\((s|es|ies)\)""",
+                    re.IGNORECASE)
 ALLOW = re.compile(r'never "?[a-z]+\((s|es|ies)\)')
 FILES = [
     ("app/static/app.js", ("//", "*", "/*")),
