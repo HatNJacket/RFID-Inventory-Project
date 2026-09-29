@@ -1300,7 +1300,7 @@ public class MainActivity extends Activity {
         stationHint.setPadding(dp(4), dp(10), dp(4), 0);
         // One line — the full identify-mode explanation lives behind the
         // ? button, where every other tab keeps its long version too.
-        stationHint.setText("Scan a product barcode — the TRIGGER links "
+        stationHint.setText("Scan a product barcode - the TRIGGER links "
                 + "each RFID sticker to it.");
         v.addView(stationHint, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
@@ -1346,7 +1346,7 @@ public class MainActivity extends Activity {
         }
         if (on) {
             beep(SOUND_OTHER);
-            status.setText("IDENTIFY armed — pull the TRIGGER on a sticker "
+            status.setText("IDENTIFY armed - pull the TRIGGER on a sticker "
                     + "to see what it is. Tap again to go back to linking.");
         } else {
             status.setText(stationProduct == null
@@ -1363,7 +1363,7 @@ public class MainActivity extends Activity {
         }
         if (tagReadBusy) return;
         tagReadBusy = true;
-        status.setText("Reading ONE tag — hold the antenna against the "
+        status.setText("Reading ONE tag - hold the antenna against the "
                 + "sticker…");
         new Thread(() -> {
             final TagRead read = readStrongestTag(700);
@@ -1372,7 +1372,7 @@ public class MainActivity extends Activity {
                 ui.post(() -> {
                     tagReadBusy = false;
                     beep(SOUND_ERR);
-                    status.setText("No tag read — get closer and try "
+                    status.setText("No tag read - get closer and try "
                             + "again.");
                 });
                 return;
@@ -1386,7 +1386,7 @@ public class MainActivity extends Activity {
                     // Say the mode is still on — the dialog hides the
                     // button, and a forgotten mode is a surprised operator.
                     status.setText(identifyArmed
-                            ? "Tag read ✓ — IDENTIFY still armed; trigger "
+                            ? "Tag read ✓ - IDENTIFY still armed; trigger "
                               + "the next sticker, or tap IDENTIFY: ON to "
                               + "go back to linking."
                             : "Tag read ✓");
@@ -1529,7 +1529,7 @@ public class MainActivity extends Activity {
         dlg()
                 .setTitle("Unlink this tag?")
                 .setMessage(what + "\n\nThe tag stops counting as that "
-                        + "product's box. The sticker stays on the box — "
+                        + "product's box. The sticker stays on the box - "
                         + "peel it off, or re-pair it to the right product "
                         + "in a batch.\n\nNothing in Shopify changes. "
                         + "History records the unlink.")
@@ -1542,7 +1542,7 @@ public class MainActivity extends Activity {
                                         "UTF-8"), null);
                         ui.post(() -> {
                             beep(SOUND_OK);
-                            status.setText("Tag unlinked ✓ — "
+                            status.setText("Tag unlinked ✓ - "
                                     + "peel the sticker off, or re-pair it.");
                         });
                     } catch (Exception e) {
@@ -2078,9 +2078,9 @@ public class MainActivity extends Activity {
         if (locThermo != null) locThermo.invalidate();
         if (announce) {
             status.setText("Locate power " + power
-                    + (power <= 5 ? " — only answers within arm's reach."
-                       : power <= 12 ? " — a shelf bay or two."
-                       : " — the whole aisle answers."));
+                    + (power <= 5 ? " - only answers within arm's reach."
+                       : power <= 12 ? " - a shelf bay or two."
+                       : " - the whole aisle answers."));
         }
     }
 
@@ -2123,8 +2123,8 @@ public class MainActivity extends Activity {
         paintAutoBtn();
         status.setText(on
                 ? "AUTO power: steps between " + autoFloor() + " and 30 as "
-                  + "you close in — tap the bar any time to take over."
-                : "Manual power — tap the bar to set 1–30, AUTO to hand "
+                  + "you close in - tap the bar any time to take over."
+                : "Manual power - tap the bar to set 1–30, AUTO to hand "
                   + "it back.");
     }
 
@@ -2254,7 +2254,7 @@ public class MainActivity extends Activity {
             setLocPower(want, false);
             autoLastChange = now;
             beep(SOUND_OTHER);
-            status.setText("AUTO: closer — power down to " + locPower + ".");
+            status.setText("AUTO: closer - power down to " + locPower + ".");
         } else if (!fresh && locPower < 30) {
             // Starved. If we recently stepped down, that level is burned.
             if (now - autoLastChange < (tunAutoPenaltyS * 1000L)
@@ -2266,7 +2266,7 @@ public class MainActivity extends Activity {
             dbgLine("auto power " + locPower + "→" + want + " (starved)");
             setLocPower(want, false);
             autoLastChange = now;
-            status.setText("AUTO: lost it — power up to " + locPower + ".");
+            status.setText("AUTO: lost it - power up to " + locPower + ".");
         }
     }
 
@@ -2275,7 +2275,7 @@ public class MainActivity extends Activity {
         if (mode == 1) {
             // Radar hunts ONE tag. A single-tag product narrows itself.
             if (locProduct == null || locTags.isEmpty()) {
-                alertStatus("Load a product first — scan its barcode or "
+                alertStatus("Load a product first - scan its barcode or "
                         + "pick from LIST….");
                 return;
             }
@@ -2283,7 +2283,7 @@ public class MainActivity extends Activity {
                 locNarrow = locTags.keySet().iterator().next();
             }
             if (locNarrow == null) {
-                alertStatus("RADAR tracks ONE tag — pick it via TARGET… "
+                alertStatus("RADAR tracks ONE tag - pick it via TARGET… "
                         + "first.");
                 return;
             }
@@ -2337,7 +2337,7 @@ public class MainActivity extends Activity {
             registerAccelSweep();
         }
         status.setText("RADAR: pull the trigger, then sweep naturally "
-                + "back and forth — it adds up over a few passes.");
+                + "back and forth - it adds up over a few passes.");
         locRadarView.invalidate();
         updateLocateUi();
     }
@@ -2364,7 +2364,7 @@ public class MainActivity extends Activity {
         android.hardware.Sensor accel = sensorMgr.getDefaultSensor(
                 android.hardware.Sensor.TYPE_ACCELEROMETER);
         if (accel == null) {
-            alertStatus("No usable motion sensor — RADAR can't run on "
+            alertStatus("No usable motion sensor - RADAR can't run on "
                     + "this device.");
             return;
         }
@@ -2527,12 +2527,12 @@ public class MainActivity extends Activity {
             radarChainwayRunning = ok;
             dbgLine("chainway radar start ok=" + ok);
             status.setText(ok
-                    ? "Radar running — rotate slowly on the spot."
-                    : "Radar refused to start — try METER mode.");
+                    ? "Radar running - rotate slowly on the spot."
+                    : "Radar refused to start - try METER mode.");
             if (!ok) beep(SOUND_ERR);
         } catch (Throwable t) {
             dbgLine("chainway radar failed: " + t);
-            alertStatus("Radar mode failed on this device — use METER. ("
+            alertStatus("Radar mode failed on this device - use METER. ("
                     + t.getClass().getSimpleName() + ")");
         }
     }
@@ -2578,14 +2578,14 @@ public class MainActivity extends Activity {
         boolean rough = radarSpread > 70;
         boolean paused = radarEngine == 3 && !sweepActive;
         locRadarInfo.setText(radarBearing == null
-                ? (paused ? "paused — sweep back and forth to measure"
+                ? (paused ? "paused - sweep back and forth to measure"
                     : "gathering… sweep back and forth")
                 : (radarEngine != 2
                     ? plural((sweepHalfCount / 2), "sweep", "sweeps") + " · " : "")
                   + plural(n, "ping", "pings")
                   + (paused ? " · paused (not sweeping)"
-                    : rough ? " · rough — keep sweeping"
-                    : " · steady — trust it"));
+                    : rough ? " · rough - keep sweeping"
+                    : " · steady - trust it"));
         locRadarView.setState(rel, radarSpread, radarBearing != null);
     }
 
@@ -2882,7 +2882,7 @@ public class MainActivity extends Activity {
                         beep(SOUND_ERR);
                         locName.setText(fp != null
                                 ? fp.optString("product_title", code) : code);
-                        locSku.setText("No RFID tags on file — nothing to "
+                        locSku.setText("No RFID tags on file - nothing to "
                                 + "hunt.");
                         locImg.setImageBitmap(null);
                         updateLocateUi();
@@ -3976,7 +3976,7 @@ public class MainActivity extends Activity {
                             : "LIST");
                     if (n == 0) {
                         beep(SOUND_ERR);
-                        status.setText("Locate list is empty — on the web "
+                        status.setText("Locate list is empty - on the web "
                                 + "terminal, open any product and press "
                                 + "\"Send to C72 locate list\".");
                         return;
@@ -4119,7 +4119,7 @@ public class MainActivity extends Activity {
         }
 
         dref[0] = dlg()
-                .setTitle("Locate list — tap to hunt")
+                .setTitle("Locate list - tap to hunt")
                 .setView(scroll)
                 .setNegativeButton("CLOSE", null)
                 .show();
@@ -4154,7 +4154,7 @@ public class MainActivity extends Activity {
         }
         if (locTargets().isEmpty() && !unpairedHunt) {
             beep(SOUND_ERR);
-            status.setText("Every tag is marked found — RESET via "
+            status.setText("Every tag is marked found - RESET via "
                     + "TARGET… to hunt them again.");
             return;
         }
@@ -4512,7 +4512,7 @@ public class MainActivity extends Activity {
                 locFullPromptAt = now;
                 dlg()
                         .setTitle("Right on top of it")
-                        .setMessage("Signal is pegged — that's tag …"
+                        .setMessage("Signal is pegged - that's tag …"
                                 + epc.substring(Math.max(0,
                                         epc.length() - 6))
                                 + ". Mark it FOUND and hunt the rest?")
@@ -4649,7 +4649,7 @@ public class MainActivity extends Activity {
         list.addView(targetCard("RESET found marks",
                 plural(locFound.size(), "tag", "tags") + " marked found", null, () -> {
                     locFound.clear();
-                    retarget(null, "Found marks cleared — hunting every "
+                    retarget(null, "Found marks cleared - hunting every "
                             + "tag again.");
                     if (dref[0] != null) dref[0].dismiss();
                 }));
@@ -4794,7 +4794,7 @@ public class MainActivity extends Activity {
                     beep(SOUND_ERR);
                     status.setText(fstrange
                             ? "Read a tag, but not one of this product's."
-                            : "Nothing read — hold the antenna against "
+                            : "Nothing read - hold the antenna against "
                               + "the sticker and try again.");
                     if (wasLocating) toggleLocate();
                 }
@@ -4986,7 +4986,7 @@ public class MainActivity extends Activity {
         back.setOnClickListener(x -> {
             if (dref[0] != null) dref[0].dismiss();
             markFoundAndResume(epc, false);
-            status.setText("Found ✓ " + epcTail(epc) + " — carry it "
+            status.setText("Found ✓ " + epcTail(epc) + " - carry it "
                     + (home != null ? "back to " + home : "home")
                     + ". Nothing was written.");
         });
@@ -5078,7 +5078,7 @@ public class MainActivity extends Activity {
                                 beep(SOUND_OK);
                                 markFoundAndResume(epc, false);
                                 status.setText(sku + " now lives in "
-                                        + bin + " ✓ — found-marked "
+                                        + bin + " ✓ - found-marked "
                                         + epcTail(epc) + ".");
                             });
                         } catch (Exception ex) {
@@ -5098,7 +5098,7 @@ public class MainActivity extends Activity {
      *  target it opens the tag list to pick one (Nick's Q3). */
     private void editTagAction() {
         if (locTags.isEmpty()) {
-            status.setText("Nothing being hunted — look up a product "
+            status.setText("Nothing being hunted - look up a product "
                     + "first.");
             return;
         }
@@ -5128,7 +5128,7 @@ public class MainActivity extends Activity {
         for (final String epc : locTags.keySet()) {
             boolean found = locFound.contains(epc);
             list.addView(targetCard(epcTail(epc),
-                    found ? "marked found — tap to edit its record"
+                    found ? "marked found - tap to edit its record"
                           : "tap to edit this tag's record",
                     found ? "ok" : null,
                     () -> {
@@ -5157,13 +5157,13 @@ public class MainActivity extends Activity {
             ui.post(() -> {
                 if (fi == null) {
                     beep(SOUND_ERR);
-                    status.setText("Couldn't read the tag's record — "
+                    status.setText("Couldn't read the tag's record - "
                             + "check the connection.");
                     return;
                 }
                 if (!fi.optBoolean("found", false)) {
                     beep(SOUND_ERR);
-                    status.setText("That tag has no pairing on file — "
+                    status.setText("That tag has no pairing on file - "
                             + "nothing to edit.");
                     return;
                 }
@@ -5206,7 +5206,7 @@ public class MainActivity extends Activity {
         box.addView(rowWithHelp(aside, "SET ASIDE - UNAVAILABLE",
                 "Found it, but it can't sell (missing a piece, "
                 + "damaged). Moves 1 unit into a Shopify unavailable "
-                + "bucket — you pick which — and adds a staff comment "
+                + "bucket - you pick which - and adds a staff comment "
                 + "to the product. On-hand total is unchanged; the "
                 + "shelf then expects one fewer box, and audits say it "
                 + "matches its unavailable stock."));
@@ -5382,9 +5382,9 @@ public class MainActivity extends Activity {
                         api("POST", "/api/assignments/retire", body);
                         ui.post(() -> dropTagFromHunt(epc, sold
                                 ? "Marked presumed sold ✓ "
-                                  + epcTail(epc) + " — sale consumed."
+                                  + epcTail(epc) + " - sale consumed."
                                 : "Tag retired ✓ " + epcTail(epc)
-                                  + " — undo lives at the station."));
+                                  + " - undo lives at the station."));
                     } catch (Exception ex) {
                         ui.post(() -> {
                             beep(SOUND_ERR);
@@ -5411,7 +5411,7 @@ public class MainActivity extends Activity {
                                         "UTF-8"), null);
                         ui.post(() -> dropTagFromHunt(epc,
                                 "Unlinked ✓ " + epcTail(epc)
-                                + " — re-pair it at the station."));
+                                + " - re-pair it at the station."));
                     } catch (Exception ex) {
                         ui.post(() -> {
                             beep(SOUND_ERR);
@@ -5449,7 +5449,7 @@ public class MainActivity extends Activity {
                 + " found; out of the hunt.");
         if (locTargets().isEmpty()) {
             stopLocate(false);
-            status.setText("All " + plural(locTags.size(), "tag", "tags") + " found ✓ — "
+            status.setText("All " + plural(locTags.size(), "tag", "tags") + " found ✓ - "
                     + "un-find one via TARGET to hunt it again.");
         } else if (locating) {
             // The found tag may have been the narrow filter's target —
@@ -5853,7 +5853,7 @@ public class MainActivity extends Activity {
             dlg()
                     .setTitle("Remove the double count?")
                     .setMessage(it.qty + " scanned + " + it.taggedBefore
-                            + " already tagged — if the " + plural(it.taggedBefore, "stickered box was", "stickered boxes were") + " among the scans, "
+                            + " already tagged - if the " + plural(it.taggedBefore, "stickered box was", "stickered boxes were") + " among the scans, "
                             + "the true split is " + fixed + " new + "
                             + it.taggedBefore + " tagged.\n\nBatch counts "
                             + "only; Shopify is untouched.")
@@ -6011,7 +6011,7 @@ public class MainActivity extends Activity {
             editPos.setVisibility(View.VISIBLE);
             editPos.setText("Listing " + (editIdx + 1) + " of "
                     + editEntry.candidates.size() + " sharing this barcode"
-                    + (current ? "  — currently selected" : ""));
+                    + (current ? " - currently selected" : ""));
             editUse.setVisibility(View.VISIBLE);
             // Never disabled: confirming the listing ALREADY selected is
             // the usual move ("yes, this one") and settles the several-
@@ -6040,7 +6040,7 @@ public class MainActivity extends Activity {
                     + "system has it in " + it.binLocation + ".");
             String home = firstBin(it.binLocation);
             editBinTripBtn.setText("TAKE IT TO " + home
-                    + " — start a trip");
+                    + " - start a trip");
             // A trip needs boxes to carry and no tags tying them here yet.
             editBinTripBtn.setVisibility(home != null && it.qty > 0
                     && it.paired == 0 ? View.VISIBLE : View.GONE);
@@ -6058,7 +6058,7 @@ public class MainActivity extends Activity {
                 if (v != null && v == it.id) joined++;
             }
             editBundleBtn.setText(joined > 0
-                    ? "✓ " + joined + " BOX(ES) BUNDLED — ADD MORE…"
+                    ? "✓ " + joined + " BOX(ES) BUNDLED - ADD MORE…"
                     : "BUNDLE OTHER BOXES ONTO THIS…");
         }
         // Only a real product can be skipped; an unknown barcode already has
@@ -6069,7 +6069,7 @@ public class MainActivity extends Activity {
         editNoScanBtn.setVisibility(
                 it.resolved && it.sku != null ? View.VISIBLE : View.GONE);
         editNoScanBtn.setText(it.noScan
-                ? "⊘ RFID FLAG ON — REMOVE" : "WON'T RFID SCAN");
+                ? "⊘ RFID FLAG ON - REMOVE" : "WON'T RFID SCAN");
         editIdentBtn.setVisibility(it.resolved ? View.VISIBLE : View.GONE);
         // Only while the count still matters (labels not queued yet) and
         // only when there ARE earlier tags to account for.
@@ -6077,7 +6077,7 @@ public class MainActivity extends Activity {
                 && (it.priorTags > 0 || it.taggedBefore > 0)
                 ? View.VISIBLE : View.GONE);
         editPriorBtn.setText(it.taggedBefore > 0
-                ? "✓ " + it.taggedBefore + " ALREADY TAGGED — CHANGE…"
+                ? "✓ " + it.taggedBefore + " ALREADY TAGGED - CHANGE…"
                 : "ALREADY TAGGED…");
         // Only while counts still matter (labels not queued yet). The
         // server also refuses once this product's labels are queued.
@@ -6088,7 +6088,7 @@ public class MainActivity extends Activity {
                 ? View.VISIBLE : View.GONE);
         editCaseBtn.setText(it.caseCount > 0
                 ? "✓ " + it.caseCount + " SEALED CASE(S) OF "
-                  + it.caseUnits + " — CHANGE…"
+                  + it.caseUnits + " - CHANGE…"
                 : "BOX OF MULTIPLE PRODUCTS…");
         editDblBtn.setVisibility(it.resolved && it.qty > 0
                 && it.taggedBefore > 0 ? View.VISIBLE : View.GONE);
@@ -6131,8 +6131,8 @@ public class MainActivity extends Activity {
                 api("PUT", "/api/label-names/"
                         + encPath(sku), body);
                 ui.post(() -> editMsg.setText(name.isEmpty()
-                        ? "Cleared ✓ — standard label."
-                        : "Saved ✓ — prints as the "
+                        ? "Cleared ✓ - standard label."
+                        : "Saved ✓ - prints as the "
                           + ("both".equals(mode) ? "name and SKU"
                              : "sku".equals(mode) ? "SKU line" : "name")));
             } catch (Exception e) {
@@ -6197,7 +6197,7 @@ public class MainActivity extends Activity {
             }
             warn.setText(w.length() > 0 ? w.toString()
                     : "⚠ The SKU or barcode has a character the "
-                    + "database can't store (it shows as ?) — records "
+                    + "database can't store (it shows as ?) - records "
                     + "won't match until it's replaced.");
             warn.setTextColor(C_WARN);
             warn.setTextSize(12);
@@ -6292,7 +6292,7 @@ public class MainActivity extends Activity {
                 ui.post(() -> {
                     beep(SOUND_OK);
                     closeItemEditor();
-                    status.setText("Saved ✓ — "
+                    status.setText("Saved ✓ - "
                             + (skuChanged && bcChanged
                                ? "SKU " + newSku + " · barcode " + newBc
                                : skuChanged ? "SKU is now " + newSku
@@ -6313,7 +6313,7 @@ public class MainActivity extends Activity {
         final int itemId = editEntry.item.id;
         final String what = unresolved
                 ? "Remove this unresolved scan from the list?\n\nNothing "
-                  + "permanent changes — scanning it again brings it back."
+                  + "permanent changes - scanning it again brings it back."
                 : "Drop this product from the batch?\n\nIts boxes stop "
                   + "counting here and no labels print for it.";
         dlg()
@@ -7008,7 +7008,7 @@ public class MainActivity extends Activity {
             if (step == STEP_PAIR) pairSelect(code);
             else if (step == STEP_CHECK) {
                 beep(SOUND_ERR);
-                status.setText("CHECK step — tap flagged items to review, "
+                status.setText("CHECK step - tap flagged items to review, "
                         + "or BACK to keep scanning.");
             } else batchScan(code);
         } else if (activeTab == TAB_LOCATE) {
@@ -7161,7 +7161,7 @@ public class MainActivity extends Activity {
         scanning = true;
         holdSweepRunning = true;
         beep(SOUND_OTHER);
-        status.setText("Sweeping… 0 tags — release the trigger to send.");
+        status.setText("Sweeping… 0 tags - release the trigger to send.");
     }
 
     private void restoreHoldSweepPower() {
@@ -7186,7 +7186,7 @@ public class MainActivity extends Activity {
         synchronized (tags) { swept.addAll(tags.keySet()); }
         if (swept.isEmpty()) {
             beep(SOUND_ERR);
-            status.setText("Swept nothing — hold longer, or raise the "
+            status.setText("Swept nothing - hold longer, or raise the "
                     + "sweep power (⚙ → Trigger pulls).");
             return;
         }
@@ -7209,14 +7209,14 @@ public class MainActivity extends Activity {
                 ui.post(() -> {
                     beep(SOUND_OK);
                     status.setText("Sweep #" + resp.optInt("id") + " sent ✓ "
-                            + "(" + swept.size() + " tags) — pull it on the "
+                            + "(" + swept.size() + " tags) - pull it on the "
                             + "PC: bulk scan, verify, or a bin audit.");
                 });
             } catch (Exception e) {
                 ui.post(() -> {
                     beep(SOUND_ERR);
                     status.setText("Sweep send FAILED: " + e.getMessage()
-                            + " — sweep again once Wi-Fi is back.");
+                            + " - sweep again once Wi-Fi is back.");
                 });
             }
         }).start();
@@ -7241,7 +7241,7 @@ public class MainActivity extends Activity {
                 toggleScan();   // baseline sweep of a part-tagged shelf
             } else if (inBatch()) {
                 beep(SOUND_ERR);
-                status.setText("RFID stickers pair in the PAIR step — "
+                status.setText("RFID stickers pair in the PAIR step - "
                         + "press NEXT until you get there.");
             } else {
                 status.setText("Pick a batch first.");
@@ -7350,7 +7350,7 @@ public class MainActivity extends Activity {
                 readerReady = ready;
                 status.setText(ready
                         ? "Ready (power " + power + ")."
-                        : "RFID reader init FAILED — turn off "
+                        : "RFID reader init FAILED - turn off "
                           + "KeyboardEmulator's UHF mode and reopen.");
             });
         }).start();
@@ -7369,7 +7369,7 @@ public class MainActivity extends Activity {
                 if (wasScanning) reader.startInventoryTag();
                 ui.post(() -> status.setText(ok
                         ? "Power set to " + lv
-                        : "Power change FAILED — try again"));
+                        : "Power change FAILED - try again"));
             } catch (Exception e) {
                 ui.post(() -> status.setText("Power change failed: "
                         + e.getMessage()));
@@ -7530,7 +7530,7 @@ public class MainActivity extends Activity {
         java.util.List<Integer> favs = favPowers();
         if (favs.isEmpty()) {
             beep(SOUND_ERR);
-            status.setText("No favourite power levels yet — tap the PWR "
+            status.setText("No favourite power levels yet - tap the PWR "
                     + "chip and star the levels you use.");
             return;
         }
@@ -7580,7 +7580,7 @@ public class MainActivity extends Activity {
                     ? "★ Unstar " + now : "☆ Star " + now);
             if (favs.isEmpty()) {
                 TextView none = new TextView(this);
-                none.setText("No favourites — pick a power, then star it.");
+                none.setText("No favourites - pick a power, then star it.");
                 none.setTextSize(12);
                 none.setTextColor(C_MUTED);
                 favRow.addView(none);
@@ -7729,7 +7729,7 @@ public class MainActivity extends Activity {
                 .replaceAll("/+$", "");
         String key = prefs.getString("key", "");
         if (key.isEmpty()) {
-            throw new Exception("Station key not set — open ⚙ and paste "
+            throw new Exception("Station key not set - open ⚙ and paste "
                     + "your station link.");
         }
         HttpURLConnection conn = (HttpURLConnection)
@@ -7838,7 +7838,7 @@ public class MainActivity extends Activity {
                             : "\n\nMarking it complete records the bin as "
                               + "checked and done.")
                         + " Nothing in Shopify changes.")
-                .setPositiveButton("BIN IS EMPTY — COMPLETE", (d, w) ->
+                .setPositiveButton("BIN IS EMPTY - COMPLETE", (d, w) ->
                         completeEmptyBin())
                 .setNegativeButton("Keep scanning", null)
                 .show();
@@ -7936,7 +7936,7 @@ public class MainActivity extends Activity {
                         .setMessage("Pull the trigger to sweep the shelf "
                                 + "first (the PWR chip changes power). "
                                 + "If nothing on this shelf answers at "
-                                + "all, you can apply the empty sweep — "
+                                + "all, you can apply the empty sweep - "
                                 + "every product with tags on record "
                                 + "goes RED for a human look.")
                         .setPositiveButton("APPLY EMPTY SWEEP", (d, w) ->
@@ -7970,7 +7970,7 @@ public class MainActivity extends Activity {
                         .setTitle("Nothing to print")
                         .setMessage("No untagged boxes were counted"
                                 + (alreadyTagged > 0
-                                   ? " — all " + plural(alreadyTagged, "box", "boxes")
+                                   ? " - all " + plural(alreadyTagged, "box", "boxes")
                                      + " here already wear a tag"
                                    : "")
                                 + ", so there are no labels to queue and "
@@ -7978,7 +7978,7 @@ public class MainActivity extends Activity {
                                 + "nothing to print? VERIFY still runs: "
                                 + "the final sweep checks every tag on "
                                 + "the shelf.")
-                        .setPositiveButton("NOTHING TO PRINT — VERIFY",
+                        .setPositiveButton("NOTHING TO PRINT - VERIFY",
                                 (d, w) -> skipPrint(true))
                         .setNegativeButton("Back", null)
                         .show();
@@ -8033,7 +8033,7 @@ public class MainActivity extends Activity {
         synchronized (tags) { tags.clear(); }
         verifySkuState.clear();
         beep(SOUND_OTHER);
-        status.setText("Sweep cleared — pull the trigger to scan the bin "
+        status.setText("Sweep cleared - pull the trigger to scan the bin "
                 + "again.");
         refreshBatchList();
     }
@@ -8083,7 +8083,7 @@ public class MainActivity extends Activity {
         shelfUnknown = 0;
         synchronized (tags) { tags.clear(); }
         beep(SOUND_OTHER);
-        status.setText("Shelf sweep cleared — pull the trigger to sweep "
+        status.setText("Shelf sweep cleared - pull the trigger to sweep "
                 + "the shelf again.");
     }
 
@@ -8148,7 +8148,7 @@ public class MainActivity extends Activity {
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(300)));
 
         AlertDialog d = dlg()
-                .setTitle("Shelf sweep — " + batchBin)
+                .setTitle("Shelf sweep - " + batchBin)
                 .setView(box)
                 .create();
         ref[0] = d;
@@ -8158,7 +8158,7 @@ public class MainActivity extends Activity {
                 // the step continues with every read intact.
                 shelfRowsBox = null;
                 shelfStatusLine = null;
-                status.setText(plural(shelfEpcs.size(), "tag", "tags") + " kept — "
+                status.setText(plural(shelfEpcs.size(), "tag", "tags") + " kept - "
                         + "trigger to add more (PWR chip changes "
                         + "power), RESULTS when done.");
             }
@@ -8230,7 +8230,7 @@ public class MainActivity extends Activity {
                 int added = shelfEpcs.size() - before;
                 if (shelfStatusLine != null) {
                     shelfStatusLine.setText(plural(heard.size(), "read", "reads") + ", "
-                            + added + " new — " + plural(shelfEpcs.size(), "tag", "tags") + " total. Checking…");
+                            + added + " new - " + plural(shelfEpcs.size(), "tag", "tags") + " total. Checking…");
                 }
                 shelfPost(false, after);
             });
@@ -8288,7 +8288,7 @@ public class MainActivity extends Activity {
             // stale until the server's are pulled back.
             reloadBatchAndReview();
             applyBatchUi();
-            status.setText("Shelf sweep applied ✓ — collected counts "
+            status.setText("Shelf sweep applied ✓ - collected counts "
                     + "split into already-tagged vs needs-a-label. "
                     + "Yellow/red rows are in the check list.");
         });
@@ -8389,7 +8389,7 @@ public class MainActivity extends Activity {
                         + (explained > 0
                            ? ", sales explain " + explained : "")
                         + " · " + unexplained
-                        + " unaccounted — tap to resolve");
+                        + " unaccounted - tap to resolve");
             } else if ("silent".equals(state)) {
                 line.setTextColor(C_OVER);
                 line.setText("✗ NONE of " + onFile
@@ -8397,14 +8397,14 @@ public class MainActivity extends Activity {
                         + (explained > 0
                            ? " · sales explain " + explained + " of "
                              + silentN : "")
-                        + " — tap to resolve");
+                        + " - tap to resolve");
             } else if ("noscan".equals(state)) {
                 line.setTextColor(C_MUTED);
-                line.setText("⊘ won't RFID scan — sweeps can't count "
+                line.setText("⊘ won't RFID scan - sweeps can't count "
                         + "these; set already-tagged on the item itself");
             } else {
                 line.setTextColor(C_MUTED);
-                line.setText("no tags on record — "
+                line.setText("no tags on record - "
                         + plural((it != null ? it.qty : 0), "box gets", "boxes get") + " labels");
             }
             col.addView(line);
@@ -8469,7 +8469,7 @@ public class MainActivity extends Activity {
         if (shelfUnknown > 0) {
             TextView t = new TextView(this);
             t.setText(plural(shelfUnknown, "tag", "tags") + " in range belong to other "
-                    + "products/bins — ignored here.");
+                    + "products/bins - ignored here.");
             t.setTextSize(11);
             t.setTextColor(C_MUTED);
             t.setPadding(dp(4), dp(2), 0, 0);
@@ -8507,7 +8507,7 @@ public class MainActivity extends Activity {
         ol.topMargin = dp(8);
         box.addView(oneBtn, ol);
         TextView oneHint = new TextView(this);
-        oneHint.setText("Hold the gun right at each stickered box — "
+        oneHint.setText("Hold the gun right at each stickered box - "
                 + "every read joins the sweep. Metal-heavy products "
                 + "(dovetail bars) often answer only up close.");
         oneHint.setTextSize(11);
@@ -8551,7 +8551,7 @@ public class MainActivity extends Activity {
             int newLabels = Math.max(0, it.qty - heard);
             derived.setText("→ " + plural(newLabels, "box gets", "boxes get") + " new labels"
                     + (silent > 0
-                       ? " · " + plural(silent, "sticker", "stickers") + " silent — scan "
+                       ? " · " + plural(silent, "sticker", "stickers") + " silent - scan "
                          + "one-by-one; still nothing = dead tag below"
                        : ""));
         };
@@ -8618,7 +8618,7 @@ public class MainActivity extends Activity {
         TextView msg = new TextView(this);
         msg.setText("1. PEEL the silent sticker OFF the box (sticker "
                 + "removal doesn't hurt our packaging).\n2. Hold it "
-                + "against the gun and press SCAN — lots of products "
+                + "against the gun and press SCAN - lots of products "
                 + "(metal!) block tags that are actually fine.\n\n"
                 + "Reads off the box → that tag's record is dropped and "
                 + "the box gets a fresh label.\nStill silent → the tag "
@@ -8634,10 +8634,10 @@ public class MainActivity extends Activity {
         box.addView(out);
 
         final AlertDialog dlg = dlg()
-                .setTitle("Replace a dead tag — " + it.name())
+                .setTitle("Replace a dead tag - " + it.name())
                 .setView(box)
-                .setPositiveButton("⚡ SCAN IT NOW — OFF THE BOX", null)
-                .setNeutralButton("STILL SILENT — DISCARD", null)
+                .setPositiveButton("⚡ SCAN IT NOW - OFF THE BOX", null)
+                .setNeutralButton("STILL SILENT - DISCARD", null)
                 .setNegativeButton("Back", null)
                 .create();
         dlg.show();
@@ -8683,14 +8683,14 @@ public class MainActivity extends Activity {
                     if (epc == null) {
                         out.setText(heard.isEmpty()
                                 ? "Nothing answered. If it's still "
-                                  + "silent this close, it's dead — "
+                                  + "silent this close, it's dead - "
                                   + "use DISCARD."
-                                : "Only already-counted tags answered — "
+                                : "Only already-counted tags answered - "
                                   + "step away from the shelf and try "
                                   + "again.");
                         return;
                     }
-                    out.setText("Read " + epc + " — dropping its "
+                    out.setText("Read " + epc + " - dropping its "
                             + "record…");
                     retireReplacedTag(it, epc, dlg, out);
                 });
@@ -8726,7 +8726,7 @@ public class MainActivity extends Activity {
                     beep(SOUND_OK);
                     if (parent != null) parent.dismiss();
                     status.setText("Tag " + gone + " retired ("
-                            + kind + ") ✓ — the box counts as untagged "
+                            + kind + ") ✓ - the box counts as untagged "
                             + "and gets a fresh label. Bin the sticker.");
                     shelfPost(false, null);
                     reloadBatchAndReview();
@@ -9188,7 +9188,7 @@ public class MainActivity extends Activity {
               .append(r.detectedOther);
         }
         if (r.noScan) {
-            sb.append("\n⊘ Flagged 'won't RFID scan' — sweeps never "
+            sb.append("\n⊘ Flagged 'won't RFID scan' - sweeps never "
                     + "expect these tags to answer.");
         }
         if (r.reason != null && !r.reason.isEmpty()) {
@@ -9346,13 +9346,13 @@ public class MainActivity extends Activity {
                         step = STEP_VERIFY;
                         startVerifyStep();
                         applyBatchUi();
-                        status.setText("No labels — straight to VERIFY: "
+                        status.setText("No labels - straight to VERIFY: "
                                 + "pull the trigger and sweep the whole "
                                 + "shelf, then SEND SWEEP.");
                     } else {
                         step = STEP_PAIR;
                         applyBatchUi();
-                        status.setText("Straight to pairing — no labels "
+                        status.setText("Straight to pairing - no labels "
                                 + "queued.");
                     }
                 });
@@ -9375,7 +9375,7 @@ public class MainActivity extends Activity {
         dlg()
                 .setTitle("Undo ALL pairing?")
                 .setMessage("Release all " + plural(n, "tag", "tags") + " tied in this "
-                        + "batch?\n\nThe printed labels stay valid — you "
+                        + "batch?\n\nThe printed labels stay valid - you "
                         + "just re-scan them onto their products. Nothing "
                         + "in Shopify changes.")
                 .setPositiveButton("Release " + n, (d, w) -> new Thread(() -> {
@@ -9387,7 +9387,7 @@ public class MainActivity extends Activity {
                             beep(SOUND_OK);
                             pairActive = null;
                             pairHistory.clear();
-                            status.setText(plural(removed, "tie", "ties") + " released — "
+                            status.setText(plural(removed, "tie", "ties") + " released - "
                                     + "pair the shelf again.");
                             reloadBatchOnly();
                         });
@@ -9450,7 +9450,7 @@ public class MainActivity extends Activity {
         }
         sweepArmed = true;
         beep(SOUND_OTHER);
-        status.setText("SWEEP ARMED — HOLD the trigger over "
+        status.setText("SWEEP ARMED - HOLD the trigger over "
                 + pairActive.name() + "'s boxes, release to assign.");
     }
 
@@ -9464,7 +9464,7 @@ public class MainActivity extends Activity {
         }
         scanning = true;
         sweepRunning = true;
-        status.setText("Sweeping… 0 tags — release the trigger to stop.");
+        status.setText("Sweeping… 0 tags - release the trigger to stop.");
     }
 
     private void stopHeldSweep() {
@@ -9484,7 +9484,7 @@ public class MainActivity extends Activity {
         if (target == null) return;
         if (swept.isEmpty()) {
             beep(SOUND_ERR);
-            status.setText("Swept nothing — hold the trigger longer, or "
+            status.setText("Swept nothing - hold the trigger longer, or "
                     + "raise PWR.");
             return;
         }
@@ -9505,7 +9505,7 @@ public class MainActivity extends Activity {
                     if (orphans.isEmpty()) {
                         beep(SOUND_OTHER);
                         status.setText("All " + plural(swept.size(), "tag", "tags") + " "
-                                + "swept are already linked — nothing "
+                                + "swept are already linked - nothing "
                                 + "orphaned here.");
                         return;
                     }
@@ -9651,10 +9651,10 @@ public class MainActivity extends Activity {
                     }
                     if (step == STEP_CHECK) {
                         status.setText(checkEntries.isEmpty()
-                                ? "Nothing needs checking ✓ — NEXT queues "
+                                ? "Nothing needs checking ✓ - NEXT queues "
                                   + "the labels."
                                 : plural(checkEntries.size(), "item needs", "items need") + " a "
-                                  + "look — tap one to review. NEXT queues "
+                                  + "look - tap one to review. NEXT queues "
                                   + "the labels.");
                         refreshBatchList();
                         // Boxes on the wrong shelf: walk them one by one
@@ -9724,7 +9724,7 @@ public class MainActivity extends Activity {
                 if (resumeId > 0) {
                     ui.post(() -> {
                         status.setText("Bin " + bin + " is already on the "
-                                + "list — tap its card to resume.");
+                                + "list - tap its card to resume.");
                         loadBatchPickerInline();
                         btInput.requestFocus();
                     });
@@ -9735,7 +9735,7 @@ public class MainActivity extends Activity {
                 api("POST", "/api/batches", body);
                 ui.post(() -> {
                     beep(SOUND_OK);
-                    status.setText("Bin " + bin + " added — tap its card "
+                    status.setText("Bin " + bin + " added - tap its card "
                             + "below to start collecting.");
                     loadBatchPickerInline();
                     btInput.requestFocus();
@@ -9780,7 +9780,7 @@ public class MainActivity extends Activity {
         }
         dlg()
                 .setTitle("Leave bin " + batchBin + "?")
-                .setMessage("LEAVE OPEN parks the batch to resume later — "
+                .setMessage("LEAVE OPEN parks the batch to resume later - "
                         + "on this gun or the web terminal.\n\nABANDON "
                         + "closes it for good"
                         + (n > 0 ? " and releases its " + plural(n, "tag tie", "tag ties") : "")
@@ -9818,7 +9818,7 @@ public class MainActivity extends Activity {
                 ui.post(() -> {
                     beep(SOUND_OK);
                     exitBatch(true);
-                    status.setText("Batch on " + bin + " abandoned — the "
+                    status.setText("Batch on " + bin + " abandoned - the "
                             + "bin is back on the to-do list.");
                 });
             } catch (Exception e) {
@@ -9891,7 +9891,7 @@ public class MainActivity extends Activity {
         ScrollView sc = new ScrollView(this);
         sc.addView(box);
         AlertDialog.Builder b = dlg()
-                .setTitle("Receiving — " + green + " of " + plural(total, "product", "products") + " fully tagged")
+                .setTitle("Receiving - " + green + " of " + plural(total, "product", "products") + " fully tagged")
                 .setView(sc)
                 .setPositiveButton("CONFIRM", (d, w) -> {
                     exitBatch(false);
@@ -11529,22 +11529,22 @@ public class MainActivity extends Activity {
                 status.setText("SHELF SWEEP: this bin was tagged before ("
                         + (batchPrevDoneAt == null ? "?"
                            : agoLong(batchPrevDoneAt))
-                        + "). Pull the trigger and sweep — reads add up "
+                        + "). Pull the trigger and sweep - reads add up "
                         + "across pulls (PWR chip changes power). "
                         + (shelfEpcs.isEmpty() ? ""
                            : plural(shelfEpcs.size(), "tag", "tags") + " so far. ")
                         + "RESULTS when done; CLEAR starts over.");
             } else if (step == STEP_CHECK) {
                 status.setText(checkEntries.isEmpty()
-                        ? "CHECK: nothing flagged ✓ — NEXT queues labels."
-                        : "CHECK: tap flagged items to review — NEXT "
+                        ? "CHECK: nothing flagged ✓ - NEXT queues labels."
+                        : "CHECK: tap flagged items to review - NEXT "
                           + "queues labels.");
             } else if (step == STEP_PAIR) {
                 status.setText("PAIR: scan a product barcode, TRIGGER each "
                         + "sticker; NEXT verifies the bin.");
             } else {
                 status.setText("VERIFY: pull the trigger to sweep the whole "
-                        + "bin, then SEND SWEEP — the results show here AND "
+                        + "bin, then SEND SWEEP - the results show here AND "
                         + "on the PC/iPad.");
             }
         } else {
@@ -11722,8 +11722,8 @@ public class MainActivity extends Activity {
         String home = it.binLocation == null || it.binLocation.isEmpty()
                 ? "no bin on record" : it.binLocation;
         msg.setText(it.name() + " was RFID-tagged before this batch (side "
-                + "trip or earlier session) — " + plural(n, "tag", "tags") + " in the "
-                + "system.\nRecorded shelf: " + home + " — go look, or "
+                + "trip or earlier session) - " + plural(n, "tag", "tags") + " in the "
+                + "system.\nRecorded shelf: " + home + " - go look, or "
                 + "SWEEP to count its tags in range.\n\n"
                 + "Stickered boxes must not get a second label. Count the "
                 + "boxes on this shelf that already wear a sticker:");
@@ -11758,7 +11758,7 @@ public class MainActivity extends Activity {
         // of the tags in range belong to THIS product (bin_check with a
         // skus filter). Sets the stepper; the operator can still adjust.
         final Button sweepBtn =
-                smallBtn("⚡ SWEEP — COUNT THIS PRODUCT'S TAGS");
+                smallBtn("⚡ SWEEP - COUNT THIS PRODUCT'S TAGS");
         LinearLayout.LayoutParams swl = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT);
@@ -11773,7 +11773,7 @@ public class MainActivity extends Activity {
 
         final Switch held = mkToggle(true);
         held.setText("The box I just scanned is one of the stickered ones "
-                + "— don't count its scan again");
+                + "- don't count its scan again");
         held.setTextSize(12);
         held.setTextColor(C_TEXT);
         held.setVisibility(offerUncount ? View.VISIBLE : View.GONE);
@@ -11784,7 +11784,7 @@ public class MainActivity extends Activity {
             consequence.setText(count[0] > 0
                     ? "→ " + plural(count[0], "box", "boxes") + " counted as already done "
                       + "· labels print only for the others"
-                    : "→ no stickered boxes here — every box scanned "
+                    : "→ no stickered boxes here - every box scanned "
                       + "gets a label");
             held.setEnabled(count[0] > 0);
             if (count[0] == 0) held.setChecked(false);
@@ -11860,7 +11860,7 @@ public class MainActivity extends Activity {
                         refresh.run();
                         sweepOut.setText("Heard " + plural(fdet, "tag", "tags") + " of "
                                 + "this product · " + plural(ftotal, "tag", "tags") + " "
-                                + "in range · " + fon + " on file — "
+                                + "in range · " + fon + " on file - "
                                 + "count set to " + fdet + ".");
                         sweepBtn.setEnabled(true);
                         sweepBtn.setText("⚡ SWEEP AGAIN");
@@ -11871,7 +11871,7 @@ public class MainActivity extends Activity {
                                 + e.getMessage());
                         sweepBtn.setEnabled(true);
                         sweepBtn.setText(
-                                "⚡ SWEEP — COUNT THIS PRODUCT'S TAGS");
+                                "⚡ SWEEP - COUNT THIS PRODUCT'S TAGS");
                     });
                 }
             }).start();
@@ -11910,7 +11910,7 @@ public class MainActivity extends Activity {
                         + "stickered box on this shelf later, use ALREADY "
                         + "TAGGED… in the item editor.")
                 .setCancelable(false)
-                .setPositiveButton("OK — SAVE", (dg, w) ->
+                .setPositiveButton("OK - SAVE", (dg, w) ->
                         putTaggedBefore(it, 0, false))
                 .setNegativeButton("BACK", (dg, w) ->
                         showAlreadyTaggedDialog(it, offerUncount))
@@ -11966,7 +11966,7 @@ public class MainActivity extends Activity {
                 ui.post(() -> {
                     replaceItem(fresh);
                     beep(SOUND_OK);
-                    status.setText("Count fixed — " + plural(fresh.qty, "box", "boxes") + " to label, " + fresh.taggedBefore
+                    status.setText("Count fixed - " + plural(fresh.qty, "box", "boxes") + " to label, " + fresh.taggedBefore
                             + " already stickered.");
                     updateBatchCard();
                     refreshBatchList();
@@ -12644,7 +12644,7 @@ public class MainActivity extends Activity {
                     }
                 }
                 final String note = "📦 On order: " + remaining
-                        + " more expected — " + pos;
+                        + " more expected - " + pos;
                 ui.post(() -> {
                     if (previewItem == item) {
                         status.setText(status.getText() + "\n" + note);
@@ -12800,7 +12800,7 @@ public class MainActivity extends Activity {
         if (r == null || r.distinct <= 1) return "";
         String s = " · strongest of " + r.distinct + " tags";
         if (r.runnerUp > -998 && r.rssi - r.runnerUp < 2.0) {
-            s += " (another was NEARLY as close — check the pick)";
+            s += " (another was NEARLY as close - check the pick)";
         }
         return s;
     }
@@ -12808,7 +12808,7 @@ public class MainActivity extends Activity {
     private void pairReadTag() {
         if (pairActive == null) {
             beep(SOUND_ERR);
-            status.setText("Scan a product's barcode first — then trigger "
+            status.setText("Scan a product's barcode first - then trigger "
                     + "on its stickers.");
             return;
         }
@@ -12828,7 +12828,7 @@ public class MainActivity extends Activity {
                 ui.post(() -> {
                     tagReadBusy = false;
                     beep(SOUND_ERR);
-                    status.setText("No tag read — get closer (or raise "
+                    status.setText("No tag read - get closer (or raise "
                             + "PWR) and trigger again.");
                 });
                 return;
@@ -12881,7 +12881,7 @@ public class MainActivity extends Activity {
                             String.valueOf(item.id)});
                     beep(SOUND_OK);
                     status.setText(hint != null ? hint
-                            : (suspect ? "SUSPECT read saved — " : "")
+                            : (suspect ? "SUSPECT read saved - " : "")
                               + "Tag ✓ …" + epc.substring(
                                       Math.max(0, epc.length() - 6))
                               + "  (" + item.paired
@@ -12947,7 +12947,7 @@ public class MainActivity extends Activity {
             pairActive = it;
             previewItem = it;
             if (pairTarget(it) > 0) {
-                status.setText(it.name() + " focused — trigger on its "
+                status.setText(it.name() + " focused - trigger on its "
                         + "stickers (" + it.paired + "/"
                         + pairTarget(it) + ").");
             }
@@ -12959,9 +12959,9 @@ public class MainActivity extends Activity {
             int boxes = 0;
             for (BItem b : bItems) boxes += b.unitsTotal;
             beep(SOUND_OTHER);
-            dlg().setTitle("ALREADY TAGGED — JUST CARRY")
+            dlg().setTitle("ALREADY TAGGED - JUST CARRY")
                     .setMessage(plural(boxes, "box", "boxes") + " here are already "
-                            + "tagged from an earlier session — no "
+                            + "tagged from an earlier session - no "
                             + "labels print and nothing pairs. Carry "
                             + "them to " + batchBin + " and confirm.")
                     .setPositiveButton("MOVED TO " + batchBin + " ✓",
@@ -12985,7 +12985,7 @@ public class MainActivity extends Activity {
         Toast.makeText(this, "Side trip complete ✓",
                 Toast.LENGTH_SHORT).show();
         status.setText("✓ " + it.name() + " fully paired (" + it.paired
-                + "/" + target + ") — closing the trip.");
+                + "/" + target + ") - closing the trip.");
         finishSideTrip();
         return true;
     }
@@ -13036,13 +13036,13 @@ public class MainActivity extends Activity {
         if (next == null) {
             beep(SOUND_OTHER);
             status.setText("✓ " + it.name() + " done (" + it.paired + "/"
-                    + target + ") — every printed label is paired.");
+                    + target + ") - every printed label is paired.");
             return;
         }
         pairActive = next;
         previewItem = next;
         beep(SOUND_OTHER);
-        status.setText("✓ " + it.name() + " done — next up: "
+        status.setText("✓ " + it.name() + " done - next up: "
                 + next.name() + " (" + next.paired + "/"
                 + pairTarget(next) + "). Trigger on its stickers.");
         updateBatchCard();
@@ -13084,13 +13084,13 @@ public class MainActivity extends Activity {
         }
         if (total == 0) {
             beep(SOUND_ERR);
-            status.setText("Nothing to print — scan boxes first.");
+            status.setText("Nothing to print - scan boxes first.");
             return;
         }
         final int n = total;
         dlg()
                 .setTitle("Print labels for bin " + batchBin + "?")
-                .setMessage(plural(n, "label", "labels") + " — one per box — will "
+                .setMessage(plural(n, "label", "labels") + " - one per box - will "
                         + "print at the warehouse printer."
                         + (caseLabels > 0
                            ? " " + caseLabels + " of them are sealed "
@@ -13134,7 +13134,7 @@ public class MainActivity extends Activity {
                             beep(SOUND_OK);
                             step = STEP_PAIR;
                             applyBatchUi();
-                            status.setText(plural(queued, "label", "labels") + " queued ✓ — "
+                            status.setText(plural(queued, "label", "labels") + " queued ✓ - "
                                     + "printing at the warehouse laptop. "
                                     + "Stick them on, then pair."
                                     + sideNote);
@@ -13149,7 +13149,7 @@ public class MainActivity extends Activity {
                                 step = STEP_PAIR;
                                 applyBatchUi();
                                 status.setText("Labels were already "
-                                        + "queued — on to PAIR.");
+                                        + "queued - on to PAIR.");
                             } else {
                                 beep(SOUND_ERR);
                                 status.setText(e.getMessage());
@@ -13186,7 +13186,7 @@ public class MainActivity extends Activity {
                     beep(SOUND_OTHER);
                     status.setText("Undid tag …" + last[0].substring(
                             Math.max(0, last[0].length() - 6))
-                            + " — now " + plural(item.paired, "tag", "tags") + ".");
+                            + " - now " + plural(item.paired, "tag", "tags") + ".");
                     updateBatchCard();
                     refreshBatchList();
                 });
@@ -13238,7 +13238,7 @@ public class MainActivity extends Activity {
         verifySkuState.clear();
         applyBatchUi();
         if (!completed) {
-            status.setText("Left the batch (still open — resume any time).");
+            status.setText("Left the batch (still open - resume any time).");
         }
     }
 
@@ -13449,7 +13449,7 @@ public class MainActivity extends Activity {
 
         TextView head = new TextView(this);
         head.setText("Scanned " + scanned
-                + " — tap the product it really belongs to:");
+                + " - tap the product it really belongs to:");
         head.setTextSize(12);
         head.setTextColor(C_MUTED);
         box.addView(head);
@@ -13851,7 +13851,7 @@ public class MainActivity extends Activity {
                 ui.post(() -> {
                     closeItemEditor();
                     beep(SOUND_OK);
-                    status.setText("Barcode written ✓ — now RE-SCAN those "
+                    status.setText("Barcode written ✓ - now RE-SCAN those "
                             + plural(qty, "box", "boxes") + "; they'll come up as " + title
                             + ".");
                     reloadBatchAndReview();
@@ -13873,7 +13873,7 @@ public class MainActivity extends Activity {
     // a quantity from a guess is how stock records get wrecked.
     private static final String[] SKIP_REASONS = {
         "No barcode on the box",
-        "Wrapped — can't identify it",
+        "Wrapped - can't identify it",
         "Barcode damaged / unreadable",
         "Can't reach it",
         "Other",
@@ -14044,7 +14044,7 @@ public class MainActivity extends Activity {
                 .setMessage(reason + "\n\nIt stays on the list with that "
                         + "reason, gets no label, and won't hold up the "
                         + "batch.\n\nNothing is counted and no quantity "
-                        + "changes — in Shopify or here. It comes back as a "
+                        + "changes - in Shopify or here. It comes back as a "
                         + "review task when the bin is closed.")
                 .setPositiveButton("Skip it", (d, w) -> setItemSkip(true, reason))
                 .setNegativeButton("Cancel", null)
@@ -14080,9 +14080,9 @@ public class MainActivity extends Activity {
                         it.noScan = want;
                         renderItemEditor();
                         editMsg.setText(want
-                                ? "Flagged ⊘ — sweeps won't expect this "
+                                ? "Flagged ⊘ - sweeps won't expect this "
                                   + "product to answer. Logged."
-                                : "Flag removed ✓ — logged.");
+                                : "Flag removed ✓ - logged.");
                     });
                 } catch (Exception e) {
                     ui.post(() -> editMsg.setText(e.getMessage()));
@@ -14185,7 +14185,7 @@ public class MainActivity extends Activity {
         }
         if (epcs.isEmpty()) {
             beep(SOUND_ERR);
-            status.setText("Nothing swept — press BASELINE again and hold "
+            status.setText("Nothing swept - press BASELINE again and hold "
                     + "the trigger over the shelf first.");
             return;
         }
@@ -14205,7 +14205,7 @@ public class MainActivity extends Activity {
                             .setMessage(msg)
                             .setPositiveButton("OK", null)
                             .show();
-                    status.setText("Baseline ✓ — now scan only the untagged "
+                    status.setText("Baseline ✓ - now scan only the untagged "
                             + "boxes.");
                     reloadBatchOnly();
                 });
@@ -14255,7 +14255,7 @@ public class MainActivity extends Activity {
                         + "the bin \"ask first\" on the work list.");
             } else if (step == STEP_COLLECT) {
                 helpDialog("1 · COLLECT",
-                        "Scan the barcode of EVERY box in this bin — one "
+                        "Scan the barcode of EVERY box in this bin - one "
                         + "scan per box, so three of the same product means "
                         + "three scans.\n\n"
                         + "• Tap an item to fix its count, bin, or details."
@@ -14274,7 +14274,7 @@ public class MainActivity extends Activity {
                         + "shelf, count mismatch, several listings on one "
                         + "barcode, unknown barcodes, products expected "
                         + "here but never seen.\n\n"
-                        + "• Tap a flagged item to review it — arrows pick "
+                        + "• Tap a flagged item to review it - arrows pick "
                         + "between listings, TAKE IT TO <bin> starts a "
                         + "side trip for strays.\n"
                         + "• Wrong-shelf boxes get their own review: each "
@@ -14286,7 +14286,7 @@ public class MainActivity extends Activity {
                 helpDialog("3 · PAIR",
                         "Stick the printed labels on their boxes and tie "
                         + "each label to its product:\n\n"
-                        + "• Scan the product's BARCODE — it becomes "
+                        + "• Scan the product's BARCODE - it becomes "
                         + "active.\n"
                         + "• Pull the TRIGGER close to ONE sticker. The "
                         + "reader listens briefly and picks the strongest "
@@ -14301,19 +14301,19 @@ public class MainActivity extends Activity {
                         "Prove the shelf: hold the trigger and sweep the "
                         + "whole bin, then SEND SWEEP.\n\n"
                         + "• The table shows printed vs tagged vs heard "
-                        + "for every product — ⊘ rows are \"won't RFID "
+                        + "for every product - ⊘ rows are \"won't RFID "
                         + "scan\" products, which never answer and don't "
                         + "count against you.\n"
                         + "• CONFIRM hands the bin to the PC/iPad for the "
                         + "final Complete; SWEEP AGAIN clears and retries."
-                        + "\n• Raise power (10+) for sweeps — distance "
+                        + "\n• Raise power (10+) for sweeps - distance "
                         + "matters here, precision doesn't.");
             }
         } else if (activeTab == TAB_STATION) {
             helpDialog("Scan Station",
                     "One-off tagging at the desk (Astronomik serials and "
                     + "quick singles):\n\n"
-                    + "• Scan a barcode (or type a SKU) — the product "
+                    + "• Scan a barcode (or type a SKU) - the product "
                     + "shows with its tag count.\n"
                     + "• Pull the trigger near ONE sticker to link it. "
                     + "The strongest tag wins (Settings can switch to "
@@ -14329,14 +14329,14 @@ public class MainActivity extends Activity {
                     + "whether Shopify still knows the SKU. From there "
                     + "you can UNLINK it or LOCATE the product.\n"
                     + "• Scan a BIN barcode (like D1-3) while a product "
-                    + "is up to move the product there — RFID records and "
+                    + "is up to move the product there - RFID records and "
                     + "Shopify both.\n"
                     + "• ⊘ means the product is flagged \"won't RFID "
                     + "scan\": pair the sticker BEFORE applying it.");
         } else if (activeTab == TAB_LINK) {        } else if (activeTab == TAB_LINK) {
             helpDialog("Link",
                     "The gun becomes an input device for the web "
-                    + "terminal — no Bluetooth pairing to the PC:\n\n"
+                    + "terminal - no Bluetooth pairing to the PC:\n\n"
                     + "• On the PC, open the Scan station tab and turn "
                     + "ON its C72 LINK toggle.\n"
                     + "• Every barcode scan and trigger read on THIS tab "
@@ -14350,31 +14350,31 @@ public class MainActivity extends Activity {
         } else if (activeTab == TAB_LOCATE) {
             helpDialog("Locate",
                     "Hunt a product's RFID tags by signal strength:\n\n"
-                    + "• Scan or type a barcode/SKU — its tags on file "
+                    + "• Scan or type a barcode/SKU - its tags on file "
                     + "load, with the recorded bin as a starting point.\n"
                     + "• TRIGGER starts/stops the hunt. The meter and the "
                     + "beeps rise as you close in (strongest tag wins).\n"
                     + "• Signal pegged? Drop the power: FAR hears the "
                     + "aisle, NEAR a bay or two, TOUCH only arm's reach.\n"
                     + "• FOUND IT? reads at power 1 with the antenna "
-                    + "touching the sticker — a confirmed find drops that "
+                    + "touching the sticker - a confirmed find drops that "
                     + "tag from the hunt so you can chase the next box.\n"
                     + "• TARGET… narrows to one tag, un-finds one, or "
                     + "resets the found marks.");
         } else if (activeTab == TAB_AUDIT) {
             helpDialog("Audit",
                     "Square a shelf against the system:\n\n"
-                    + "• Type or ◀ ▶ a bin or rack — the list shows "
+                    + "• Type or ◀ ▶ a bin or rack - the list shows "
                     + "every product expected there, worst first (red, "
                     + "yellow, green).\n"
                     + "• TRIGGER sweeps; stopping re-checks by itself. "
                     + "CHECK re-runs it any time.\n"
-                    + "• Barcode any box WITHOUT a sticker — it's noted "
+                    + "• Barcode any box WITHOUT a sticker - it's noted "
                     + "and its label prints from the banner.\n"
                     + "• Tap a product row for fixes: print missing "
                     + "labels, mark sold, set or lower stock, send to "
                     + "locate, open in Station.\n"
-                    + "• LOG AUDIT signs the shelf off — the counts "
+                    + "• LOG AUDIT signs the shelf off - the counts "
                     + "become the bin's new baseline and the audit "
                     + "queue moves on.");
         }
@@ -14385,7 +14385,7 @@ public class MainActivity extends Activity {
         helpDialog("Item editor",
                 "Everything about ONE product in this batch:\n\n"
                 + "• ◀ ▶ flip between listings sharing this barcode "
-                + "(open-box twins) — USE THIS LISTING reassigns.\n"
+                + "(open-box twins) - USE THIS LISTING reassigns.\n"
                 + "• − / + fix the box count; the number after / is what "
                 + "Shopify expects.\n"
                 + "• BIN changes the product's shelf in Shopify. The "
@@ -14442,7 +14442,7 @@ public class MainActivity extends Activity {
                 ui.post(() -> {
                     beep(SOUND_OK);
                     status.setText(flagged
-                            ? "Bin " + bin + " flagged ⚑ — it shows \"ask "
+                            ? "Bin " + bin + " flagged ⚑ - it shows \"ask "
                               + "first\" on the work list."
                             : "Flag removed from " + bin + ".");
                 });
@@ -14523,9 +14523,9 @@ public class MainActivity extends Activity {
 
         TextView head = new TextView(this);
         head.setText(fromNext
-                ? "Decide these before labels print — a label printed "
+                ? "Decide these before labels print - a label printed "
                   + "here names THIS bin:"
-                : "On the wrong shelf — tap each one to decide:");
+                : "On the wrong shelf - tap each one to decide:");
         head.setTextSize(12);
         head.setTextColor(C_MUTED);
         box.addView(head);
@@ -14609,7 +14609,7 @@ public class MainActivity extends Activity {
                 .setTitle(plural(strays.size(), "box", "boxes") + " on the wrong shelf")
                 .setView(sc)
                 .setNegativeButton(fromNext
-                                ? "NOT NOW — LABELS PRINT HERE" : "LATER",
+                                ? "NOT NOW - LABELS PRINT HERE" : "LATER",
                         fromNext ? (dg, w) -> askPrintOrSkip() : null);
         if (undecided == 0) {
             // Every decided stray goes home - one trip per distinct home
@@ -14657,13 +14657,13 @@ public class MainActivity extends Activity {
                 + (e.recordBinTags > 0
                    ? "\n\n⚠ " + plural(e.recordBinTags, "tagged box is", "tagged boxes are") + " "
                      + "already recorded at " + home + ". Keeping this "
-                     + "one HERE moves the product's recorded bin — "
+                     + "one HERE moves the product's recorded bin - "
                      + "those boxes' records come along too, even though "
                      + "they sit at " + home + "."
                    : ""));
         box.addView(meta);
 
-        Button move = smallBtn("MOVE IT TO " + home + " — side trip");
+        Button move = smallBtn("MOVE IT TO " + home + " - side trip");
         move.setOnClickListener(vw -> {
             strayMove.add(e.item.id);
             ((AlertDialog) move.getTag()).dismiss();
@@ -14682,7 +14682,7 @@ public class MainActivity extends Activity {
         moveHint.setTextColor(C_MUTED);
         box.addView(moveHint);
 
-        Button keep = smallBtn("KEEP IT HERE — bin becomes " + batchBin);
+        Button keep = smallBtn("KEEP IT HERE - bin becomes " + batchBin);
         LinearLayout.LayoutParams kl = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT);
@@ -14962,7 +14962,7 @@ public class MainActivity extends Activity {
                 + (pendingTrips.isEmpty()
                    ? "Pair them, then FINISH to get back to " + fromBin
                      + "."
-                   : "Pair them, then FINISH — " + plural(pendingTrips.size(), "more trip", "more trips") + " follow."));
+                   : "Pair them, then FINISH - " + plural(pendingTrips.size(), "more trip", "more trips") + " follow."));
         applyBatchUi();
         reloadBatchOnly();
     }
@@ -15044,7 +15044,7 @@ public class MainActivity extends Activity {
                 : box.optString("product_title");
         String note = box == null || box.isNull("scan_note") ? ""
                 : box.optString("scan_note");
-        status.setText("Box of " + units + " — opened or sealed?");
+        status.setText("Box of " + units + " - opened or sealed?");
         dlg()
                 .setTitle("Box of " + units + " x " + sku)
                 .setMessage((title.isEmpty() ? "" : title + "\n\n")
@@ -15059,7 +15059,7 @@ public class MainActivity extends Activity {
                 .setNegativeButton("Left sealed", (d, w) ->
                         batchScanCase(code, "sealed"))
                 .setNeutralButton("Skip", (d, w) -> {
-                    status.setText("Box skipped — nothing counted.");
+                    status.setText("Box skipped - nothing counted.");
                     btInput.requestFocus();
                 })
                 .show();
@@ -15796,7 +15796,7 @@ public class MainActivity extends Activity {
                     status.setText("Trigger on the sticker to link it "
                             + "(" + plural(tagsOnFile, "tag", "tags") + " on file)."
                             + (noScan ? " ⊘ Won't scan once it's on the "
-                              + "box — pair BEFORE applying." : ""));
+                              + "box - pair BEFORE applying." : ""));
                     btInput.requestFocus();
                 });
             }
@@ -15885,7 +15885,7 @@ public class MainActivity extends Activity {
                 ui.post(() -> {
                     tagReadBusy = false;
                     beep(SOUND_ERR);
-                    status.setText("No tag read — get closer and trigger "
+                    status.setText("No tag read - get closer and trigger "
                             + "again.");
                 });
                 return;
@@ -15925,7 +15925,7 @@ public class MainActivity extends Activity {
                     stationHistory.push(epc);
                     stationTracker.setText(String.valueOf(stationTags));
                     beep(warn.isEmpty() ? SOUND_OK : SOUND_OTHER);
-                    status.setText((suspect ? "SUSPECT read saved — " : "")
+                    status.setText((suspect ? "SUSPECT read saved - " : "")
                             + "Linked ✓ …" + epc.substring(
                                     Math.max(0, epc.length() - 6))
                             + "  (" + stationTags + " on file)"
@@ -16009,7 +16009,7 @@ public class MainActivity extends Activity {
             if (sweepRunning) {
                 int n;
                 synchronized (tags) { n = tags.size(); }
-                status.setText("Sweeping… " + plural(n, "tag", "tags") + " — release the "
+                status.setText("Sweeping… " + plural(n, "tag", "tags") + " - release the "
                         + "trigger to stop.");
             } else if (inBatch() && step == STEP_VERIFY && scanning) {
                 int n;
@@ -16027,13 +16027,13 @@ public class MainActivity extends Activity {
                 // 2026-08-31: every scan should say what it's reading).
                 int n;
                 synchronized (tags) { n = tags.size(); }
-                status.setText("Sweeping… " + plural(n, "tag", "tags") + " — release "
+                status.setText("Sweeping… " + plural(n, "tag", "tags") + " - release "
                         + "the trigger to send.");
             } else if (auditScanning) {
                 // Audit sweep: fold reads into the collected set as
                 // they arrive so the per-product counters fill live.
                 auditMergeTags();
-                status.setText("Sweeping… " + plural(auditTagSet.size(), "unique tag", "unique tags") + " collected — trigger to stop.");
+                status.setText("Sweeping… " + plural(auditTagSet.size(), "unique tag", "unique tags") + " collected - trigger to stop.");
             } else if (stripScanning) {
                 stripMerge();
                 status.setText("Sweeping the strip… " + plural(stripEpcs.size(), "unique tag", "unique tags") + " - trigger to stop.");
@@ -18527,7 +18527,7 @@ public class MainActivity extends Activity {
         linkFeed = new LinearLayout(this);
         linkFeed.setOrientation(LinearLayout.VERTICAL);
         LinearLayout none = emptyBox("No scans yet",
-                "Barcode or trigger — results land here");
+                "Barcode or trigger - results land here");
         none.setTag("empty");
         linkFeed.addView(none);
         root.addView(linkFeed);
@@ -18550,7 +18550,7 @@ public class MainActivity extends Activity {
             if (read == null || read.epc == null || read.epc.isEmpty()) {
                 ui.post(() -> {
                     beep(SOUND_ERR);
-                    status.setText("No tag read — get closer and trigger "
+                    status.setText("No tag read - get closer and trigger "
                             + "again.");
                 });
                 return;
@@ -18624,14 +18624,14 @@ public class MainActivity extends Activity {
                     beep(SOUND_ERR);
                     mark.setText("✕");
                     mark.setTextColor(C_OVER);
-                    sub.setText("NOT SENT — " + e.getMessage());
+                    sub.setText("NOT SENT - " + e.getMessage());
                     sub.setTextColor(C_OVER);
                     alertStatus("Couldn't reach the server: "
                             + e.getMessage());
                 });
                 return;
             }
-            ui.post(() -> sub.setText("delivered — waiting for the "
+            ui.post(() -> sub.setText("delivered - waiting for the "
                     + "terminal…"));
             pollLinkOutcome(id, mark, sub, display);
         }).start();
@@ -18675,7 +18675,7 @@ public class MainActivity extends Activity {
             beep(SOUND_OTHER);
             mark.setText("?");
             sub.setText("delivered, no answer");
-            status.setText("Delivered, but the terminal isn't answering — "
+            status.setText("Delivered, but the terminal isn't answering - "
                     + "is the C72 LINK toggle ON on the Scan station?");
         });
     }
@@ -18799,7 +18799,7 @@ public class MainActivity extends Activity {
         uSum.setTextSize(11);
         uSum.setTextColor(C_MUTED);
         uSum.setText("v" + ownVersionName()
-                + " installed — tap to check the server");
+                + " installed - tap to check the server");
         ut.addView(uSum);
         upd.addView(ut, new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
@@ -18839,7 +18839,7 @@ public class MainActivity extends Activity {
         box.addView(toggleRow("Auto-advance pairing",
                 "When a product's paired tags hit its printed-label "
                 + "count, selection hops to the next product in PRINT "
-                + "order — work the label stack top-down or bottom-up "
+                + "order - work the label stack top-down or bottom-up "
                 + "without scanning each barcode. Which way you're "
                 + "going is learned from your first products, then "
                 + "locked.", swPairNext));
@@ -18996,7 +18996,7 @@ public class MainActivity extends Activity {
                 if (prefs.getInt(k, 0) > 0) steps++;
             }
             pSum.setText((tabs == 0
-                    ? "no tab defaults — power stays where you set it"
+                    ? "no tab defaults - power stays where you set it"
                     : plural(tabs, "tab default", "tab defaults"))
                     + (prefs.getBoolean("pow_steps_on", false)
                         ? " · batch steps: " + steps + " set"
@@ -19189,7 +19189,7 @@ public class MainActivity extends Activity {
                     if (!tabVisible(activeTab)) activeTab = TAB_BATCH;
                     selectTab(activeTab);
                     status.setText(prefs.getString("key", "").isEmpty()
-                            ? "Saved — but the station key is still empty "
+                            ? "Saved - but the station key is still empty "
                               + "(Settings → Connection)"
                             : "Settings saved ✓");
                 })
@@ -19268,7 +19268,7 @@ public class MainActivity extends Activity {
         grp.addView(calib);
         TextView calHint = new TextView(this);
         calHint.setText("Pull and hold the gun's trigger for the feel you "
-                + "want — your hold time becomes the threshold.");
+                + "want - your hold time becomes the threshold.");
         calHint.setTextSize(11);
         calHint.setTextColor(C_MUTED);
         calHint.setPadding(dp(4), dp(2), dp(4), dp(6));
@@ -19343,7 +19343,7 @@ public class MainActivity extends Activity {
                     if (onSaved != null) onSaved.run();
                     status.setText("Trigger pulls saved ✓"
                             + (swHold.isChecked()
-                                ? " — hold " + ms + " ms to sweep."
+                                ? " - hold " + ms + " ms to sweep."
                                 : ""));
                 })
                 .setNegativeButton("Back", null)
@@ -19377,7 +19377,7 @@ public class MainActivity extends Activity {
                 long held = System.currentTimeMillis() - downAt[0];
                 long set = Math.max(200, Math.min(2000, held));
                 msIn.setText(String.valueOf(set));
-                Toast.makeText(this, "Held " + held + " ms — threshold "
+                Toast.makeText(this, "Held " + held + " ms - threshold "
                         + (set == held ? "set." : "set to " + set
                           + " (kept between 200 and 2000)."),
                         Toast.LENGTH_LONG).show();
@@ -19447,7 +19447,7 @@ public class MainActivity extends Activity {
                 mkToggle(prefs.getBoolean("pow_steps_on", false));
         box.addView(toggleRow("Different power per batch step",
                 "Collect, Check, Pair and Verify each get their own "
-                + "default while a batch is open — a set step beats the "
+                + "default while a batch is open - a set step beats the "
                 + "Batch tab default.", swSteps));
         final LinearLayout grp = new LinearLayout(this);
         grp.setOrientation(LinearLayout.VERTICAL);
@@ -19620,7 +19620,7 @@ public class MainActivity extends Activity {
                                 .setTitle("Rebuild the screen?")
                                 .setMessage("Applying the theme rebuilds "
                                         + "the screen. Your open batch is "
-                                        + "safe on the server — re-pick "
+                                        + "safe on the server - re-pick "
                                         + "it from the list after.")
                                 .setPositiveButton("APPLY",
                                         (d2, w2) -> recreate())
@@ -19631,7 +19631,7 @@ public class MainActivity extends Activity {
                     }
                 })
                 .setNegativeButton("Later", (d, w) -> status.setText(
-                        "Theme saved — it applies next time the app "
+                        "Theme saved - it applies next time the app "
                         + "opens."))
                 .show();
     }
@@ -19686,7 +19686,7 @@ public class MainActivity extends Activity {
                             onPicked.accept(0xFF000000 | (c & 0xFFFFFF));
                             if (dref[0] != null) dref[0].dismiss();
                         } catch (Exception e) {
-                            alertStatus("Not a colour — use #RRGGBB, like "
+                            alertStatus("Not a colour - use #RRGGBB, like "
                                     + "#2F7DE1.");
                         }
                     })
@@ -19858,7 +19858,7 @@ public class MainActivity extends Activity {
         serverIn.setText(prefs.getString("server", DEFAULT_SERVER));
         box.addView(serverIn);
         TextView hint = new TextView(this);
-        hint.setText("Paste the whole station link — the key is read "
+        hint.setText("Paste the whole station link - the key is read "
                 + "from ?key= automatically.");
         hint.setTextSize(11);
         hint.setTextColor(C_MUTED);
@@ -19906,7 +19906,7 @@ public class MainActivity extends Activity {
                             .apply();
                     if (onSaved != null) onSaved.run();
                     status.setText(key.isEmpty()
-                            ? "Saved — but the station key is still empty"
+                            ? "Saved - but the station key is still empty"
                             : "Connection saved ✓");
                 })
                 .setNegativeButton("Back", null)
@@ -19987,7 +19987,7 @@ public class MainActivity extends Activity {
                     if (server > ownVersionCode()) {
                         offerAppUpdate(name);
                     } else if (verbose) {
-                        Toast.makeText(this, "Up to date ✓ — v"
+                        Toast.makeText(this, "Up to date ✓ - v"
                                 + ownVersionName(), Toast.LENGTH_SHORT)
                                 .show();
                     }
@@ -20021,7 +20021,7 @@ public class MainActivity extends Activity {
             dlg()
                     .setTitle("One-time permission")
                     .setMessage("Android needs you to allow this app to "
-                            + "install its own updates — once. Flip the "
+                            + "install its own updates - once. Flip the "
                             + "toggle on the next screen, come back, and "
                             + "check for the update again.")
                     .setPositiveButton("OPEN SETTING", (d, w) ->
@@ -20089,7 +20089,7 @@ public class MainActivity extends Activity {
                         this, 7348, cb, flags).getIntentSender());
                 ui.post(() -> {
                     hideLoading();
-                    status.setText("Update downloaded — confirm the "
+                    status.setText("Update downloaded - confirm the "
                             + "install when Android asks.");
                 });
             } catch (Exception e) {

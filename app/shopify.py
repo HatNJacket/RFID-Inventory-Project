@@ -843,7 +843,7 @@ def set_on_hand(sku: str, qty: int) -> int:
         raise RuntimeError(f"{sku} is not stocked at any location.")
     if len(levels) > 1:
         raise RuntimeError(
-            f"{sku} is stocked at {len(levels)} locations — set its "
+            f"{sku} is stocked at {len(levels)} locations - set its "
             f"count in Shopify admin instead."
         )
     before = 0
@@ -941,7 +941,7 @@ def move_unavailable(sku: str, bucket: str, qty: int = 1,
         raise RuntimeError(f"{sku} is not stocked at any location.")
     if len(levels) > 1:
         raise RuntimeError(
-            f"{sku} is stocked at {len(levels)} locations — move it "
+            f"{sku} is stocked at {len(levels)} locations - move it "
             f"in Shopify admin instead."
         )
     counts = {q["name"]: q["quantity"] for q in levels[0]["quantities"]}

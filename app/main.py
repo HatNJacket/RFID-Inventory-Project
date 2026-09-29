@@ -513,7 +513,7 @@ def upsert_case(payload: CaseIn, session: Session = Depends(get_session)):
         raise HTTPException(
             409,
             f"{code} is already a real product "
-            f"({existing_product.get('sku')}) — a case code has to be a "
+            f"({existing_product.get('sku')}) - a case code has to be a "
             f"barcode Shopify doesn't know.",
         )
 
@@ -525,7 +525,7 @@ def upsert_case(payload: CaseIn, session: Session = Depends(get_session)):
             raise
     if product is None:
         raise HTTPException(
-            404, f"No product found for {payload.sku} — check the SKU."
+            404, f"No product found for {payload.sku} - check the SKU."
         )
 
     row = session.get(CaseCode, code)
@@ -769,7 +769,7 @@ def _product_lookup_raw(barcode: str):
                             f"Recognized an {sp.brand} serial number "
                             f"(prefix {sp.prefix} = {sp.item_name}), but no "
                             f"product with SKU {sp.sku} exists in the "
-                            f"catalog — the store's SKU may be outdated."
+                            f"catalog - the store's SKU may be outdated."
                         ),
                         "suggested_sku": sp.sku,
                         "serial_prefix": sp.prefix,
@@ -1528,7 +1528,7 @@ def sweep_assign(
         session.rollback()
         raise HTTPException(
             409, "A tag in that sweep was assigned by someone else "
-                 "mid-write — pull the sweep again.",
+                 "mid-write - pull the sweep again.",
         )
     for a in assigned:
         session.refresh(a)
@@ -1839,7 +1839,7 @@ def tag_info(rfid_id: str, session: Session = Depends(get_session)):
         if job is not None:
             notes.append(
                 f"Printed for {job.sku or job.product_title or '?'} "
-                f"(job #{job.id}, {job.status}) but never paired — stick it "
+                f"(job #{job.id}, {job.status}) but never paired - stick it "
                 f"on that box and pair it, or void the label."
             )
             return {
@@ -1847,7 +1847,7 @@ def tag_info(rfid_id: str, session: Session = Depends(get_session)):
                 "print_job": job.as_dict(), "notes": notes,
             }
         notes.append(
-            "This tag isn't in the system at all — a blank sticker, or one "
+            "This tag isn't in the system at all - a blank sticker, or one "
             "from another store. Pairing it in a batch will claim it."
         )
         return {"found": False, "printed_only": False, "epc": epc,
@@ -1874,7 +1874,7 @@ def tag_info(rfid_id: str, session: Session = Depends(get_session)):
     live_bins = sorted({(e.bin or "").strip() for e in live if e.bin})
     if sku_key and not live:
         notes.append(
-            f"Shopify has no product with SKU {row.sku} any more — this "
+            f"Shopify has no product with SKU {row.sku} any more - this "
             f"tag is an orphan (usually an old SKU that was renamed). "
             f"Unlinking it is normally the right move."
         )
@@ -1888,13 +1888,13 @@ def tag_info(rfid_id: str, session: Session = Depends(get_session)):
     if row.condition:
         notes.append(f"Box condition: {_condition_label(row.condition)}.")
     if row.suspect:
-        notes.append("Flagged as a SUSPECT read when it was paired — the "
+        notes.append("Flagged as a SUSPECT read when it was paired - the "
                      "EPC doesn't look like a normal tag.")
     if (row.case_units or 0) > 1:
         notes.append(f"Sealed case: this ONE tag counts as "
                      f"{row.case_units} units.")
     if sku_key and sku_key in _noscan_skus(session):
-        notes.append("Product is flagged \"won't RFID scan on box\" — "
+        notes.append("Product is flagged \"won't RFID scan on box\" - "
                      "sweeps don't expect it to answer.")
 
     batch = session.get(Batch, row.batch_id) if row.batch_id else None
@@ -3321,7 +3321,7 @@ def mark_assignments_sold(
         raise HTTPException(
             409,
             f"{len(wrong)} of those tags belong to a different product "
-            f"({wrong[0]} …) — refusing to mark them sold as {sku}.",
+            f"({wrong[0]} …) - refusing to mark them sold as {sku}.",
         )
     units = 0
     for r in rows:
@@ -3384,7 +3384,7 @@ def split_products(
         if bc == _norm_id(y.new_sku):
             raise HTTPException(
                 422,
-                f"{x.sku}'s barcode equals the other product's SKU — "
+                f"{x.sku}'s barcode equals the other product's SKU - "
                 f"they'd still collide.",
             )
     by = (payload.changed_by or "").strip()[:100] or None
@@ -3662,7 +3662,7 @@ def create_alias(payload: AliasIn, session: Session = Depends(get_session)):
     if _resolve(payload.alias_barcode, mode, db_ok, api_ok) is not None:
         raise HTTPException(
             409,
-            "That scanned code already matches a real product — it can't "
+            "That scanned code already matches a real product - it can't "
             "be linked as an alias.",
         )
 
@@ -3885,7 +3885,7 @@ class FilterSetIn(BaseModel):
                 raise ValueError(f"'{s}' doesn't look like a serial number")
         if len({s[:4] for s in v}) != 3:
             raise ValueError(
-                "the three serials must have three different prefixes — "
+                "the three serials must have three different prefixes - "
                 "was the same filter scanned twice?"
             )
         return v
@@ -3917,7 +3917,7 @@ def register_filter_set(
         name += f" ({product['variant_title']})"
     prefixes = [s[:4] for s in payload.serials]
     note = (
-        f"Part of the SET: {name} — 3 boxes "
+        f"Part of the SET: {name} - 3 boxes "
         f"(R={prefixes[0]}, G={prefixes[1]}, B={prefixes[2]}). "
         f"Apply ONE tag to the set, not one per filter."
     )[:255]
@@ -5022,7 +5022,7 @@ def update_on_hand(
     _require_shopify_env()
     if not payload.confirmed:
         raise HTTPException(
-            409, "This writes a stock number to Shopify — confirm it first."
+            409, "This writes a stock number to Shopify - confirm it first."
         )
     live = shopify.get_on_hand(payload.sku)
     if live is None:
@@ -5119,7 +5119,7 @@ def undo_on_hand(
             f"Undo sets Shopify on-hand for {row.sku} back to {old} "
             f"(currently {live}"
             + (
-                f" — note: something else changed it since this update "
+                f" - note: something else changed it since this update "
                 f"wrote {row.new_barcode}"
                 if live is not None and str(live) != (row.new_barcode or "")
                 else ""
@@ -5144,7 +5144,7 @@ def undo_on_hand(
         "sku": row.sku,
         "before": before,
         "after": old,
-        "message": f"Undone — {row.sku} on-hand back to {old}.",
+        "message": f"Undone - {row.sku} on-hand back to {old}.",
     }
 
 
@@ -8026,7 +8026,7 @@ def mark_bin_tagged(
             409,
             f"Mark {name} as batch tagged? {_count(len(tags), 'tag', 'tags')} across "
             f"{_count(len(by_sku), 'product is', 'products are')} recorded there. This records "
-            f"the shelf as done — it does NOT tag anything, print "
+            f"the shelf as done - it does NOT tag anything, print "
             f"anything, or touch Shopify. Confirm to record it.",
         )
 
@@ -8080,7 +8080,7 @@ def mark_bin_tagged(
         "products": len(by_sku),
         "tags": len(tags),
         "message": (
-            f"{name} recorded as batch tagged ✓ — {_count(len(tags), 'tag', 'tags')} "
+            f"{name} recorded as batch tagged ✓ - {_count(len(tags), 'tag', 'tags')} "
             f"across {_count(len(by_sku), 'product', 'products')}, from the tags already on "
             f"file. Nothing was tagged, printed or written to Shopify."
         ),
@@ -9759,14 +9759,14 @@ def _shelf_reconcile(
                 "sku": r.sku,
                 "kind": r.kind,
                 "message": (
-                    "replaced sticker still on a box — peel it off"
+                    "replaced sticker still on a box - peel it off"
                     if r.kind in ("replaced", "dead")
-                    else "unsellable return — parts/disposal stock, "
+                    else "unsellable return - parts/disposal stock, "
                          "not counted"
                     if r.kind == "unsellable"
-                    else "display unit — showroom stock, not counted"
+                    else "display unit - showroom stock, not counted"
                     if r.kind == "display"
-                    else "retired tag heard — possible return; check the box"
+                    else "retired tag heard - possible return; check the box"
                 ),
             }
             _openbox_decorate(entry, r, open_returns)
@@ -11190,7 +11190,7 @@ def replace_dead_tag(
         if target is None:
             raise HTTPException(
                 404,
-                "That EPC isn't an active tag — it may already be "
+                "That EPC isn't an active tag - it may already be "
                 "retired, or the read was garbled.",
             )
         if _up(target.sku) \
@@ -11225,7 +11225,7 @@ def replace_dead_tag(
             raise HTTPException(
                 404,
                 "No unheard tag record is left for this product in "
-                "this bin — nothing to drop.",
+                "this bin - nothing to drop.",
             )
         kind = "dead"
 
@@ -12151,7 +12151,7 @@ def batch_item_resolve(
             "message": (
                 f"Shopify still has no product with barcode or SKU {code}. "
                 "If you just changed it there, give it a few seconds and try "
-                "again — the store's search takes a moment to catch up."
+                "again - the store's search takes a moment to catch up."
             ),
         }
 
@@ -12193,7 +12193,7 @@ def batch_item_resolve(
             "queued": queued,
             "item": existing.as_dict(),
             "message": (
-                f"Resolved to {title} — its {_count(moved, 'box', 'boxes')} merged into the "
+                f"Resolved to {title} - its {_count(moved, 'box', 'boxes')} merged into the "
                 f"row already in this batch ({existing.qty_scanned} total)."
                 + (f" {_count(queued, 'label', 'labels')} queued." if queued else "")
             ),
@@ -12222,9 +12222,9 @@ def batch_item_resolve(
         "queued": queued,
         "item": item.as_dict(),
         "message": (
-            (f"Refreshed from Shopify ✓ — {title}."
+            (f"Refreshed from Shopify ✓ - {title}."
              if was_resolved
-             else f"Resolved to {title} ✓ — {_count(item.qty_scanned, 'box', 'boxes')} "
+             else f"Resolved to {title} ✓ - {_count(item.qty_scanned, 'box', 'boxes')} "
                   f"kept.")
             + (f" {_count(queued, 'label', 'labels')} queued." if queued else "")
         ),
@@ -12291,7 +12291,7 @@ def set_product_kind(
     else:
         message = (
             f"{sku} is back in the RFID system"
-            + (" as a bundle — it still won't be labelled."
+            + (" as a bundle - it still won't be labelled."
                if payload.kind == "bundle"
                else " as a multi-box product.")
         )
@@ -12420,8 +12420,8 @@ def _write_bundle_contents(
         "contents": _bundle_contents(session, sku),
         "message": (
             f"{sku} = {fmt([{'component_sku': c, 'qty': q} for c, q in rows])}"
-            + " — batch collect now counts the components instead."
-            if rows else f"{sku} contents cleared — countable again."
+            + " - batch collect now counts the components instead."
+            if rows else f"{sku} contents cleared - countable again."
         ),
     }
 
@@ -12459,7 +12459,7 @@ def import_bundle_contents(
     if not components:
         raise HTTPException(
             404,
-            f"Shopify holds no bundle components for {sku} — it isn't a "
+            f"Shopify holds no bundle components for {sku} - it isn't a "
             f"native bundle (or wasn't built with the Bundles app). "
             f"Define the contents by hand instead.",
         )
@@ -12753,7 +12753,7 @@ def set_item_kind(
         raise HTTPException(
             409,
             f"{_count(item.paired_count, 'RFID tag is', 'RFID tags are')} already paired to this "
-            f"row. Unpair them first — marking it a bundle would leave "
+            f"row. Unpair them first - marking it a bundle would leave "
             f"tags pointing at something with no box to be on.",
         )
 
@@ -12789,18 +12789,18 @@ def set_item_kind(
     name = item.product_title or item.sku or item.scanned_code
     if payload.excluded:
         message = (
-            f"{name} dropped from the RFID system — it won't be seeded into "
+            f"{name} dropped from the RFID system - it won't be seeded into "
             f"future batches or labelled. Undo it from the product's panel "
             f"in History."
         )
     elif payload.kind == "bundle":
         message = (
-            f"{name} marked as a bundle — no labels will print for it; its "
+            f"{name} marked as a bundle - no labels will print for it; its "
             f"component products get tagged as themselves."
         )
     else:
         message = (
-            f"{name} marked as a multi-box product — one label per box, as "
+            f"{name} marked as a multi-box product - one label per box, as "
             f"scanned."
         )
     return {
@@ -12846,13 +12846,13 @@ def batch_item_split(
     if item.paired_count:
         raise HTTPException(
             409,
-            f"{_count(item.paired_count, 'tag is', 'tags are')} already paired to this row — "
+            f"{_count(item.paired_count, 'tag is', 'tags are')} already paired to this row - "
             f"undo the pairing first, then split.",
         )
     if item.case_count:
         raise HTTPException(
             409,
-            "This row holds sealed cases. Open or re-scan them first — a "
+            "This row holds sealed cases. Open or re-scan them first - a "
             "case can't be split between listings.",
         )
     total = sum(p.qty for p in payload.parts)
@@ -12931,7 +12931,7 @@ def batch_item_split(
     )
     return {
         "items": [r.as_dict() for r in rows],
-        "message": f"Split ✓ — {summary}.",
+        "message": f"Split ✓ - {summary}.",
     }
 
 
@@ -12978,7 +12978,7 @@ def set_item_skipped(
     return {
         "item": item.as_dict(),
         "message": (
-            f"{name} skipped — no label, and it won't hold up the batch. "
+            f"{name} skipped - no label, and it won't hold up the batch. "
             f"Counts are untouched; it'll come back as a review task."
             if payload.skipped
             else f"{name} is back in the batch."
@@ -13106,7 +13106,7 @@ def batch_item_labels(
     if item.kind == "bundle":
         raise HTTPException(
             422,
-            "This is marked as a bundle — it has no box of its own to put a "
+            "This is marked as a bundle - it has no box of its own to put a "
             "tag on. Print the label from one of its component products, or "
             "switch it to 'multi-box product' if that's wrong.",
         )
@@ -13184,7 +13184,7 @@ def batch_queue_labels(
         )
         if not jobs and not skipped_no_bin and not held_notes:
             raise HTTPException(
-                422, "Nothing new to label — every scanned box already "
+                422, "Nothing new to label - every scanned box already "
                      "has a label queued or printed.",
             )
         session.add_all(jobs)
@@ -13220,7 +13220,7 @@ def batch_queue_labels(
             raise HTTPException(
                 422,
                 "Everything scanned here is marked as a bundle, and bundles "
-                "aren't labelled — their component products are tagged "
+                "aren't labelled - their component products are tagged "
                 "instead. Switch one to 'multi-box product' if that's wrong.",
             )
         raise HTTPException(422, "No resolved products with boxes to label.")
@@ -15996,13 +15996,13 @@ def divert_to_bin(
     if _is_receiving(parent):
         raise HTTPException(
             422,
-            "Receiving doesn't need side trips — every label already "
+            "Receiving doesn't need side trips - every label already "
             "carries its product's home bin.",
         )
     if parent.status not in ("collecting", "printing"):
         raise HTTPException(
             409,
-            f"This batch is {parent.status} — side trips only run while "
+            f"This batch is {parent.status} - side trips only run while "
             f"it's still being worked.",
         )
     wanted = payload.bin.strip()
@@ -16054,7 +16054,7 @@ def divert_to_bin(
         raise HTTPException(
             409,
             f"{len(stuck)} of those already have labels printed for THIS "
-            f"bin — reprint/void those labels first, or pair them here.",
+            f"bin - reprint/void those labels first, or pair them here.",
         )
 
     side = Batch(
@@ -16087,7 +16087,7 @@ def divert_to_bin(
         session.rollback()
         raise HTTPException(
             422,
-            "Nothing there can be labelled — bundles carry no labels of "
+            "Nothing there can be labelled - bundles carry no labels of "
             "their own.",
         )
     # Whole-strip printing (Nick, 2026-09-16): while the parent is still
@@ -16183,7 +16183,7 @@ def close_divert(batch_id: int, session: Session = Depends(get_session)):
         ],
         "message": (
             f"Side trip to {side.bin_name} closed"
-            + (f" — back to {parent.bin_name}." if parent else ".")
+            + (f" - back to {parent.bin_name}." if parent else ".")
         ),
     }
 
@@ -16210,7 +16210,7 @@ def batch_baseline(
     if batch.status != "collecting":
         raise HTTPException(
             409,
-            f"This batch is already {batch.status} — a baseline only makes "
+            f"This batch is already {batch.status} - a baseline only makes "
             f"sense before labels are queued.",
         )
     swept = {e.strip().upper() for e in payload.epcs if e and e.strip()}
@@ -16270,13 +16270,13 @@ def batch_baseline(
         "strays": stray_rows[:20],
         "unknown": unknown,
         "message": (
-            f"Baseline applied ✓ — {_count(len(swept), 'tag', 'tags')} swept, {matched} "
+            f"Baseline applied ✓ - {_count(len(swept), 'tag', 'tags')} swept, {matched} "
             f"matched to products; {_count(tagged_products, 'product', 'products')} here "
             f"already carry tags"
             + (f", {done} fully done" if done else "")
             + (f". {_count(len(stray_rows), 'tag belongs', 'tags belong')} to products not "
                f"expected in {batch.bin_name}" if stray_rows else "")
-            + (f". {_count(unknown, 'tag', 'tags')} aren't in the system — printed but "
+            + (f". {_count(unknown, 'tag', 'tags')} aren't in the system - printed but "
                f"never paired, or foreign." if unknown else ".")
         ),
     }
@@ -16310,7 +16310,7 @@ def set_tagged_before(
     if batch.status in ("done", "abandoned"):
         raise HTTPException(
             409,
-            f"This batch is {batch.status} — its counts are settled.",
+            f"This batch is {batch.status} - its counts are settled.",
         )
     item = _get_batch_item(session, batch_id, item_id)
     if not item.resolved:
@@ -16340,10 +16340,10 @@ def set_tagged_before(
     return {
         "item": d,
         "message": (
-            f"{_count(payload.count, 'box', 'boxes')} counted as already tagged — no "
+            f"{_count(payload.count, 'box', 'boxes')} counted as already tagged - no "
             f"labels will print for those."
             if payload.count else
-            "Already-tagged count cleared — every scanned box gets a label."
+            "Already-tagged count cleared - every scanned box gets a label."
         ),
     }
 
@@ -16428,7 +16428,7 @@ def batch_pair(
         )
         raise HTTPException(
             409,
-            f"Duplicate EPC — already assigned to "
+            f"Duplicate EPC - already assigned to "
             f"{existing.product_title if existing else 'another product'}.",
         )
     session.refresh(assignment)
@@ -16638,8 +16638,8 @@ def batch_item_reprint(
         raise HTTPException(
             409,
             f"{_count(item.paired_count, 'tag is', 'tags are')} already paired to the old "
-            f"labels. Peel those stickers OFF the boxes first — a leftover "
-            f"sticker would answer sweeps alongside the new one — then "
+            f"labels. Peel those stickers OFF the boxes first - a leftover "
+            f"sticker would answer sweeps alongside the new one - then "
             f"confirm and try again.",
         )
 
@@ -16751,7 +16751,7 @@ def batch_verify(
     if _is_receiving(batch):
         raise HTTPException(
             422,
-            "Receiving batches don't verify against a shelf — finishing "
+            "Receiving batches don't verify against a shelf - finishing "
             "files a bin-check Review task for every bin that received "
             "stock instead.",
         )
@@ -16884,15 +16884,15 @@ def batch_verify(
                     "product_title": r.product_title,
                     "kind": r.kind,
                     "message": (
-                        "replaced sticker still on a box — peel it off"
+                        "replaced sticker still on a box - peel it off"
                         if r.kind in ("replaced", "dead")
-                        else "unsellable return — parts/disposal "
+                        else "unsellable return - parts/disposal "
                              "stock, not counted"
                         if r.kind == "unsellable"
-                        else "display unit — showroom stock, not "
+                        else "display unit - showroom stock, not "
                              "counted"
                         if r.kind == "display"
-                        else "retired tag heard — possible return; "
+                        else "retired tag heard - possible return; "
                              "check the box"
                     ),
                 }
@@ -17007,13 +17007,13 @@ def batch_verify(
             r["state"] = "pairing-short"
             r["reason"] = (
                 f"{_count(r['printed_count'] - r['paired_count'], 'printed label', 'printed labels')} "
-                f"never got a tag paired — finish pairing"
+                f"never got a tag paired - finish pairing"
             )
         elif not na and db < r["paired_count"]:
             r["state"] = "batch-silent"
             r["reason"] = (
                 f"{_count(r['paired_count'] - db, 'tag', 'tags')} paired in THIS batch "
-                f"didn't answer — find those boxes"
+                f"didn't answer - find those boxes"
             )
         elif not na and do < prior_expected:
             gap = prior_expected - do
@@ -17189,8 +17189,8 @@ def batch_complete(
             409,
             f"Bin {batch.bin_name} is ready to close, but bins are closed "
             f"from a web terminal so the counts can be checked on a full "
-            f"screen. Open Batch tagging on the PC or iPad — this bin is "
-            f"waiting under unfinished batches — run Verify, then Complete "
+            f"screen. Open Batch tagging on the PC or iPad - this bin is "
+            f"waiting under unfinished batches - run Verify, then Complete "
             f"batch.",
         )
     # Skipped items keep their honest record in History (nothing was
@@ -19553,7 +19553,7 @@ def product_history(
             "detail": (
                 "no labels print for it, and it is kept out of new batches"
                 if kind_row.excluded
-                else "no labels print for it — its components carry the tags"
+                else "no labels print for it - its components carry the tags"
                 if kind_row.kind == "bundle"
                 else "one label per box"
             ),
@@ -20220,7 +20220,7 @@ def history(
             "detail": (
                 "no labels print for it, and it is kept out of new batches"
                 if pk.excluded
-                else "no labels print for it — its components carry the tags"
+                else "no labels print for it - its components carry the tags"
                 if pk.kind == "bundle"
                 else "one label per box"
             ),
@@ -20275,7 +20275,7 @@ def history(
                 "sku": None,
                 "title": f"Bin {b.bin_name}",
                 "detail": f"Recorded as batch tagged from an audit sweep "
-                          f"(#{b.id}) — from tags already on file; no "
+                          f"(#{b.id}) - from tags already on file; no "
                           f"shelf walk, nothing printed or written",
                 "undo": undo,
             })
@@ -20434,7 +20434,7 @@ def _oneleft_detail(oc: OneLeftCheck) -> str:
         body = f"1-left check confirmed on the dashboard (as {oc.employee})"
     else:
         body = (
-            f"1-left check auto-cleared (as {oc.employee}) — evidence "
+            f"1-left check auto-cleared (as {oc.employee}) - evidence "
             f"{_count(oc.evidence_units, 'unit', 'units')} vs claimed "
             f"{oc.claimed if oc.claimed is not None else '?'}"
         )

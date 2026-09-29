@@ -3599,9 +3599,15 @@ the REAL prod numbers (dev/tests/test_ledger_flow.py, 41 checks).
   barcode repair GIF. Old slide files stay on disk for cached clients;
   the C72 Link-tab mockup swaps for a real gun screenshot whenever one
   lands in `assets/`.
-- **TODO next web-terminal build (Nick 2026-08-24): strip every em dash
-  ("—") from UI copy** — replace with a plain hyphen or reword. New
-  strings written this session already comply.
+- **✅ DONE 2026-09-29 — the em-dash sweep, app-wide.** The web was
+  already clean from the 2026-09-14 pass; this one covered the C72
+  (197 strings, 4.23) and the server's API/History messages (75 in
+  main.py, shopify.py, orders_sync.py, print_agent.py). Only text
+  inside string literals changed - comments and docstrings keep
+  theirs, and lone "—" placeholders (empty cells, "SKU —") stay on
+  purpose because code compares against them. dev/tests/
+  test_emdash.py fails the suite if one returns (proven by planting
+  one). Print-agent copy rides its next real version bump.
 - **✅ DONE 2026-09-29 — the "(s)" plural sweep, app-wide** (web,
   server messages, print agent, C72 4.22): ~500 sites now read "1 tag"
   / "2 tags" with verbs agreeing ("1 bin is / 2 bins are"). Helpers:

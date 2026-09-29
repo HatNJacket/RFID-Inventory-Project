@@ -889,7 +889,7 @@ def run(session: Session, source: str = "manual") -> dict:
         if "ACCESS_DENIED" in str(error) or "Access denied" in str(error):
             status["waiting_scope"] = True
             status["error"] = (
-                "The Shopify app doesn't have the read_orders scope yet — "
+                "The Shopify app doesn't have the read_orders scope yet - "
                 "add it under Develop apps → Configuration, and the next "
                 "run picks it up."
             )

@@ -1710,7 +1710,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dry-run", action="store_true",
         help="Print ZPL to the terminal instead of a printer (still marks "
-             "jobs done — use for wiring tests, not real stock)",
+             "jobs done - use for wiring tests, not real stock)",
     )
     parser.add_argument(
         "--no-rfid", action="store_true",
