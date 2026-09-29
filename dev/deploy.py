@@ -1,15 +1,15 @@
-"""ONE deploy command (Nick, 2026-09-23: dev must duplicate prod
-automatically): build the zip, deploy PROD, deploy DEV, then mirror
-prod's data into dev's sqlite via dev/sync_dev.py.
+"""ONE deploy command: build the zip with mkdeploy's Python zipfile and
+deploy PROD. Nick, 2026-09-29: deploys go to production only - the dev
+twin (telcan-rfid-dev) and its prod->dev data mirror are retired from
+the default pipeline (dev was barely used, and the mirror's full-table
+export loaded the shared Basic database on every deploy).
 
-    py dev/deploy.py              # the whole pipeline
-    py dev/deploy.py --prod-only  # prod deploy, no dev, no sync
-    py dev/deploy.py --dev-only   # dev deploy + data sync only
-    py dev/deploy.py --no-sync    # both deploys, skip the data mirror
+    py dev/deploy.py               # prod only (the default)
+    py dev/deploy.py --with-dev    # ALSO deploy the dev twin + mirror
+                                   # (only if Nick asks for dev again)
 
-The az commands are the SAME hard-rule commands as ever (mkdeploy's
-Python zipfile, az webapp deploy) - this just stops anyone forgetting
-the dev half.
+The az command is the SAME hard-rule command as ever (mkdeploy's
+Python zipfile, az webapp deploy) - never PowerShell Compress-Archive.
 """
 import os
 import subprocess
@@ -34,17 +34,15 @@ def deploy(app_name: str) -> None:
 def main() -> None:
     args = set(sys.argv[1:])
     run("py dev/mkdeploy.py")
-    if "--dev-only" not in args:
-        deploy("telcan-rfid")
-    if "--prod-only" in args:
+    deploy("telcan-rfid")
+    if "--with-dev" not in args:
         return
     deploy("telcan-rfid-dev")
-    if "--no-sync" not in args:
-        print("\n=== mirroring prod data into dev")
-        sys.path.insert(0, HERE)
-        import sync_dev
-        if sync_dev.main() != 0:
-            sys.exit(1)
+    print("\n=== mirroring prod data into dev")
+    sys.path.insert(0, HERE)
+    import sync_dev
+    if sync_dev.main() != 0:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

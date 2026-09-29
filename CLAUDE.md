@@ -23,15 +23,13 @@ change log; commit messages here are written to be read later.
   On-hand *sync* stays blocked - writes happen at operator
   confirmation only, never in the background.
 - **Deploy ONLY via `py dev/deploy.py`** (runs mkdeploy's Python
-  zipfile build, deploys prod AND the dev twin, then mirrors prod's
-  data into dev - dev must always duplicate prod, Nick 2026-09-23).
-  The underlying pieces stay available:
+  zipfile build, deploys PROD only - Nick 2026-09-29: stop deploying
+  the dev twin, it wasn't used). The underlying pieces stay available:
   `py dev/mkdeploy.py` then
-  `az webapp deploy -n telcan-rfid -g shopify-automation-rg --type zip --src-path dev/deploy.zip`
-  (dev twin: `-n telcan-rfid-dev`; data mirror alone: `py dev/sync_dev.py`).
-  The DEV site (telcan-rfid-dev) has its own sqlite + STATION_KEY,
-  Shopify writes disabled. Test risky/new features there first; never
-  point it at the prod database.
+  `az webapp deploy -n telcan-rfid -g shopify-automation-rg --type zip --src-path dev/deploy.zip`.
+  The dev twin (telcan-rfid-dev, own sqlite, Shopify writes off) still
+  exists but is NOT deployed or mirrored; `--with-dev` does both only
+  if Nick asks for dev again. Never point it at the prod database.
   PowerShell `Compress-Archive` writes backslash zip entries that break the
   Linux container — it has downed prod twice. Don't deploy while changing
   app settings (the restart collides with the zip deploy).

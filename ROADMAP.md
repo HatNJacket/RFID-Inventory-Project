@@ -833,11 +833,13 @@ was empty, so the terminal showed no RFID inventory. Now:
   the big history tables); POST /api/admin/snapshot/import DOUBLE-
   guarded (needs ALLOW_SNAPSHOT_IMPORT=1 - only the dev app sets it -
   AND a sqlite engine) so it can never wipe prod.
-- **`py dev/deploy.py` is THE deploy command now**: mkdeploy -> prod
-  -> dev -> mirror prod data into dev (dev/sync_dev.py, also runnable
-  standalone). ~34k rows / all 50 tables in one pass; dev shows the
-  real batches, tags, bin map and queue. Flags: --prod-only,
-  --dev-only, --no-sync.
+- **`py dev/deploy.py` is THE deploy command now**: mkdeploy -> prod.
+  SUPERSEDED 2026-09-29 (Nick): "stop pushing to dev and just push to
+  production - dev wasn't really used". The default is prod only; the
+  dev twin and the prod->dev mirror (dev/sync_dev.py, which also
+  loaded the shared Basic DB with a full export per deploy) run only
+  with --with-dev, if Nick asks for dev again. (Was: prod -> dev ->
+  mirror, flags --prod-only / --dev-only / --no-sync.)
 - COORDINATION NOTE: a parallel session drafted an app-side mirror
   (app/devsync.py + DEV_SYNC_SOURCE_DB, dev pulls straight from the
   prod DB on a timer) - uncommitted, unwired. Only ONE mechanism
