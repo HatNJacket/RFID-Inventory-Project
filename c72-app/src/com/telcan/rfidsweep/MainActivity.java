@@ -16155,6 +16155,7 @@ public class MainActivity extends Activity {
     private TextView auditCtxRack, auditCtxPos;
     private android.widget.ProgressBar auditCtxBar;
     private boolean auditLoading = false;
+    private ScrollView auditScroll;
     // Did the shown report come from real sweep evidence (a live set or
     // a saved sweep)? Silence means nothing until something was swept.
     private boolean auditRepSwept = false;
@@ -16325,6 +16326,7 @@ public class MainActivity extends Activity {
         auditWork.addView(auditBanner, abl);
 
         ScrollView scroll = new ScrollView(this);
+        auditScroll = scroll;
         auditList = new LinearLayout(this);
         auditList.setOrientation(LinearLayout.VERTICAL);
         auditList.setPadding(0, dp(6), 0, dp(6));
@@ -17298,6 +17300,9 @@ public class MainActivity extends Activity {
 
     /** Paint a report as the shown one. */
     private void auditApply(String loc, AuditCached c, boolean beepOk) {
+        // A different bin starts at the top of its list (Nick,
+        // 2026-09-29); a re-check of the same bin keeps your place.
+        boolean newBin = auditLoc == null || !auditLoc.equalsIgnoreCase(loc);
         auditRep = c.rep;
         auditRepSwept = c.swept;
         auditShownSweep = c.shown;
@@ -17316,6 +17321,7 @@ public class MainActivity extends Activity {
         }
         auditTrimForeign(c);
         auditRender();
+        if (newBin && auditScroll != null) auditScroll.scrollTo(0, 0);
         auditCtxUpdate();
         // No note on success (Nick, 2026-09-29): the strip names the bin
         // and the list is the answer.
@@ -17826,8 +17832,14 @@ public class MainActivity extends Activity {
             // First line: the SKU (Nick, 2026-09-28) + where it lives.
             auditFlagLine(sub, (sku.isEmpty() ? "(no SKU)" : sku)
                     + (bins.isEmpty() ? "" : " \u00b7 " + bins), C_MUTED);
+            // "Expected: 1 · Heard: 1" (Nick, 2026-09-29: the old
+            // "0/1 heard · expect 1 · on shelf 1" read as a puzzle). Both
+            // count units; the card's big figure keeps tags heard/on file.
             StringBuilder count = new StringBuilder();
-            count.append(det).append("/").append(here).append(" heard");
+            if (exp < 0) {
+                count.append("Heard: ").append(det).append(" of ")
+                        .append(plural(here, "tag", "tags"));
+            }
             if (exp >= 0) {
                 // The server's SHELF range: unavailable units only widen
                 // the top (F9160A: 1 unavailable, not here -> 0-1).
@@ -17837,14 +17849,16 @@ public class MainActivity extends Activity {
                 int hi = !it.isNull("shelf_hi") ? it.optInt("shelf_hi")
                         : Math.max(it.optInt("expected_qty"),
                                 unitsHere - sold) + unavail;
-                count.append(" \u00b7 expect ")
+                count.append("Expected: ")
                         .append(lo == hi ? String.valueOf(lo)
                                 : lo + "\u2013" + hi);
                 if (unavail > 0) {
-                    count.append(" (incl ").append(unavail)
+                    count.append(" (").append(unavail)
                             .append(" unavailable)");
                 }
-                count.append(" \u00b7 on shelf ").append(detUnits + gh);
+                // Units the sweep heard (a sealed case counts its units;
+                // a retired tag that answered counts too).
+                count.append(" \u00b7 Heard: ").append(detUnits + gh);
             }
             auditFlagLine(sub, count.toString(), C_MUTED);
             if (newly > 0) {
@@ -18072,23 +18086,27 @@ public class MainActivity extends Activity {
                 {"0", "tags heard", null},
                 {String.valueOf(nBad), "flagged", nBad > 0 ? "bad" : null},
         };
+        // Centered (Nick, 2026-09-29): equal cells across the strip, each
+        // number centered over its label.
         for (String[] st : stats) {
             LinearLayout cell = new LinearLayout(this);
             cell.setOrientation(LinearLayout.VERTICAL);
-            cell.setPadding(0, 0, dp(16), 0);
+            cell.setGravity(Gravity.CENTER_HORIZONTAL);
             TextView num = new TextView(this);
             num.setText(st[0]);
             num.setTextSize(19);
             num.setTypeface(null, Typeface.BOLD);
+            num.setGravity(Gravity.CENTER);
             num.setTextColor("ok".equals(st[2]) ? C_OK
                     : "bad".equals(st[2]) ? C_OVER : C_TEXT);
             cell.addView(num);
             TextView lbl = new TextView(this);
             lbl.setText(st[1].toUpperCase(java.util.Locale.ROOT));
             lbl.setTextSize(9);
+            lbl.setGravity(Gravity.CENTER);
             lbl.setTextColor(C_MUTED);
             cell.addView(lbl);
-            strip.addView(cell);
+            strip.addView(cell, weight());
         }
         auditList.addView(strip, auditRowLp());
 
@@ -19584,10 +19602,9 @@ public class MainActivity extends Activity {
         final String sku = it.optString("sku");
         final String bin = loc != null && loc.contains("-") ? loc
                 : auditItemFirstBin(it, loc);
-        final EditText in = themedEdit();
-        in.setInputType(InputType.TYPE_CLASS_NUMBER);
-        in.setText(String.valueOf(Math.max(0, heard)));
-        in.setSelection(in.getText().length());
+        // − count + (Nick, 2026-09-29): no text box; tap the number for
+        // a keypad when the count is big.
+        final int[] val = {Math.max(0, heard)};
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(dp(20), dp(8), dp(20), 0);
@@ -19596,22 +19613,15 @@ public class MainActivity extends Activity {
                 + tagUnits + ". Labels print for any difference.");
         t.setTextSize(12);
         t.setTextColor(C_MUTED);
-        t.setPadding(0, 0, 0, dp(8));
+        t.setPadding(0, 0, 0, dp(10));
         box.addView(t);
-        box.addView(in);
+        box.addView(auditCountStepper(val, 1000),
+                new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT));
         dlg().setView(box)
                 .setPositiveButton("CONFIRM", (d, w) -> {
-                    final int n;
-                    try {
-                        n = Integer.parseInt(in.getText().toString().trim());
-                    } catch (NumberFormatException nf) {
-                        beep(SOUND_ERR);
-                        return;
-                    }
-                    if (n < 0 || n > 1000) {
-                        beep(SOUND_ERR);
-                        return;
-                    }
+                    final int n = val[0];
                     final int print = Math.max(0, n - tagUnits);
                     try {
                         it.put("stock_confirmed", n);
@@ -19654,7 +19664,78 @@ public class MainActivity extends Activity {
                 })
                 .setNegativeButton("CANCEL", null)
                 .show();
-        in.requestFocus();
+    }
+
+    /** − [n] + with square buttons; tapping the number opens a number
+     *  keypad for big counts. val[0] holds the value (0..max). */
+    private LinearLayout auditCountStepper(final int[] val, final int max) {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER);
+        final Button minus = smallBtn("−");
+        final Button plus = smallBtn("+");
+        for (Button sq : new Button[]{minus, plus}) {
+            sq.setTextSize(20);
+            sq.setMinWidth(0);
+            sq.setMinimumWidth(0);
+            sq.setMinHeight(0);
+            sq.setMinimumHeight(0);
+            sq.setPadding(0, 0, 0, 0);
+        }
+        final TextView num = new TextView(this);
+        num.setText(String.valueOf(val[0]));
+        num.setTextSize(24);
+        num.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+        num.setTextColor(C_TEXT);
+        num.setGravity(Gravity.CENTER);
+        num.setMinWidth(dp(72));
+        num.setPadding(dp(8), dp(4), dp(8), dp(4));
+        num.setBackground(btnBg(C_CARD, 0, C_PRESS, 8));
+        minus.setOnClickListener(x -> {
+            val[0] = Math.max(0, val[0] - 1);
+            num.setText(String.valueOf(val[0]));
+        });
+        plus.setOnClickListener(x -> {
+            val[0] = Math.min(max, val[0] + 1);
+            num.setText(String.valueOf(val[0]));
+        });
+        num.setOnClickListener(x -> {
+            final EditText in = themedEdit();
+            in.setInputType(InputType.TYPE_CLASS_NUMBER);
+            in.setText(String.valueOf(val[0]));
+            in.setSelectAllOnFocus(true);
+            LinearLayout pad = new LinearLayout(this);
+            pad.setPadding(dp(20), dp(8), dp(20), 0);
+            pad.addView(in, new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT));
+            AlertDialog kd = dlg().setView(pad)
+                    .setPositiveButton("SET", (d2, w2) -> {
+                        try {
+                            int n = Integer.parseInt(
+                                    in.getText().toString().trim());
+                            val[0] = Math.max(0, Math.min(max, n));
+                            num.setText(String.valueOf(val[0]));
+                        } catch (NumberFormatException ignored) {
+                            beep(SOUND_ERR);
+                        }
+                    })
+                    .setNegativeButton("CANCEL", null)
+                    .create();
+            // Straight to the number keypad.
+            kd.getWindow().setSoftInputMode(android.view.WindowManager
+                    .LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE);
+            kd.show();
+            in.requestFocus();
+        });
+        row.addView(minus, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        LinearLayout.LayoutParams nl = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        nl.leftMargin = dp(12);
+        nl.rightMargin = dp(12);
+        row.addView(num, nl);
+        row.addView(plus, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        return row;
     }
 
     /** A silent-tag row's small button: no 88dp minimum width. */
