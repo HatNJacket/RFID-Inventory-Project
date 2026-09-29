@@ -414,6 +414,7 @@ const EVENT_META = {
   // never a person's click, so they wear their own tag.
   "review-autoclosed": ["Auto-Resolved", "#57748c"],
   "labels-not-printed": ["Labels Not Printed", "#c05717"],
+  "receiving-booked": ["Receiving Booked", "#2f7a5e"],
   "unprinted-sold": ["Unlabelled Sold", "#a8570f"],
   "label-unpaired": ["Label Not Paired", "#d72c0d"],
   "stock-not-updated": ["Stock Not Updated", "#8250df"],

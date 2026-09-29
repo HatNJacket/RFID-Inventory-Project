@@ -21081,3 +21081,8 @@ def _oneleft_detail(oc: OneLeftCheck) -> str:
     if not oc.ok:
         body += f" · FAILED: {oc.error or 'unknown error'}"
     return body[:500]
+
+
+# TC-Planner receiving sync (2026-09-29) - its own module; registers its
+# routes on this app when imported.
+from app import receiving_sync as _receiving_sync  # noqa: E402,F401
