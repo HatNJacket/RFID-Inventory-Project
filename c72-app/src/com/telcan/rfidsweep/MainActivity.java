@@ -7801,7 +7801,12 @@ public class MainActivity extends Activity {
         HttpURLConnection conn = (HttpURLConnection)
                 new URL(server + path).openConnection();
         conn.setConnectTimeout(10000);
-        conn.setReadTimeout(20000);
+        // Audit checks and saved sweeps get longer (2026-09-29): the
+        // shared Basic database queues them behind other apps at busy
+        // moments, and a slow answer beats a dropped one.
+        boolean slowOk = path.endsWith("/check")
+                || path.startsWith("/api/epc-captures");
+        conn.setReadTimeout(slowOk ? 45000 : 20000);
         conn.setRequestMethod(method);
         conn.setRequestProperty("X-Station-Key", key);
         // Big JSON answers (bin checks, batch verifies) compress ~8x;
@@ -17221,8 +17226,21 @@ public class MainActivity extends Activity {
      *  re-read that product's on-hand from Shopify before checking. */
     private AuditCached auditComputeCheck(String loc, String refreshSku)
             throws Exception {
+        return auditComputeCheck(loc, refreshSku, false);
+    }
+
+    /** blankBase: the location with NOTHING heard - the base a new
+     *  sweep's live counters fill in (never the saved sweep). */
+    private AuditCached auditComputeCheck(String loc, String refreshSku,
+            boolean blankBase) throws Exception {
         AuditCached c = new AuditCached();
         c.key = auditEvidenceKey();
+        if (blankBase) {
+            c.rep = api("POST", "/api/bins/" + encPath(loc) + "/check",
+                    new JSONObject().put("epcs", new JSONArray()));
+            c.swept = false;
+            return c;
+        }
         Integer capId = null;
         JSONObject shown = null;
         if (c.key == 0) {
@@ -17269,8 +17287,6 @@ public class MainActivity extends Activity {
             final boolean beepOk) {
         final int seq = ++auditFetchSeq;
         auditBusy(busyMsg);
-        // The rest of the rack starts loading NOW, beside this bin.
-        auditPrefetchRack();
         new Thread(() -> {
             try {
                 final AuditCached c = auditComputeCheck(loc);
@@ -17284,7 +17300,7 @@ public class MainActivity extends Activity {
                     }
                     auditBusy(null);
                     auditApply(loc, c, beepOk);
-                    // Evidence may have moved (trimmed other racks' tags).
+                    // The open bin first, then the rest of the rack.
                     auditPrefetchRack();
                 });
             } catch (Exception e) {
@@ -17367,6 +17383,27 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** The open location with nothing heard, as the live sweep's base:
+     *  every tag on file starts silent and answers as the sweep hears
+     *  it. Not cached - it's only true until the sweep stops. */
+    private void auditLiveBase(final String loc) {
+        final int seq = ++auditFetchSeq;
+        new Thread(() -> {
+            try {
+                final AuditCached c = auditComputeCheck(loc, null, true);
+                ui.post(() -> {
+                    if (seq != auditFetchSeq || !loc.equalsIgnoreCase(
+                            auditBin.getText().toString().trim())) {
+                        return;
+                    }
+                    auditApply(loc, c, false);
+                });
+            } catch (Exception ignored) {
+                // The stop's check brings the real answer anyway.
+            }
+        }).start();
+    }
+
     /** A product window's ↻ (Nick, 2026-09-29, F9168A: two pickups got
      *  fulfilled mid-audit): pull orders now (the read-only sync the web's
      *  Sync orders runs), re-check this bin skipping the pickup cache,
@@ -17414,11 +17451,12 @@ public class MainActivity extends Activity {
         }).start();
     }
 
-    // Three at a time (2026-09-29): the rack loads alongside the open
-    // bin instead of one bin after another. Small on purpose - the
-    // database tier is small too.
+    // ONE at a time, after the open bin (2026-09-29): the shared Basic
+    // database answers queued requests no faster - three in parallel
+    // just made each slower and the open bin wait (30 s stalls after
+    // repeated sweeps). Stale tasks skip themselves.
     private final java.util.concurrent.ExecutorService auditPool =
-            java.util.concurrent.Executors.newFixedThreadPool(3);
+            java.util.concurrent.Executors.newSingleThreadExecutor();
     private final java.util.HashSet<String> auditInFlight =
             new java.util.HashSet<>();
 
@@ -17495,6 +17533,15 @@ public class MainActivity extends Activity {
             if (reader.startInventoryTag()) {
                 auditScanning = true;
                 scanning = true;
+                // A new sweep replaces a SAVED audit on screen (Nick,
+                // 2026-09-29): the banner goes, verdicts wait for the
+                // stop, and the counters restart from a blank base.
+                if (auditShownSweep != null && auditLoc != null) {
+                    auditShownSweep = null;
+                    auditRepSwept = false;
+                    auditRender();
+                    auditLiveBase(auditLoc);
+                }
                 if (auditLandingShown) {
                     status.setText("Sweeping… walk the shelf. Trigger to stop.");
                 } else {
@@ -18111,9 +18158,11 @@ public class MainActivity extends Activity {
         auditList.addView(strip, auditRowLp());
 
         if (!swept) {
-            auditList.addView(auditRowView("Not swept yet - pull the "
-                    + "trigger to sweep this shelf; the verdicts fill in "
-                    + "when you stop.", C_MUTED), auditRowLp());
+            auditList.addView(auditRowView(auditScanning
+                    ? "Sweeping - the verdicts fill in when you stop."
+                    : "Not swept yet - pull the trigger to sweep this "
+                      + "shelf; the verdicts fill in when you stop.",
+                    auditScanning ? C_BLUE : C_MUTED), auditRowLp());
         } else if (flagged == 0) {
             auditList.addView(auditRowView("\u2713 ALL CLEAR - every "
                     + "product is exactly as the system expects. LOG "

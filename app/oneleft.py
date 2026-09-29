@@ -58,6 +58,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app import config
+from app.database import ci_in
 from app.models import (
     AppSetting,
     Batch,
@@ -315,7 +316,8 @@ def build_board(session: Session, pending: list[dict]) -> list[dict]:
     map_bins: dict[str, str] = {}
     for sku, bin_name in session.execute(
         select(BinMapEntry.sku, BinMapEntry.bin).where(
-            func.upper(BinMapEntry.sku).in_(sorted(sku_keys))
+            # Index-friendly on the case-insensitive database (2026-09-29).
+            ci_in(BinMapEntry.sku, sorted(sku_keys))
         )
     ):
         if sku and bin_name:
