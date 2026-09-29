@@ -426,6 +426,7 @@ const EVENT_META = {
   "bundle-contents-set": ["Bundle Contents", "#6f42c1"],
   "bundles-pulled": ["Bundles Pulled", "#6f42c1"],
   "locate-list": ["Locate List", "#5561c9"],
+  "audit-unsure": ["Marked Unsure", "#b07d12"],
   "locate-paired": ["Locate Assigned Tag", "#2f9e6e"],
   "receiving-dismissed": ["Sold Before Label", "#5c5f62"],
   "unpaired-ignored": ["Unpaired Write-off", "#7a7d80"],
@@ -14036,6 +14037,7 @@ async function loadAudits() {
     loadAuditSessions(),
     loadUnavailable(),
     loadPacking(),
+    loadUnsureCount(),
   ];
   Promise.allSettled(slowLoads).then(() =>
     setFreshTag("audhub-fresh", true)
@@ -16956,6 +16958,154 @@ document.getElementById("locq-close").addEventListener("click", () => {
 document.getElementById("locq-overlay").addEventListener("click", (e) => {
   if (e.target.id === "locq-overlay")
     document.getElementById("locq-overlay").hidden = true;
+});
+
+// ---- Marked unsure (Nick, 2026-09-29) --------------------------------------
+// Silent tags the C72 auditor couldn't call, parked with a note. Each row
+// resolves through the same endpoints the audit uses, then files itself.
+async function loadUnsureCount() {
+  const el = document.getElementById("unsure-count");
+  try {
+    const r = await apiJson("/api/audit/unsure");
+    el.textContent = r.count ? String(r.count) : "";
+    el.hidden = !r.count;
+  } catch (err) {
+    el.hidden = true;
+  }
+}
+
+async function unsureResolve(id, resolution) {
+  await postJson(`/api/audit/unsure/${id}/resolve`, {
+    resolution,
+    by: operatorEl.value || null,
+  });
+}
+
+async function renderUnsureOverlay() {
+  const list = document.getElementById("unsure-list");
+  const msg = document.getElementById("unsure-msg");
+  list.innerHTML = '<li class="inventory__empty">Loading…</li>';
+  try {
+    const r = await apiJson("/api/audit/unsure");
+    const entries = r.entries || [];
+    const cnt = document.getElementById("unsure-count");
+    cnt.textContent = entries.length ? String(entries.length) : "";
+    cnt.hidden = !entries.length;
+    if (!entries.length) {
+      list.innerHTML =
+        '<li class="inventory__empty">Nothing marked unsure - the C72 ' +
+        "audit's Unsure button parks a silent tag here.</li>";
+      return;
+    }
+    list.innerHTML = entries
+      .map(
+        (e) => `<li class="recent__item unsure-row" data-id="${e.id}">
+        <div class="unsure-row__head">
+          <a href="#" class="hist-sku" data-sku="${escapeHtml(e.sku || "")}"><b>${escapeHtml(e.sku || "(no SKU)")}</b></a>
+          <span class="binlabel">${escapeHtml(e.product_title || "")}</span>
+        </div>
+        <div class="binlabel">Tag …${escapeHtml((e.epc || "").slice(-6))}${
+          e.bin ? ` · Bin: ${escapeHtml(e.bin)}` : ""
+        }${e.created_by ? ` · by ${escapeHtml(e.created_by)}` : ""}${
+          e.created_at ? ` · ${fmtWhen(e.created_at)}` : ""
+        }</div>
+        ${e.note ? `<div class="unsure-row__note">${escapeHtml(e.note)}</div>` : ""}
+        <div class="unsure-row__acts">
+          <button class="reset" type="button" data-act="unpaired"
+                  title="The sticker is gone or on another box - remove the record">Unpair</button>
+          <button class="reset" type="button" data-act="sold"
+                  title="Retire it presumed sold (consumes a recorded sale)">Sold</button>
+          <button class="reset" type="button" data-act="located"
+                  title="Queue this tag for a hunt on the C72's Locate tab">Locate</button>
+          <button class="reset" type="button" data-act="dismissed"
+                  title="Leave the tag as it is and close the note">Dismiss</button>
+        </div>
+      </li>`
+      )
+      .join("");
+    const byId = new Map(entries.map((e) => [String(e.id), e]));
+    list.querySelectorAll(".unsure-row").forEach((li) => {
+      const e = byId.get(li.dataset.id);
+      li.querySelectorAll("[data-act]").forEach((b) => {
+        b.addEventListener("click", async () => {
+          const act = b.dataset.act;
+          const tail = "…" + (e.epc || "").slice(-6);
+          if (act === "unpaired" &&
+              !confirm(`Unpair tag ${tail} from ${e.sku}? The record is removed; Shopify untouched.`))
+            return;
+          if (act === "sold" &&
+              !confirm(`Retire tag ${tail} of ${e.sku} as presumed sold?`))
+            return;
+          li.querySelectorAll("button").forEach((x) => (x.disabled = true));
+          msg.textContent = "";
+          try {
+            const by = operatorEl.value || "";
+            if (act === "unpaired") {
+              await apiJson(
+                `/api/rfid-assignments/${encodeURIComponent(e.epc)}?by=` +
+                  encodeURIComponent(by),
+                { method: "DELETE" }
+              );
+            } else if (act === "sold") {
+              await postJson("/api/assignments/mark-sold", {
+                sku: e.sku,
+                epcs: [e.epc],
+                changed_by: by || null,
+              });
+            } else if (act === "located") {
+              const q = await apiJson("/api/locate-queue");
+              const mine = (q.entries || []).find(
+                (x) => (x.sku || "").toUpperCase() === (e.sku || "").toUpperCase());
+              const epcs = new Set(mine ? mine.epcs || [] : []);
+              epcs.add(e.epc);
+              await postJson("/api/locate-queue", {
+                sku: e.sku,
+                label: e.product_title || e.sku,
+                worker: by || null,
+                epcs: Array.from(epcs),
+              });
+            }
+            await unsureResolve(e.id, act);
+            msg.textContent =
+              act === "located"
+                ? `${e.sku} tag ${tail} is on the C72 locate list ✓`
+                : act === "dismissed"
+                ? `Dismissed ✓`
+                : act === "sold"
+                ? `Tag ${tail} marked sold ✓`
+                : `Tag ${tail} unpaired ✓`;
+            renderUnsureOverlay();
+          } catch (err) {
+            msg.textContent = err.message;
+            li.querySelectorAll("button").forEach((x) => (x.disabled = false));
+          }
+        });
+      });
+    });
+    list.querySelectorAll(".hist-sku").forEach((a) => {
+      a.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        if (!a.dataset.sku) return;
+        document.getElementById("unsure-overlay").hidden = true;
+        openProductHistory(a.dataset.sku);
+      });
+    });
+  } catch (err) {
+    list.innerHTML = `<li class="inventory__empty">${escapeHtml(err.message)}</li>`;
+  }
+}
+
+document.getElementById("review-unsure-btn").addEventListener("click", () => {
+  document.getElementById("unsure-msg").textContent = "";
+  document.getElementById("unsure-overlay").hidden = false;
+  renderUnsureOverlay();
+});
+document.getElementById("unsure-close").addEventListener("click", () => {
+  document.getElementById("unsure-overlay").hidden = true;
+});
+document.getElementById("unsure-overlay").addEventListener("click", (e) => {
+  if (e.target.id === "unsure-overlay")
+    document.getElementById("unsure-overlay").hidden = true;
 });
 
 // Label save — serialized products write the top line through their

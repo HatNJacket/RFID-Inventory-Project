@@ -4734,6 +4734,22 @@ tr.bvx-fam .chip { margin-left: 6px; }
 /* --- audits hub polish (Nick, 2026-09-29) ----------------------------- */
 .audtop { margin-top: 12px; align-items: center; }
 .audtop .freshtag { margin: 0; }
+/* Marked-unsure count + rows (Nick, 2026-09-29) */
+.unsure-count {
+  display: inline-block; min-width: 18px; margin-left: 6px;
+  padding: 0 6px; border-radius: 9px; font-size: 11px; font-weight: 700;
+  line-height: 18px; text-align: center;
+  background: var(--warn-bg); color: var(--warn-ink);
+}
+.unsure-count[hidden] { display: none; }
+.recent__item.unsure-row { display: block; }
+.unsure-row__head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.unsure-row__note {
+  margin: 6px 0 2px; padding: 6px 10px; border-radius: 8px;
+  background: var(--bg); border: 1px solid var(--line);
+  font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.unsure-row__acts { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
 .onebin--main {
   align-items: flex-start; gap: 12px; background: var(--card);
   border: 1px solid var(--line); border-radius: 12px;

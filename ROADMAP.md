@@ -182,6 +182,36 @@ a rack picker; the audit window is scoped to one rack (C72 4.24).**
   verdicts, range flags, MARK ALL SOLD and ALL CLEAR wait until the
   report came from a real sweep (live set or saved sweep).
   test_plurals.py went case-blind and caught 15 uppercase "(S)" leftovers.
+- 4.26 (same day, Nick, walking rack I1):
+  - Rack cache: opening a rack checks the open bin, then the rest of
+    the rack in the background; arrows paint instantly from the
+    cache while the evidence (collected set, or each bin's saved
+    sweep) is unchanged. CHECK / any fix / a stopped sweep re-check
+    and re-prefetch. The strip shows "Checking N tags..." /
+    "Sweeping - trigger to stop and check" in place of the position.
+  - After a check of the live set, tags whose products live on OTHER
+    racks leave the collected set (this rack's other bins' tags stay);
+    they come back if the audit moves to another rack.
+  - Summary: "Strays" removed. Unexplained silence reads "N silent
+    tags, unexplained by sales" with no button - tap the card.
+  - Product window: "Confirm Stock Level" with square -/+, one button
+    (Set to N / Lower to N / "Confirm N stock"). Confirm shows when the
+    shelf is in the expected range and silence outruns sales+pickups:
+    the extra silent tags retire as not-in-storage (missing, no sale
+    consumed), Shopify untouched (F9143D: 0 on hand, 1 silent tag).
+    Silent-tag rows: Unpair / Unsure / Locate (Sold stays on the web),
+    compact. Unpair+print and Add-to-locate buttons gone; "Print a
+    label" (owed count or 1), "Can't RFID scan" (won't-scan flag),
+    "Open in station". ↻ REFRESH runs the read-only orders sync and
+    re-checks skipping the 3-min pickup cache (F9168A: pickups
+    fulfilled mid-audit), then reopens the window.
+  - Printed labels heard unpaired: tap to pair each to its print job's
+    product (homed to this bin) or dismiss.
+  - Server: rfid_audit_unsure + POST/GET /api/audit/unsure,
+    POST /api/audit/unsure/{id}/resolve; check items carry
+    unsure_epcs; BinCheckIn.fresh. Web: "Marked unsure" beside Locate
+    list (count badge) - Unpair / Sold / Locate / Dismiss per row; rows
+    whose tag is gone resolve themselves. dev/tests/test_audit_unsure.py.
 
 **ROUND 14 (Nick, 2026-09-29) — ✅ BUILT: the Audits hub tightened
 (iterated over live previews, approved). Web only.**

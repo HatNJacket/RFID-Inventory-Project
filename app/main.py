@@ -57,6 +57,7 @@ from app.models import (
     BatchItem,
     BinMapEntry,
     BundleContent,
+    AuditUnsure,
     BundleInfo,
     CaseCode,
     EpcCapture,
@@ -6816,6 +6817,9 @@ class BinCheckIn(BaseModel):
     # doesn't put in this bin (open-box twins, strays kept here, map
     # lag) and their tags deserve real counts, not a blank row.
     skus: list[str] = Field(default_factory=list, max_length=500)
+    # A window's Refresh (Nick, 2026-09-29, F9168A: pickups fulfilled
+    # mid-audit): skip the 3-minute pickup-orders cache for this check.
+    fresh: bool = False
 
 
 # ---- scored audit queue (Nick's design, settled 2026-09-28) ---------------
@@ -7075,6 +7079,8 @@ def bin_check(
     localize below a rack anyway; bins are just levels of one shelf)."""
     swept = {_up(e) for e in payload.epcs if e}
     loc = bin_name.strip()
+    if payload.fresh:
+        _pickup_cache["at"] = 0.0   # re-read open pickups below
     if payload.capture_id:
         cap = session.get(EpcCapture, payload.capture_id)
         if cap is None:
@@ -7492,6 +7498,23 @@ def bin_check(
             (r["range_lo"] <= r["detected_units"] <= r["range_hi"])
             if swept else None
         )
+    # Silent tags already parked as UNSURE (Nick, 2026-09-29) - the gun
+    # shows them as marked instead of offering the button again.
+    _sil_all = sorted({_up(e) for r in report for e in r.get("silent_epcs") or []})
+    _unsure = set()
+    if _sil_all:
+        _unsure = {
+            _up(e) for e in session.scalars(
+                select(AuditUnsure.epc).where(
+                    func.upper(AuditUnsure.epc).in_(_sil_all),
+                    AuditUnsure.status == "open",
+                )
+            )
+        }
+    for r in report:
+        r["unsure_epcs"] = [
+            e for e in r.get("silent_epcs") or [] if _up(e) in _unsure
+        ]
     if swept:
         # A FULLY-CONFIRMED product is evidence (Nick, 2026-09-08, the
         # ZWO OAG): every tag on file lives here, every one answered,
@@ -8401,6 +8424,159 @@ def audit_racks(session: Session = Depends(get_session)):
         "racks": racks_bins,
         "checks_open": checks,
     }
+
+
+# ---- "Unsure" silent tags (Nick, 2026-09-29) --------------------------------
+# The C72 auditor can't always call a silent tag (gone? behind a box? on
+# another shelf?). UNSURE parks it with an optional note; the web Audits
+# hub's "Marked unsure" list is where it gets worked later.
+class AuditUnsureIn(BaseModel):
+    epc: str = Field(min_length=4, max_length=64)
+    sku: str | None = Field(default=None, max_length=100)
+    bin: str | None = Field(default=None, max_length=100)
+    note: str | None = Field(default=None, max_length=500)
+    by: str | None = Field(default=None, max_length=100)
+
+
+def _unsure_row(u: AuditUnsure, active: bool) -> dict:
+    return {
+        "id": u.id,
+        "epc": u.epc,
+        "sku": u.sku,
+        "product_title": u.product_title,
+        "bin": u.bin,
+        "note": u.note,
+        "created_by": u.created_by,
+        "created_at": u.created_at.isoformat() if u.created_at else None,
+        "status": u.status,
+        "resolution": u.resolution,
+        "active": active,
+    }
+
+
+@app.post("/api/audit/unsure", dependencies=[Depends(require_user)])
+def audit_unsure_mark(
+    payload: AuditUnsureIn, session: Session = Depends(get_session)
+):
+    """Mark one silent tag UNSURE. Re-marking an open one updates its
+    note. Local record only - no tag, stock or Shopify change."""
+    epc = _up(payload.epc)
+    t = session.scalar(
+        select(RfidAssignment).where(func.upper(RfidAssignment.rfid_id) == epc)
+    )
+    if t is None:
+        raise HTTPException(404, "That tag isn't paired to anything.")
+    note = (payload.note or "").strip() or None
+    row = session.scalar(
+        select(AuditUnsure).where(
+            func.upper(AuditUnsure.epc) == epc,
+            AuditUnsure.status == "open",
+        )
+    )
+    if row is None:
+        row = AuditUnsure(
+            epc=t.rfid_id,
+            sku=t.sku or payload.sku,
+            product_title=t.product_title,
+            bin=(payload.bin or t.bin_location or None),
+            note=note,
+            created_by=payload.by,
+            status="open",
+        )
+        session.add(row)
+    else:
+        row.note = note
+        if payload.bin:
+            row.bin = payload.bin
+    _log_change(
+        session,
+        sku=t.sku,
+        title=t.product_title,
+        variant_id=t.shopify_variant_id,
+        field="audit-unsure",
+        old=t.rfid_id,
+        new=("unsure: " + note) if note else "unsure",
+        by=payload.by,
+    )
+    session.commit()
+    return _unsure_row(row, True)
+
+
+@app.get("/api/audit/unsure", dependencies=[Depends(require_user)])
+def audit_unsure_list(
+    status: str = "open", session: Session = Depends(get_session)
+):
+    """The Marked-unsure list, newest first. An open row whose tag is no
+    longer active (unpaired, retired, sold elsewhere) resolves itself
+    here - somebody already dealt with it."""
+    q = select(AuditUnsure).order_by(AuditUnsure.created_at.desc(),
+                                     AuditUnsure.id.desc())
+    if status != "all":
+        q = q.where(AuditUnsure.status == status)
+    rows = session.scalars(q.limit(500)).all()
+    keys = sorted({_up(r.epc) for r in rows})
+    active = set()
+    if keys:
+        active = {
+            _up(e)
+            for e in session.scalars(
+                select(RfidAssignment.rfid_id).where(
+                    func.upper(RfidAssignment.rfid_id).in_(keys)
+                )
+            )
+        }
+    out = []
+    changed = False
+    for r in rows:
+        is_active = _up(r.epc) in active
+        if r.status == "open" and not is_active:
+            r.status = "resolved"
+            r.resolution = "tag-gone"
+            r.resolved_by = "auto"
+            r.resolved_at = datetime.now(timezone.utc)
+            changed = True
+            if status == "open":
+                continue
+        out.append(_unsure_row(r, is_active))
+    if changed:
+        session.commit()
+    return {"entries": out, "count": len(out)}
+
+
+class AuditUnsureResolveIn(BaseModel):
+    resolution: Literal["unpaired", "sold", "located", "dismissed"]
+    by: str | None = Field(default=None, max_length=100)
+
+
+@app.post("/api/audit/unsure/{uid}/resolve",
+          dependencies=[Depends(require_user)])
+def audit_unsure_resolve(
+    uid: int, payload: AuditUnsureResolveIn,
+    session: Session = Depends(get_session),
+):
+    """Close an Unsure row. The fix itself (unpair, sold, locate) runs
+    through its own endpoint and logs there; this only files the row."""
+    row = session.get(AuditUnsure, uid)
+    if row is None:
+        raise HTTPException(404, "No such Unsure entry.")
+    if row.status != "open":
+        return _unsure_row(row, False)
+    row.status = "resolved"
+    row.resolution = payload.resolution
+    row.resolved_by = payload.by
+    row.resolved_at = datetime.now(timezone.utc)
+    if payload.resolution == "dismissed":
+        _log_change(
+            session,
+            sku=row.sku,
+            title=row.product_title,
+            field="audit-unsure",
+            old=row.epc,
+            new="unsure dismissed",
+            by=payload.by,
+        )
+    session.commit()
+    return _unsure_row(row, True)
 
 
 @app.get("/api/audit/unavailable", dependencies=[Depends(require_user)])
@@ -19538,6 +19714,7 @@ def product_history(
             # locate list, tag-sold and scan notes are local markers only.
             "shopify": c.changed_field
             not in ("rfid-scan", "locate-list", "tag-sold", "scan-note",
+                    "audit-unsure",
                     "tag-retired", "tag-unretired", "tag-released",
                     "tag-reapplied", "ledger-cleared", "non-taggable",
                     "unlabelable-box", "mislabel-flag", "box-set",

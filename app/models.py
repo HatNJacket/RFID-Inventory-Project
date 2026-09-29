@@ -1548,6 +1548,35 @@ class LocateQueueEntry(Base):
                 if e.strip()]
 
 
+class AuditUnsure(Base):
+    """A silent tag the auditor couldn't call (Nick, 2026-09-29): marked
+    UNSURE on the C72 with an optional note, worked later from the web
+    Audits hub's "Marked unsure" list (unpair / sold / locate / dismiss).
+    One open row per EPC; a row whose tag is no longer active resolves
+    itself the next time the list is read."""
+
+    __tablename__ = "rfid_audit_unsure"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    epc: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    sku: Mapped[str | None] = mapped_column(String(100))
+    product_title: Mapped[str | None] = mapped_column(String(255))
+    bin: Mapped[str | None] = mapped_column(String(100))
+    note: Mapped[str | None] = mapped_column(String(500))
+    created_by: Mapped[str | None] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    # open | resolved
+    status: Mapped[str] = mapped_column(String(16), nullable=False,
+                                        default="open")
+    resolution: Mapped[str | None] = mapped_column(String(32))
+    resolved_by: Mapped[str | None] = mapped_column(String(100))
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+
+
 class AppSetting(Base):
     """Server-stored key/value switches the web UI can flip without an
     app-settings change (no restart, no az CLI). First user: the 1-left

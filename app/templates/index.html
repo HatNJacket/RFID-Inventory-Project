@@ -1337,6 +1337,8 @@
           <div id="audhub-fresh" class="freshtag" hidden></div>
           <button class="reset home__minorlink" id="review-locate-btn" type="button"
                   title="Products queued for a physical tag hunt on the C72's Locate tab">📡 Locate list</button>
+          <button class="reset home__minorlink" id="review-unsure-btn" type="button"
+                  title="Silent tags the C72 auditor marked Unsure, with their notes - work them here">❔ Marked unsure<span class="unsure-count" id="unsure-count" hidden></span></button>
           <button class="reset home__minorlink" id="review-ordersync" type="button"
                   title="Pull fulfilled orders (read-only) and refresh the sold ledger. Runs by itself hourly.">↻ Sync orders</button>
         </div>
@@ -1416,6 +1418,20 @@
           <div class="linkbox__actions u-mt10">
             <span class="linkbox__text" id="locq-msg"></span>
             <button class="reset" id="locq-close" type="button">Close</button>
+          </div>
+        </section>
+      </div>
+
+      <!-- Silent tags the C72 auditor marked Unsure (Nick, 2026-09-29):
+           worked here - unpair, sold, locate or dismiss. -->
+      <div class="phist-overlay" id="unsure-overlay" hidden>
+        <section class="linkbox serialbox phist-modal phist-modal--w560">
+          <div class="linkbox__title">Marked unsure</div>
+          <p class="linkbox__text">Silent tags an auditor couldn't call on the C72, with their note. Pick what happened to each one; a tag that's already been dealt with elsewhere drops off by itself.</p>
+          <ul class="recent__list" id="unsure-list"></ul>
+          <div class="linkbox__actions u-mt10">
+            <span class="linkbox__text" id="unsure-msg"></span>
+            <button class="reset" id="unsure-close" type="button">Close</button>
           </div>
         </section>
       </div>
