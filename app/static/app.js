@@ -428,6 +428,7 @@ const EVENT_META = {
   "locate-list": ["Locate List", "#5561c9"],
   "audit-unsure": ["Marked Unsure", "#b07d12"],
   "unavailable-noted": ["Unavailable Noted", "#8a6d1f"],
+  "stock-confirmed": ["Shelf Count Confirmed", "#2f7a5e"],
   "locate-paired": ["Locate Assigned Tag", "#2f9e6e"],
   "receiving-dismissed": ["Sold Before Label", "#5c5f62"],
   "unpaired-ignored": ["Unpaired Write-off", "#7a7d80"],

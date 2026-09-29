@@ -3,7 +3,7 @@ may be set aside off the shelf, so they only widen the TOP of the shelf
 range; the C72's one-tap "Note it" leaves a note the bin's checks read
 until its next completed audit.
 """
-import os, sys, tempfile
+import os, sys, tempfile, time
 from datetime import datetime, timedelta, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__)))))
@@ -90,18 +90,63 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
             BarcodeChange.changed_field == "unavailable-noted")).all()
     check("every note is History-logged", len(ev) == 3, len(ev))
 
-    # A completed audit after the note starts fresh.
+    # A completed audit after the note starts fresh (sqlite stamps
+    # server-side times to the second - keep the rows apart).
+    time.sleep(1.2)
     with Session(get_engine()) as s:
-        s.add(BinAudit(bin="I1-2", audited_at=datetime.now(timezone.utc)
-                       + timedelta(seconds=5), audited_by="Nick",
-                       baseline="{}"))
+        s.add(BinAudit(bin="I1-2", audited_at=datetime.now(timezone.utc),
+                       audited_by="Nick", baseline="{}"))
         s.commit()
+    time.sleep(1.2)
     rep = cl.post("/api/bins/I1-2/check", json={"epcs": heard}).json()
     check("notes older than the bin's last audit no longer count",
           item(rep, "F9160A")["unavailable_noted"] == 0)
 
     bad = cl.post("/api/audit/unavailable-note", json={"sku": "X", "bin": "I1-2", "qty": -1})
     check("a negative count is refused", bad.status_code == 422, bad.status_code)
+
+    # Resolve: a confirmed shelf count rides on the check (F9172D).
+    rep = cl.post("/api/bins/I1-2/check", json={"epcs": heard}).json()
+    check("no shelf count confirmed yet",
+          item(rep, "B-2")["stock_confirmed"] is None)
+    r = cl.post("/api/audit/stock-confirm", json={
+        "sku": "B-2", "bin": "i1-2", "qty": 2, "by": "C72"})
+    check("confirming a shelf count answers", r.status_code == 200, r.text)
+    cl.post("/api/audit/stock-confirm", json={
+        "sku": "B-2", "bin": "I1-2", "qty": 3, "by": "C72"})
+    rep = cl.post("/api/bins/I1-2/check", json={"epcs": heard}).json()
+    check("the newest confirmed count stands",
+          item(rep, "B-2")["stock_confirmed"] == 3)
+    with Session(get_engine()) as s:
+        n = len(s.scalars(select(BarcodeChange).where(
+            BarcodeChange.changed_field == "stock-confirmed")).all())
+        bm = s.scalars(select(BinMapEntry).where(
+            BinMapEntry.sku == "B-2")).one()
+    check("confirms are History-logged, never a stock write",
+          n == 2 and bm.qty == 2, (n, bm.qty))
+
+    # Mark sold re-reads that product's on-hand into the snapshot
+    # (F9168A: pickups fulfilled, snapshot hours old).
+    with patch("app.shopify.get_on_hand", return_value=1):
+        r = cl.post("/api/assignments/mark-sold", json={
+            "sku": "B-2", "epcs": ["E0000000000000000000B002"],
+            "changed_by": "C72"})
+    with Session(get_engine()) as s:
+        bm = s.scalars(select(BinMapEntry).where(
+            BinMapEntry.sku == "B-2")).one()
+    check("mark-sold trues the snapshot up to Shopify (raw 1 - 1 unavailable = 0)",
+          r.status_code == 200 and bm.qty == 0, (r.status_code, bm.qty))
+
+    # The window's refresh does the same through the check.
+    with patch("app.shopify.get_on_hand", return_value=3):
+        rep = cl.post("/api/bins/I1-2/check", json={
+            "epcs": heard, "fresh": True, "refresh_skus": ["B-2"]}).json()
+    check("a refresh re-reads on-hand before checking",
+          item(rep, "B-2")["expected_qty"] == 2, item(rep, "B-2")["expected_qty"])
+    with patch("app.shopify.get_on_hand", side_effect=RuntimeError("down")):
+        r = cl.post("/api/bins/I1-2/check", json={
+            "epcs": heard, "refresh_skus": ["B-2"]})
+    check("a Shopify failure on refresh is fail-soft", r.status_code == 200)
 
 print()
 if fails:

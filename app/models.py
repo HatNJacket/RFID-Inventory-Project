@@ -1598,6 +1598,26 @@ class AuditUnavailNote(Base):
     )
 
 
+class AuditStockConfirm(Base):
+    """"There are N of this product on this shelf" (Nick, 2026-09-29,
+    F9172D): the C72's Resolve on an in-range "never got a label" flag.
+    The check reads the newest one per SKU since the bin's last completed
+    audit; labels owed become N minus the tags on file, so a shelf the
+    operator confirmed stops asking for labels it doesn't need. Local
+    only - never a stock write."""
+
+    __tablename__ = "rfid_audit_stock_confirms"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sku: Mapped[str] = mapped_column(String(100), index=True, nullable=False)
+    bin: Mapped[str] = mapped_column(String(100), index=True, nullable=False)
+    qty: Mapped[int] = mapped_column(nullable=False, default=0)
+    created_by: Mapped[str | None] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class AppSetting(Base):
     """Server-stored key/value switches the web UI can flip without an
     app-settings change (no restart, no az CLI). First user: the 1-left

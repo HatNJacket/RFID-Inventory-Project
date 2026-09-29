@@ -23,6 +23,45 @@ _SessionLocal = None
 _pool_capacity = None
 
 
+_ci_state: dict = {"ci": None}
+
+
+def db_is_case_insensitive() -> bool:
+    """True when the database compares text case-insensitively already
+    (Azure SQL's default *_CI_* collation). Asked once per worker;
+    anything unexpected answers False - the UPPER() path stays."""
+    if _ci_state["ci"] is None:
+        ci = False
+        try:
+            from sqlalchemy import text
+
+            eng = get_engine()
+            if eng.dialect.name == "mssql":
+                with eng.connect() as conn:
+                    coll = conn.execute(text(
+                        "SELECT CONVERT(varchar(128), "
+                        "DATABASEPROPERTYEX(DB_NAME(), 'Collation'))"
+                    )).scalar() or ""
+                ci = "_CI_" in coll.upper()
+        except Exception:  # noqa: BLE001 - fall back to UPPER()
+            ci = False
+        _ci_state["ci"] = ci
+    return _ci_state["ci"]
+
+
+def ci_in(col, values):
+    """Case-insensitive `col IN values` (values already uppercased).
+    On a case-insensitive database the plain IN can use the column's
+    index - UPPER(col) forced a full scan of the tag and History tables
+    on every audit check (2026-09-29: 20-second re-checks). Elsewhere
+    (sqlite, tests) it stays UPPER(col) IN (...)."""
+    from sqlalchemy import func
+
+    if db_is_case_insensitive():
+        return col.in_(values)
+    return func.upper(col).in_(values)
+
+
 def _normalize_url(url: str) -> str:
     """Accept a plain 'mssql://' URL and route it to the pymssql driver.
     'mssql+pymssql://' and 'sqlite:///' pass through untouched."""

@@ -49,6 +49,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app import shipstation, shopify
+from app.database import ci_in
 from app.models import (
     AppSetting,
     BarcodeChange,
@@ -149,7 +150,8 @@ def _sku_in(stmt, column, uppers):
     """Attach an upper-SKU IN() only when the list is small enough to
     compile cheaply; large lists filter in Python (caller checks)."""
     if uppers is not None and len(uppers) <= _IN_LIMIT:
-        return stmt.where(func.upper(column).in_(sorted(uppers)))
+        # Index-friendly on a case-insensitive database (2026-09-29).
+        return stmt.where(ci_in(column, sorted(uppers)))
     return stmt
 
 

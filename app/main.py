@@ -13,8 +13,10 @@ import logging
 import os
 import re
 import secrets
+import threading
 import time
 import unicodedata
+from collections import OrderedDict
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -38,6 +40,7 @@ from app import (config, oneleft, orders_sync, planner, shipstation,
                  shopify)
 from app.auth import require_user
 from app.database import (
+    ci_in,
     DatabaseNotConfigured,
     database_configured,
     get_engine,
@@ -57,6 +60,7 @@ from app.models import (
     BatchItem,
     BinMapEntry,
     BundleContent,
+    AuditStockConfirm,
     AuditUnavailNote,
     AuditUnsure,
     BundleInfo,
@@ -128,6 +132,11 @@ def _up(s: str | None) -> str:
     """SKU/EPC comparison key: None-safe, trimmed, uppercased. The house
     rule is that every SKU compare is case-insensitive."""
     return s.strip().upper() if s else ""
+
+
+def _ci_in(col, values):
+    """Index-friendly case-insensitive IN - see database.ci_in."""
+    return ci_in(col, values)
 
 
 def _count(n, one: str, many: str | None = None) -> str:
@@ -222,6 +231,9 @@ async def lifespan(app: FastAPI):
             _maybe_refresh_bin_map()
         # Daily fulfilled-order sync (8 AM Toronto) — read-only, fail-soft.
         orders_sync.start_daily_thread()
+        # Warm the scored audit queue so the first landing is instant.
+        if _audit_q_enabled():
+            _audit_q_refresh_bg()
     yield
 
 
@@ -3340,6 +3352,9 @@ def mark_assignments_sold(
         )
         session.delete(r)
     retired = orders_sync.retire_units(session, sku, units)
+    # Those orders already dropped Shopify's on-hand - catch the local
+    # snapshot up so the audit's expectation drops with the tags.
+    _true_up_snapshot(session, sku)
     session.commit()
     return {
         "removed_tags": len(rows),
@@ -5005,6 +5020,22 @@ def _refresh_binmap_onhand(
         return
     row = max(rows, key=lambda r: r.qty or 0)
     row.qty = max(0, (row.qty or 0) + delta)
+
+
+def _true_up_snapshot(session: Session, sku: str) -> None:
+    """Re-read ONE product's on-hand from Shopify into the bin-map
+    snapshot (Nick, 2026-09-29, F9168A: three pickups fulfilled, their
+    tags marked sold, and the audit still expected 3 from a snapshot
+    hours old). Fail-soft - a Shopify hiccup leaves the snapshot as is."""
+    if not sku or config.check_shopify_env():
+        return
+    try:
+        live = shopify.get_on_hand(sku)
+    except Exception:  # noqa: BLE001
+        logger.warning("on-hand true-up failed for %s", sku)
+        return
+    if live is not None:
+        _refresh_binmap_onhand(session, sku, live)
 
 
 @app.post(
@@ -6821,6 +6852,8 @@ class BinCheckIn(BaseModel):
     # A window's Refresh (Nick, 2026-09-29, F9168A: pickups fulfilled
     # mid-audit): skip the 3-minute pickup-orders cache for this check.
     fresh: bool = False
+    # ...and re-read these products' on-hand from Shopify first.
+    refresh_skus: list[str] = Field(default_factory=list, max_length=20)
 
 
 # ---- scored audit queue (Nick's design, settled 2026-09-28) ---------------
@@ -6980,6 +7013,7 @@ def bin_audit_complete(
         )
         session.add(row)
         made.append(bkey.upper())
+    _audit_q_invalidate()   # the queue re-scores from this sign-off
     # The sign-off ticks its bin in any open walk session (round 11:
     # the per-rack grid's "mark done" button is gone - auditing the
     # bin IS the tick, from the web button and the C72 LOG alike). A
@@ -7017,6 +7051,22 @@ def bin_audit_complete(
     }
 
 
+_stamped_captures: "OrderedDict[int, bool]" = OrderedDict()
+_stamped_lock = threading.Lock()
+
+
+def _first_stamp_of_capture(capture_id: int) -> bool:
+    """True the first time a saved sweep is checked (per worker) - its
+    tags get their last-heard stamp then, not once per bin."""
+    with _stamped_lock:
+        if capture_id in _stamped_captures:
+            return False
+        _stamped_captures[capture_id] = True
+        while len(_stamped_captures) > 500:
+            _stamped_captures.popitem(last=False)
+        return True
+
+
 def _stamp_heard(session: Session, epcs) -> int:
     """Stamp last_heard_at=now on every KNOWN tag in a sweep (scored
     audit queue, 2026-09-28). One bulk UPDATE, fail-soft: hearing is
@@ -7028,7 +7078,7 @@ def _stamp_heard(session: Session, epcs) -> int:
     try:
         result = session.execute(
             update(RfidAssignment)
-            .where(func.upper(RfidAssignment.rfid_id).in_(ups))
+            .where(_ci_in(RfidAssignment.rfid_id, ups))
             .values(last_heard_at=datetime.now(timezone.utc))
             .execution_options(synchronize_session=False)
         )
@@ -7082,6 +7132,10 @@ def bin_check(
     loc = bin_name.strip()
     if payload.fresh:
         _pickup_cache["at"] = 0.0   # re-read open pickups below
+    if payload.refresh_skus:
+        for _s in payload.refresh_skus:
+            _true_up_snapshot(session, _s.strip())
+        session.commit()
     if payload.capture_id:
         cap = session.get(EpcCapture, payload.capture_id)
         if cap is None:
@@ -7095,8 +7149,13 @@ def bin_check(
         if not cap.bin and loc:
             cap.bin = loc.upper()[:100]
             session.commit()
-    if swept and _stamp_heard(session, swept):
-        session.commit()
+    # A saved sweep is stamped ONCE (2026-09-29): the C72 checks one
+    # capture against every bin of a rack in parallel, and re-stamping
+    # the same tags per bin was a full-table UPDATE each time.
+    if swept and (not payload.capture_id
+                  or _first_stamp_of_capture(payload.capture_id)):
+        if _stamp_heard(session, swept):
+            session.commit()
     bin_keys = [loc.lower()]
     rack = False
     if "-" not in loc and loc:
@@ -7130,7 +7189,7 @@ def bin_check(
     if wanted or extra:
         for t in session.scalars(
             select(RfidAssignment).where(
-                func.upper(RfidAssignment.sku).in_(sorted(wanted | extra))
+                _ci_in(RfidAssignment.sku, sorted(wanted | extra))
             )
         ):
             tags_by_sku.setdefault((t.sku or "").upper(), []).append(t)
@@ -7168,7 +7227,7 @@ def bin_check(
     if _audit_keys:
         for _r in session.scalars(
             select(SoldRecord).where(
-                func.upper(SoldRecord.sku).in_(_audit_keys)
+                _ci_in(SoldRecord.sku, _audit_keys)
             ).order_by(SoldRecord.fulfilled_at, SoldRecord.id)
         ):
             left = max(0, (_r.quantity or 0) - (_r.retired or 0))
@@ -7211,7 +7270,7 @@ def bin_check(
             r.rfid_id.upper(): r
             for r in session.scalars(
                 select(RetiredTag).where(
-                    func.upper(RetiredTag.rfid_id).in_(sorted(swept))
+                    _ci_in(RetiredTag.rfid_id, sorted(swept))
                 )
             )
         }
@@ -7340,7 +7399,7 @@ def bin_check(
     if merged_order:
         for bc in session.scalars(
             select(BundleContent).where(
-                func.upper(BundleContent.bundle_sku).in_(merged_order)
+                _ci_in(BundleContent.bundle_sku, merged_order)
             ).order_by(BundleContent.id)
         ):
             bundle_cover.setdefault(
@@ -7412,7 +7471,7 @@ def bin_check(
             a.rfid_id.upper(): a
             for a in session.scalars(
                 select(RfidAssignment).where(
-                    func.upper(RfidAssignment.rfid_id).in_(sorted(swept))
+                    _ci_in(RfidAssignment.rfid_id, sorted(swept))
                 )
             )
         }
@@ -7441,7 +7500,7 @@ def bin_check(
                 (e or "").upper()
                 for e in session.scalars(
                     select(LabelDismissal.epc).where(
-                        func.upper(LabelDismissal.epc).in_(sorted(unknown))
+                        _ci_in(LabelDismissal.epc, sorted(unknown))
                     )
                 )
             }
@@ -7451,7 +7510,7 @@ def bin_check(
                 (j.epc or "").upper(): j
                 for j in session.scalars(
                     select(PrintJob).where(
-                        func.upper(PrintJob.epc).in_(sorted(unknown))
+                        _ci_in(PrintJob.epc, sorted(unknown))
                     )
                 )
             }
@@ -7525,6 +7584,18 @@ def bin_check(
         r["unavailable_noted"] = min(
             _un_notes.get(_up(r.get("sku")), 0), r.get("unavailable") or 0
         )
+    # Shelf counts the operator confirmed since the last completed audit
+    # (the C72's Resolve on "never got a label"): newest per SKU.
+    _sc_q = select(AuditStockConfirm).where(
+        func.lower(AuditStockConfirm.bin).in_(bin_keys)
+    ).order_by(AuditStockConfirm.created_at, AuditStockConfirm.id)
+    if _un_since is not None:
+        _sc_q = _sc_q.where(AuditStockConfirm.created_at > _un_since)
+    _confirms: dict[str, int] = {}
+    for _c in session.scalars(_sc_q):
+        _confirms[_up(_c.sku)] = _c.qty or 0
+    for r in report:
+        r["stock_confirmed"] = _confirms.get(_up(r.get("sku")))
     # Silent tags already parked as UNSURE (Nick, 2026-09-29) - the gun
     # shows them as marked instead of offering the button again.
     _sil_all = sorted({_up(e) for r in report for e in r.get("silent_epcs") or []})
@@ -7533,7 +7604,7 @@ def bin_check(
         _unsure = {
             _up(e) for e in session.scalars(
                 select(AuditUnsure.epc).where(
-                    func.upper(AuditUnsure.epc).in_(_sil_all),
+                    _ci_in(AuditUnsure.epc, _sil_all),
                     AuditUnsure.status == "open",
                 )
             )
@@ -8137,8 +8208,80 @@ def mark_bin_tagged(
     }
 
 
+# The scored queue, cached (Nick, 2026-09-29: the C72 landing took 8 s).
+# It reads the whole tag, bin-map and ledger tables, so it answers from
+# the last computation and refreshes behind itself once older than
+# _AUDIT_Q_FRESH seconds; a LOG AUDIT or a finished batch drops it so
+# the next read is exact. The sqlite engines (tests, the dev twin) skip
+# the cache - they recompute every time, exactly as before.
+_AUDIT_Q_FRESH = 180
+_audit_q: dict = {"at": 0.0, "data": None, "gen": 0, "running": False}
+_audit_q_lock = threading.Lock()
+
+
+def _audit_q_enabled() -> bool:
+    try:
+        return get_engine().dialect.name != "sqlite"
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _audit_q_invalidate() -> None:
+    with _audit_q_lock:
+        _audit_q["gen"] += 1
+        _audit_q["data"] = None
+        _audit_q["at"] = 0.0
+
+
+def _audit_q_refresh_bg() -> None:
+    with _audit_q_lock:
+        if _audit_q["running"]:
+            return
+        _audit_q["running"] = True
+        gen = _audit_q["gen"]
+
+    def run():
+        try:
+            with Session(get_engine()) as s:
+                data = _audit_bins_compute(s)
+            with _audit_q_lock:
+                if _audit_q["gen"] == gen:
+                    _audit_q["data"] = data
+                    _audit_q["at"] = time.time()
+        except Exception:  # noqa: BLE001 - the stale copy keeps serving
+            logger.exception("audit queue refresh failed")
+        finally:
+            with _audit_q_lock:
+                _audit_q["running"] = False
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+def _audit_bins_cached(session: Session) -> dict:
+    if not _audit_q_enabled():
+        return _audit_bins_compute(session)
+    with _audit_q_lock:
+        data, at, gen = _audit_q["data"], _audit_q["at"], _audit_q["gen"]
+    if data is not None:
+        if time.time() - at > _AUDIT_Q_FRESH:
+            _audit_q_refresh_bg()
+        return data
+    data = _audit_bins_compute(session)
+    with _audit_q_lock:
+        if _audit_q["gen"] == gen:
+            _audit_q["data"] = data
+            _audit_q["at"] = time.time()
+    return data
+
+
 @app.get("/api/audit/bins", dependencies=[Depends(require_user)])
 def audit_bins(session: Session = Depends(get_session)):
+    """The scored audit queue (see _audit_bins_compute), served from the
+    short-lived cache above."""
+    return _audit_bins_cached(session)
+
+
+def _audit_bins_compute(session: Session) -> dict:
     """Shopify on-hand vs RFID units on file, per product, grouped by the
     product's bin and scored by the sum of ABSOLUTE differences — the
     received-but-nowhere-to-be-found detector. On-hand comes from the
@@ -8605,6 +8748,40 @@ def audit_unavailable_note(
              f"set aside, not on the shelf"
              if row.qty else "note withdrawn")
             + (f" - {row.note}" if row.note else ""),
+        by=payload.by,
+    )
+    session.commit()
+    return {"id": row.id, "sku": row.sku, "bin": row.bin, "qty": row.qty}
+
+
+class AuditStockConfirmIn(BaseModel):
+    sku: str = Field(min_length=1, max_length=100)
+    bin: str = Field(min_length=1, max_length=100)
+    qty: int = Field(ge=0, le=100000)
+    by: str | None = Field(default=None, max_length=100)
+
+
+@app.post("/api/audit/stock-confirm", dependencies=[Depends(require_user)])
+def audit_stock_confirm(
+    payload: AuditStockConfirmIn, session: Session = Depends(get_session)
+):
+    """The operator's shelf count for one product (Nick, 2026-09-29,
+    F9172D): "Resolve" on an in-range label flag. Labels owed become
+    qty minus the tags on file until the bin's next completed audit. A
+    local note - Shopify's stock is never written from here."""
+    row = AuditStockConfirm(
+        sku=payload.sku.strip(),
+        bin=payload.bin.strip().upper(),
+        qty=payload.qty,
+        created_by=payload.by,
+    )
+    session.add(row)
+    _log_change(
+        session,
+        sku=row.sku,
+        field="stock-confirmed",
+        old=row.bin,
+        new=f"{row.qty} on the shelf (audit)",
         by=payload.by,
     )
     session.commit()
@@ -9092,6 +9269,7 @@ def _maybe_close_receiving(session: Session, batch: Batch) -> bool:
             receipt.settled_at = datetime.now(timezone.utc)
         return True
     batch.status = "done"
+    _audit_q_invalidate()   # a finished batch changes the queue
     batch.completed_at = datetime.now(timezone.utc)
     return True
 
@@ -9104,6 +9282,7 @@ def _close_receipt_batch(session: Session, receipt: OrderReceipt) -> bool:
     if batch is None or batch.status in ("done", "abandoned"):
         return False
     batch.status = "done"
+    _audit_q_invalidate()   # a finished batch changes the queue
     batch.completed_at = datetime.now(timezone.utc)
     return True
 
@@ -17570,6 +17749,7 @@ def batch_complete(
                 by=payload.created_by,
             )
     batch.status = "done"
+    _audit_q_invalidate()   # a finished batch changes the queue
     batch.completed_at = datetime.now(timezone.utc)
     session.commit()
     oneleft.kick("batch completed", payload.created_by)
@@ -17616,6 +17796,7 @@ def _complete_receiving(session: Session, batch: Batch, payload) -> dict:
         if boxes > 0 and bin_ and bin_.lower() != "no bin assigned":
             bins[bin_] = bins.get(bin_, 0) + boxes
     batch.status = "done"
+    _audit_q_invalidate()   # a finished batch changes the queue
     batch.completed_at = datetime.now(timezone.utc)
     session.commit()
     oneleft.kick("receiving completed", payload.created_by)
@@ -19782,7 +19963,7 @@ def product_history(
             # locate list, tag-sold and scan notes are local markers only.
             "shopify": c.changed_field
             not in ("rfid-scan", "locate-list", "tag-sold", "scan-note",
-                    "audit-unsure", "unavailable-noted",
+                    "audit-unsure", "unavailable-noted", "stock-confirmed",
                     "tag-retired", "tag-unretired", "tag-released",
                     "tag-reapplied", "ledger-cleared", "non-taggable",
                     "unlabelable-box", "mislabel-flag", "box-set",

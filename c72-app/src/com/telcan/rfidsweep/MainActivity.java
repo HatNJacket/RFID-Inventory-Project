@@ -17134,8 +17134,13 @@ public class MainActivity extends Activity {
         return loc.trim().toUpperCase(java.util.Locale.ROOT);
     }
 
+    /** The evidence a report was checked against. Trimmed other-rack
+     *  tags still count toward it (the sets are disjoint, so the sum of
+     *  hashes IS the union's): trimming changes nothing any bin of this
+     *  rack reports, so it mustn't throw away the rack's answers. */
     private int auditEvidenceKey() {
-        return auditTagSet.isEmpty() ? 0 : auditTagSet.hashCode();
+        if (auditTagSet.isEmpty() && auditDropped.isEmpty()) return 0;
+        return auditTagSet.hashCode() + auditDropped.hashCode();
     }
 
     private void auditCacheClear() {
@@ -17153,10 +17158,12 @@ public class MainActivity extends Activity {
      *  hand - the live collected set, else the location's own newest
      *  saved sweep (Nick, 2026-09-28), else nothing swept. */
     private AuditCached auditComputeCheck(String loc) throws Exception {
-        return auditComputeCheck(loc, false);
+        return auditComputeCheck(loc, null);
     }
 
-    private AuditCached auditComputeCheck(String loc, boolean fresh)
+    /** refreshSku != null: the window's ↻ - skip the pickup cache and
+     *  re-read that product's on-hand from Shopify before checking. */
+    private AuditCached auditComputeCheck(String loc, String refreshSku)
             throws Exception {
         AuditCached c = new AuditCached();
         c.key = auditEvidenceKey();
@@ -17190,7 +17197,10 @@ public class MainActivity extends Activity {
                     : new JSONObject().put("epcs", new JSONArray(
                             new ArrayList<>(auditTagSet)));
         }
-        if (fresh) body.put("fresh", true);
+        if (refreshSku != null) {
+            body.put("fresh", true);
+            body.put("refresh_skus", new JSONArray().put(refreshSku));
+        }
         c.rep = api("POST", "/api/bins/" + encPath(loc) + "/check", body);
         c.swept = (capId != null && capId > 0) || c.key != 0;
         c.shown = capId != null && capId > 0 ? shown : null;
@@ -17203,6 +17213,8 @@ public class MainActivity extends Activity {
             final boolean beepOk) {
         final int seq = ++auditFetchSeq;
         auditBusy(busyMsg);
+        // The rest of the rack starts loading NOW, beside this bin.
+        auditPrefetchRack();
         new Thread(() -> {
             try {
                 final AuditCached c = auditComputeCheck(loc);
@@ -17216,6 +17228,7 @@ public class MainActivity extends Activity {
                     }
                     auditBusy(null);
                     auditApply(loc, c, beepOk);
+                    // Evidence may have moved (trimmed other racks' tags).
                     auditPrefetchRack();
                 });
             } catch (Exception e) {
@@ -17288,10 +17301,6 @@ public class MainActivity extends Activity {
             }
         }
         if (dropped > 0) {
-            // The report in hand is still true for this bin - re-key it to
-            // the trimmed set so the arrows keep using it.
-            c.key = auditEvidenceKey();
-            if (auditLoc != null) auditCache.put(auditCacheKey(auditLoc), c);
             status.setText(plural(dropped, "tag from another rack",
                     "tags from other racks") + " left this sweep - "
                     + "checks stay quick.");
@@ -17303,7 +17312,7 @@ public class MainActivity extends Activity {
      *  Sync orders runs), re-check this bin skipping the pickup cache,
      *  and reopen the same product's window on the new numbers. */
     private void auditRefreshProduct(final String loc, final String sku) {
-        auditCacheClear();
+        auditCache.remove(auditCacheKey(loc));
         final int seq = ++auditFetchSeq;
         auditBusy("Refreshing " + sku + "…");
         new Thread(() -> {
@@ -17313,7 +17322,7 @@ public class MainActivity extends Activity {
                 } catch (Exception ignored) {
                     // A failed pull still re-checks with what's on file.
                 }
-                final AuditCached c = auditComputeCheck(loc, true);
+                final AuditCached c = auditComputeCheck(loc, sku);
                 ui.post(() -> {
                     if (c.key == auditEvidenceKey()) {
                         auditCache.put(auditCacheKey(loc), c);
@@ -17345,40 +17354,48 @@ public class MainActivity extends Activity {
         }).start();
     }
 
-    /** Check the rest of the rack's bins in the background, one at a
-     *  time, so the arrows paint instantly. Stops when the rack or the
-     *  evidence changes under it. */
+    // Three at a time (2026-09-29): the rack loads alongside the open
+    // bin instead of one bin after another. Small on purpose - the
+    // database tier is small too.
+    private final java.util.concurrent.ExecutorService auditPool =
+            java.util.concurrent.Executors.newFixedThreadPool(3);
+    private final java.util.HashSet<String> auditInFlight =
+            new java.util.HashSet<>();
+
+    /** Check the rest of the rack's bins in the background so the
+     *  arrows paint instantly. A task skips itself when the rack or the
+     *  evidence changed while it waited. */
     private void auditPrefetchRack() {
         if (auditRack == null || auditRackBins.isEmpty()) return;
         final String rack = auditRack;
         final int key = auditEvidenceKey();
         final String cur = auditCacheKey(auditBin.getText().toString());
-        final List<String> todo = new ArrayList<>();
-        for (String b : auditRackBins) {
-            AuditCached c = auditCache.get(auditCacheKey(b));
-            if (auditCacheKey(b).equals(cur)) continue;
-            if (c == null || c.key != key) todo.add(b);
-        }
-        if (todo.isEmpty()) return;
-        new Thread(() -> {
-            for (final String b : todo) {
-                if (!rack.equals(auditRack) || key != auditEvidenceKey()
-                        || auditScanning) {
-                    return;
-                }
+        for (final String b : auditRackBins) {
+            final String bk = auditCacheKey(b);
+            AuditCached c = auditCache.get(bk);
+            if (bk.equals(cur) || (c != null && c.key == key)) continue;
+            final String flight = bk + "|" + key;
+            if (!auditInFlight.add(flight)) continue;
+            auditPool.execute(() -> {
                 try {
-                    final AuditCached c = auditComputeCheck(b);
+                    if (!rack.equals(auditRack) || key != auditEvidenceKey()
+                            || auditScanning) {
+                        return;
+                    }
+                    final AuditCached got = auditComputeCheck(b);
                     ui.post(() -> {
                         if (rack.equals(auditRack)
-                                && c.key == auditEvidenceKey()) {
-                            auditCache.put(auditCacheKey(b), c);
+                                && got.key == auditEvidenceKey()) {
+                            auditCache.put(bk, got);
                         }
                     });
                 } catch (Exception ignored) {
                     // The arrow will just ask again.
+                } finally {
+                    ui.post(() -> auditInFlight.remove(flight));
                 }
-            }
-        }).start();
+            });
+        }
     }
 
     // ---- sweeping ----------------------------------------------------------
@@ -17878,15 +17895,40 @@ public class MainActivity extends Activity {
             // (the neutral W9177 path).
             // Against the shelf's expectation: set-aside units the
             // shortfall is laid on need no label here.
-            if (expShelf >= 0 && unitsHere < expShelf && !sku.isEmpty()) {
-                final int kMiss = expShelf - unitsHere;
-                frows.add(auditFlagRowView(kMiss + " box"
-                        + (kMiss == 1 ? "" : "es") + " never got a "
-                        + "label (pairing never changes on-hand)",
-                        C_WARN,
-                        "\ud83c\udff7 Print " + kMiss,
-                        () -> auditPrintMissingLabels(fSku,
-                                auditItemFirstBin(it, loc), kMiss)));
+            // A shelf count the operator confirmed (Resolve) replaces the
+            // guess: labels owed = that count minus the tags on file.
+            final Integer confirmed = !it.has("stock_confirmed")
+                    || it.isNull("stock_confirmed") ? null
+                    : Integer.valueOf(it.optInt("stock_confirmed"));
+            if (confirmed != null) {
+                auditFlagLine(sub, "\u2713 Shelf count confirmed: "
+                        + confirmed, C_OK);
+            }
+            final int owedTo = confirmed != null ? confirmed : expShelf;
+            if (owedTo >= 0 && unitsHere < owedTo && !sku.isEmpty()) {
+                final int kMiss = owedTo - unitsHere;
+                // Inside the expected range the count may simply be
+                // right (Nick, 2026-09-29, F9172D): Resolve asks for the
+                // shelf count first and prints only the difference.
+                boolean inRangeNow = swept && !it.isNull("in_range")
+                        && it.optBoolean("in_range");
+                final int heardNowF = detUnits + gh;
+                final int unitsHereF = unitsHere;
+                if (confirmed == null && inRangeNow) {
+                    frows.add(auditFlagRowView(kMiss + " box"
+                            + (kMiss == 1 ? "" : "es") + " never got a "
+                            + "label?", C_WARN, "Resolve",
+                            () -> auditResolveStock(it, loc, heardNowF,
+                                    unitsHereF)));
+                } else {
+                    frows.add(auditFlagRowView(kMiss + " box"
+                            + (kMiss == 1 ? "" : "es") + " never got a "
+                            + "label (pairing never changes on-hand)",
+                            C_WARN,
+                            "\ud83c\udff7 Print " + kMiss,
+                            () -> auditPrintMissingLabels(fSku,
+                                    auditItemFirstBin(it, loc), kMiss)));
+                }
                 warn = true;
             }
             if (rangeOff) {
@@ -18483,10 +18525,10 @@ public class MainActivity extends Activity {
             return;
         }
         // The fetch saves the sweep once and checks by id - one path
-        // for LOAD, CHECK and every write's re-check (2026-09-28). A
-        // check by hand (or after a fix) re-checks the whole rack too:
-        // a write can move what the other bins say.
-        auditCacheClear();
+        // for LOAD, CHECK and every write's re-check (2026-09-28). Only
+        // THIS bin re-checks (2026-09-29: a fix re-loading the whole
+        // rack took 20 s); the other bins keep their answers.
+        auditCache.remove(auditCacheKey(loc));
         auditFetchNow(loc, "Checking\u2026", true);
     }
 
@@ -19126,8 +19168,12 @@ public class MainActivity extends Activity {
             // Noted set-aside units need no label on this shelf.
             final int expShelf = exp - Math.min(unavail,
                     it.optInt("unavailable_noted"));
-            final int owedLabels = exp >= 0 && unitsHere < expShelf
-                    ? expShelf - unitsHere : 0;
+            // A confirmed shelf count (Resolve) beats the expectation.
+            final int owedTo = it.has("stock_confirmed")
+                    && !it.isNull("stock_confirmed")
+                    ? it.optInt("stock_confirmed") : expShelf;
+            final int owedLabels = exp >= 0 && unitsHere < owedTo
+                    ? owedTo - unitsHere : 0;
             labels.add(owedLabels > 0
                     ? "Print " + plural(owedLabels, "label", "labels")
                       + " (expected, not paired)"
@@ -19472,6 +19518,88 @@ public class MainActivity extends Activity {
         }).start();
     }
 
+    /** RESOLVE (Nick, 2026-09-29, F9172D): an in-range "never got a
+     *  label" asks for the real shelf count first (defaults to what the
+     *  sweep heard), files it, and prints labels only for the gap
+     *  between that count and the tags on file. Never a stock write. */
+    private void auditResolveStock(final JSONObject it, final String loc,
+            final int heard, final int tagUnits) {
+        final String sku = it.optString("sku");
+        final String bin = loc != null && loc.contains("-") ? loc
+                : auditItemFirstBin(it, loc);
+        final EditText in = themedEdit();
+        in.setInputType(InputType.TYPE_CLASS_NUMBER);
+        in.setText(String.valueOf(Math.max(0, heard)));
+        in.setSelection(in.getText().length());
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(20), dp(8), dp(20), 0);
+        TextView t = new TextView(this);
+        t.setText("How many " + sku + " are on the shelf? Tags on file: "
+                + tagUnits + ". Labels print for any difference.");
+        t.setTextSize(12);
+        t.setTextColor(C_MUTED);
+        t.setPadding(0, 0, 0, dp(8));
+        box.addView(t);
+        box.addView(in);
+        dlg().setView(box)
+                .setPositiveButton("CONFIRM", (d, w) -> {
+                    final int n;
+                    try {
+                        n = Integer.parseInt(in.getText().toString().trim());
+                    } catch (NumberFormatException nf) {
+                        beep(SOUND_ERR);
+                        return;
+                    }
+                    if (n < 0 || n > 1000) {
+                        beep(SOUND_ERR);
+                        return;
+                    }
+                    final int print = Math.max(0, n - tagUnits);
+                    try {
+                        it.put("stock_confirmed", n);
+                    } catch (Exception ignored) {
+                    }
+                    auditRender();
+                    new Thread(() -> {
+                        try {
+                            api("POST", "/api/audit/stock-confirm",
+                                    new JSONObject()
+                                            .put("sku", sku)
+                                            .put("bin", bin == null ? loc : bin)
+                                            .put("qty", n)
+                                            .put("by", prefs.getString(
+                                                    "device", "C72")));
+                            if (print > 0) auditQueueLabels(sku, bin, print);
+                            ui.post(() -> {
+                                beep(SOUND_OK);
+                                status.setText("✓ " + sku + ": " + n
+                                        + " on the shelf" + (print > 0
+                                        ? " - " + plural(print, "label",
+                                                "labels")
+                                          + " queued. Stick "
+                                          + (print == 1 ? "it" : "them")
+                                          + " on and sweep again."
+                                        : "."));
+                            });
+                        } catch (Exception e) {
+                            ui.post(() -> {
+                                try {
+                                    it.remove("stock_confirmed");
+                                } catch (Exception ignored) {
+                                }
+                                auditRender();
+                                beep(SOUND_ERR);
+                                alertStatus("Resolve failed: " + e.getMessage());
+                            });
+                        }
+                    }).start();
+                })
+                .setNegativeButton("CANCEL", null)
+                .show();
+        in.requestFocus();
+    }
+
     /** A silent-tag row's small button: no 88dp minimum width. */
     private Button auditTagBtn(String text) {
         Button b = smallBtn(text);
@@ -19559,14 +19687,13 @@ public class MainActivity extends Activity {
      *  retired tag that answers a later sweep offers Un-retire. */
     private void auditActConfirmStock(final String sku, final String bin,
             final int qty, final List<String> epcs) {
-        dlg().setTitle("CONFIRM " + qty + " STOCK")
-                .setMessage(sku + " stays at " + qty + " on hand in "
-                        + "Shopify. " + plural(epcs.size(),
-                                "silent tag retires", "silent tags retire")
-                        + " as missing so the tags match the shelf - out of "
-                        + "every count, still recognized if it ever "
-                        + "answers a sweep again (Un-retire). Undo lives "
-                        + "in History.")
+        // Short and small (Nick, 2026-09-29).
+        dlg().setMessage("Confirm " + qty + " stock for " + sku + "? "
+                        + plural(epcs.size(), "silent tag is",
+                                "silent tags are")
+                        + " recorded in case "
+                        + (epcs.size() == 1 ? "it's" : "they're")
+                        + " found again.")
                 .setPositiveButton("CONFIRM", (d, w) -> new Thread(() -> {
                     try {
                         api("POST", "/api/assignments/retire",

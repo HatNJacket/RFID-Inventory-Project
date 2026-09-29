@@ -226,6 +226,28 @@ a rack picker; the audit window is scoped to one rack (C72 4.24).**
     flags and label-owed counts against the sellable expectation. The
     old auto-green "likely the set-aside unit" is gone on the C72 (the
     web keeps its old flag wording). dev/tests/test_unavail_shelf.py.
+- 4.27 (same day, Nick, still on rack I1):
+  - Speed. Measured on prod: the landing's /api/audit/racks took 8 s
+    (the scored queue re-reads every tag, map and ledger row), one bin
+    check 0.5-1.7 s, and the gun checked a rack's bins one after
+    another. Now: the scored queue is cached (stale-while-revalidate,
+    3 min, warmed at startup, dropped on LOG AUDIT / batch done; sqlite
+    engines skip it); a saved sweep stamps last-heard ONCE, not per bin;
+    the check's tag/ledger lookups use database.ci_in - plain IN on a
+    case-insensitive collation (asked once), UPPER() elsewhere - so the
+    Basic-tier DB can use its indexes; the gun loads the rack's bins
+    three at a time beside the open one, keys its cache on collected +
+    trimmed tags (trimming no longer discards the rack), and a fix
+    re-checks only the current bin (the 20 s after Confirm).
+  - Mark sold / ↻ REFRESH re-read that product's on-hand from Shopify
+    into the snapshot (F9168A kept "expecting 3" after its pickups).
+  - "Never got a label" INSIDE the expected range: Resolve asks for
+    the shelf count (default = heard), files it (rfid_audit_stock_
+    confirms, POST /api/audit/stock-confirm, History "Shelf Count
+    Confirmed"), prints only count - tags on file; the check carries
+    stock_confirmed so the card goes green (F9172D: right at 0).
+  - Confirm-stock popup: one line, "1 silent tag is recorded in case
+    it's found again." dev/tests/test_audit_cache.py.
 
 **ROUND 14 (Nick, 2026-09-29) — ✅ BUILT: the Audits hub tightened
 (iterated over live previews, approved). Web only.**
