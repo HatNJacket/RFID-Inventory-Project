@@ -11257,13 +11257,28 @@ public class MainActivity extends Activity {
             card.setBackground(btnBg(C_CARD, C_LINE, C_PRESS, 8));
             card.setPadding(dp(10), dp(9), dp(10), dp(9));
 
+            // Receiving shows its stock order number (Nick, 2026-09-29:
+            // "#1003" - orders are into four digits); an old batch that
+            // spans several orders shows the first with a "+". Every
+            // chip gets room for five characters so the rows line up.
+            String chipText = b.optString("bin_name");
+            if (receiving) {
+                JSONArray sos = b.optJSONArray("stock_orders");
+                chipText = sos != null && sos.length() > 0
+                        ? "#" + sos.optString(0)
+                          + (sos.length() > 1 ? "+" : "")
+                        : "RCV";
+            }
             TextView chip = new TextView(this);
-            chip.setText(receiving ? "RCV" : b.optString("bin_name"));
+            chip.setText(chipText);
             chip.setTextSize(16);
             chip.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
             chip.setTextColor(C_BLUE_DK);
             chip.setBackground(rr(C_SOFT, 0, 6));
-            chip.setPadding(dp(9), dp(8), dp(9), dp(8));
+            chip.setPadding(dp(8), dp(8), dp(8), dp(8));
+            chip.setGravity(Gravity.CENTER);
+            chip.setSingleLine(true);
+            chip.setMinWidth(dp(72));
             card.addView(chip);
 
             LinearLayout mid = new LinearLayout(this);
@@ -11278,7 +11293,10 @@ public class MainActivity extends Activity {
             l1.setGravity(Gravity.CENTER_VERTICAL);
             TextView t1 = new TextView(this);
             String age = ago(b.optString("created_at", ""));
-            t1.setText("#" + id + (age.isEmpty() ? "" : " · " + age));
+            // "Batch #219" on receiving so it can't be mistaken for the
+            // stock order number in the chip.
+            t1.setText((receiving ? "Batch #" : "#") + id
+                    + (age.isEmpty() ? "" : " · " + age));
             t1.setTextSize(12);
             t1.setTextColor(C_TEXT);
             l1.addView(t1);

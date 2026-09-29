@@ -9670,6 +9670,10 @@ def link_scan_result(
     return {"scan": row.as_dict()}
 
 
+# "SO 1003", "SO#1003", "so 946, SO 947" -> the digits, in order.
+_SO_NUM_RE = re.compile(r"\bSO\s*#?\s*(\d+)", re.IGNORECASE)
+
+
 @app.get("/api/batches", dependencies=[Depends(require_user)])
 def list_batches(
     status: str | None = None,
@@ -9725,6 +9729,9 @@ def list_batches(
                 0,
                 printed_by_batch.get(b.id, 0) - d["paired"],
             )
+            # The stock order number(s) the batch is for (Nick,
+            # 2026-09-29: the C72 list shows "#1003" instead of "RCV").
+            d["stock_orders"] = _SO_NUM_RE.findall(b.created_by or "")
         # A bin that already had a FULL tagging session: the C72 list
         # shows the yellow "Previous batch tagging: X ago" line, and the
         # batch itself runs the re-tag flow (quiet collect, shelf sweep

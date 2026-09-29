@@ -18909,7 +18909,9 @@ async function loadHome() {
   if (b) {
     homeEls.resumeWhat.textContent =
       b.kind === "receiving"
-        ? `Receiving batch #${b.id}`
+        ? (receivingSoOf(b.created_by)
+            ? `Receiving ${receivingSoOf(b.created_by)} (batch #${b.id})`
+            : `Receiving batch #${b.id}`)
         : `Bin ${b.bin_name} (batch #${b.id})`;
     const bits = [];
     if (b.boxes) bits.push(`${b.paired || 0} of ${b.boxes} paired`);
