@@ -70,6 +70,15 @@ from app.models import (
 
 logger = logging.getLogger("rfid.oneleft")
 
+
+def _count(n, one: str, many: str | None = None) -> str:
+    """"1 unit" / "2 units" - never "unit(s)" (same rule as main.py)."""
+    try:
+        single = int(n) == 1
+    except (TypeError, ValueError):
+        single = False
+    return f"{n} {one if single else (many or one + 's')}"
+
 _TIMEOUT = 20
 # Their confirm endpoint validates against this fixed list — mirror of
 # their deployed source. Nick + Clay were added to both sides
@@ -370,7 +379,7 @@ def build_board(session: Session, pending: list[dict]) -> list[dict]:
                     seen_last = heard
         if seen_units:
             details.append(
-                f"{seen_units} tagged box(es) heard by a walk-scan"
+                f"{_count(seen_units, 'tagged box', 'tagged boxes')} heard by a walk-scan"
                 + (f" (last {seen_last:%b %d %H:%M})" if seen_last else "")
             )
         batch_units = 0
@@ -384,7 +393,7 @@ def build_board(session: Session, pending: list[dict]) -> list[dict]:
                     batch_last = at
         if batch_units:
             details.append(
-                f"{batch_units} unit(s) counted in batch {batch_label}"
+                f"{_count(batch_units, 'unit', 'units')} counted in batch {batch_label}"
             )
 
         evidence_units = max(seen_units, batch_units)

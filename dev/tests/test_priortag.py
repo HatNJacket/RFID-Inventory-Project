@@ -212,7 +212,9 @@ with patch("app.shopify.lookup_barcode", side_effect=look), \
     row = next(i for i in rep["items"] if i["sku"]=="DEEP-1")
     check("hearing only PART of the already-tagged bundle = YELLOW row",
           rep["ok"] is True and row["state"]=="prior-silent"
-          and "earlier tag(s) silent" in row["reason"], row)
+          and "earlier tag" in row["reason"]
+          and "silent" in row["reason"]
+          and "(s)" not in row["reason"], row)
     rep = cl.post(f"/api/batches/{bidv}/verify", json={"epcs":[]}).json()
     check("hearing only this batch's own pairs (X, none of the earlier "
           "tags) = accepted", rep["ok"] is True, rep)

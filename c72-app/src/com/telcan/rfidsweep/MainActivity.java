@@ -226,6 +226,12 @@ public class MainActivity extends Activity {
      *  through create(), so both .show() and .create().show() sites are
      *  covered): with the setting on, a trigger pull presses the
      *  dialog's enabled confirm button — and ONLY when it has one. */
+    /** "1 tag" / "2 tags" - never "tag(s)" (Nick, 2026-09-29). The
+     *  forms may carry a verb ("bin is" / "bins are"). */
+    private static String plural(long n, String one, String many) {
+        return n + " " + (n == 1 ? one : many);
+    }
+
     private AlertDialog.Builder dlg() {
         return new AlertDialog.Builder(this, themeDark
                 ? android.R.style.Theme_DeviceDefault_Dialog_Alert
@@ -2575,8 +2581,8 @@ public class MainActivity extends Activity {
                 ? (paused ? "paused — sweep back and forth to measure"
                     : "gathering… sweep back and forth")
                 : (radarEngine != 2
-                    ? (sweepHalfCount / 2) + " sweep(s) · " : "")
-                  + n + " ping(s)"
+                    ? plural((sweepHalfCount / 2), "sweep", "sweeps") + " · " : "")
+                  + plural(n, "ping", "pings")
                   + (paused ? " · paused (not sweeping)"
                     : rough ? " · rough — keep sweeping"
                     : " · steady — trust it"));
@@ -2923,14 +2929,13 @@ public class MainActivity extends Activity {
                             + (bin != null ? "  ·  Bin: " + bin : "")
                             + "  ·  " + (narrowed
                                ? "🎯 hunting " + locTags.size()
-                                 + " SILENT of " + onFile
-                                 + " tag(s) on file"
-                               : locTags.size() + " tag(s) on file"));
+                                 + " SILENT of " + plural(onFile, "tag", "tags") + " on file"
+                               : plural(locTags.size(), "tag", "tags") + " on file"));
                     loadImage(locProduct.isNull("image_url") ? null
                             : locProduct.optString("image_url"), locImg);
                     updateLocateUi();
                     status.setText("Pull the trigger to hunt "
-                            + locTags.size() + " tag(s).");
+                            + plural(locTags.size(), "tag", "tags") + ".");
                 });
             } catch (Exception e) {
                 ui.post(() -> {
@@ -2984,13 +2989,12 @@ public class MainActivity extends Activity {
                         -999.0);
             }
         }
-        locSku.setText(locTags.size()
-                + " unpaired target(s) · listening for more");
+        locSku.setText(plural(locTags.size(), "unpaired target", "unpaired targets") + " · listening for more");
         locImg.setImageBitmap(null);
         paintUnpairedBtn();
         beep(SOUND_OK);
         status.setText("UNPAIRED TAGS: trigger to hunt "
-                + (locTags.isEmpty() ? "" : locTags.size() + " sticker(s)")
+                + (locTags.isEmpty() ? "" : plural(locTags.size(), "sticker", "stickers"))
                 + (locTags.isEmpty() ? "- every ownerless sticker heard "
                         + "becomes a target" : " (new ones join live)")
                 + ". 100% opens the pair window - or scan a barcode "
@@ -3035,9 +3039,7 @@ public class MainActivity extends Activity {
                             locTags.put(e, -999.0);
                         }
                     }
-                    locSku.setText(locTags.size()
-                            + " unpaired target(s) · " + upChecked
-                            + " tag(s) checked");
+                    locSku.setText(plural(locTags.size(), "unpaired target", "unpaired targets") + " · " + plural(upChecked, "tag", "tags") + " checked");
                     updateLocateUi();
                 });
             } catch (Exception ignored) {
@@ -3124,9 +3126,8 @@ public class MainActivity extends Activity {
                             beep(SOUND_OK);
                             status.setText(msg);
                             if (unpairedHunt) {
-                                locSku.setText(locTags.size()
-                                        + " unpaired target(s) · "
-                                        + upChecked + " tag(s) checked");
+                                locSku.setText(plural(locTags.size(), "unpaired target", "unpaired targets") + " · "
+                                        + plural(upChecked, "tag", "tags") + " checked");
                             }
                             updateLocateUi();
                         });
@@ -3193,8 +3194,7 @@ public class MainActivity extends Activity {
                             labels += r.optInt("count");
                         }
                         list.addView(targetCard(bin,
-                                labels + " label(s) · " + items.size()
-                                        + " product(s) owe pairing",
+                                plural(labels, "label", "labels") + " · " + plural(items.size(), "product", "products") + " owe pairing",
                                 null, () -> {
                                     if (dref[0] != null) {
                                         dref[0].dismiss();
@@ -3309,8 +3309,8 @@ public class MainActivity extends Activity {
                 .setNegativeButton("CLOSE", null)
                 .show();
         if (unpairedHunt) {
-            locSku.setText(locTags.size() + " unpaired target(s) · "
-                    + upChecked + " tag(s) checked");
+            locSku.setText(plural(locTags.size(), "unpaired target", "unpaired targets") + " · "
+                    + plural(upChecked, "tag", "tags") + " checked");
             updateLocateUi();
         }
     }
@@ -3504,9 +3504,9 @@ public class MainActivity extends Activity {
                     }
                     upChecked += batch.size();
                     if (unpairedHunt) {
-                        locSku.setText(locTags.size() + " unpaired "
-                                + "target(s) · " + upChecked
-                                + " tag(s) checked");
+                        locSku.setText(plural(locTags.size(), "unpaired target",
+                                        "unpaired targets")
+                                + " · " + plural(upChecked, "tag", "tags") + " checked");
                         updateLocateUi();
                     }
                 });
@@ -3616,13 +3616,13 @@ public class MainActivity extends Activity {
                     }
                     upArmedProduct = null;
                     if (unpairedHunt) {
-                        locSku.setText(locTags.size() + " unpaired "
-                                + "target(s) · " + upChecked
-                                + " tag(s) checked");
+                        locSku.setText(plural(locTags.size(), "unpaired target",
+                                        "unpaired targets")
+                                + " · " + plural(upChecked, "tag", "tags") + " checked");
                     }
                     status.setText(msg + " - UNDO PAIR reverses it. "
                             + (locTags.size() > 0
-                               ? locTags.size() + " target(s) left."
+                               ? plural(locTags.size(), "target", "targets") + " left."
                                : "No unpaired targets in earshot."));
                     // The pinned bin's count moves with every pair
                     // (Nick, 2026-09-15).
@@ -3679,9 +3679,9 @@ public class MainActivity extends Activity {
                             upReleaseAutoNarrow(null);
                         }
                         if (unpairedHunt) {
-                            locSku.setText(locTags.size() + " unpaired "
-                                    + "target(s) · " + upChecked
-                                    + " tag(s) checked");
+                            locSku.setText(plural(locTags.size(), "unpaired target",
+                                            "unpaired targets")
+                                    + " · " + plural(upChecked, "tag", "tags") + " checked");
                         }
                         updateLocateUi();
                     }
@@ -3714,8 +3714,7 @@ public class MainActivity extends Activity {
         }
         dlg()
                 .setTitle("SOLD WITHOUT LABEL?")
-                .setMessage(sku + ": dismiss all " + r.optInt("count")
-                        + " owed label(s)? The box sold before it "
+                .setMessage(sku + ": dismiss all " + plural(r.optInt("count"), "owed label", "owed labels") + "? The box sold before it "
                         + "could be labelled - no counts change, and "
                         + "the web History can undo it.")
                 .setPositiveButton("DISMISS", (d, w) ->
@@ -3749,9 +3748,9 @@ public class MainActivity extends Activity {
                     }
                     if (host != null) host.dismiss();
                     if (unpairedHunt) {
-                        locSku.setText(locTags.size() + " unpaired "
-                                + "target(s) · " + upChecked
-                                + " tag(s) checked");
+                        locSku.setText(plural(locTags.size(), "unpaired target",
+                                        "unpaired targets")
+                                + " · " + plural(upChecked, "tag", "tags") + " checked");
                         updateLocateUi();
                     }
                     status.setText(msg);
@@ -3861,9 +3860,8 @@ public class MainActivity extends Activity {
                             if (unpairedHunt) {
                                 upKnown.remove(epc);
                                 locTags.put(epc, -999.0);
-                                locSku.setText(locTags.size()
-                                        + " unpaired target(s) · "
-                                        + upChecked + " tag(s) checked");
+                                locSku.setText(plural(locTags.size(), "unpaired target", "unpaired targets") + " · "
+                                        + plural(upChecked, "tag", "tags") + " checked");
                             }
                             status.setText("Undone - …" + epc.substring(
                                     Math.max(0, epc.length() - 6))
@@ -3953,7 +3951,7 @@ public class MainActivity extends Activity {
                             .setView(scroll)
                             .setNegativeButton("CLOSE", null)
                             .show();
-                    status.setText(total + " receiving label(s) never "
+                    status.setText(plural(total, "receiving label", "receiving labels") + " never "
                             + "RFID-paired.");
                 });
             } catch (Exception e) {
@@ -4044,7 +4042,7 @@ public class MainActivity extends Activity {
             nm.setMaxLines(2);
             mid.addView(nm);
             TextView meta = new TextView(this);
-            meta.setText("SKU: " + sku + " · " + tagCount + " tag(s)"
+            meta.setText("SKU: " + sku + " · " + plural(tagCount, "tag", "tags")
                     + (binText.length() > 0
                        ? " · tags say " + binText : ""));
             meta.setTextSize(11);
@@ -4098,11 +4096,10 @@ public class MainActivity extends Activity {
             // raw EPCs - there is no product behind them to look up.
             final boolean epcHunt = e.optBoolean("epc_hunt", false);
             if (epcHunt) {
-                meta.setText(only.size() + " sticker(s) heard on sweeps "
+                meta.setText(plural(only.size(), "sticker", "stickers") + " heard on sweeps "
                         + "with no product linked - hunt and fix them");
             } else if (!only.isEmpty()) {
-                meta.setText(meta.getText() + " · 🎯 " + only.size()
-                        + " silent tag(s) targeted");
+                meta.setText(meta.getText() + " · 🎯 " + plural(only.size(), "silent tag", "silent tags") + " targeted");
             }
             final String huntTitle = label != null && !label.isEmpty()
                     ? label : sku;
@@ -4584,7 +4581,7 @@ public class MainActivity extends Activity {
         locInfo.setText((locNarrow != null
                 ? "targeting ONE tag …" + locNarrow.substring(
                         Math.max(0, locNarrow.length() - 6))
-                : "targeting " + locTargets().size() + " tag(s)")
+                : "targeting " + plural(locTargets().size(), "tag", "tags"))
                 + " · heard " + locHeardCount + " of " + locTags.size()
                 + " ever · " + locFound.size() + " found ✓"
                 + " · power " + locPower);
@@ -4650,7 +4647,7 @@ public class MainActivity extends Activity {
         }
 
         list.addView(targetCard("RESET found marks",
-                locFound.size() + " tag(s) marked found", null, () -> {
+                plural(locFound.size(), "tag", "tags") + " marked found", null, () -> {
                     locFound.clear();
                     retarget(null, "Found marks cleared — hunting every "
                             + "tag again.");
@@ -5363,7 +5360,7 @@ public class MainActivity extends Activity {
             final String kind, int soldCover) {
         final boolean sold = "presumed-sold".equals(kind);
         String msg = sold
-                ? "Order history shows " + soldCover + " sale(s) with "
+                ? "Order history shows " + plural(soldCover, "sale", "sales") + " with "
                   + "no tagged unit for " + sku + ". This retires the "
                   + "tag as PRESUMED SOLD and consumes one of those "
                   + "sales."
@@ -5452,7 +5449,7 @@ public class MainActivity extends Activity {
                 + " found; out of the hunt.");
         if (locTargets().isEmpty()) {
             stopLocate(false);
-            status.setText("All " + locTags.size() + " tag(s) found ✓ — "
+            status.setText("All " + plural(locTags.size(), "tag", "tags") + " found ✓ — "
                     + "un-find one via TARGET to hunt it again.");
         } else if (locating) {
             // The found tag may have been the narrow filter's target —
@@ -5856,8 +5853,7 @@ public class MainActivity extends Activity {
             dlg()
                     .setTitle("Remove the double count?")
                     .setMessage(it.qty + " scanned + " + it.taggedBefore
-                            + " already tagged — if the " + it.taggedBefore
-                            + " stickered box(es) were among the scans, "
+                            + " already tagged — if the " + plural(it.taggedBefore, "stickered box was", "stickered boxes were") + " among the scans, "
                             + "the true split is " + fixed + " new + "
                             + it.taggedBefore + " tagged.\n\nBatch counts "
                             + "only; Shopify is untouched.")
@@ -6753,7 +6749,7 @@ public class MainActivity extends Activity {
             // the row means no label can print for its cases. The way
             // out is undo, then declare again naming the product.
             dlg()
-                    .setTitle(it.caseCount + " sealed case(s) - no "
+                    .setTitle(plural(it.caseCount, "sealed case", "sealed cases") + " - no "
                             + "product yet")
                     .setMessage("This row was never matched to a "
                             + "product, so its case labels CAN'T print "
@@ -6769,7 +6765,7 @@ public class MainActivity extends Activity {
             return;
         }
         dlg()
-                .setTitle(it.caseCount + " sealed case(s) of "
+                .setTitle(plural(it.caseCount, "sealed case", "sealed cases") + " of "
                         + it.caseUnits)
                 .setMessage("Each box prints ONE label (\"" + it.caseUnits
                         + " x " + (it.sku == null ? "?" : it.sku)
@@ -7165,7 +7161,7 @@ public class MainActivity extends Activity {
         scanning = true;
         holdSweepRunning = true;
         beep(SOUND_OTHER);
-        status.setText("Sweeping… 0 tag(s) — release the trigger to send.");
+        status.setText("Sweeping… 0 tags — release the trigger to send.");
     }
 
     private void restoreHoldSweepPower() {
@@ -7836,7 +7832,7 @@ public class MainActivity extends Activity {
                         + "EMPTY?"
                         + (expected > 0
                             ? "\n\nMarking it complete records 0 on the "
-                              + "shelf for the " + expected + " product(s) "
+                              + "shelf for the " + plural(expected, "product", "products") + " "
                               + "Shopify expects here and files an "
                               + "inventory-check for each."
                             : "\n\nMarking it complete records the bin as "
@@ -7896,7 +7892,7 @@ public class MainActivity extends Activity {
             if (left > 0) {
                 dlg()
                         .setTitle("Finish side trip?")
-                        .setMessage(left + " label(s) here still have no tag "
+                        .setMessage(plural(left, "label", "labels") + " here still have no tag "
                                 + "paired.\n\nGo back to " + parentBinName
                                 + " anyway?")
                         .setPositiveButton("Finish", (d, w) -> finishSideTrip())
@@ -7974,7 +7970,7 @@ public class MainActivity extends Activity {
                         .setTitle("Nothing to print")
                         .setMessage("No untagged boxes were counted"
                                 + (alreadyTagged > 0
-                                   ? " — all " + alreadyTagged + " box(es)"
+                                   ? " — all " + plural(alreadyTagged, "box", "boxes")
                                      + " here already wear a tag"
                                    : "")
                                 + ", so there are no labels to queue and "
@@ -8162,7 +8158,7 @@ public class MainActivity extends Activity {
                 // the step continues with every read intact.
                 shelfRowsBox = null;
                 shelfStatusLine = null;
-                status.setText(shelfEpcs.size() + " tag(s) kept — "
+                status.setText(plural(shelfEpcs.size(), "tag", "tags") + " kept — "
                         + "trigger to add more (PWR chip changes "
                         + "power), RESULTS when done.");
             }
@@ -8177,8 +8173,7 @@ public class MainActivity extends Activity {
         // Raw reads, said as such: this counts EVERY tag the gun heard
         // (strays and other shelves included), while each row shows the
         // per-product match, so the two totals legitimately differ.
-        shelfStatusLine.setText(shelfEpcs.size()
-                + " tag read(s), strays included; rows show this bin's "
+        shelfStatusLine.setText(plural(shelfEpcs.size(), "tag read", "tag reads") + ", strays included; rows show this bin's "
                 + "products. Tap a yellow/red row to resolve it.");
     }
 
@@ -8206,7 +8201,7 @@ public class MainActivity extends Activity {
                     synchronized (tags) { n = tags.size(); }
                     if (btn != null) {
                         ui.post(() -> btn.setText(
-                                "Sweeping… " + n + " tag(s)"));
+                                "Sweeping… " + plural(n, "tag", "tags")));
                     }
                 }
             } catch (Exception ignored) {
@@ -8234,9 +8229,8 @@ public class MainActivity extends Activity {
                 beep(heard.isEmpty() ? SOUND_OTHER : SOUND_OK);
                 int added = shelfEpcs.size() - before;
                 if (shelfStatusLine != null) {
-                    shelfStatusLine.setText(heard.size() + " read(s), "
-                            + added + " new — " + shelfEpcs.size()
-                            + " tag(s) total. Checking…");
+                    shelfStatusLine.setText(plural(heard.size(), "read", "reads") + ", "
+                            + added + " new — " + plural(shelfEpcs.size(), "tag", "tags") + " total. Checking…");
                 }
                 shelfPost(false, after);
             });
@@ -8411,8 +8405,7 @@ public class MainActivity extends Activity {
             } else {
                 line.setTextColor(C_MUTED);
                 line.setText("no tags on record — "
-                        + (it != null ? it.qty : 0)
-                        + " box(es) get labels");
+                        + plural((it != null ? it.qty : 0), "box gets", "boxes get") + " labels");
             }
             col.addView(line);
             int overHeard = r.optInt("over_heard");
@@ -8423,7 +8416,7 @@ public class MainActivity extends Activity {
                 TextView over = new TextView(this);
                 over.setTextSize(11.5f);
                 over.setTextColor(C_WARN);
-                over.setText("⚠ heard " + overHeard + " more tag(s) "
+                over.setText("⚠ heard " + plural(overHeard, "more tag", "more tags") + " "
                         + "than boxes collected, check for a "
                         + "neighboring shelf or uncollected stock");
                 col.addView(over);
@@ -8475,7 +8468,7 @@ public class MainActivity extends Activity {
         }
         if (shelfUnknown > 0) {
             TextView t = new TextView(this);
-            t.setText(shelfUnknown + " tag(s) in range belong to other "
+            t.setText(plural(shelfUnknown, "tag", "tags") + " in range belong to other "
                     + "products/bins — ignored here.");
             t.setTextSize(11);
             t.setTextColor(C_MUTED);
@@ -8498,9 +8491,9 @@ public class MainActivity extends Activity {
         box.setPadding(dp(16), dp(6), dp(16), dp(4));
 
         TextView counts = new TextView(this);
-        counts.setText(onFile + " tag(s) on record here · sweep heard "
+        counts.setText(plural(onFile, "tag", "tags") + " on record here · sweep heard "
                 + heard + " · expected " + expected + " · "
-                + it.qty + " box(es) collected this batch");
+                + plural(it.qty, "box", "boxes") + " collected this batch");
         counts.setTextSize(12);
         counts.setTextColor(C_WARN);
         counts.setBackground(rr(C_WARN_BG, 0, 8));
@@ -8556,9 +8549,9 @@ public class MainActivity extends Activity {
             num.setText(String.valueOf(eye[0]));
             int silent = Math.max(0, eye[0] - heard);
             int newLabels = Math.max(0, it.qty - heard);
-            derived.setText("→ " + newLabels + " box(es) get new labels"
+            derived.setText("→ " + plural(newLabels, "box gets", "boxes get") + " new labels"
                     + (silent > 0
-                       ? " · " + silent + " sticker(s) silent — scan "
+                       ? " · " + plural(silent, "sticker", "stickers") + " silent — scan "
                          + "one-by-one; still nothing = dead tag below"
                        : ""));
         };
@@ -8653,7 +8646,7 @@ public class MainActivity extends Activity {
                 v -> {
             final java.util.Set<String> before =
                     new java.util.HashSet<>(shelfEpcs);
-            out.setText("Scanning… 0 tag(s)");
+            out.setText("Scanning… 0 tags");
             new Thread(() -> {
                 final List<String> heard = new ArrayList<>();
                 try {
@@ -8664,7 +8657,7 @@ public class MainActivity extends Activity {
                         final int n;
                         synchronized (tags) { n = tags.size(); }
                         ui.post(() -> out.setText(
-                                "Scanning… " + n + " tag(s)"));
+                                "Scanning… " + plural(n, "tag", "tags")));
                     }
                 } catch (Exception ignored) {
                 } finally {
@@ -8767,7 +8760,7 @@ public class MainActivity extends Activity {
                     + "the bin first, then SEND SWEEP.");
             return;
         }
-        status.setText("Sending " + epcs.size() + " tag(s)\u2026");
+        status.setText("Sending " + plural(epcs.size(), "tag", "tags") + "\u2026");
         new Thread(() -> {
             try {
                 // The capture first: the web terminal watching this batch
@@ -9123,7 +9116,7 @@ public class MainActivity extends Activity {
                         ? f.optString("product_title", "?")
                         : f.optString("sku"));
             }
-            w.setText(foreign.length() + " tag(s) from other products "
+            w.setText(plural(foreign.length(), "tag", "tags") + " from other products "
                     + "in range: " + fb);
             w.setTextSize(11);
             w.setTextColor(C_MUTED);
@@ -9132,7 +9125,7 @@ public class MainActivity extends Activity {
         JSONArray unk = rep.optJSONArray("unknown_epcs");
         if (unk != null && unk.length() > 0) {
             TextView w = new TextView(this);
-            w.setText(unk.length() + " unknown tag(s) in range.");
+            w.setText(plural(unk.length(), "unknown tag", "unknown tags") + " in range.");
             w.setTextSize(11);
             w.setTextColor(C_MUTED);
             box.addView(w);
@@ -9152,7 +9145,7 @@ public class MainActivity extends Activity {
                 .setNegativeButton("CONTINUE SWEEP", (d, w) -> {
                     int kept;
                     synchronized (tags) { kept = tags.size(); }
-                    status.setText("Sweep kept (" + kept + " tag(s))"
+                    status.setText("Sweep kept (" + plural(kept, "tag", "tags") + ")"
                             + " - pull the trigger to add the missed "
                             + "boxes, then SEND SWEEP again. CLEAR "
                             + "starts a fresh sweep.");
@@ -9189,8 +9182,9 @@ public class MainActivity extends Activity {
           .append(", heard ").append(r.noScan ? "n/a"
                   : String.valueOf(r.detectedBatch));
         if (r.taggedBefore > 0 || r.detectedOther > 0) {
-            sb.append("\nEarlier sessions: ").append(r.taggedBefore)
-              .append(" box(es) already tagged here, heard ")
+            sb.append("\nEarlier sessions: ")
+              .append(plural(r.taggedBefore, "box", "boxes"))
+              .append(" already tagged here, heard ")
               .append(r.detectedOther);
         }
         if (r.noScan) {
@@ -9222,7 +9216,7 @@ public class MainActivity extends Activity {
             b.setNeutralButton("IGNORE IN THIS BATCH", (d, w) -> {
                 if (r.paired > 0) {
                     beep(SOUND_ERR);
-                    status.setText("It has " + r.paired + " tag(s) paired "
+                    status.setText("It has " + plural(r.paired, "tag", "tags") + " paired "
                             + "in this batch - undo those pairs first, "
                             + "then ignore it.");
                     return;
@@ -9380,7 +9374,7 @@ public class MainActivity extends Activity {
         final int n = paired;
         dlg()
                 .setTitle("Undo ALL pairing?")
-                .setMessage("Release all " + n + " tag(s) tied in this "
+                .setMessage("Release all " + plural(n, "tag", "tags") + " tied in this "
                         + "batch?\n\nThe printed labels stay valid — you "
                         + "just re-scan them onto their products. Nothing "
                         + "in Shopify changes.")
@@ -9393,7 +9387,7 @@ public class MainActivity extends Activity {
                             beep(SOUND_OK);
                             pairActive = null;
                             pairHistory.clear();
-                            status.setText(removed + " tie(s) released — "
+                            status.setText(plural(removed, "tie", "ties") + " released — "
                                     + "pair the shelf again.");
                             reloadBatchOnly();
                         });
@@ -9470,7 +9464,7 @@ public class MainActivity extends Activity {
         }
         scanning = true;
         sweepRunning = true;
-        status.setText("Sweeping… 0 tag(s) — release the trigger to stop.");
+        status.setText("Sweeping… 0 tags — release the trigger to stop.");
     }
 
     private void stopHeldSweep() {
@@ -9494,7 +9488,7 @@ public class MainActivity extends Activity {
                     + "raise PWR.");
             return;
         }
-        status.setText("Checking " + swept.size() + " swept tag(s)…");
+        status.setText("Checking " + plural(swept.size(), "swept tag", "swept tags") + "…");
         new Thread(() -> {
             try {
                 JSONObject body = new JSONObject()
@@ -9510,14 +9504,13 @@ public class MainActivity extends Activity {
                 ui.post(() -> {
                     if (orphans.isEmpty()) {
                         beep(SOUND_OTHER);
-                        status.setText("All " + swept.size() + " tag(s) "
+                        status.setText("All " + plural(swept.size(), "tag", "tags") + " "
                                 + "swept are already linked — nothing "
                                 + "orphaned here.");
                         return;
                     }
                     // Everything unowned belongs to the active product.
-                    status.setText("Assigning " + orphans.size()
-                            + " unlinked tag(s) to " + target.name()
+                    status.setText("Assigning " + plural(orphans.size(), "unlinked tag", "unlinked tags") + " to " + target.name()
                             + (already > 0 ? "  (" + already + " already "
                               + "linked, skipped)" : "") + "…");
                     assignEpcs(orphans, target);
@@ -9569,10 +9562,9 @@ public class MainActivity extends Activity {
             final String problem = err;
             ui.post(() -> {
                 beep(done > 0 || companions > 0 ? SOUND_OK : SOUND_ERR);
-                status.setText(done + " tag(s) assigned to "
+                status.setText(plural(done, "tag", "tags") + " assigned to "
                         + target.name()
-                        + (companions > 0 ? " · " + companions
-                          + " companion box label(s) confirmed" : "")
+                        + (companions > 0 ? " · " + plural(companions, "companion box label", "companion box labels") + " confirmed" : "")
                         + (problem != null ? " · " + problem : ""));
                 if (recvDoneF && batchOrderReceipt != null
                         && !recvHandoffShown) {
@@ -9661,7 +9653,7 @@ public class MainActivity extends Activity {
                         status.setText(checkEntries.isEmpty()
                                 ? "Nothing needs checking ✓ — NEXT queues "
                                   + "the labels."
-                                : checkEntries.size() + " item(s) need a "
+                                : plural(checkEntries.size(), "item needs", "items need") + " a "
                                   + "look — tap one to review. NEXT queues "
                                   + "the labels.");
                         refreshBatchList();
@@ -9777,8 +9769,7 @@ public class MainActivity extends Activity {
                     .setMessage("LEAVE OPEN parks the shipment to resume "
                             + "later - it closes by itself once every box "
                             + "is paired. ABANDON closes it for good"
-                            + (n > 0 ? " and releases its " + n
-                               + " tag tie(s)" : "") + ".")
+                            + (n > 0 ? " and releases its " + plural(n, "tag tie", "tag ties") : "") + ".")
                     .setPositiveButton("LEAVE OPEN", (d, w) ->
                             exitBatch(false))
                     .setNeutralButton("ABANDON…", (d, w) ->
@@ -9792,8 +9783,7 @@ public class MainActivity extends Activity {
                 .setMessage("LEAVE OPEN parks the batch to resume later — "
                         + "on this gun or the web terminal.\n\nABANDON "
                         + "closes it for good"
-                        + (n > 0 ? " and releases its " + n
-                           + " tag tie(s)" : "")
+                        + (n > 0 ? " and releases its " + plural(n, "tag tie", "tag ties") : "")
                         + ". Nothing in Shopify changes either way.")
                 .setPositiveButton("LEAVE OPEN", (d, w) -> exitBatch(false))
                 .setNeutralButton("ABANDON…", (d, w) ->
@@ -9806,7 +9796,7 @@ public class MainActivity extends Activity {
         dlg()
                 .setTitle("Abandon " + batchBin + "?")
                 .setMessage("The batch closes without completing"
-                        + (ties > 0 ? ", its " + ties + " tag tie(s) are "
+                        + (ties > 0 ? ", its " + plural(ties, "tag tie is", "tag ties are") + " "
                            + "released (printed labels become unlinked "
                            + "stickers)" : "")
                         + ", and the bin goes back on the to-do list. "
@@ -9866,7 +9856,7 @@ public class MainActivity extends Activity {
             }
             Integer ub = recvUnitBoxes.get(b.id);
             String marks = (joined > 0
-                    ? "\n   +" + joined + " bundled box(es) open this "
+                    ? "\n   +" + plural(joined, "bundled box", "bundled boxes") + " open this "
                       + "card" : "")
                     + (ub != null && ub > 1
                        ? "\n   1 unit = " + ub + " boxes (one label "
@@ -9901,8 +9891,7 @@ public class MainActivity extends Activity {
         ScrollView sc = new ScrollView(this);
         sc.addView(box);
         AlertDialog.Builder b = dlg()
-                .setTitle("Receiving — " + green + " of " + total
-                        + " product(s) fully tagged")
+                .setTitle("Receiving — " + green + " of " + plural(total, "product", "products") + " fully tagged")
                 .setView(sc)
                 .setPositiveButton("CONFIRM", (d, w) -> {
                     exitBatch(false);
@@ -10038,8 +10027,8 @@ public class MainActivity extends Activity {
                     .isEmpty()) flagged++;
         }
         TextView head = new TextView(this);
-        head.setText((items == null ? 0 : items.length()) + " line(s) · "
-                + boxes + " box(es) remaining"
+        head.setText(plural((items == null ? 0 : items.length()), "line", "lines") + " · "
+                + plural(boxes, "box", "boxes") + " remaining"
                 + (flagged > 0 ? " · " + flagged + " flagged" : "")
                 + (scanOrder != null
                    ? "\nLabels print in the order you scanned." : ""));
@@ -10056,7 +10045,7 @@ public class MainActivity extends Activity {
                     + line.optString("title",
                             line.optString("product_title", "?"))
                     + "\n   " + line.optString("sku", "-") + " · "
-                    + line.optInt("remaining") + " box(es)"
+                    + plural(line.optInt("remaining"), "box", "boxes")
                     + (flag.isEmpty()
                        ? " · " + line.optString("bin_location", "?")
                        : "\n   ⚠ " + flag));
@@ -10143,12 +10132,11 @@ public class MainActivity extends Activity {
                         beep(SOUND_OK);
                         live[0] = false;
                         d.dismiss();
-                        status.setText("All " + total + " label(s) out - "
+                        status.setText("All " + plural(total, "label", "labels") + " out - "
                                 + "take the stack to the pallet.");
                         enterBatch(id);
                     } else {
-                        d.setMessage("Printer: " + done + " of " + total
-                                + " label(s) out…\n\nGrab the stack when "
+                        d.setMessage("Printer: " + done + " of " + plural(total, "label", "labels") + " out…\n\nGrab the stack when "
                                 + "it's done - the screen continues on "
                                 + "its own.");
                         ui.postDelayed(poll[0], 2500);
@@ -10195,8 +10183,7 @@ public class MainActivity extends Activity {
                     .show();
             return;
         }
-        StringBuilder sb = new StringBuilder(total
-                + " label(s) left on the strip:\n");
+        StringBuilder sb = new StringBuilder(plural(total, "label", "labels") + " left on the strip:\n");
         for (int i = 0; unpaired != null && i < unpaired.length(); i++) {
             JSONObject u = unpaired.optJSONObject(i);
             sb.append("\n· ").append(u.optString("product_title",
@@ -10266,7 +10253,7 @@ public class MainActivity extends Activity {
         dlg()
                 .setTitle("STRIP SWEEP - " + stripEpcs.size()
                         + " TAG(S)")
-                .setMessage(stripEpcs.size() + " unique tag(s) heard. "
+                .setMessage(plural(stripEpcs.size(), "unique tag", "unique tags") + " heard. "
                         + "Tags already paired to real boxes are "
                         + "excluded automatically - hold the strip and "
                         + "close the shipment?")
@@ -10306,7 +10293,7 @@ public class MainActivity extends Activity {
                     // with the rollback.
                     if (cands != null && cands.length() > 0) {
                         StringBuilder sb = new StringBuilder(
-                                cands.length() + " swept tag(s) are "
+                                plural(cands.length(), "swept tag is", "swept tags are") + " "
                                 + "recorded as PAIRED boxes of this "
                                 + "shipment:\n");
                         for (int i = 0; i < cands.length(); i++) {
@@ -10473,8 +10460,7 @@ public class MainActivity extends Activity {
         for (int n : sortCounts.values()) boxes += n;
         TextView head = new TextView(this);
         head.setText((pileMode ? "SORT INTO PILES - " : "SORT - ")
-                + boxes + " box(es) · " + sortCounts.size()
-                + " product(s)");
+                + plural(boxes, "box", "boxes") + " · " + plural(sortCounts.size(), "product", "products"));
         head.setTextSize(15);
         head.setTypeface(null, Typeface.BOLD);
         head.setTextColor(C_BLUE);
@@ -10494,7 +10480,7 @@ public class MainActivity extends Activity {
                 TextView t = new TextView(this);
                 t.setText((unres ? PILE_UNRESOLVED
                         : "SO " + e.getKey()) + " pile: "
-                        + e.getValue() + " box(es) sorted");
+                        + plural(e.getValue(), "box", "boxes") + " sorted");
                 t.setTextSize(13);
                 t.setTextColor(unres ? C_WARN : C_TEXT);
                 t.setPadding(dp(4), dp(2), 0, dp(2));
@@ -10673,8 +10659,9 @@ public class MainActivity extends Activity {
                         .append(alt.optString("reference_number"))
                         .append("'s line list covers EVERYTHING - one "
                                 + "pile, ")
-                        .append(alt.optInt("overflow_boxes"))
-                        .append(" box(es) flagged past its remaining "
+                        .append(plural(alt.optInt("overflow_boxes"), "box",
+                                "boxes"))
+                        .append(" flagged past its remaining "
                                 + "quantities.");
             }
             AlertDialog.Builder b1 = dlg()
@@ -10701,7 +10688,7 @@ public class MainActivity extends Activity {
                 }
                 sb.append("\n· SO ").append(
                         o.optString("reference_number"))
-                        .append(" - ").append(n).append(" box(es)");
+                        .append(" - ").append(plural(n, "box", "boxes"));
                 appendOverflow(sb, o);
             }
             appendUnmatched(sb, unmatched);
@@ -10710,8 +10697,9 @@ public class MainActivity extends Activity {
                         .append(alt.optString("reference_number"))
                         .append("'s line list covers EVERYTHING - one "
                                 + "pile, ")
-                        .append(alt.optInt("overflow_boxes"))
-                        .append(" box(es) flagged past its remaining "
+                        .append(plural(alt.optInt("overflow_boxes"), "box",
+                                "boxes"))
+                        .append(" flagged past its remaining "
                                 + "quantities.");
             } else {
                 sb.append("\n\nSort the pallet into piles first (each "
@@ -10939,7 +10927,7 @@ public class MainActivity extends Activity {
                             java.util.Locale.ROOT)))) {
             beep(SOUND_ERR);
             status.setText("That's the set's own code - scan the OTHER "
-                    + "box(es), or trigger to finish.");
+                    + "boxes, or trigger to finish.");
             return;
         }
         recvBundleCodes.put(key, bundleTargetId);
@@ -10949,7 +10937,7 @@ public class MainActivity extends Activity {
         for (Integer v : recvBundleCodes.values()) {
             if (v != null && v == bundleTargetId) joined++;
         }
-        status.setText("Box joined ✓ - " + joined + " box(es) bundled "
+        status.setText("Box joined ✓ - " + plural(joined, "box", "boxes") + " bundled "
                 + "onto " + target.name() + ". Keep scanning, trigger "
                 + "when done.");
     }
@@ -10965,7 +10953,7 @@ public class MainActivity extends Activity {
             }
         }
         status.setText(target == null ? "Bundling done."
-                : "Bundling done - " + joined + " box(es) now open "
+                : "Bundling done - " + plural(joined, "box", "boxes") + " now open "
                   + target.name() + "'s card. ONE label pairs per set, "
                   + "on the main box.");
     }
@@ -11254,8 +11242,7 @@ public class MainActivity extends Activity {
             int unpairedLabels = b.optInt("unpaired_labels", 0);
             if (receiving && unpairedLabels > 0) {
                 TextView up = new TextView(this);
-                up.setText("🏷 " + unpairedLabels
-                        + " label(s) not RFID-paired");
+                up.setText("🏷 " + plural(unpairedLabels, "label", "labels") + " not RFID-paired");
                 up.setTextSize(11);
                 up.setTextColor(C_OVER);
                 up.setBackground(rr(C_OVER_BG, 0, 6));
@@ -11545,7 +11532,7 @@ public class MainActivity extends Activity {
                         + "). Pull the trigger and sweep — reads add up "
                         + "across pulls (PWR chip changes power). "
                         + (shelfEpcs.isEmpty() ? ""
-                           : shelfEpcs.size() + " tag(s) so far. ")
+                           : plural(shelfEpcs.size(), "tag", "tags") + " so far. ")
                         + "RESULTS when done; CLEAR starts over.");
             } else if (step == STEP_CHECK) {
                 status.setText(checkEntries.isEmpty()
@@ -11735,7 +11722,7 @@ public class MainActivity extends Activity {
         String home = it.binLocation == null || it.binLocation.isEmpty()
                 ? "no bin on record" : it.binLocation;
         msg.setText(it.name() + " was RFID-tagged before this batch (side "
-                + "trip or earlier session) — " + n + " tag(s) in the "
+                + "trip or earlier session) — " + plural(n, "tag", "tags") + " in the "
                 + "system.\nRecorded shelf: " + home + " — go look, or "
                 + "SWEEP to count its tags in range.\n\n"
                 + "Stickered boxes must not get a second label. Count the "
@@ -11795,7 +11782,7 @@ public class MainActivity extends Activity {
         Runnable refresh = () -> {
             num.setText(String.valueOf(count[0]));
             consequence.setText(count[0] > 0
-                    ? "→ " + count[0] + " box(es) counted as already done "
+                    ? "→ " + plural(count[0], "box", "boxes") + " counted as already done "
                       + "· labels print only for the others"
                     : "→ no stickered boxes here — every box scanned "
                       + "gets a label");
@@ -11833,7 +11820,7 @@ public class MainActivity extends Activity {
                         final int heardNow;
                         synchronized (tags) { heardNow = tags.size(); }
                         ui.post(() -> sweepOut.setText(
-                                "Sweeping… " + heardNow + " tag(s) heard"));
+                                "Sweeping… " + plural(heardNow, "tag", "tags") + " heard"));
                     }
                 } catch (Exception ignored) {
                 } finally {
@@ -11871,8 +11858,8 @@ public class MainActivity extends Activity {
                     ui.post(() -> {
                         count[0] = Math.min(500, fdet);
                         refresh.run();
-                        sweepOut.setText("Heard " + fdet + " tag(s) of "
-                                + "this product · " + ftotal + " tag(s) "
+                        sweepOut.setText("Heard " + plural(fdet, "tag", "tags") + " of "
+                                + "this product · " + plural(ftotal, "tag", "tags") + " "
                                 + "in range · " + fon + " on file — "
                                 + "count set to " + fdet + ".");
                         sweepBtn.setEnabled(true);
@@ -11893,7 +11880,7 @@ public class MainActivity extends Activity {
         ScrollView sc = new ScrollView(this);
         sc.addView(box);
         dlg()
-                .setTitle(n + " box(es) may already be stickered")
+                .setTitle(plural(n, "box", "boxes") + " may already be stickered")
                 .setView(sc)
                 .setCancelable(false)
                 .setPositiveButton("CONFIRM", (dg, w) -> {
@@ -11918,7 +11905,7 @@ public class MainActivity extends Activity {
     private void confirmNoneStickered(BItem it, boolean offerUncount) {
         dlg()
                 .setTitle("No stickered boxes here")
-                .setMessage(it.priorTags + " tag(s) stay in the system "
+                .setMessage(plural(it.priorTags, "tag stays", "tags stay") + " in the system "
                         + "pointing at stock somewhere else. If you find a "
                         + "stickered box on this shelf later, use ALREADY "
                         + "TAGGED… in the item editor.")
@@ -11979,8 +11966,7 @@ public class MainActivity extends Activity {
                 ui.post(() -> {
                     replaceItem(fresh);
                     beep(SOUND_OK);
-                    status.setText("Count fixed — " + fresh.qty
-                            + " box(es) to label, " + fresh.taggedBefore
+                    status.setText("Count fixed — " + plural(fresh.qty, "box", "boxes") + " to label, " + fresh.taggedBefore
                             + " already stickered.");
                     updateBatchCard();
                     refreshBatchList();
@@ -12425,8 +12411,7 @@ public class MainActivity extends Activity {
                             + (b.remoteBin != null ? b.remoteBin : "?")
                             + ", collect it there");
                     h.bc.setVisibility(View.VISIBLE);
-                    h.bc.setText("Using its known count: " + b.knownUnits
-                            + " box(es)");
+                    h.bc.setText("Using its known count: " + plural(b.knownUnits, "box", "boxes"));
                     h.tracker.setText(String.valueOf(b.knownUnits));
                 } else {
                     Integer units = boxSetUnitsHere(b.sku == null ? ""
@@ -12963,7 +12948,7 @@ public class MainActivity extends Activity {
             previewItem = it;
             if (pairTarget(it) > 0) {
                 status.setText(it.name() + " focused — trigger on its "
-                        + "sticker(s) (" + it.paired + "/"
+                        + "stickers (" + it.paired + "/"
                         + pairTarget(it) + ").");
             }
         }
@@ -12975,7 +12960,7 @@ public class MainActivity extends Activity {
             for (BItem b : bItems) boxes += b.unitsTotal;
             beep(SOUND_OTHER);
             dlg().setTitle("ALREADY TAGGED — JUST CARRY")
-                    .setMessage(boxes + " box(es) here are already "
+                    .setMessage(plural(boxes, "box", "boxes") + " here are already "
                             + "tagged from an earlier session — no "
                             + "labels print and nothing pairs. Carry "
                             + "them to " + batchBin + " and confirm.")
@@ -13105,7 +13090,7 @@ public class MainActivity extends Activity {
         final int n = total;
         dlg()
                 .setTitle("Print labels for bin " + batchBin + "?")
-                .setMessage(n + " label(s) — one per box — will "
+                .setMessage(plural(n, "label", "labels") + " — one per box — will "
                         + "print at the warehouse printer."
                         + (caseLabels > 0
                            ? " " + caseLabels + " of them are sealed "
@@ -13114,7 +13099,7 @@ public class MainActivity extends Activity {
                            : "")
                         + " Collect them there, stick them on, then "
                         + "PAIR.")
-                .setPositiveButton("Queue " + n + " label(s)",
+                .setPositiveButton("Queue " + plural(n, "label", "labels"),
                         (d, w) -> new Thread(() -> {
                     try {
                         JSONObject body = new JSONObject().put(
@@ -13149,7 +13134,7 @@ public class MainActivity extends Activity {
                             beep(SOUND_OK);
                             step = STEP_PAIR;
                             applyBatchUi();
-                            status.setText(queued + " label(s) queued ✓ — "
+                            status.setText(plural(queued, "label", "labels") + " queued ✓ — "
                                     + "printing at the warehouse laptop. "
                                     + "Stick them on, then pair."
                                     + sideNote);
@@ -13201,7 +13186,7 @@ public class MainActivity extends Activity {
                     beep(SOUND_OTHER);
                     status.setText("Undid tag …" + last[0].substring(
                             Math.max(0, last[0].length() - 6))
-                            + " — now " + item.paired + " tag(s).");
+                            + " — now " + plural(item.paired, "tag", "tags") + ".");
                     updateBatchCard();
                     refreshBatchList();
                 });
@@ -13361,7 +13346,7 @@ public class MainActivity extends Activity {
         ScrollView sc = new ScrollView(this);
         sc.addView(box);
         AlertDialog dlg = dlg()
-                .setTitle("Split " + total + " box(es)")
+                .setTitle("Split " + plural(total, "box", "boxes"))
                 .setView(sc)
                 .setPositiveButton("SPLIT", (d, w) -> postSplit(cands, counts))
                 .setNegativeButton("Cancel", null)
@@ -13867,7 +13852,7 @@ public class MainActivity extends Activity {
                     closeItemEditor();
                     beep(SOUND_OK);
                     status.setText("Barcode written ✓ — now RE-SCAN those "
-                            + qty + " box(es); they'll come up as " + title
+                            + plural(qty, "box", "boxes") + "; they'll come up as " + title
                             + ".");
                     reloadBatchAndReview();
                 });
@@ -14204,7 +14189,7 @@ public class MainActivity extends Activity {
                     + "the trigger over the shelf first.");
             return;
         }
-        status.setText("Matching " + epcs.size() + " tag(s)…");
+        status.setText("Matching " + plural(epcs.size(), "tag", "tags") + "…");
         new Thread(() -> {
             try {
                 JSONObject body = new JSONObject()
@@ -14575,10 +14560,10 @@ public class MainActivity extends Activity {
             col.addView(nm);
             TextView sub = new TextView(this);
             sub.setText("SKU " + (e.item.sku == null ? "—" : e.item.sku)
-                    + " · " + e.item.unitsTotal + " box(es) · here "
+                    + " · " + plural(e.item.unitsTotal, "box", "boxes") + " · here "
                     + batchBin + " → home " + home
                     + (e.recordBinTags > 0
-                       ? "\n⚠ " + e.recordBinTags + " tagged box(es) "
+                       ? "\n⚠ " + plural(e.recordBinTags, "tagged box", "tagged boxes") + " "
                          + "already recorded at " + home
                        : ""));
             sub.setTextSize(11);
@@ -14621,7 +14606,7 @@ public class MainActivity extends Activity {
         ScrollView sc = new ScrollView(this);
         sc.addView(box);
         AlertDialog.Builder b = dlg()
-                .setTitle(strays.size() + " box(es) on the wrong shelf")
+                .setTitle(plural(strays.size(), "box", "boxes") + " on the wrong shelf")
                 .setView(sc)
                 .setNegativeButton(fromNext
                                 ? "NOT NOW — LABELS PRINT HERE" : "LATER",
@@ -14670,7 +14655,7 @@ public class MainActivity extends Activity {
                 + "\nThis shelf: " + batchBin
                 + "   ·   On record: " + home
                 + (e.recordBinTags > 0
-                   ? "\n\n⚠ " + e.recordBinTags + " tagged box(es) are "
+                   ? "\n\n⚠ " + plural(e.recordBinTags, "tagged box is", "tagged boxes are") + " "
                      + "already recorded at " + home + ". Keeping this "
                      + "one HERE moves the product's recorded bin — "
                      + "those boxes' records come along too, even though "
@@ -14691,7 +14676,7 @@ public class MainActivity extends Activity {
         box.addView(move, bl);
         TextView moveHint = new TextView(this);
         moveHint.setText("Labels print with " + home + " on them; you "
-                + "carry the box(es) there and pair them, then you're "
+                + "carry the boxes there and pair them, then you're "
                 + "back here.");
         moveHint.setTextSize(11);
         moveHint.setTextColor(C_MUTED);
@@ -14874,7 +14859,7 @@ public class MainActivity extends Activity {
     private boolean tripCarryAsked = false;
 
     private void startSideTrips(final List<String> bins) {
-        status.setText("Setting up " + bins.size() + " trip(s)…");
+        status.setText("Setting up " + plural(bins.size(), "trip", "trips") + "…");
         final int fromId = batchId;
         final String fromBin = batchBin;
         new Thread(() -> {
@@ -14926,17 +14911,16 @@ public class MainActivity extends Activity {
                 }
                 if (walkNow.isEmpty()) {
                     beep(SOUND_OK);
-                    status.setText(made.size() + " side trip(s) set up ("
-                            + heldBins + ") - " + heldLabels
-                            + " label(s) will print WITH " + batchBin
+                    status.setText(plural(made.size(), "side trip", "side trips") + " set up ("
+                            + heldBins + ") - " + plural(heldLabels, "label", "labels") + " will print WITH " + batchBin
                             + "'s strip at PRINT. Keep working this bin; "
-                            + "after printing, resume the trip(s) from "
+                            + "after printing, resume the trips from "
                             + "the batch list to pair them.");
                     reloadBatchAndReview();
                     return;
                 }
                 if (heldLabels > 0) {
-                    Toast.makeText(this, heldLabels + " label(s) for "
+                    Toast.makeText(this, plural(heldLabels, "label", "labels") + " for "
                             + heldBins + " print with " + batchBin
                             + "'s strip at PRINT",
                             Toast.LENGTH_LONG).show();
@@ -14949,7 +14933,7 @@ public class MainActivity extends Activity {
                 for (PendingTrip t : walkNow) totalLabels += t.labels;
                 if (walkNow.size() > 1) {
                     Toast.makeText(this, walkNow.size() + " trips set up - "
-                            + totalLabels + " label(s) printing together",
+                            + plural(totalLabels, "label", "labels") + " printing together",
                             Toast.LENGTH_LONG).show();
                 }
                 enterSideTrip(walkNow.get(0), fromId, fromBin);
@@ -14974,13 +14958,11 @@ public class MainActivity extends Activity {
         tripCarryAsked = false;
         step = STEP_PAIR;
         beep(SOUND_OK);
-        status.setText("SIDE TRIP " + t.bin + " — " + t.labels
-                + " label(s) queued. "
+        status.setText("SIDE TRIP " + t.bin + " — " + plural(t.labels, "label", "labels") + " queued. "
                 + (pendingTrips.isEmpty()
                    ? "Pair them, then FINISH to get back to " + fromBin
                      + "."
-                   : "Pair them, then FINISH — " + pendingTrips.size()
-                     + " more trip(s) follow."));
+                   : "Pair them, then FINISH — " + plural(pendingTrips.size(), "more trip", "more trips") + " follow."));
         applyBatchUi();
         reloadBatchOnly();
     }
@@ -15105,8 +15087,8 @@ public class MainActivity extends Activity {
                     noteScanned(item.id);
                     previewItem = item;
                     beep(SOUND_OK);
-                    status.setText(item.unitsTotal + " unit(s), "
-                            + item.labelsTotal + " label(s)"
+                    status.setText(plural(item.unitsTotal, "unit", "units") + ", "
+                            + plural(item.labelsTotal, "label", "labels")
                             + (sealed ? " · box left sealed." : "."));
                     updateBatchCard();
                     refreshBatchList();
@@ -15415,8 +15397,7 @@ public class MainActivity extends Activity {
                     + (reason.isEmpty() ? "" : " · \"" + reason + "\"")
                     + (note.isEmpty() ? "" : "\n" + note)
                     + (m.length() > 1
-                            ? "\n+" + (m.length() - 1)
-                              + " more open return(s) for this SKU"
+                            ? "\n+" + plural((m.length() - 1), "more open return", "more open returns") + " for this SKU"
                             : ""));
             retMatchBox.setVisibility(View.VISIBLE);
         } else {
@@ -15545,14 +15526,14 @@ public class MainActivity extends Activity {
             new java.util.HashMap<String, String>() {{
         put("as-new", "Box goes back to live stock as new: the tag "
                 + "comes back live (its condition clears to Good), "
-                + "Shopify on-hand goes UP by the unit(s) on this tag "
+                + "Shopify on-hand goes UP by the units on this tag "
                 + "(undoable from History), and the box shelves in its "
                 + "home bin. The refund happens in the Returns app - "
                 + "do NOT also use its add-back-to-stock option, or "
                 + "the unit counts twice.");
         put("used", "Box comes back USED: the tag comes back live "
                 + "with condition Used and Shopify on-hand goes UP by "
-                + "the unit(s) on this tag (undoable from History). "
+                + "the units on this tag (undoable from History). "
                 + "Process the 20% fee and the used draft in the "
                 + "Returns app; relabel the box when it relists.");
         put("unsellable", "Box is unsellable: the tag retires for "
@@ -15813,7 +15794,7 @@ public class MainActivity extends Activity {
                             : p.optString("image_url"), stationImg);
                     beep(SOUND_OK);
                     status.setText("Trigger on the sticker to link it "
-                            + "(" + tagsOnFile + " tag(s) on file)."
+                            + "(" + plural(tagsOnFile, "tag", "tags") + " on file)."
                             + (noScan ? " ⊘ Won't scan once it's on the "
                               + "box — pair BEFORE applying." : ""));
                     btInput.requestFocus();
@@ -15828,7 +15809,7 @@ public class MainActivity extends Activity {
     private void stationSweepPair(final List<String> swept) {
         final JSONObject p = stationProduct;
         if (p == null) return;
-        status.setText("Pairing " + swept.size() + " swept tag(s) to "
+        status.setText("Pairing " + plural(swept.size(), "swept tag", "swept tags") + " to "
                 + p.optString("product_title", "the product") + "\u2026");
         new Thread(() -> {
             try {
@@ -15865,7 +15846,7 @@ public class MainActivity extends Activity {
                     stationTags += done;
                     stationTracker.setText(String.valueOf(stationTags));
                     beep(done > 0 ? SOUND_OK : SOUND_ERR);
-                    status.setText(done + " tag(s) paired \u2713"
+                    status.setText(plural(done, "tag", "tags") + " paired \u2713"
                             + (dups > 0 ? " \u00b7 " + dups
                               + " already assigned (skipped)" : "")
                             + " \u00b7 " + stationTags + " on file"
@@ -16000,7 +15981,7 @@ public class MainActivity extends Activity {
             scanning = false;
             int n;
             synchronized (tags) { n = tags.size(); }
-            status.setText("Paused - " + n + " unique tag(s) collected.");
+            status.setText("Paused - " + plural(n, "unique tag", "unique tags") + " collected.");
         } else if (reader.startInventoryTag()) {
             scanning = true;
             status.setText("Sweeping… trigger to stop.");
@@ -16028,37 +16009,34 @@ public class MainActivity extends Activity {
             if (sweepRunning) {
                 int n;
                 synchronized (tags) { n = tags.size(); }
-                status.setText("Sweeping… " + n + " tag(s) — release the "
+                status.setText("Sweeping… " + plural(n, "tag", "tags") + " — release the "
                         + "trigger to stop.");
             } else if (inBatch() && step == STEP_VERIFY && scanning) {
                 int n;
                 synchronized (tags) { n = tags.size(); }
-                status.setText("Sweeping the bin… " + n + " unique tag(s). "
+                status.setText("Sweeping the bin… " + plural(n, "unique tag", "unique tags") + ". "
                         + "Trigger again to stop, then CHECK BIN.");
             } else if (inBatch() && step == STEP_SHELF && scanning) {
                 // Reads fold into the running pile as they arrive, so a
                 // trigger release or power change never loses them.
                 mergeShelfReads();
-                status.setText("Shelf sweep… " + shelfEpcs.size()
-                        + " unique tag(s) so far. Trigger again to stop, "
+                status.setText("Shelf sweep… " + plural(shelfEpcs.size(), "unique tag", "unique tags") + " so far. Trigger again to stop, "
                         + "RESULTS when the shelf is done.");
             } else if (holdSweepRunning) {
                 // The station hold-sweep counts live too (Nick,
                 // 2026-08-31: every scan should say what it's reading).
                 int n;
                 synchronized (tags) { n = tags.size(); }
-                status.setText("Sweeping… " + n + " tag(s) — release "
+                status.setText("Sweeping… " + plural(n, "tag", "tags") + " — release "
                         + "the trigger to send.");
             } else if (auditScanning) {
                 // Audit sweep: fold reads into the collected set as
                 // they arrive so the per-product counters fill live.
                 auditMergeTags();
-                status.setText("Sweeping… " + auditTagSet.size()
-                        + " unique tag(s) collected — trigger to stop.");
+                status.setText("Sweeping… " + plural(auditTagSet.size(), "unique tag", "unique tags") + " collected — trigger to stop.");
             } else if (stripScanning) {
                 stripMerge();
-                status.setText("Sweeping the strip… " + stripEpcs.size()
-                        + " unique tag(s) - trigger to stop.");
+                status.setText("Sweeping the strip… " + plural(stripEpcs.size(), "unique tag", "unique tags") + " - trigger to stop.");
             }
         }
         locateTick();
@@ -16246,7 +16224,7 @@ public class MainActivity extends Activity {
                             : c.optString("note", "");
                     labels[i] = "#" + c.optInt("id") + " · "
                             + c.optString("device", "C72") + " · "
-                            + c.optInt("epc_count") + " tag(s)"
+                            + plural(c.optInt("epc_count"), "tag", "tags")
                             + (note.isEmpty() ? "" : " · " + note);
                 }
                 final boolean[] ticked = new boolean[caps.length()];
@@ -16298,8 +16276,8 @@ public class MainActivity extends Activity {
             ui.post(() -> {
                 auditRender();
                 beep(SOUND_OK);
-                status.setText(m + " sweep(s) merged - "
-                        + (auditTagSet.size() - before) + " new tag(s), "
+                status.setText(plural(m, "sweep", "sweeps") + " merged - "
+                        + plural((auditTagSet.size() - before), "new tag", "new tags") + ", "
                         + auditTagSet.size() + " collected.");
             });
         }).start();
@@ -16515,7 +16493,7 @@ public class MainActivity extends Activity {
                               + " bins)"
                             : "Bin " + loc;
                     beep(SOUND_OK);
-                    status.setText(where + " - " + n + " product(s). "
+                    status.setText(where + " - " + plural(n, "product", "products") + ". "
                             + "Trigger to sweep, tap a row for fixes, "
                             + "LOG AUDIT to sign the shelf off.");
                 });
@@ -16547,10 +16525,9 @@ public class MainActivity extends Activity {
                 // A stopped sweep is a finished pass - refresh the
                 // report right away, no extra tap (Nick, 2026-09-28).
                 auditFetch(auditLoc, "Paused - checking "
-                        + auditTagSet.size() + " collected tag(s)…");
+                        + plural(auditTagSet.size(), "collected tag", "collected tags") + "…");
             } else {
-                status.setText("Paused - " + auditTagSet.size()
-                        + " unique tag(s) collected. Type or ◀ ▶ a bin "
+                status.setText("Paused - " + plural(auditTagSet.size(), "unique tag", "unique tags") + " collected. Type or ◀ ▶ a bin "
                         + "to compare, or ⋯ for sweep tools.");
             }
         } else {
@@ -16613,8 +16590,7 @@ public class MainActivity extends Activity {
                     auditRender();
                     beep(SOUND_OK);
                     status.setText("Pulled sweep #" + id + " - "
-                            + (auditTagSet.size() - before)
-                            + " new tag(s), " + auditTagSet.size()
+                            + plural((auditTagSet.size() - before), "new tag", "new tags") + ", " + auditTagSet.size()
                             + " collected.");
                 });
             } catch (Exception e) {
@@ -16657,8 +16633,7 @@ public class MainActivity extends Activity {
 
     private void auditClear() {
         if (auditTagSet.isEmpty()) return;
-        dlg().setMessage("Clear " + auditTagSet.size()
-                        + " collected tag(s)? (Finds and labels are kept.)")
+        dlg().setMessage("Clear " + plural(auditTagSet.size(), "collected tag", "collected tags") + "? (Finds and labels are kept.)")
                 .setPositiveButton("Clear", (d, w) -> {
                     auditTagSet.clear();
                     auditMergedSize = -1;
@@ -16725,7 +16700,7 @@ public class MainActivity extends Activity {
         if (auditRep == null) {
             // Walk mode: the collected count + the finds work list.
             TextView t = auditRowView(
-                    auditTagSet.size() + " unique tag(s) collected this "
+                    plural(auditTagSet.size(), "unique tag", "unique tags") + " collected this "
                     + "walk.\nBarcode any box WITHOUT a sticker - it "
                     + "becomes a label to print and pair.", C_TEXT);
             auditList.addView(t, auditRowLp());
@@ -16785,8 +16760,9 @@ public class MainActivity extends Activity {
 
         if (owed != null && owed.length() > 0) {
             StringBuilder sb = new StringBuilder();
-            sb.append("\u26a0 ").append(owed.length()).append(" printed "
-                    + "label(s) answered but were never PAIRED:");
+            sb.append("\u26a0 ").append(plural(owed.length(),
+                    "printed label answered but was never PAIRED:",
+                    "printed labels answered but were never PAIRED:"));
             for (int i = 0; i < owed.length(); i++) {
                 JSONObject o = owed.optJSONObject(i);
                 sb.append("\n\u00b7 ").append(o.optString("sku", "?"));
@@ -16893,7 +16869,7 @@ public class MainActivity extends Activity {
                     ghostEpcs.add(ghosts.optJSONObject(j)
                             .optString("epc"));
                 }
-                frows.add(auditFlagRowView(gh + " retired tag(s) "
+                frows.add(auditFlagRowView(plural(gh, "retired tag", "retired tags") + " "
                         + "ANSWERED - box never left", C_OVER,
                         "Un-retire",
                         () -> auditActUnretire(ghostEpcs)));
@@ -16958,13 +16934,13 @@ public class MainActivity extends Activity {
                 }
             }
             if (fOpen > 0) {
-                frows.add(auditFlagRowView(fOpen + " tagless box(es) "
+                frows.add(auditFlagRowView(plural(fOpen, "tagless box", "tagless boxes") + " "
                         + "noted - label owed (banner prints them)",
                         C_WARN, null, null));
                 warn = true;
             }
             if (fPrinted > 0) {
-                frows.add(auditFlagRowView(fPrinted + " label(s) "
+                frows.add(auditFlagRowView(plural(fPrinted, "label", "labels") + " "
                         + "printed, not paired yet", C_OVER, null,
                         null));
                 red = true;
@@ -17183,10 +17159,12 @@ public class MainActivity extends Activity {
             int open = e.getValue()[0];
             int printed = e.getValue()[1];
             String line = titles.get(sku) + " · " + sku + "\n"
-                    + (open > 0 ? open + " label(s) owed" : "")
+                    + (open > 0 ? plural(open, "label", "labels") + " owed" : "")
                     + (open > 0 && printed > 0 ? " · " : "")
                     + (printed > 0
-                       ? printed + " printed, pair the sticker(s)" : "");
+                       ? printed + " printed, pair the "
+                         + (printed == 1 ? "sticker" : "stickers")
+                       : "");
             TextView row = auditRowView(line,
                     printed > 0 ? C_WARN : C_TEXT);
             row.setOnClickListener(x -> auditDismissFind(sku));
@@ -17405,7 +17383,7 @@ public class MainActivity extends Activity {
                         return;
                     }
                     StringBuilder msg = new StringBuilder();
-                    msg.append(queued).append(" label(s) queued on the "
+                    msg.append(plural(queued, "label", "labels")).append(" queued on the "
                             + "warehouse printer (each says its HOME "
                             + "bin).");
                     if (skipped != null && skipped.length() > 0) {
@@ -17584,7 +17562,7 @@ public class MainActivity extends Activity {
         if (auditScanning) auditToggleScan();
         dlg().setTitle("LOG AUDIT - " + loc)
                 .setMessage("Sign off this audit? The "
-                        + auditTagSet.size() + " collected tag(s) "
+                        + plural(auditTagSet.size(), "collected tag", "collected tags") + " "
                         + "become " + loc + "'s new baseline - the "
                         + "audit queue and expected ranges count "
                         + "forward from here. Shopify is untouched.")
@@ -17661,8 +17639,7 @@ public class MainActivity extends Activity {
                                                         "device", "C72")));
                                 ui.post(() -> {
                                     beep(SOUND_OK);
-                                    status.setText("✓ " + epcs.size()
-                                            + " label warning(s) "
+                                    status.setText("✓ " + plural(epcs.size(), "label warning", "label warnings") + " "
                                             + "dismissed for good. "
                                             + "Re-checking…");
                                     auditCheck();
@@ -17726,14 +17703,12 @@ public class MainActivity extends Activity {
                             ui.post(() -> {
                                 if (errText.isEmpty()) {
                                     beep(SOUND_OK);
-                                    status.setText("✓ " + totalUnits
-                                            + " tag(s) across " + okF
-                                            + " product(s) retired "
+                                    status.setText("✓ " + plural(totalUnits, "tag", "tags") + " across " + plural(okF, "product", "products") + " retired "
                                             + "presumed-sold. "
                                             + "Re-checking…");
                                 } else {
                                     beep(SOUND_ERR);
-                                    status.setText(okF + " product(s) "
+                                    status.setText(plural(okF, "product", "products") + " "
                                             + "done, some failed:"
                                             + errText);
                                 }
@@ -17753,7 +17728,7 @@ public class MainActivity extends Activity {
 
     private void auditActMarkSold(final String sku,
             final List<String> epcs) {
-        dlg().setMessage("Retire " + epcs.size() + " silent tag(s) of "
+        dlg().setMessage("Retire " + plural(epcs.size(), "silent tag", "silent tags") + " of "
                         + sku + " as presumed sold? Fulfilled orders "
                         + "account for them. Shopify untouched; undo "
                         + "in History.")
@@ -17770,8 +17745,7 @@ public class MainActivity extends Activity {
                                                         "device", "C72")));
                                 ui.post(() -> {
                                     beep(SOUND_OK);
-                                    status.setText(epcs.size()
-                                            + " tag(s) retired "
+                                    status.setText(plural(epcs.size(), "tag", "tags") + " retired "
                                             + "presumed-sold \u2713 "
                                             + "Re-checking\u2026");
                                     auditCheck();
@@ -17785,9 +17759,10 @@ public class MainActivity extends Activity {
     }
 
     private void auditActUnretire(final List<String> epcs) {
-        dlg().setMessage("These tag(s) were marked sold/retired but "
+        dlg().setMessage((epcs.size() == 1 ? "This tag was" : "These tags were")
+                        + " marked sold/retired but "
                         + "they ANSWERED this sweep - the box is still "
-                        + "on the shelf. Make the record(s) live again?")
+                        + "on the shelf. Make the records live again?")
                 .setPositiveButton("UN-RETIRE", (d, w) ->
                         new Thread(() -> {
                             try {
@@ -17851,7 +17826,7 @@ public class MainActivity extends Activity {
             final int qty, final List<String> epcs, final int cur,
             final boolean canLower, final boolean pickupExplains) {
         dlg().setMessage("Lower Shopify on-hand for " + sku + " to "
-                        + qty + "? " + epcs.size() + " silent tag(s) "
+                        + qty + "? " + plural(epcs.size(), "silent tag", "silent tags") + " "
                         + "retire presumed-sold with it - sales cover "
                         + "what they can, the rest writes off as "
                         + "shrinkage."
@@ -17915,7 +17890,7 @@ public class MainActivity extends Activity {
                 ui.post(() -> {
                     beep(SOUND_OK);
                     status.setText(sku + " queued for LOCATE \u2713 - "
-                            + "the silent tag(s) are the hunt targets "
+                            + "the silent tags are the hunt targets "
                             + "on the LOCATE tab.");
                 });
             } catch (Exception e) {
@@ -17957,12 +17932,11 @@ public class MainActivity extends Activity {
      *  check confirms. */
     private void auditActUnpairPrint(final String sku, final String bin,
             final List<String> epcs) {
-        dlg().setMessage("Unpair " + epcs.size() + " silent tag(s) of "
-                        + sku + " and queue " + epcs.size()
-                        + " replacement label(s)?\n\nCheck the shelf "
+        dlg().setMessage("Unpair " + plural(epcs.size(), "silent tag", "silent tags") + " of "
+                        + sku + " and queue " + plural(epcs.size(), "replacement label", "replacement labels") + "?\n\nCheck the shelf "
                         + "first - re-sweep behind the boxes. If the "
                         + "boxes really are here with dead or missing "
-                        + "stickers, this removes the old record(s) "
+                        + "stickers, this removes the old records "
                         + "and prints fresh labels to pair. Shopify "
                         + "on-hand is NOT touched.")
                 .setPositiveButton("UNPAIR + PRINT", (d, w) ->
@@ -17980,8 +17954,7 @@ public class MainActivity extends Activity {
                                 ui.post(() -> {
                                     beep(SOUND_OK);
                                     status.setText("\u2713 " + epcs.size()
-                                            + " unpaired, " + epcs.size()
-                                            + " label(s) queued - stick "
+                                            + " unpaired, " + plural(epcs.size(), "label", "labels") + " queued - stick "
                                             + "and pair them (banner "
                                             + "pair mode). "
                                             + "Re-checking\u2026");
@@ -18190,8 +18163,7 @@ public class MainActivity extends Activity {
                     final int doneF = done;
                     ui.post(() -> {
                         beep(SOUND_OK);
-                        status.setText("\u2713 " + doneF
-                                + " printed-label note(s) dismissed. "
+                        status.setText("\u2713 " + plural(doneF, "printed-label note", "printed-label notes") + " dismissed. "
                                 + "Re-checking\u2026");
                         auditRefreshFinds();
                         auditCheck();
@@ -18456,7 +18428,7 @@ public class MainActivity extends Activity {
                         return;
                     }
                     final int nF = n;
-                    status.setText("Queueing " + n + " label(s)…");
+                    status.setText("Queueing " + plural(n, "label", "labels") + "…");
                     new Thread(() -> {
                         try {
                             JSONObject p = api("GET",
@@ -18498,7 +18470,7 @@ public class MainActivity extends Activity {
                             api("POST", "/api/print-jobs", body);
                             ui.post(() -> {
                                 beep(SOUND_OK);
-                                status.setText("✓ " + nF + " label(s) "
+                                status.setText("✓ " + plural(nF, "label", "labels") + " "
                                         + "queued for " + sku + ". Stick "
                                         + "them on, then pair (PAIR MODE "
                                         + "or Scan Station) - the count "
@@ -19025,7 +18997,7 @@ public class MainActivity extends Activity {
             }
             pSum.setText((tabs == 0
                     ? "no tab defaults — power stays where you set it"
-                    : tabs + " tab default(s)")
+                    : plural(tabs, "tab default", "tab defaults"))
                     + (prefs.getBoolean("pow_steps_on", false)
                         ? " · batch steps: " + steps + " set"
                         : ""));
@@ -19117,7 +19089,7 @@ public class MainActivity extends Activity {
         thSum.setText(("system".equals(thmMode)
                 ? "follows the gun (" + (themeDark ? "dark" : "light") + ")"
                 : thmMode + " mode")
-                + (overrides > 0 ? " · " + overrides + " colour(s) custom"
+                + (overrides > 0 ? " · " + plural(overrides, "colour", "colours") + " custom"
                     : " · default colours"));
         tht.addView(thSum);
         thm.addView(tht, new LinearLayout.LayoutParams(

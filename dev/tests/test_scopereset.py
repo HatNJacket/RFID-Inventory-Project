@@ -203,7 +203,7 @@ with patch("app.main._maybe_refresh_bin_map", return_value=False), \
         "units": 2, "contents": [{"sku": "PART-A", "qty": 2}],
         "worker": "Nick"})
     check("unconfirmed un-bundle asks with the numbers",
-          r.status_code == 409 and "4 component label(s)" in
+          r.status_code == 409 and "4 component labels" in
           r.json()["detail"], r.text[:250])
     r = cl.post("/api/bundles/BUN-1/unbundle", json={
         "units": 2, "contents": [{"sku": "PART-A", "qty": 2}],

@@ -291,7 +291,7 @@ with patch("app.main.oneleft") as ol:
         "rfid_id": E(21), **body})
     d = r.json()
     check("second pair past stock: pair stands WITH a warning",
-          r.status_code == 201 and "tag record(s)" in
+          r.status_code == 201 and "tag record" in
           d.get("warning", ""), d)
     r = cl.post("/api/rfid-assignments/sweep", json={
         "epcs": [E(22)], **body})

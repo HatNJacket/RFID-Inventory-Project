@@ -661,7 +661,7 @@ document.getElementById("evcolor-reset").addEventListener("click", () => {
   if (!n) return;
   if (
     !confirm(
-      `Reset ${n} customized event colour(s) back to the defaults? ` +
+      `Reset ${countNoun(n, "customized event colour", "customized event colours")} back to the defaults? ` +
         "This can't be undone."
     )
   )
@@ -1032,7 +1032,7 @@ async function openObxWindow(p) {
   }
   if ((obxInfo.open_returns || []).length) {
     document.getElementById("obx-msg").textContent =
-      `${obxInfo.open_returns.length} return(s) of this product already ` +
+      `${countNoun(obxInfo.open_returns.length, "return", "returns")} of this product already ` +
       `waiting - filing another is fine for another unit.`;
   }
   document.getElementById("obx-go-print").disabled = false;
@@ -3511,7 +3511,7 @@ async function actOnBatchLinkScan(s) {
     }
     verifyEpcs.add(s.value.trim().toUpperCase());
     bEl.verifyCount.textContent = `${verifyEpcs.size} unique tags collected.`;
-    const t = `Tag collected - ${verifyEpcs.size} unique tag(s) so far.`;
+    const t = `Tag collected - ${countNoun(verifyEpcs.size, "unique tag", "unique tags")} so far.`;
     setBatchResult(t, "ok");
     return { ok: true, text: t };
   }
@@ -3665,7 +3665,7 @@ async function pollLink() {
       linkSuspended = false;
       if (skipped > 0) {
         linkStatus.textContent =
-          `Resumed - ${skipped} scan(s) sent while this screen was ` +
+          `Resumed - ${countNoun(skipped, "scan", "scans")} sent while this screen was ` +
           "away were skipped.";
       }
       renderLinkWarn();
@@ -3811,12 +3811,12 @@ function renderBulk() {
   if (active) {
     bulkProgress.textContent =
       bulkPrinted > 0
-        ? `${bulkTagged} of ${bulkPrinted} label(s) printed this visit ` +
+        ? `${bulkTagged} of ${countNoun(bulkPrinted, "label", "labels")} printed this visit ` +
           `are tagged` +
           (bulkTagged < bulkPrinted
             ? ` - ${bulkPrinted - bulkTagged} to go.`
             : ".")
-        : `${bulkTagged} tag(s) assigned · no labels printed this visit, ` +
+        : `${countNoun(bulkTagged, "tag", "tags")} assigned · no labels printed this visit, ` +
           `so no auto-reset target - Reset (Esc) when done.`;
   }
 }
@@ -3889,7 +3889,7 @@ function bulkCheckpoint() {
   if (!bulkPrinted) return;
   if (bulkTagged === bulkPrinted) {
     setResult(
-      `All ${bulkPrinted} label(s) printed this visit are tagged ✓ - ` +
+      `All ${countNoun(bulkPrinted, "label", "labels")} printed this visit are tagged ✓ - ` +
         `resetting.`,
       "ok",
       "rfid"
@@ -3898,10 +3898,10 @@ function bulkCheckpoint() {
     setTimeout(resetStation, 900);
   } else if (bulkTagged > bulkPrinted && bulkTagged > bulkWarnedAt) {
     document.getElementById("bulk-warn-text").textContent =
-      `${bulkTagged} tag(s) assigned against ${bulkPrinted} label(s) ` +
+      `${countNoun(bulkTagged, "tag", "tags")} assigned against ${countNoun(bulkPrinted, "label", "labels")} ` +
       `printed this visit - a spare or blank label in range may have ` +
       `been swept and wrongly assigned. Undo removes only the ` +
-      `${lastSweep.length} tag(s) this last action assigned.`;
+      `${countNoun(lastSweep.length, "tag", "tags")} this last action assigned.`;
     document.getElementById("bulk-warn-undo").textContent =
       `UNDO THIS SWEEP (${lastSweep.length})`;
     bulkWarnEl.hidden = false;
@@ -3934,7 +3934,7 @@ bulkSweepBtn.addEventListener("click", async () => {
     if (res.count > 0) lastSweep = res.assigned.map((a) => a.rfid_id);
     const dup = (res.duplicates || []).length;
     setResult(
-      `Sweep (${cap.epc_count} tag(s) heard): ${res.count} new assigned` +
+      `Sweep (${countNoun(cap.epc_count, "tag", "tags")} heard): ${res.count} new assigned` +
         (dup ? ` · ${dup} already assigned - skipped` : "") +
         "." +
         (res.warning ? ` ⚠ ${res.warning}` : ""),
@@ -3976,7 +3976,7 @@ document
       lastSweep = [];
       bulkWarnEl.hidden = true;
       setResult(
-        `Sweep undone - ${res.count} tag(s) unlinked (History has the ` +
+        `Sweep undone - ${countNoun(res.count, "tag", "tags")} unlinked (History has the ` +
           `receipt).`,
         "ok",
         "rfid"
@@ -4351,7 +4351,7 @@ function renderBundles() {
       )
     : bndlData.bundles;
   meta.textContent =
-    `${bndlData.count} bundle(s) defined${last}` +
+    `${countNoun(bndlData.count, "bundle", "bundles")} defined${last}` +
     (q && shown.length !== bndlData.count
       ? ` · ${shown.length} match the search`
       : "");
@@ -4376,7 +4376,7 @@ function bndlCardHtml(b) {
       <span class="bndl__ctitle">${escapeHtml(c.title || "")}</span>
       <span class="bndl__facts">${
         c.bin ? `${escapeHtml(c.bin)} · ` : ""
-      }${c.tags} tag(s)${
+      }${countNoun(c.tags, "tag", "tags")}${
         c.on_hand != null ? ` · ${c.on_hand} on hand` : ""
       }</span>
       <button class="reset bndl-rm" type="button"
@@ -4908,12 +4908,12 @@ function renderResumeList() {
         ? "📦 Receiving" + (so ? ` · ${escapeHtml(so)}` : "")
         : `Bin ${escapeHtml(b.bin_name)}`;
     li.innerHTML =
-      `<b>${label}</b> - ${b.products} product(s), ` +
-      `${b.boxes} box(es), ${b.paired} paired · ${escapeHtml(b.status)} ` +
+      `<b>${label}</b> - ${countNoun(b.products, "product", "products")}, ` +
+      `${countNoun(b.boxes, "box", "boxes")}, ${b.paired} paired · ${escapeHtml(b.status)} ` +
       `<span class="mono">${escapeHtml(fmtWhen(b.created_at))}` +
       `${b.created_by ? " · " + escapeHtml(b.created_by) : ""}</span>` +
       (b.unpaired_labels
-        ? ` <span class="binlabel binlabel--bad">🏷 ${b.unpaired_labels} label(s) not RFID-paired</span>`
+        ? ` <span class="binlabel binlabel--bad">🏷 ${countNoun(b.unpaired_labels, "label", "labels")} not RFID-paired</span>`
         : "");
     li.addEventListener("click", () => resumeBatch(b.id));
     bEl.resumeList.append(li);
@@ -4957,7 +4957,7 @@ async function renderUnresolvedLabels() {
       li.innerHTML = `
         <div class="unres-row__main">
           <b>${escapeHtml(p.product_title || p.sku || "?")}</b>
-          <div class="binlabel"><span class="mono">${escapeHtml(p.sku || "?")}</span> · ${p.count} label(s) · Receiving #${p.batch_id}${
+          <div class="binlabel"><span class="mono">${escapeHtml(p.sku || "?")}</span> · ${countNoun(p.count, "label", "labels")} · Receiving #${p.batch_id}${
             p.reference ? " · " + escapeHtml(p.reference) : ""
           }${p.bin_location ? " · bin " + escapeHtml(p.bin_location) : ""}</div>
         </div>
@@ -5051,8 +5051,8 @@ async function loadBinBoard() {
             "carried over were tagged - the rest of this shelf was " +
             'never checked">side trip</span>'
           : "") +
-        `<div class="binlist__count">${r.products} product(s) · ` +
-        `${r.boxes} box(es) · ${r.tags} tag(s)</div>` +
+        `<div class="binlist__count">${countNoun(r.products, "product", "products")} · ` +
+        `${countNoun(r.boxes, "box", "boxes")} · ${countNoun(r.tags, "tag", "tags")}</div>` +
         `<div class="binlist__count">${escapeHtml(fmtWhen(r.completed_at))}` +
         `${r.by ? " · " + escapeHtml(r.by) : ""}</div>`;
       recent.append(li);
@@ -5132,7 +5132,7 @@ function renderBinBoard() {
     `${binBoard.hidden_count ? ` · ${binBoard.hidden_count} hidden` : ""}` +
     `${
       binBoard.malformed_count
-        ? ` · ${binBoard.malformed_count} odd name(s)`
+        ? ` · ${countNoun(binBoard.malformed_count, "odd name", "odd names")}`
         : ""
     }${
       binBoard.flagged_count ? ` · ${binBoard.flagged_count} flagged` : ""
@@ -5166,9 +5166,9 @@ function renderBinBoard() {
       q
         ? "No bins match that."
         : hideOddBins && oddInList
-          ? `Nothing left but ${oddInList} odd-named bin(s), which are hidden.`
+          ? `Nothing left but ${countNoun(oddInList, "odd-named bin", "odd-named bins")}, which are hidden.`
           : binBoard.hidden_count && !showHiddenBins
-            ? `Nothing left to do - ${binBoard.hidden_count} bin(s) are hidden.`
+            ? `Nothing left to do - ${countNoun(binBoard.hidden_count, "bin is", "bins are")} hidden.`
             : "Every bin has been done ✓"
     }</li>`;
     return;
@@ -5203,7 +5203,7 @@ function renderBinBoard() {
             )}">⚑ ask first</span>`
           : ""
       }` +
-      `<span class="binlist__count">${b.products} product(s)${
+      `<span class="binlist__count">${countNoun(b.products, "product", "products")}${
         b.open_batch_id ? " · in progress" : ""
       }${b.hidden ? " · hidden" : ""}</span>` +
       `<button class="binlist__go" type="button">${
@@ -5286,7 +5286,7 @@ function renderBinBoard() {
     li.innerHTML =
       `<span class="binlist__check">✓</span>` +
       `<span class="binlist__name">${escapeHtml(b.bin)}</span>` +
-      `<span class="binlist__count">${b.products} product(s) · done ` +
+      `<span class="binlist__count">${countNoun(b.products, "product", "products")} · done ` +
       `${escapeHtml(fmtAgo(b.completed_at))}${
         b.by ? ` · ${escapeHtml(b.by)}` : ""
       }</span>`;
@@ -5375,7 +5375,7 @@ document.getElementById("batch-baseline").addEventListener("click", async () => 
   if (
     !confirm(
       `Use the last C72 sweep as the baseline for ${batch.bin_name}?\n\n` +
-        `${cap.epc_count} tag(s), from ${cap.device || "C72"} at ${when}.\n\n` +
+        `${countNoun(cap.epc_count, "tag", "tags")}, from ${cap.device || "C72"} at ${when}.\n\n` +
         `Every tag read marks its product as already tagged - those boxes ` +
         `won't get labels. Make sure that sweep was THIS shelf.`
     )
@@ -5445,10 +5445,10 @@ async function startBatch() {
       .join(", ");
     setBatchResult(
       (batchItems.length
-        ? `${batchItems.length} product(s) expected in bin ${batch.bin_name} - start scanning boxes.`
+        ? `${countNoun(batchItems.length, "product", "products")} expected in bin ${batch.bin_name} - start scanning boxes.`
         : `Nothing on file for bin ${batch.bin_name} - scan boxes and they'll be added.`) +
         (covered
-          ? ` 📦 ${batch.covered_bundles.length} bundle listing(s) covered by their components - no separate count needed: ${covered}.`
+          ? ` 📦 ${countNoun(batch.covered_bundles.length, "bundle listing", "bundle listings")} covered by their components - no separate count needed: ${covered}.`
           : ""),
       "ok"
     );
@@ -5634,7 +5634,7 @@ async function checkForIncomingSweep() {
     // The "checking…" line used to sit there forever (Nick, 2026-08-31)
     // - once the check lands, say so and point at the next move.
     setBatchResult(
-      `Sweep #${cap.id} checked ✓ - ${verifyEpcs.size} unique tag(s) ` +
+      `Sweep #${cap.id} checked ✓ - ${countNoun(verifyEpcs.size, "unique tag", "unique tags")} ` +
         `on file. Sweep again to add reads, or Complete batch below.`,
       "ok"
     );
@@ -5810,7 +5810,7 @@ bEl.abandon.addEventListener("click", async () => {
   if (!batch) return;
   const ties = batchItems.reduce((n, i) => n + (i.paired_count || 0), 0);
   const msg = ties
-    ? `Abandon the batch for bin ${batch.bin_name}?\n\n${ties} tag(s) were ` +
+    ? `Abandon the batch for bin ${batch.bin_name}?\n\n${countNoun(ties, "tag was", "tags were")} ` +
       `paired in this batch - those ties will be REMOVED so the products ` +
       `aren't left tied to unverified labels. Counts stay in History.`
     : `Abandon the batch for bin ${batch.bin_name}? Collected counts are ` +
@@ -5821,7 +5821,7 @@ bEl.abandon.addEventListener("click", async () => {
       remove_ties: true,
     });
     if (res.ties_removed)
-      setBatchResult(`Batch abandoned - ${res.ties_removed} tie(s) released.`, "ok");
+      setBatchResult(`Batch abandoned - ${countNoun(res.ties_removed, "tie", "ties")} released.`, "ok");
   } catch (err) {
     /* already closed is fine */
   }
@@ -5976,8 +5976,8 @@ function itemCard(item, mode) {
       ${
         unitBreakdown(item)
           ? `<div class="bcell__meta bcell__cases" title="${escapeHtml(
-              `${item.qty_scanned} loose box(es) plus ${item.case_count} sealed case(s) of ${item.case_units} - ${item.labels_total} label(s) in total`
-            )}">${escapeHtml(unitBreakdown(item))} - ${item.labels_total} label(s)</div>`
+              `${countNoun(item.qty_scanned, "loose box", "loose boxes")} plus ${countNoun(item.case_count, "sealed case", "sealed cases")} of ${item.case_units} - ${countNoun(item.labels_total, "label", "labels")} in total`
+            )}">${escapeHtml(unitBreakdown(item))} - ${countNoun(item.labels_total, "label", "labels")}</div>`
           : ""
       }
       ${
@@ -6066,9 +6066,9 @@ async function batchCollectScan(code) {
       // Say both numbers: a case makes units and labels diverge.
       setBatchResult(
         (data.case.scan_note ? `⚠ ${data.case.scan_note} - ` : "") +
-          `${itemDisplayName(item)} - ${item.units_total} unit(s)` +
+          `${itemDisplayName(item)} - ${countNoun(item.units_total, "unit", "units")}` +
           (unitBreakdown(item) ? ` (${unitBreakdown(item)})` : "") +
-          `, ${item.labels_total} label(s)` +
+          `, ${countNoun(item.labels_total, "label", "labels")}` +
           (data.case_action === "sealed" ? " - box left sealed." : "."),
         data.case.scan_note ? "err" : "ok"
       );
@@ -6113,7 +6113,7 @@ function renderBatchItems() {
     );
     summary.textContent =
       `${started} of ${expected.length} expected products scanned · ` +
-      `${boxes} box(es) total` +
+      `${countNoun(boxes, "box", "boxes")} total` +
       (tagged ? ` · ${tagged} already tagged (baseline)` : "");
     summary.hidden = false;
   } else {
@@ -6488,7 +6488,7 @@ function bwalkRender() {
       }<span class="bwalk__prod">${escapeHtml(itemDisplayName(item))}</span>
         <span>›</span><span>boxes</span>
         <span class="bwalk__grow"></span>
-        <span class="bwalk__meta">${bwalk.pos + 1} of ${bwalk.seq.length} box(es)</span>
+        <span class="bwalk__meta">${bwalk.pos + 1} of ${countNoun(bwalk.seq.length, "box", "boxes")}</span>
         <button class="reset bwalk__close" type="button" title="Close the walk">✕</button>
       </div>
       <div class="bwalk__pager">
@@ -6639,7 +6639,7 @@ function renderMultibinBar() {
     bEl.items.parentElement.insertBefore(bar, bEl.items);
   }
   bar.innerHTML = `
-    <span>${multibinSel.size} product(s) selected</span>
+    <span>${countNoun(multibinSel.size, "product", "products")} selected</span>
     <button class="print__btn" id="multibin-go" type="button">Set bin for selected…</button>
     <button class="reset" id="multibin-clear" type="button">Clear selection</button>`;
   bar.querySelector("#multibin-clear").addEventListener("click", () => {
@@ -6649,7 +6649,7 @@ function renderMultibinBar() {
   bar.querySelector("#multibin-go").addEventListener("click", async () => {
     const skus = [...multibinSel];
     const bin = prompt(
-      `Move ${skus.length} product(s) to which bin?\n\n` +
+      `Move ${countNoun(skus.length, "product", "products")} to which bin?\n\n` +
         skus.join(", ").slice(0, 300) +
         `\n\nEach write goes to Shopify AND the local records, logged ` +
         `per product with its own undo in History.`
@@ -6673,7 +6673,7 @@ function renderMultibinBar() {
     multibinSel.clear();
     await refreshBatch();
     setBatchResult(
-      `${ok} of ${skus.length} product(s) moved to ${target}` +
+      `${ok} of ${countNoun(skus.length, "product", "products")} moved to ${target}` +
         (errs.length ? ` - failed: ${errs.join("; ").slice(0, 200)}` : "") +
         `.`,
       errs.length ? "err" : "ok"
@@ -6767,7 +6767,7 @@ async function recvUndoLastPair() {
     recvPairHistory.pop();
     await pullBatch(false);
     setBatchResult(
-      `Undid ${ok} tag(s) on ${last.label}` +
+      `Undid ${countNoun(ok, "tag", "tags")} on ${last.label}` +
         (problem ? ` · ${problem}` : "") +
         (recvPairHistory.length
           ? ` - Undo again walks further back.`
@@ -6874,7 +6874,7 @@ function renderReceivingList() {
   const flagged = shown.filter((i) => recvProblemText(i)).length;
   const soldOff = items.filter(recvSoldDismissed).length;
   summary.textContent = items.length
-    ? `${items.length} product(s) · ${printed} label(s) printed · ` +
+    ? `${countNoun(items.length, "product", "products")} · ${countNoun(printed, "label", "labels")} printed · ` +
       `${tagged} tagged` +
       (flagged ? ` · ⚠ ${flagged} flagged` : "") +
       (soldOff ? ` · ${soldOff} dismissed (sold)` : "") +
@@ -7009,9 +7009,9 @@ function recvCard(item) {
           problem
             ? `<div class="bcell__meta recvcard__flag">⚠ Problem${focused ? "" : " · select to see why"}</div>`
             : over
-              ? `<div class="bcell__meta recvcard__flag">⚠ ${taggedN - want} more tag(s) than boxes${focused ? "" : " · select to review"}</div>`
+              ? `<div class="bcell__meta recvcard__flag">⚠ ${countNoun(taggedN - want, "more tag", "more tags")} than boxes${focused ? "" : " · select to review"}</div>`
               : missing
-                ? `<div class="bcell__meta recvcard__flag">⚠ ${missing} label(s) not printed yet${focused ? "" : " · select for details"}</div>`
+                ? `<div class="bcell__meta recvcard__flag">⚠ ${countNoun(missing, "label", "labels")} not printed yet${focused ? "" : " · select for details"}</div>`
                 : ""
         }
       </div>
@@ -7085,7 +7085,7 @@ function recvCard(item) {
         renderReceivingList();
         setBatchResult(
           `${itemDisplayName(item)}: over-pair flag dismissed - the ` +
-            `extra tag(s) stay paired.`,
+            `extra tags stay paired.`,
           "ok"
         );
       }
@@ -7181,7 +7181,7 @@ function recvFocusBody(item, problem, received, printedN, taggedN, missing, over
   // until dismissed by hand (Nick, 2026-08-31).
   const overBlock = over
     ? `<div class="recvcard__body recvcard__body--problem">
-        ⚠ ${taggedN} tag(s) paired against ${recvWant(item)} box(es).
+        ⚠ ${countNoun(taggedN, "tag", "tags")} paired against ${countNoun(recvWant(item), "box", "boxes")}.
         A spare or blank label in range may have been swept onto this
         product - unpair it from Edit product → live tags. If the extra
         tag is real (a box the count missed), fix the count or dismiss.
@@ -7199,10 +7199,10 @@ function recvFocusBody(item, problem, received, printedN, taggedN, missing, over
         <span class="recvbar2__prt" style="width:${prtPct}%"></span>
       </div>
       <div class="recvcard__caption">
-        ${printedN} label(s) printed · ${taggedN} tagged · ${left} left to scan
+        ${countNoun(printedN, "label", "labels")} printed · ${taggedN} tagged · ${left} left to scan
         ${
           missing
-            ? ` · <button class="reset recvcard__missing" type="button" data-act="missing">🖨 Print ${missing} missing label(s)</button>`
+            ? ` · <button class="reset recvcard__missing" type="button" data-act="missing">🖨 Print ${countNoun(missing, "missing label", "missing labels")}</button>`
             : ""
         }
       </div>
@@ -7242,13 +7242,13 @@ function sweepNoteState(s, remaining) {
   } else if (remaining > 0 && s.untagged === remaining) {
     out = {
       cls: "bulknote--green",
-      text: `${s.untagged} tag(s) waiting - matches the ${remaining} left`,
+      text: `${countNoun(s.untagged, "tag", "tags")} waiting - matches the ${remaining} left`,
     };
   } else {
     out = {
       cls: "bulknote--yellow",
       text:
-        `${s.untagged} untagged tag(s) waiting` +
+        `${countNoun(s.untagged, "untagged tag", "untagged tags")} waiting` +
         (remaining > 0 ? ` vs ${remaining} left` : ""),
     };
   }
@@ -7328,7 +7328,7 @@ async function recvPullSweep(item) {
     const orphans = un.unlinked || [];
     if (!orphans.length) {
       setBatchResult(
-        `Sweep (${cap.epc_count} tag(s) heard): every one is already ` +
+        `Sweep (${countNoun(cap.epc_count, "tag", "tags")} heard): every one is already ` +
           `linked - nothing new to pair.`,
         "err"
       );
@@ -7355,7 +7355,7 @@ async function recvPullSweep(item) {
     }
     recvRememberPairs(landed, item.id, itemDisplayName(item));
     setBatchResult(
-      `Sweep: ${ok} tag(s) paired to ${itemDisplayName(item)}` +
+      `Sweep: ${countNoun(ok, "tag", "tags")} paired to ${itemDisplayName(item)}` +
         (problem ? ` · ${problem}` : "") +
         (done ? " - every box is paired, shipment complete ✓" : "") +
         ".",
@@ -7376,7 +7376,7 @@ async function recvPrintMissing(item, missing) {
       { quantity: missing, requested_by: operatorEl.value || null }
     );
     setBatchResult(
-      `${res.count} label(s) queued for ${itemDisplayName(item)} ✓ - ` +
+      `${countNoun(res.count, "label", "labels")} queued for ${itemDisplayName(item)} ✓ - ` +
         `the Queue tab tracks them.`,
       "ok"
     );
@@ -7527,7 +7527,7 @@ document.getElementById("recv-reprint-go").addEventListener("click", async () =>
     );
     document.getElementById("recv-reprint-overlay").hidden = true;
     setBatchResult(
-      `${res.count} label(s) queued for ${itemDisplayName(item)} ✓ - ` +
+      `${countNoun(res.count, "label", "labels")} queued for ${itemDisplayName(item)} ✓ - ` +
         `the Queue tab tracks them. The received count is unchanged.`,
       "ok"
     );
@@ -7562,7 +7562,7 @@ document.getElementById("recv-count-save").addEventListener("click", async () =>
           : "") +
         ` ✓` +
         (qty > (item.printed_count || 0)
-          ? ` - ${qty - (item.printed_count || 0)} box(es) have no label ` +
+          ? ` - ${countNoun(qty - (item.printed_count || 0), "box has", "boxes have")} no label ` +
             `yet; the card offers to print them.`
           : ""),
       "ok"
@@ -7695,7 +7695,7 @@ const FLAG_TEXT = {
   skipped: "skipped - couldn't be scanned, nothing counted",
   "tagged-not-detected":
     "tags on file for this shelf, but the sweep read none - find the " +
-    "tagged box(es) before printing more",
+    "tagged boxes before printing more",
   bundle: "a bundle - no box of its own to tag",
   "not-on-shelf":
     "Shopify expects this here, but none was scanned - it's in another " +
@@ -7769,7 +7769,7 @@ function renderStrayBins(bins) {
     const row = document.createElement("div");
     row.className = "kindrow";
     row.innerHTML = `
-      <span class="kindrow__what">${b.count} product(s) here actually live in
+      <span class="kindrow__what">${countNoun(b.count, "product", "products")} here actually live in
         <b>${escapeHtml(b.bin)}</b> - ${escapeHtml(b.skus.filter(Boolean).join(", "))}</span>
       <button class="reset" type="button">Take them to ${escapeHtml(b.bin)}…</button>`;
     row.querySelector("button").addEventListener("click", () => divertToBin(b.bin));
@@ -7838,7 +7838,7 @@ document
     if (
       left.length &&
       !confirm(
-        `${left.length} product(s) here still have labels waiting to be ` +
+        `${countNoun(left.length, "product", "products")} here still have labels waiting to be ` +
           `paired.\n\nClose the side trip anyway?`
       )
     )
@@ -7969,7 +7969,7 @@ function checkEntryCard(entry) {
           ? ` - sweep heard ${sh.heard} of ${sh.on_file} on file, expected ${sh.expected}` +
             (sh.presumed_sold ? ` (${sh.presumed_sold} presumed sold)` : "") +
             (sh.over_heard
-              ? ` · heard ${sh.over_heard} more tag(s) than boxes collected, check for a neighboring shelf or uncollected stock`
+              ? ` · heard ${countNoun(sh.over_heard, "more tag", "more tags")} than boxes collected, check for a neighboring shelf or uncollected stock`
               : "") +
             (sh.over_unavailable
               ? ` · ${sh.over_unavailable} more on the shelf than expected - matches its UNAVAILABLE stock in Shopify (reserved/damaged), so the extra is explained`
@@ -8403,7 +8403,7 @@ document.getElementById("bitem-binwarn").addEventListener("click", async (ev) =>
     if (
       !confirm(
         `Drop ${it.product_title || it.sku} from this batch? ` +
-          `Its ${it.qty_scanned} box(es) stop counting here and no labels ` +
+          `Its ${countNoun(it.qty_scanned, "box", "boxes")} stop counting here and no labels ` +
           `print for it - take them to bin ${it.bin_location}.`
       )
     )
@@ -8749,7 +8749,7 @@ document.getElementById("bitem-oddapply").addEventListener("click", async () => 
     loadBatchReview();
     setBatchResult(
       `Barcode updated in Shopify ✓ - now RE-SCAN those ` +
-        `${it.qty_scanned} box(es); they'll come up as ${p.product_title}.`,
+        `${countNoun(it.qty_scanned, "box", "boxes")}; they'll come up as ${p.product_title}.`,
       "ok"
     );
   } catch (err) {
@@ -8761,8 +8761,8 @@ document.getElementById("bitem-drop").addEventListener("click", async () => {
   const it = bitemEntry.item;
   if (
     !confirm(
-      `Remove this unresolved scan (${it.scanned_code}, ${it.qty_scanned} ` +
-        `box(es)) from the list? Nothing permanent changes - scanning it ` +
+      `Remove this unresolved scan (${it.scanned_code}, ` +
+        `${countNoun(it.qty_scanned, "box", "boxes")}) from the list? Nothing permanent changes - scanning it ` +
         `again brings it back.`
     )
   )
@@ -8804,7 +8804,7 @@ function openSplitForm() {
   const wrap = document.getElementById("bitem-splitwrap");
   const rows = document.getElementById("bitem-split-rows");
   document.getElementById("bitem-split-title").textContent =
-    `Divide the ${it.qty_scanned} scanned box(es) between these listings:`;
+    `Divide the ${countNoun(it.qty_scanned, "scanned box", "scanned boxes")} between these listings:`;
   rows.innerHTML = "";
   cands.forEach((c, i) => {
     const row = document.createElement("div");
@@ -8977,7 +8977,7 @@ document.getElementById("bitem-print").addEventListener("click", async () => {
   );
   if (
     !confirm(
-      `Print ${qty} label(s) for ${it.product_title || it.sku}?\n\n` +
+      `Print ${countNoun(qty, "label", "labels")} for ${it.product_title || it.sku}?\n\n` +
         `They join the print queue with the rest - the other products in ` +
         `this bin aren't reprinted.`
     )
@@ -8991,7 +8991,7 @@ document.getElementById("bitem-print").addEventListener("click", async () => {
       { quantity: qty, requested_by: operatorEl.value || null }
     );
     batchSound("ok");
-    msg.textContent = `${res.count} label(s) queued - collect them at the printer.`;
+    msg.textContent = `${countNoun(res.count, "label", "labels")} queued - collect them at the printer.`;
   } catch (err) {
     batchSound("err");
     msg.textContent = err.message;
@@ -9032,7 +9032,7 @@ bEl.queue.addEventListener("click", async () => {
     if (
       !confirm(
         `No untagged boxes were counted` +
-          (tagged ? ` - all ${tagged} box(es) here already wear a tag` : "") +
+          (tagged ? ` - all ${countNoun(tagged, "box", "boxes")} here already wear a tag` : "") +
           `, so there are no labels to queue and nothing to pair.\n\n` +
           `Sure there's nothing to print? OK skips straight ahead - ` +
           `run the verify sweep to finish the bin.`
@@ -9055,7 +9055,7 @@ bEl.queue.addEventListener("click", async () => {
     }
     return;
   }
-  if (!confirm(`Queue ${total} label(s) for bin ${batch.bin_name}?`)) return;
+  if (!confirm(`Queue ${countNoun(total, "label", "labels")} for bin ${batch.bin_name}?`)) return;
   bEl.queue.disabled = true;
   try {
     const data = await postJson(`/api/batches/${batch.id}/queue-labels`, {
@@ -9063,7 +9063,7 @@ bEl.queue.addEventListener("click", async () => {
     });
     batch.status = "printing";
     setBatchResult(
-      `${data.count} label(s) queued.` +
+      `${countNoun(data.count, "label", "labels")} queued.` +
         (data.side_labels
           ? ` The strip's tail carries ${data.side_labels} more for ` +
             `${(data.side_trips || [])
@@ -9193,7 +9193,7 @@ document
     const n = bprintSelected.size;
     if (
       !confirm(
-        `Reprint ${n} selected label(s)?\n\nThe old copies are voided ` +
+        `Reprint ${countNoun(n, "selected label", "selected labels")}?\n\nThe old copies are voided ` +
           `and their tag records unlinked - BIN THEM first (a voided ` +
           `label on a box answers sweeps as an unknown tag). Fresh ` +
           `replacements queue right away; the rest of the run is ` +
@@ -9351,7 +9351,7 @@ function renderPairCard() {
   const summary = document.getElementById("bpair-summary");
   const target = batchItems.reduce((n, i) => n + pairLabelGoal(i), 0);
   const paired = batchItems.reduce((n, i) => n + i.paired_count, 0);
-  summary.textContent = `${paired} of ${target} label(s) paired${
+  summary.textContent = `${paired} of ${countNoun(target, "label", "labels")} paired${
     target - paired > 0 ? ` · ${target - paired} to go` : " ✓"
   }`;
 
@@ -9365,10 +9365,10 @@ function renderPairCard() {
       ? "⊘ RFID flag ON - remove"
       : "⊘ Won't RFID scan";
   bEl.pairProgress.textContent =
-    `${item.paired_count} of ${goal} label(s) paired · ` +
+    `${item.paired_count} of ${countNoun(goal, "label", "labels")} paired · ` +
     `${Math.max(0, goal - item.paired_count)} remaining` +
     (item.printed_count != null && item.printed_count !== goal
-      ? ` (${item.printed_count} label(s) printed)`
+      ? ` (${countNoun(item.printed_count, "label", "labels")} printed)`
       : "");
   bEl.pairUndo.disabled = !pairHistory.length;
 }
@@ -9731,7 +9731,7 @@ document.getElementById("bpair-reprint").addEventListener("click", async () => {
   document.getElementById("breprint-count").value =
     item.labels_total ?? item.qty_scanned;
   document.getElementById("breprint-warn").textContent = item.paired_count
-    ? `⚠ ${item.paired_count} tag(s) are already paired to the old labels. ` +
+    ? `⚠ ${countNoun(item.paired_count, "tag is", "tags are")} already paired to the old labels. ` +
       `PEEL THOSE STICKERS OFF the boxes before printing - a leftover ` +
       `sticker answers sweeps alongside the new one. You'll be asked to ` +
       `confirm they're off.`
@@ -9792,7 +9792,7 @@ document.getElementById("breprint-go").addEventListener("click", async () => {
   if (
     item.paired_count &&
     !confirm(
-      `${item.paired_count} tag(s) are paired to the old labels.\n\n` +
+      `${countNoun(item.paired_count, "tag is", "tags are")} paired to the old labels.\n\n` +
         `Have you peeled the old RFID stickers OFF the boxes?\n\n` +
         `OK = they're off, release the ties and reprint.`
     )
@@ -9896,7 +9896,7 @@ document.getElementById("bpair-reset").addEventListener("click", async () => {
   }
   if (
     !confirm(
-      `Release all ${paired} tag(s) paired in this batch?\n\nThe printed ` +
+      `Release all ${countNoun(paired, "tag", "tags")} paired in this batch?\n\nThe printed ` +
         `labels stay valid - you just re-scan them onto their products. ` +
         `Nothing in Shopify changes.`
     )
@@ -9910,7 +9910,7 @@ document.getElementById("bpair-reset").addEventListener("click", async () => {
     renderPairItems();
     renderPairCard();
     setBatchResult(
-      `${res.removed} tie(s) released - pair the shelf again.`,
+      `${countNoun(res.removed, "tie", "ties")} released - pair the shelf again.`,
       "ok"
     );
   } catch (err) {
@@ -10014,10 +10014,10 @@ bEl.verifyReport.addEventListener("click", async (e) => {
     if (!epcs.length) return;
     if (
       !confirm(
-        `Manually retire ${epcs.length} unheard tag record(s) for ` +
+        `Manually retire ${countNoun(epcs.length, "unheard tag record", "unheard tag records")} for ` +
           `${manualBtn.dataset.sku} as presumed sold?\n\n` +
           `Only do this after physically checking the shelf:\n` +
-          `- the box(es) really are NOT there (sold, moved, gone), and\n` +
+          `- the boxes really are NOT there (sold, moved, gone), and\n` +
           `- the tags aren't just dead or blocked on boxes still ` +
           `present. A dead tag on a present box goes through the check ` +
           `step's replace-tag flow instead.\n\n` +
@@ -10036,7 +10036,7 @@ bEl.verifyReport.addEventListener("click", async (e) => {
         note: `manual verify retire, bin ${batch.bin_name}`,
       });
       setBatchResult(
-        `${epcs.length} tag(s) manually retired ✓ (undo in History)`,
+        `${countNoun(epcs.length, "tag", "tags")} manually retired ✓ (undo in History)`,
         "ok"
       );
       await runVerifyCheck(
@@ -10061,7 +10061,7 @@ bEl.verifyReport.addEventListener("click", async (e) => {
     if (!epcs.length) return;
     if (
       !confirm(
-        `Retire ${epcs.length} tag record(s) for ${retireBtn.dataset.sku} ` +
+        `Retire ${countNoun(epcs.length, "tag record", "tag records")} for ${retireBtn.dataset.sku} ` +
           `as presumed sold?\n\nThe sweep never heard them and the ` +
           `shortfall matches the sales/on-hand numbers. Records move to ` +
           `the retired list (kept forever - returns recoverable), ` +
@@ -10078,7 +10078,7 @@ bEl.verifyReport.addEventListener("click", async (e) => {
         note: `verify sweep, bin ${batch.bin_name}`,
       });
       setBatchResult(
-        `${epcs.length} tag(s) retired as presumed sold ✓ (undo in History)`,
+        `${countNoun(epcs.length, "tag", "tags")} retired as presumed sold ✓ (undo in History)`,
         "ok"
       );
       await runVerifyCheck(
@@ -10116,7 +10116,7 @@ bEl.verifyReport.addEventListener("click", async (e) => {
     );
     if (
       !confirm(
-        `Raise Shopify ON-HAND for ${btns.length} product(s)?\n\n` +
+        `Raise Shopify ON-HAND for ${countNoun(btns.length, "product", "products")}?\n\n` +
           lines.join("\n") +
           `\n\nEach writes separately - every product gets its own ` +
           `History entry and Undo.`
@@ -10144,7 +10144,7 @@ bEl.verifyReport.addEventListener("click", async (e) => {
     }
     await runVerifyCheck();
     setBatchResult(
-      `${done} on-hand value(s) raised` +
+      `${countNoun(done, "on-hand value", "on-hand values")} raised` +
         (failed.length
           ? ` · ${failed.length} FAILED - ${failed.join(" · ")}`
           : " ✓ (each has its own Undo in History)"),
@@ -10203,11 +10203,11 @@ bEl.verifyReport.addEventListener("click", async (e) => {
     !confirm(
       `Set Shopify ON-HAND for ${sku} DOWN to ${qty}?\n\n` +
         (unb
-          ? `⚠ ${unb} of the missing unit(s) have NO recorded sale - ` +
-            `they are written off as shrinkage (allowed: this product ` +
+          ? `⚠ ${unb} of the missing units ${unb === 1 ? "has" : "have"} NO recorded sale - ` +
+            `${unb === 1 ? "it is" : "they are"} written off as shrinkage (allowed: this product ` +
             `completed a batch tagging before). `
-          : `Recorded sales account for the missing unit(s). `) +
-        `This lowers the count, retires ${epcs.length} silent tag(s) ` +
+          : `Recorded sales account for the missing units. `) +
+        `This lowers the count, retires ${countNoun(epcs.length, "silent tag", "silent tags")} ` +
         `as presumed-sold, and consumes what sales cover.\n\n` +
         `One Undo in History reverses all of it.`
     )
@@ -10345,7 +10345,7 @@ async function runVerifyCheck(onlyItemId = null) {
             data-epcs="${escapeHtml(epcs.slice(0, Math.max(0, -diff)).join(","))}"
             title="Set product count to ${found} (${
               unb
-                ? `${unb} of the ${-diff} missing unit(s) have no recorded sale - written off as shrinkage; allowed because this product completed a tagging before`
+                ? `${unb} of the ${countNoun(-diff, "missing unit has", "missing units have")} no recorded sale - written off as shrinkage; allowed because this product completed a tagging before`
                 : `recorded sales account for the ${-diff} missing`
             }; lowers Shopify on-hand, retires the silent tags presumed-sold; one undo reverses all of it)">⇩</button>`;
         }
@@ -10380,9 +10380,9 @@ async function runVerifyCheck(onlyItemId = null) {
                   r.reason ? `${escapeHtml(r.reason)}. ` : ""
                 }${
                   !paired && !r.reason
-                    ? `${r.paired_count} tag(s) paired vs ${r.qty_scanned} box(es) scanned - finish pairing at the gun, or fix the scan count below. `
+                    ? `${countNoun(r.paired_count, "tag", "tags")} paired vs ${countNoun(r.qty_scanned, "box", "boxes")} scanned - finish pairing at the gun, or fix the scan count below. `
                     : ""
-                }The sweep heard <b>${r.detected}</b> tag(s) of this product (${
+                }The sweep heard <b>${r.detected}</b> ${r.detected === 1 ? "tag" : "tags"} of this product (${
                   r.detected_batch ?? 0
                 } from this batch, ${r.detected_other ?? 0} earlier${
                   binsSaid ? `; records say: ${binsSaid}` : ""
@@ -10402,7 +10402,7 @@ async function runVerifyCheck(onlyItemId = null) {
                         <button class="reset bvx-retire-manual" type="button"
                           data-epcs="${escapeHtml(r.shelf.unheard_epcs.join(","))}"
                           data-sku="${escapeHtml(r.sku || "")}"
-                          title="For tags you have PHYSICALLY confirmed are gone, even when sales or on-hand don't fully account for them">Retire ${(r.shelf.unheard_epcs || []).length} unheard tag(s) manually…</button>
+                          title="For tags you have PHYSICALLY confirmed are gone, even when sales or on-hand don't fully account for them">Retire ${countNoun((r.shelf.unheard_epcs || []).length, "unheard tag", "unheard tags")} manually…</button>
                       </div>`
                     : ""
                 }
@@ -10430,7 +10430,7 @@ async function runVerifyCheck(onlyItemId = null) {
             ? ` <button class="reset bvx-retire" type="button"
                 data-epcs="${escapeHtml(r.shelf.unheard_epcs.join(","))}"
                 data-sku="${escapeHtml(r.sku || "")}"
-                title="${r.shelf.heard} of ${r.shelf.on_file} recorded tag(s) answered and the ${r.shelf.presumed_sold} missing match ${
+                title="${r.shelf.heard} of ${countNoun(r.shelf.on_file, "recorded tag answered", "recorded tags answered")} and the ${r.shelf.presumed_sold} missing match ${
                   r.shelf.basis === "sales"
                     ? "sales since tagging"
                     : "the live on-hand"
@@ -10512,7 +10512,7 @@ async function runVerifyCheck(onlyItemId = null) {
       )}. Check the ⚠ rows.</p>`
     : `<p class="result result--ok">✓ Every label printed here was paired, and every tag paired here answered the sweep.</p>`;
   const yellowNote = yellowCount
-    ? `<p class="result result--warn-soft">⚠ ${yellowCount} product(s) have EARLIER tags that stayed silent - likely sold or moved before this batch. Yellow rows; the retire buttons clean their records.</p>`
+    ? `<p class="result result--warn-soft">⚠ ${countNoun(yellowCount, "product has", "products have")} EARLIER tags that stayed silent - likely sold or moved before this batch. Yellow rows; the retire buttons clean their records.</p>`
     : "";
   // Expected silence is stated out loud, not hidden inside a green tick:
   // flagged products were paired but no sweep will ever hear them.
@@ -10520,19 +10520,19 @@ async function runVerifyCheck(onlyItemId = null) {
     (r) => r.rfid_incompatible && r.paired_count > 0 && r.detected === 0
   ).length;
   const naNote = naSilent
-    ? `<p class="result">⊘ ${naSilent} product(s) flagged "won't RFID scan" answered nothing, as expected - their tags are paired and counted; the sweep can't hear them on the box.</p>`
+    ? `<p class="result">⊘ ${countNoun(naSilent, "product", "products")} flagged "won't RFID scan" answered nothing, as expected - their tags are paired and counted; the sweep can't hear them on the box.</p>`
     : "";
   // The already-tagged exception is said out loud too: 0 scanned and 0
   // paired on those rows is CORRECT, not a miss — the boxes arrived with
   // stickers from an earlier session and only need to answer the sweep.
   const tbRows = rep.items.filter((r) => (r.tagged_before || 0) > 0);
   const tbNote = tbRows.length
-    ? `<p class="result">✓ ${tbRows.length} product(s) had boxes already RFID tagged before this batch (side trip or earlier session) - 0 scans and 0 pairs there is expected; their tags are counted in Detected instead.</p>`
+    ? `<p class="result">✓ ${countNoun(tbRows.length, "product", "products")} had boxes already RFID tagged before this batch (side trip or earlier session) - 0 scans and 0 pairs there is expected; their tags are counted in Detected instead.</p>`
     : "";
   // Unresolved codes are a heads-up, never a blocker: completing simply
   // drops them (same as removing them by hand) — no Review task is filed.
   const unresolvedNote = (rep.unresolved_codes || []).length
-    ? `<p class="result result--warn-soft">⚠ ${rep.unresolved_codes.length} unresolved barcode(s) still in this batch (${rep.unresolved_codes
+    ? `<p class="result result--warn-soft">⚠ ${countNoun(rep.unresolved_codes.length, "unresolved barcode", "unresolved barcodes")} still in this batch (${rep.unresolved_codes
         .map(escapeHtml)
         .join(", ")}) - they never matched a product. Completing drops them; nothing goes to Review. Link them at the Scan Station first if they matter.</p>`
     : "";
@@ -10558,9 +10558,7 @@ async function runVerifyCheck(onlyItemId = null) {
   // (the peel step was skipped) or a presumed-sold tag back in range
   // (probably a return). Named out loud, never lumped into "unknown".
   const retiredNote = (rep.retired_heard || []).length
-    ? `<p class="result result--warn-soft">⚠ ${
-        rep.retired_heard.length
-      } retired tag(s) answered the sweep: ${rep.retired_heard
+    ? `<p class="result result--warn-soft">⚠ ${countNoun(rep.retired_heard.length, "retired tag answered", "retired tags answered")} the sweep: ${rep.retired_heard
         .map(
           (t) =>
             `${escapeHtml(t.sku || t.product_title || "?")} <span class="mono">${escapeHtml(
@@ -10713,7 +10711,7 @@ bEl.verifyCheck.addEventListener("click", async () => {
       )
       .join("");
     bEl.verifyReport.innerHTML = `
-      <p class="result">Bin <b>${escapeHtml(rep.bin)}</b> checked against ${rep.swept} swept tag(s) - ${rep.count} product(s) on file there.</p>
+      <p class="result">Bin <b>${escapeHtml(rep.bin)}</b> checked against ${countNoun(rep.swept, "swept tag", "swept tags")} - ${countNoun(rep.count, "product", "products")} on file there.</p>
       <div class="inventory__scroll"><table class="inventory__table">
         <thead><tr><th>Product</th><th>SKU</th><th class="num">On hand</th><th class="num">Tags on file</th><th class="num">Detected</th></tr></thead>
         <tbody>${rows || '<tr><td colspan="5" class="inventory__empty">Nothing on file for that bin.</td></tr>'}</tbody>
@@ -10731,7 +10729,7 @@ function updateBvxSum(detail) {
   const t = parseInt(detail.querySelector(".bvx-tb").value, 10) || 0;
   const exp = detail.dataset.exp;
   const sum = detail.querySelector(".bvx__sum");
-  let text = `= ${q + t} box(es) total`;
+  let text = `= ${countNoun(q + t, "box", "boxes")} total`;
   if (exp !== "") {
     const diff = q + t - parseInt(exp, 10);
     text += ` vs expected ${exp}${
@@ -10769,7 +10767,7 @@ bEl.complete.addEventListener("click", async () => {
       )
       .join("\n");
     msg =
-      `⚠ ${unpaired.length} product(s) - ${missingBoxes} box(es) - ` +
+      `⚠ ${countNoun(unpaired.length, "product", "products")} - ${countNoun(missingBoxes, "box", "boxes")} - ` +
       `have NOT been entered into inventory with RFID tags yet:\n\n` +
       `${names}${unpaired.length > 6 ? "\n…" : ""}\n\n` +
       `Are you sure you want to finish? The missing ones will be filed ` +
@@ -10820,7 +10818,7 @@ document
     ).length;
     if (
       !confirm(
-        `Stop printing?\n\n${waiting} label(s) are queued or coming out. ` +
+        `Stop printing?\n\n${countNoun(waiting, "label is", "labels are")} queued or coming out. ` +
           `Everything still waiting is canceled; at most the few already ` +
           `claimed by the printer finish. Reprint anything you need from ` +
           `the Queue or the batch's Print step.`
@@ -10851,7 +10849,7 @@ document
     const n = (queueData && queueData.resumable_stopped) || 0;
     if (
       !confirm(
-        `Resume printing?\n\n${n} stopped label(s) go back in the ` +
+        `Resume printing?\n\n${countNoun(n, "stopped label goes", "stopped labels go")} back in the ` +
           `queue in their original order and print ahead of anything ` +
           `queued since. Make sure the printer is loaded and ready.`
       )
@@ -11319,7 +11317,7 @@ function renderQueue() {
             rows.push(
               queueGroupRow(subKey, 1, {
                 jobs: s.jobs,
-                label: `Print run · ${s.jobs.length} label(s)`,
+                label: `Print run · ${countNoun(s.jobs.length, "label", "labels")}`,
                 sku: j0.sku,
                 bin: j0.bin_location,
                 batch: null,
@@ -11419,7 +11417,7 @@ async function loadQueue() {
       pill.textContent =
         `⚠ Printer FAULTED - ${agent.fault}` +
         (agent.holding
-          ? ` - ${agent.holding} label(s) held until it clears`
+          ? ` - ${countNoun(agent.holding, "label", "labels")} held until it clears`
           : " - new labels will wait");
       pill.className = "pill pill--bad";
     } else if (agent.wedged) {
@@ -11428,7 +11426,7 @@ async function loadQueue() {
       // queue while everything server-side reads done (Nick, 2026-09-01).
       const mins = Math.round((agent.win_oldest_seconds || 0) / 60);
       pill.textContent =
-        `⚠ Printer WEDGED - ${agent.win_jobs} label(s) stuck in the ` +
+        `⚠ Printer WEDGED - ${countNoun(agent.win_jobs, "label", "labels")} stuck in the ` +
         `Windows queue for ${mins}m. Power-cycle the printer, or ` +
         `Clear stuck jobs and reprint.`;
       pill.className = "pill pill--bad";
@@ -11518,7 +11516,7 @@ refreshify("review-ordersync", "orders-sync", async () => {
     outcome = res.waiting_scope
       ? "Needs read_orders scope"
       : res.ok
-        ? `Synced ✓ ${res.recorded || 0} new sale(s)`
+        ? `Synced ✓ ${countNoun(res.recorded || 0, "new sale", "new sales")}`
         : "Sync failed";
   } catch (err) {
     outcome = "Sync failed";
@@ -11548,8 +11546,8 @@ async function renderOrderSyncNote() {
       return;
     }
     note.textContent = last.ok
-      ? `Order sync: last ran ${fmtAgo(last.at)} · ${last.orders ?? 0} ` +
-        `fulfilled order(s) seen · ${last.recorded ?? 0} new sale(s) recorded`
+      ? `Order sync: last ran ${fmtAgo(last.at)} · ` +
+        `${countNoun(last.orders ?? 0, "fulfilled order", "fulfilled orders")} seen · ${countNoun(last.recorded ?? 0, "new sale", "new sales")} recorded`
       : `⚠ Order sync failed ${fmtAgo(last.at)}: ${last.error || "unknown"}`;
     note.hidden = false;
   } catch {
@@ -11598,10 +11596,10 @@ function renderAuditBins() {
         : `${Math.round(auditData.onhand_age_minutes / 60)} h ago`) +
     `${auditData.refreshing ? " · refreshing now…" : ""}` +
     (skipped
-      ? ` · ${skipped} product(s) left out: ` +
+      ? ` · ${countNoun(skipped, "product", "products")} left out: ` +
         [
           auditData.skipped_bundles
-            ? `${auditData.skipped_bundles} bundle(s)`
+            ? `${countNoun(auditData.skipped_bundles, "bundle", "bundles")}`
             : "",
           auditData.skipped_non_taggable
             ? `${auditData.skipped_non_taggable} non-taggable`
@@ -11665,7 +11663,7 @@ function renderAuditBins() {
   if (overdueRows.length) {
     addHeader(
       `Audit these first - last audited over ` +
-      `${auditData.threshold_days || 14} day(s) ago (or never)`
+      `${countNoun(auditData.threshold_days || 14, "day", "days")} ago (or never)`
     );
   }
   const renderRow = (b) => {
@@ -11683,7 +11681,7 @@ function renderAuditBins() {
            b.last_audited_at
              ? `audited ${fmtAgo(b.last_audited_at)}${b.last_audited_by ? " by " + escapeHtml(b.last_audited_by) : ""} · `
              : "never audited · "
-         }${b.product_count} product(s)${
+         }${countNoun(b.product_count, "product", "products")}${
            clean
              ? " · all match"
              : ` · ${b.mismatched_count} mismatched`
@@ -11878,7 +11876,7 @@ async function renderBinAuditExpected(bin) {
           b.last_audited_at
             ? `audited ${escapeHtml(fmtAgo(b.last_audited_at))}`
             : "never audited"
-        } · ${b.product_count} product(s)${
+        } · ${countNoun(b.product_count, "product", "products")}${
           b.score === 0
             ? " · all match"
             : ` · ${b.mismatched_count} mismatched`
@@ -11932,7 +11930,7 @@ function renderPinnedSweep() {
   pill.hidden = false;
   pill.innerHTML =
     `\ud83d\udccc <b>#${escapeHtml(String(c.id))}</b> \u00b7 ` +
-    `${c.epc_count} tag(s) \u00b7 ${escapeHtml(fmtAgo(c.created_at))} ` +
+    `${countNoun(c.epc_count, "tag", "tags")} \u00b7 ${escapeHtml(fmtAgo(c.created_at))} ` +
     `<button class="reset" id="binaudit-unpin" type="button"
        title="Every bin check uses this pinned sweep - unpin to go back to the newest">unpin</button>`;
   pill.querySelector("#binaudit-unpin").addEventListener("click", async () => {
@@ -12168,9 +12166,7 @@ function swUpdateFoot() {
   if (run) {
     run.disabled = !ticked.length;
     const bin = document.getElementById("binaudit-bin").value.trim();
-    run.textContent = `Check ${bin || "\u2026"} with ${
-      ticked.length || "ticked"
-    } sweep(s)`;
+    run.textContent = `Check ${bin || "\u2026"} with ${countNoun(ticked.length || "ticked", "sweep", "sweeps")}`;
   }
 }
 
@@ -12200,9 +12196,7 @@ async function loadBinauditSweeps() {
           <span class="sw-dot ${ageMin < 10 ? "sw-dot--fresh" : "sw-dot--old"}"
             title="${ageMin < 10 ? "fresh - under 10 minutes old" : "older sweep"}"></span>
           <span class="sw-row__id">#${c.id}</span>
-          <div class="sw-row__main">${escapeHtml(c.device || "C72")} \u00b7 ${
-            c.epc_count
-          } tag(s)${
+          <div class="sw-row__main">${escapeHtml(c.device || "C72")} \u00b7 ${countNoun(c.epc_count, "tag", "tags")}${
             c.note ? `<span class="sw-note">${escapeHtml(c.note)}</span>` : ""
           }
             <span class="sw-meta">${escapeHtml(fmtAgo(c.created_at))}${
@@ -12328,7 +12322,7 @@ document
       return;
     }
     const out = document.getElementById("binaudit-report");
-    out.innerHTML = `<p class="result">Combining ${ids.length} sweep(s)…</p>`;
+    out.innerHTML = `<p class="result">Combining ${countNoun(ids.length, "sweep", "sweeps")}…</p>`;
     try {
       const epcs = new Set();
       let newest = null;
@@ -12398,9 +12392,7 @@ function packedRowHtml(c) {
   const info = `<span class="ba-sweeprow__main">#${c.id} · ${escapeHtml(
     c.device || "C72"
   )}${c.note ? " · " + escapeHtml(c.note) : ""}
-      <span class="ba-sweeprow__meta">${
-        c.epc_count
-      } tag(s) · ${escapeHtml(fmtWhen(c.created_at))}</span>
+      <span class="ba-sweeprow__meta">${countNoun(c.epc_count, "tag", "tags")} · ${escapeHtml(fmtWhen(c.created_at))}</span>
     </span>`;
   // A spent sweep shows its stamp and nothing else (Nick: a sweep is
   // retired once).
@@ -12522,7 +12514,7 @@ async function packedCheckWindow(cid) {
   const sum = document.createElement("p");
   sum.className = "linkbox__text";
   sum.textContent =
-    `${plan.label}. ${plan.heard} tag(s) heard: ${plan.owned} in the ` +
+    `${plan.label}. ${countNoun(plan.heard, "tag", "tags")} heard: ${plan.owned} in the ` +
     `system, ${plan.unowned} without a label yet (expected), ` +
     `${plan.already_retired} already retired.`;
   box.appendChild(sum);
@@ -12745,13 +12737,13 @@ function binAuditScoreRow(r) {
       ? `<button class="reset binaudit-locate" type="button"
            data-sku="${skuA}" data-title="${escapeHtml(r.product_title || "")}"
            data-epcs="${escapeHtml(epcs.join(","))}"
-           title="Queue the silent tag(s) on the C72 locate list - hunt them before deciding they're gone">${label || "Locate"}</button>`
+           title="Queue the silent tags on the C72 locate list - hunt them before deciding they're gone">${label || "Locate"}</button>`
       : "";
   const soldBtn = (epcs, label) =>
     r.sku
       ? `<button class="ba-act binaudit-marksold" type="button"
            data-sku="${skuA}" data-epcs="${escapeHtml(epcs.join(","))}"
-           title="These boxes shipped on fulfilled orders - remove their tag record(s) and retire the sale(s) in the ledger. History-logged; Shopify untouched.">${label}</button>`
+           title="These boxes shipped on fulfilled orders - remove their tag records and retire the sales in the ledger. History-logged; Shopify untouched.">${label}</button>`
       : "";
 
   if (r.rfid_incompatible) {
@@ -12803,11 +12795,11 @@ function binAuditScoreRow(r) {
     } else if (cleanGhostCase) {
       flag(
         "warn",
-        `<b>Shelf reads exactly right, but ${silent} silent record(s) ` +
+        `<b>Shelf reads exactly right, but ${countNoun(silent, "silent record", "silent records")} ` +
           `linger.</b> Usually stickers replaced without unlinking.`,
         `<button class="ba-act binaudit-cleanghosts" type="button"
            data-sku="${skuA}" data-epcs="${escapeHtml(silEpcs.join(","))}"
-           title="Recorded sales cover the oldest ones (presumed sold); the rest retire as replaced. History-logged, each restorable; Shopify untouched.">Clean up ${silent} ghost tag(s)\u2026</button>`
+           title="Recorded sales cover the oldest ones (presumed sold); the rest retire as replaced. History-logged, each restorable; Shopify untouched.">Clean up ${countNoun(silent, "ghost tag", "ghost tags")}\u2026</button>`
       );
       bump("warn");
     } else {
@@ -12820,7 +12812,7 @@ function binAuditScoreRow(r) {
         (r.sku && unexplained.length
           ? `<button class="ba-act binaudit-unpairprint" type="button"
                data-sku="${skuA}" data-epcs="${escapeHtml(unexplained.join(","))}"
-               title="Removes the silent tag record(s) AND queues the same number of replacement labels to pair - one step. Pairing never changes Shopify on-hand.">\u21bb Unpair + print replacement</button>`
+               title="Removes the silent tag records AND queues the same number of replacement labels to pair - one step. Pairing never changes Shopify on-hand.">\u21bb Unpair + print replacement</button>`
           : "") + locateBtn(silEpcs),
         "Check the shelf first - re-sweep behind the boxes before " +
           "deciding the sticker is gone."
@@ -12832,24 +12824,24 @@ function binAuditScoreRow(r) {
     const gEpcs = r.ghosts.map((g) => g.epc);
     flag(
       "warn",
-      `<b>${r.ghosts.length} retired tag(s) answered - box still ` +
+      `<b>${countNoun(r.ghosts.length, "retired tag answered", "retired tags answered")} - box still ` +
         `here.</b> Marked sold, but it never left.`,
       `<button class="ba-act binaudit-unretire" type="button"
          data-sku="${skuA}" data-epcs="${escapeHtml(gEpcs.join(","))}"
-         title="Makes the record(s) live again - the box never left. History-logged.">Un-retire ${r.ghosts.length} tag(s)</button>`
+         title="Makes the records live again - the box never left. History-logged.">Un-retire ${countNoun(r.ghosts.length, "tag", "tags")}</button>`
     );
     bump("warn");
   }
   if (r.finds_open > 0) {
     flag(
       "warn",
-      `${r.finds_open} tagless box(es) scanned on a walk - labels ` +
+      `${countNoun(r.finds_open, "tagless box", "tagless boxes")} scanned on a walk - labels ` +
         `not printed yet (the C72 banner prints them).`
     );
     bump("warn");
   }
   if (r.finds_printed > 0) {
-    flag("warn", `${r.finds_printed} label(s) printed, not yet paired.`);
+    flag("warn", `${countNoun(r.finds_printed, "label", "labels")} printed, not yet paired.`);
     bump("warn");
   }
   // The shelf carries more stock than tag records: some boxes never
@@ -12872,12 +12864,12 @@ function binAuditScoreRow(r) {
     const hi = (r.range_hi != null ? r.range_hi : r.expected_qty) + unav;
     flag(
       "warn",
-      `<b>Heard ${det} unit(s) - outside the expected ` +
+      `<b>Heard ${countNoun(det, "unit", "units")} - outside the expected ` +
         `${lo === hi ? lo : `${lo}\u2013${hi}`}.</b>`,
       exp != null && det > exp && r.sku
         ? `<button class="reset binaudit-fix" type="button"
              data-sku="${skuA}" data-qty="${det}" data-exp="${exp}"
-             title="The sweep physically heard ${det} unit(s) - write that count to Shopify on-hand. Confirmed, logged, undoable from History.">Set stock to ${det}</button>`
+             title="The sweep physically heard ${countNoun(det, "unit", "units")} - write that count to Shopify on-hand. Confirmed, logged, undoable from History.">Set stock to ${det}</button>`
         : "",
       "Re-scan the shelf thoroughly first (behind the boxes too); " +
         "if the number is real, write it."
@@ -12971,7 +12963,7 @@ function binAuditRowHtml({ r, flags, untagged, tone }) {
     .join("");
   const drawer =
     tagLines && r.sku
-      ? `<details class="pcr__tags"><summary>${silent} silent tag(s) \u25be</summary>
+      ? `<details class="pcr__tags"><summary>${countNoun(silent, "silent tag", "silent tags")} \u25be</summary>
           ${tagLines}${
             (r.silent_tags || []).length > 12
               ? `<div class="tagline"><span class="tagline__when">+${
@@ -13226,9 +13218,7 @@ function renderBinAudit() {
   out.innerHTML = `
     <div class="ba-sweep u-mb10">checked against <b>sweep #${escapeHtml(
       String(cap.id)
-    )}</b> \u00b7 ${escapeHtml(cap.device || "C72")} \u00b7 ${
-      cap.epc_count
-    } tag(s) \u00b7 ${escapeHtml(fmtWhen(cap.created_at))}${
+    )}</b> \u00b7 ${escapeHtml(cap.device || "C72")} \u00b7 ${countNoun(cap.epc_count, "tag", "tags")} \u00b7 ${escapeHtml(fmtWhen(cap.created_at))}${
       sweepIsStale(cap.created_at)
         ? ` <span class="ba-stale">\u26a0 from another day - still usable; re-sweep for fresh truth</span>`
         : ""
@@ -13272,8 +13262,11 @@ function renderBinAudit() {
     }
     ${
       !pm && (rep.covered_bundles || []).length
-        ? `<p class="result">&#128230; ${rep.covered_bundles.length} bundle
-           listing(s) here are covered by their components - no tags of
+        ? `<p class="result">&#128230; ${countNoun(
+             rep.covered_bundles.length,
+             "bundle listing here is",
+             "bundle listings here are"
+           )} covered by their components - no tags of
            their own to hear: ${rep.covered_bundles
              .map(
                (cb) =>
@@ -13315,7 +13308,7 @@ function renderBinAudit() {
         ? `<div class="linkbox__actions u-mt8">
              <button class="reset" id="binaudit-toggle" type="button">${
                binAuditShowUntagged ? "Hide" : "Show"
-             } ${untaggedCount} product(s) with no tags here</button>
+             } ${countNoun(untaggedCount, "product", "products")} with no tags here</button>
            </div>`
         : ""
     }
@@ -13396,8 +13389,8 @@ document
       if (
         !confirm(
           `Set Shopify ON-HAND for ${sku} to ${qty}?\n\n` +
-            `Shopify expects ${fix.dataset.exp}; this bin holds ${qty} ` +
-            `tagged unit(s).\n\nThis WRITES the number to Shopify. Undo ` +
+            `Shopify expects ${fix.dataset.exp}; this bin holds ` +
+            `${countNoun(qty, "tagged unit", "tagged units")}.\n\nThis WRITES the number to Shopify. Undo ` +
             `stays available in History.`
         )
       )
@@ -13444,12 +13437,13 @@ document
       if (
         !confirm(
           `Set Shopify ON-HAND for ${sku} DOWN to ${qty}?\n\n` +
-            `This retires ${epcs.length} silent tag(s) as ` +
+            `This retires ${countNoun(epcs.length, "silent tag", "silent tags")} as ` +
             `presumed-sold` +
             (unbacked
-              ? ` - ⚠ ${unbacked} of the ${drop} missing unit(s) have ` +
-                `NO recorded sale and are written off as shrinkage`
-              : ` - recorded sales account for the missing unit(s)`) +
+              ? ` - ⚠ ${unbacked} of the ${countNoun(drop, "missing unit", "missing units")} ` +
+                `${unbacked === 1 ? "has" : "have"} NO recorded sale and ` +
+                `${unbacked === 1 ? "is" : "are"} written off as shrinkage`
+              : ` - recorded sales account for the missing units`) +
             `.\n\n` +
             (heardNone
               ? `⚠ NOTHING of this product answered the sweep - be ` +
@@ -13496,7 +13490,7 @@ document
       }
       if (
         !confirm(
-          `Mark ${epcs.length} tag(s) of ${sku} as SOLD?\n\n` +
+          `Mark ${countNoun(epcs.length, "tag", "tags")} of ${sku} as SOLD?\n\n` +
             `The sweep didn't hear them, and fulfilled orders account ` +
             `for the missing boxes. Their tag records are removed ` +
             `(History-logged as Tag Sold) and the sales are retired in ` +
@@ -13512,8 +13506,8 @@ document
           changed_by: operator,
         });
         alert(
-          `${res.removed_tags} tag(s) marked sold - ` +
-            `${res.retired_against_orders} unit(s) retired against orders.`
+          `${countNoun(res.removed_tags, "tag", "tags")} marked sold - ` +
+            `${countNoun(res.retired_against_orders, "unit", "units")} retired against orders.`
         );
         await binAuditRefreshRow(sku);
       } catch (err) {
@@ -13608,11 +13602,11 @@ document
           preview: true,
         });
         const ok = confirm(
-          `Clean up ${epcs.length} ghost tag(s) of ${sku}?\n\n` +
+          `Clean up ${countNoun(epcs.length, "ghost tag", "ghost tags")} of ${sku}?\n\n` +
             `The sweep heard exactly what Shopify expects, so these ` +
             `silent records are leftovers (usually stickers replaced ` +
             `without unlinking the old tag).\n\n` +
-            `· ${plan.presumed_sold.length} oldest record(s) retire ` +
+            `· ${countNoun(plan.presumed_sold.length, "oldest record", "oldest records")} retire ` +
             `PRESUMED SOLD - recorded sales cover them\n` +
             `· ${plan.replaced.length} retire as REPLACED - their box ` +
             `wears a newer sticker\n\n` +
@@ -13674,11 +13668,11 @@ document
       const epcs = (upp.dataset.epcs || "").split(",").filter(Boolean);
       if (
         !confirm(
-          `Unpair ${epcs.length} silent tag(s) of ${sku} and queue ` +
-            `${epcs.length} replacement label(s)?\n\n` +
+          `Unpair ${countNoun(epcs.length, "silent tag", "silent tags")} of ${sku} and queue ` +
+            `${countNoun(epcs.length, "replacement label", "replacement labels")}?\n\n` +
             `Check the shelf first - re-sweep behind the boxes. If the ` +
             `boxes really are here with dead or missing stickers, this ` +
-            `removes the old record(s) and prints fresh labels to ` +
+            `removes the old records and prints fresh labels to ` +
             `pair. Shopify on-hand is NOT touched; each unpair is ` +
             `History-logged.`
         )
@@ -13695,8 +13689,8 @@ document
         }
         await binAuditQueueLabels(sku, epcs.length);
         alert(
-          `${epcs.length} tag record(s) unpaired and ${epcs.length} ` +
-            `label(s) queued on the warehouse printer.\n\nStick and ` +
+          `${countNoun(epcs.length, "tag record", "tag records")} unpaired and ` +
+            `${countNoun(epcs.length, "label", "labels")} queued on the warehouse printer.\n\nStick and ` +
             `pair them (Scan station, or the C72's pair mode) - the ` +
             `count stays put.`
         );
@@ -13729,7 +13723,7 @@ document
       try {
         await binAuditQueueLabels(sku, n);
         alert(
-          `${n} label(s) queued for ${sku}. Stick them on, then pair ` +
+          `${countNoun(n, "label", "labels")} queued for ${sku}. Stick them on, then pair ` +
             `(Scan station or the C72) - the count stays put.`
         );
       } catch (err) {
@@ -13745,9 +13739,9 @@ document
       const epcs = (unret.dataset.epcs || "").split(",").filter(Boolean);
       if (
         !confirm(
-          `Un-retire ${epcs.length} tag(s) of ${sku}?\n\nThey were ` +
+          `Un-retire ${countNoun(epcs.length, "tag", "tags")} of ${sku}?\n\nThey were ` +
             `marked sold but they ANSWERED this sweep - the box is ` +
-            `still on the shelf. The record(s) become live again. ` +
+            `still on the shelf. The records become live again. ` +
             `History-logged.`
         )
       )
@@ -13839,7 +13833,7 @@ document
           if (
             !confirm(
               `Set Shopify ON-HAND for ${sku} DOWN to ${n}?\n\n` +
-                `${epcs.length} silent tag(s) retire presumed-sold ` +
+                `${countNoun(epcs.length, "silent tag", "silent tags")} retire presumed-sold ` +
                 `with it - sales cover what they can, the rest writes ` +
                 `off as shrinkage.` +
                 (pickupExplains
@@ -14059,7 +14053,7 @@ async function loadUnavailable() {
       "ahc-unavail",
       String(d.count),
       d.count
-        ? `${d.total_units} unit(s) set aside`
+        ? `${countNoun(d.total_units, "unit", "units")} set aside`
         : "nothing set aside ✓",
       d.count ? "warn" : "ok"
     );
@@ -14091,7 +14085,7 @@ async function loadUnavailable() {
       // are demonstrably on the shelf like everything else.
       const evidence =
         g.tag_units != null
-          ? `${g.tag_units} tag(s) on file · ${g.heard_units} heard on the last sweep · on-hand ${g.on_hand_total}`
+          ? `${countNoun(g.tag_units, "tag", "tags")} on file · ${g.heard_units} heard on the last sweep · on-hand ${g.on_hand_total}`
           : "";
       li.innerHTML = `
         <span class="inventory__bin">${escapeHtml((g.bins || []).join(", ") || "—")}</span>
@@ -14110,7 +14104,7 @@ async function loadUnavailable() {
             g.return_ok
               ? `<div class="u-mt5"><button class="reset unavail-return" type="button"
                    data-sku="${escapeHtml(g.sku || "")}" data-qty="${g.unavailable}"
-                   title="Every unit - the set-aside included - is tagged AND answered the last sweep, so nothing is actually missing. Moves the unavailable unit(s) back to available in Shopify (on-hand total unchanged). Confirmed, History-logged.">RETURN ${g.unavailable} TO AVAILABLE</button></div>`
+                   title="Every unit - the set-aside included - is tagged AND answered the last sweep, so nothing is actually missing. Moves the unavailable units back to available in Shopify (on-hand total unchanged). Confirmed, History-logged.">RETURN ${g.unavailable} TO AVAILABLE</button></div>`
               : ""
           }</div>
         </span>
@@ -14127,11 +14121,11 @@ async function loadUnavailable() {
           const qty = parseInt(ret.dataset.qty, 10);
           if (
             !confirm(
-              `Return ${qty} unit(s) of ${sku} to AVAILABLE?\n\n` +
-                `All ${g.on_hand_total} unit(s) are tagged and answered ` +
+              `Return ${countNoun(qty, "unit", "units")} of ${sku} to AVAILABLE?\n\n` +
+                `All ${countNoun(g.on_hand_total, "unit is", "units are")} tagged and answered ` +
                 `the last sweep - the set-aside is sitting on the shelf ` +
-                `like everything else.\n\nThis moves the unit(s) out of ` +
-                `the unavailable bucket(s) in Shopify; on-hand total ` +
+                `like everything else.\n\nThis moves the units out of ` +
+                `the unavailable bucket in Shopify; on-hand total ` +
                 `stays the same, sellable goes up by ${qty}. ` +
                 `History-logged.`
             )
@@ -14196,7 +14190,7 @@ async function loadPacking() {
     );
     meta.textContent = d.shipstation
       ? `${c.shipped || 0} shipped · ${c.allocated || 0} awaiting`
-        + (warn ? ` · ${warn} warning(s)` : "")
+        + (warn ? ` · ${countNoun(warn, "warning", "warnings")}` : "")
       : "⚠ ShipStation isn't configured - every scan lands as "
         + "'not in shipping'.";
     list.innerHTML = (d.scans || []).length
@@ -14407,7 +14401,7 @@ function renderOneleft() {
       r.vendor,
       r.bin ? `bin ${r.bin}` : "no bin",
       r.claimed == null ? "claims ?" : `claims ${r.claimed}`,
-      `${r.tag_count} tag(s) on file`,
+      `${countNoun(r.tag_count, "tag", "tags")} on file`,
       `raised ${fmtAgo(r.detected_date)}`,
     ]
       .filter(Boolean)
@@ -14992,9 +14986,10 @@ function audRackAgg() {
 }
 
 // Chip copy rules (Nick, 2026-09-29): Capitalized, "Label: value"
-// shape, and REAL plurals - never "check(s)".
+// shape, and REAL plurals - never "check(s)". Counts that arrive as
+// text ("1") still pick the singular.
 function countNoun(n, noun, plural) {
-  return `${n} ${n === 1 ? noun : plural || noun + "s"}`;
+  return `${n} ${Number(n) === 1 ? noun : plural || noun + "s"}`;
 }
 
 // One tap on the whole card starts the rack's walk (Nick, 2026-09-29:
@@ -15634,7 +15629,7 @@ async function openProductHistory(term) {
     }
     metaEl.append(
       document.createTextNode(
-        ` · ${data.tag_count} tag(s) on file` +
+        ` · ${countNoun(data.tag_count, "tag", "tags")} on file` +
           (data.on_hand != null ? ` · on-hand ${data.on_hand}` : "")
       )
     );
@@ -15721,7 +15716,7 @@ function renderPhistTags(data, term) {
   list.hidden = true;
   if (!tags.length && !sold.length) return;
   toggle.textContent =
-    `▸ ${tags.length} live tag(s)` +
+    `▸ ${countNoun(tags.length, "live tag", "live tags")}` +
     (sold.length ? ` · ${sold.length} presumed sold` : "") +
     ": view or unpair";
   toggle.onclick = (ev) => {
@@ -16418,7 +16413,7 @@ async function openMislabelManager(sku) {
       empty.className = "linkbox__text";
       empty.textContent =
         "No products listed yet - scans show the text warning only. " +
-        "Add the product(s) this label might actually be to turn on " +
+        "Add the products this label might actually be to turn on " +
         "the picker.";
       list.appendChild(empty);
     }
@@ -16831,7 +16826,7 @@ async function renderLocateRow() {
         `On the C72 locate list` +
         (mine.added_by ? ` (added by ${mine.added_by})` : "") +
         ` - pick it on the gun's LOCATE tab to hunt its ` +
-        `${mine.tag_count} tag(s). Click to take it off the list.`;
+        `${countNoun(mine.tag_count, "tag", "tags")}. Click to take it off the list.`;
     } else {
       btn.textContent = "📡 Send to C72 locate list";
       btn.title =
@@ -16897,7 +16892,7 @@ async function renderLocateOverlay() {
           ? `<li class="recent__item recent__item--row">
         <div class="u-grow">
           <b>${escapeHtml(e.label || "Unlinked stickers heard on sweeps")}</b>
-          <div class="binlabel">${e.tag_count} sticker(s) heard on sweeps with no product linked - hunt them from the C72's Locate list, pair or retire each one found</div>
+          <div class="binlabel">${countNoun(e.tag_count, "sticker", "stickers")} heard on sweeps with no product linked - hunt them from the C72's Locate list, pair or retire each one found</div>
           <div class="binlabel">${(e.epcs || [])
             .slice(0, 8)
             .map((p) => "…" + escapeHtml(p.slice(-6)))
@@ -16910,7 +16905,7 @@ async function renderLocateOverlay() {
         <div class="u-grow">
           <a href="#" class="hist-sku" data-sku="${escapeHtml(e.sku)}"><b>${escapeHtml(e.sku)}</b></a>
           ${e.label ? ` <span class="binlabel">${escapeHtml(e.label)}</span>` : ""}
-          <div class="binlabel">${e.tag_count} tag(s)${
+          <div class="binlabel">${countNoun(e.tag_count, "tag", "tags")}${
             e.bins.length ? ` · tags say: ${e.bins.map(escapeHtml).join(", ")}` : ""
           }${e.added_by ? ` · added by ${escapeHtml(e.added_by)}` : ""}${
             e.created_at ? ` · ${fmtWhen(e.created_at)}` : ""
@@ -17064,7 +17059,7 @@ document.getElementById("phist-print").addEventListener("click", async () => {
       const body = await res.json().catch(() => ({}));
       msg.textContent = body.detail || "Queueing failed.";
     } else {
-      msg.textContent = `${qty} label(s) queued ✓ - collect at the printer (Print queue tab tracks them).`;
+      msg.textContent = `${countNoun(qty, "label", "labels")} queued ✓ - collect at the printer (Print queue tab tracks them).`;
     }
   } catch (err) {
     msg.textContent = err.message;
@@ -17361,7 +17356,7 @@ async function undoHistoryEvent(e, btn) {
     const n = (e.undo.epcs || []).length;
     if (
       !confirm(
-        `Release ${n} tag(s) from ${e.sku || e.title || "this product"}?\n\n` +
+        `Release ${countNoun(n, "tag", "tags")} from ${e.sku || e.title || "this product"}?\n\n` +
           `The product stops being tied to ${n === 1 ? "that label" : "those labels"}. ` +
           `Nothing in Shopify changes. Undo lives in History: the ` +
           `Released Tag entry re-applies them exactly as they were, ` +
@@ -17394,7 +17389,7 @@ async function undoHistoryEvent(e, btn) {
     const n = (e.undo.epcs || []).length;
     if (
       !confirm(
-        `Re-apply ${n} tag(s) to ${e.sku || e.title || "this product"}?\n\n` +
+        `Re-apply ${countNoun(n, "tag", "tags")} to ${e.sku || e.title || "this product"}?\n\n` +
           `Each assignment comes back exactly as it was before the ` +
           `release - product, bin and original pairing date included. ` +
           `Undo lives in History: the Assigned Tag entry releases them ` +
@@ -17421,7 +17416,7 @@ async function undoHistoryEvent(e, btn) {
   if (e.undo.kind === "batch-ties") {
     if (
       !confirm(
-        `Release all ${e.undo.ties} tag tie(s) from batch #${e.undo.batch_id} ` +
+        `Release all ${countNoun(e.undo.ties, "tag tie", "tag ties")} from batch #${e.undo.batch_id} ` +
           `(${e.title})?\n\nThe products stop being tied to those labels. ` +
           `Nothing in Shopify changes, and the labels themselves stay valid.`
       )
@@ -17435,7 +17430,7 @@ async function undoHistoryEvent(e, btn) {
       );
       await loadHistory();
       alert(
-        `${res.removed} tie(s) released` +
+        `${countNoun(res.removed, "tie", "ties")} released` +
           (res.legacy
             ? ` (${res.legacy} of them paired before batches tracked their own ties).`
             : ".")
@@ -17922,7 +17917,7 @@ function renderSortShip() {
               ? ` <span class="recent__note">expected ${escapeHtml(g.meta.expected_date)}</span>`
               : ""
           }</span>
-          <span class="recent__note">${units} unit(s)</span>
+          <span class="recent__note">${countNoun(units, "unit", "units")}</span>
           <button class="print__btn sortgroup__go" type="button" data-order="${orderId}"
             title="Opens this stock order in the TC-Planner with these To-receive counts pre-filled. Review there, then Save / Update stock / Print labels - nothing is saved from here.">Open in TC-Planner (pre-filled)</button>
         </div>
@@ -17936,10 +17931,8 @@ function renderSortShip() {
       <div class="sortgroup sortgroup--warn">
         <div class="sortgroup__head">
           <span class="sortgroup__title">⚠ No order explains these</span>
-          <span class="recent__note">${
-            unexplained.reduce((s, r) => s + r.unexplained, 0) +
-            strayBundles.reduce((s, b) => s + b.units, 0)
-          } unit(s)</span>
+          <span class="recent__note">${countNoun(unexplained.reduce((s, r) => s + r.unexplained, 0) +
+            strayBundles.reduce((s, b) => s + b.units, 0), "unit", "units")}</span>
         </div>
         ${strayBundles.map(bundleHtml).join("")}
         ${unexplained
@@ -18067,7 +18060,7 @@ async function sortShipResolveSuggestion(key, how) {
       await sortShipScan(term);
     }
     setSortShipStatus(
-      `${term} now resolves to ${sug.sku} - ${n} scan(s) re-sorted.`
+      `${term} now resolves to ${sug.sku} - ${countNoun(n, "scan", "scans")} re-sorted.`
     );
   } catch (err) {
     alert(err.message);
@@ -18282,11 +18275,11 @@ async function fullshipLoad() {
     // against the system - say plainly whether the check passed.
     const verdict = flaggedLines.length
       ? `<p class="result result--err">⚠ Check found problems: ` +
-        `${flaggedLines.length} of ${body.items.length} line(s) are ` +
+        `${flaggedLines.length} of ${countNoun(body.items.length, "line is", "lines are")} ` +
         `flagged below. Flagged lines print NOTHING until fixed - ` +
         `the other ${printable.length} print normally.</p>`
       : `<p class="result result--ok">✓ Check passed - all ` +
-        `${body.items.length} line(s) match products in the system ` +
+        `${countNoun(body.items.length, "line matches", "lines match")} products in the system ` +
         `and can print.</p>`;
     out.innerHTML = `
       <div class="linkbox__actions u-mb6">
@@ -18302,12 +18295,12 @@ async function fullshipLoad() {
       <div class="linkbox__actions u-mt8">
         <button class="print__btn" id="fullship-go" type="button"
           data-ref="${escapeHtml(ref)}">
-          Print ~${labelGuess} label(s) &amp; start receiving
+          Print ~${countNoun(labelGuess, "label", "labels")} &amp; start receiving
         </button>
       </div>`;
     fsStatus(
       `SO ${o.reference_number} · ${o.vendor || "?"} - ` +
-        `${body.items.length} line(s) remaining.`
+        `${countNoun(body.items.length, "line", "lines")} remaining.`
     );
   } catch (err) {
     fsStatus(err.message, true);
@@ -18404,7 +18397,7 @@ document
         .map((u) => `  ${u.product_title || u.sku} (${u.sku}): ${u.count}`)
         .join("\n");
       alert(
-        `${res.total_unpaired} label(s) printed but never found a box - ` +
+        `${countNoun(res.total_unpaired, "label", "labels")} printed but never found a box - ` +
           "the order listed products that didn't actually ship.\n\n" +
           lines +
           "\n\nPeel them off the liner and DISCARD them - unapplied " +
@@ -18594,7 +18587,7 @@ async function sortShipCreateBundle() {
   sortShipSave();
   sortShipExitSelect();
   setSortShipStatus(
-    `${keys.length} component(s) linked into ${setProduct.sku} - a full ` +
+    `${countNoun(keys.length, "component", "components")} linked into ${setProduct.sku} - a full ` +
       `sweep of them counts one set. Remembered for future shipments; ` +
       `Unbundle forgets it.`
   );
@@ -18632,7 +18625,7 @@ async function sortShipUnbundle(defKey) {
   }
   renderSortShip();
   setSortShipStatus(
-    `${def.setSku} unbundled - ${members.length} product(s) re-sorted.`
+    `${def.setSku} unbundled - ${countNoun(members.length, "product", "products")} re-sorted.`
   );
 }
 
@@ -18703,7 +18696,7 @@ async function refreshAgentChip() {
       text = "Printer wedged - labels stuck in its queue";
     } else if ((s.holding || 0) > 0) {
       cls += " pill--warn";
-      text = `${s.holding} label(s) held - printer busy`;
+      text = `${countNoun(s.holding, "label", "labels")} held - printer busy`;
     } else if ((s.win_jobs || 0) > 0) {
       cls += " pill--warn";
       text = `Printing - ${s.win_jobs} in queue`;
@@ -18766,7 +18759,7 @@ async function loadHome() {
         : `Bin ${b.bin_name} (batch #${b.id})`;
     const bits = [];
     if (b.boxes) bits.push(`${b.paired || 0} of ${b.boxes} paired`);
-    else if (b.products) bits.push(`${b.products} product(s)`);
+    else if (b.products) bits.push(`${countNoun(b.products, "product", "products")}`);
     if (b.created_by) bits.push(b.created_by);
     homeEls.resumeMeta.textContent = bits.join(" \u00b7 ");
     homeEls.resumeGo.dataset.batchId = String(b.id);
@@ -19133,8 +19126,8 @@ document
     if (
       !confirm(
         `Set Shopify ON-HAND for ${st.sku} to ${qty}?\n\n` +
-          `Shopify carries ${cur}; the tag records carry ${qty} ` +
-          `unit(s).` +
+          `Shopify carries ${cur}; the tag records carry ` +
+          `${countNoun(qty, "unit", "units")}.` +
           (lowering
             ? `\n\nLowering runs through the guarded path - sales ` +
               `cover what they can, and a product that never ` +
@@ -20416,7 +20409,7 @@ function pcardRenderBundle() {
       <div class="pcb__head">&#128230; Bundle - the components below carry
         the tags; nothing prints for this listing.${
           b.buildable != null
-            ? ` Components on hand can build <b>${b.buildable}</b> unit(s).`
+            ? ` Components on hand can build <b>${b.buildable}</b> ${b.buildable === 1 ? "unit" : "units"}.`
             : ""
         }</div>
       ${b.contents
@@ -20429,7 +20422,7 @@ function pcardRenderBundle() {
             <span class="pcb__title">${escapeHtml(c.title || "")}</span>
             <span class="bndl__facts">${
               c.bin ? escapeHtml(c.bin) + " · " : ""
-            }${c.tags} tag(s)${
+            }${countNoun(c.tags, "tag", "tags")}${
               c.on_hand != null ? ` · ${c.on_hand} on hand` : ""
             }</span>
           </button>`
@@ -20439,7 +20432,7 @@ function pcardRenderBundle() {
     el.hidden = false;
   } else if ((st.partOf || []).length) {
     el.innerHTML = `<div class="pcb pcb--member">
-      <span class="pcb__memlab">Part of bundle(s):</span>
+      <span class="pcb__memlab">${st.partOf.length === 1 ? "Part of bundle:" : "Part of bundles:"}</span>
       ${st.partOf
         .map((b) => {
           const me = (b.contents || []).find(

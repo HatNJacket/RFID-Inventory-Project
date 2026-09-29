@@ -3602,12 +3602,15 @@ the REAL prod numbers (dev/tests/test_ledger_flow.py, 41 checks).
 - **TODO next web-terminal build (Nick 2026-08-24): strip every em dash
   ("—") from UI copy** — replace with a plain hyphen or reword. New
   strings written this session already comply.
-- **TODO copy sweep (Nick 2026-09-29): kill every "(s)" plural in
-  user-facing copy** — words are singular or plural by count, never
-  "bin(s)"; app.js has countNoun() for it. Same rule pass for chips:
-  capitalized "Label: value" shape ("Drift: 9", "Worst bin: X"),
-  never bare lowercase fragments. Audits-hub surfaces already comply
-  (2026-09-29); the rest of the app is the sweep.
+- **✅ DONE 2026-09-29 — the "(s)" plural sweep, app-wide** (web,
+  server messages, print agent, C72 4.22): ~500 sites now read "1 tag"
+  / "2 tags" with verbs agreeing ("1 bin is / 2 bins are"). Helpers:
+  countNoun() in app.js, _count() in main.py / oneleft.py /
+  print_agent.py, plural() in MainActivity.java. dev/tests/
+  test_plurals.py fails the build if a quoted "word(s)" creeps back.
+  Chip rule stands: capitalized "Label: value" ("Drift: 9"). The
+  print agent's copy rides its next real version bump (AGENT_VERSION
+  unchanged, so the warehouse PC isn't forced to update for text).
 
 ## 📦 Sold detection + Nick's big batch (2026-08-18, second session)
 

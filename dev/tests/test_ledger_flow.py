@@ -336,7 +336,7 @@ with patch("app.shopify.lookup_barcode", side_effect=fake_lookup), \
         "sku": "CASE-C", "bin_name": "F1-2", "new_qty": 2,
         "epcs": c_silent, "changed_by": "Nick", "confirmed": False})
     check("unconfirmed lower answers 409 with the consequences",
-          r.status_code == 409 and "retires 1 silent tag(s)" in r.text,
+          r.status_code == 409 and "retires 1 silent tag as" in r.text,
           (r.status_code, r.text))
 
     r = cl.post("/api/onhand-updates/lower", json={
@@ -361,7 +361,7 @@ with patch("app.shopify.lookup_barcode", side_effect=fake_lookup), \
     r = cl.post(f"/api/onhand-updates/{low_id}/undo-lower",
                 json={"changed_by": "Nick", "confirmed": False})
     check("unconfirmed undo-lower answers 409",
-          r.status_code == 409 and "restores 1 retired tag(s)" in r.text,
+          r.status_code == 409 and "restores 1 retired tag and" in r.text,
           (r.status_code, r.text))
     r = cl.post(f"/api/onhand-updates/{low_id}/undo-lower",
                 json={"changed_by": "Nick", "confirmed": True})

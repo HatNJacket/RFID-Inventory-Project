@@ -78,7 +78,7 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
     check("fresh stray still queues its labels",
           r.status_code == 201 and body["labels"] == 3
           and body["batch"]["status"] == "printing"
-          and "label(s) queued" in body["message"], r.text[:250])
+          and "3 labels queued" in body["message"], r.text[:250])
 
     # ---- bundles-only stays refused -------------------------------------
     with Session(get_engine()) as s:

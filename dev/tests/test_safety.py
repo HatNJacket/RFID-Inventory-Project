@@ -60,7 +60,7 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
     check("it counts the labels a print pass WOULD queue",
           out["labels_waiting"] == 3, out)
     check("the message names the waiting work and the bin-less product",
-          "3 waiting label(s)" in out["message"]
+          "3 waiting labels" in out["message"]
           and "Binless Thing" in out["message"], out["message"])
     with Session(get_engine()) as s:
         jobs = s.scalars(select(PrintJob).where(

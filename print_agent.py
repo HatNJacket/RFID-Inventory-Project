@@ -77,6 +77,15 @@ import requests
 # its own copy to drive auto-update.
 AGENT_VERSION = "7"
 
+
+def _count(n, one, many=None):
+    """"1 label" / "2 labels" - never "label(s)"."""
+    try:
+        single = int(n) == 1
+    except (TypeError, ValueError):
+        single = False
+    return "%s %s" % (n, one if single else (many or one + "s"))
+
 # ---------------------------------------------------------------------------
 # Label geometry. Defaults match the warehouse RFID stickers (measured
 # 2.125 x 1.25 inch) at the ZD220's 203 dpi; override with --label-width /
@@ -726,7 +735,7 @@ class UsbTransport:
         if not wanted:
             raise OSError(
                 f"no USB printer matching '{self.match}' "
-                f"({len(devices)} usbprint device(s) present)"
+                f"({_count(len(devices), 'usbprint device', 'usbprint devices')} present)"
             )
         self.path = wanted[0]
         GENERIC_READ, GENERIC_WRITE = 0x80000000, 0x40000000
@@ -1208,7 +1217,7 @@ class Agent:
             fault = ", ".join(faults)
             if fault != self.fault:
                 log(f"! printer FAULTED: {fault} - holding "
-                    f"{self.holding} label(s) until it clears")
+                    f"{_count(self.holding, 'label', 'labels')} until it clears")
                 self.fault = fault
             self._pulse(status=st)
             time.sleep(3)
@@ -1504,7 +1513,7 @@ class Agent:
             elif kind == "purge":
                 if self.args.printer_name and not self.args.dry_run:
                     n = purge_windows_queue(self.args.printer_name)
-                    output = f"deleted {n} Windows job(s)"
+                    output = f"deleted {_count(n, 'Windows job', 'Windows jobs')}"
                 else:
                     output = ("no Windows queue here (direct/dry-run "
                               "mode prints nothing through the spooler)")

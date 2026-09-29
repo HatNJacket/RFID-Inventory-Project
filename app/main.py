@@ -128,6 +128,17 @@ def _up(s: str | None) -> str:
     return s.strip().upper() if s else ""
 
 
+def _count(n, one: str, many: str | None = None) -> str:
+    """"1 tag" / "2 tags" - never "tag(s)" (Nick, 2026-09-29). `one`
+    and `many` may carry a verb ("bin is" / "bins are"). Counts that
+    arrive as text still pick the right form."""
+    try:
+        single = int(n) == 1
+    except (TypeError, ValueError):
+        single = False
+    return f"{n} {one if single else (many or one + 's')}"
+
+
 # Per-BOX conditions (Nick, 2026-09-16): what state ONE physical unit is
 # in - the foundation for returns and future condition workflows.
 # Distinct from stock buckets (available/committed/on-hand). NULL/absent
@@ -1373,7 +1384,7 @@ def _overpair_warning(session: Session, sku: str | None) -> str | None:
     if units <= expected:
         return None
     return (
-        f"This product now carries {units} tag record(s) but stock only "
+        f"This product now carries {_count(units, 'tag record', 'tag records')} but stock only "
         f"explains {expected} (on-hand {oh}"
         + (f" + {sold} sold-unretired" if sold else "")
         + (f" + {unavail} unavailable" if unavail else "")
@@ -1669,7 +1680,7 @@ def tags_release(payload: TagChainIn, session: Session = Depends(get_session)):
         "epcs": released,
         "skipped": skipped,
         "message": (
-            f"{len(released)} tag(s) released"
+            f"{_count(len(released), 'tag', 'tags')} released"
             + (f" ({len(skipped)} skipped - they belong to another product)"
                if skipped else "")
             + ". Undo lives in History: Released Tag > Undo re-applies them."
@@ -1755,7 +1766,7 @@ def tags_reapply(payload: TagChainIn, session: Session = Depends(get_session)):
         "epcs": reapplied,
         "skipped": skipped,
         "message": (
-            f"{len(reapplied)} tag(s) re-applied with their original "
+            f"{_count(len(reapplied), 'tag', 'tags')} re-applied with their original "
             "pairing dates"
             + (f" ({len(skipped)} skipped - re-applied already or claimed "
                "by another product)" if skipped else "")
@@ -3082,7 +3093,7 @@ def stop_printing(
         session,
         title="Print queue",
         field="print-stop",
-        old=f"{len(rows)} job(s) canceled",
+        old=f"{_count(len(rows), 'job', 'jobs')} canceled",
         new=f"{in_flight} in flight finished"
                      if in_flight else "queue was drained",
         by=(payload.requested_by or "").strip() or None,
@@ -3092,8 +3103,8 @@ def stop_printing(
         "canceled": len(rows),
         "in_flight": in_flight,
         "message": (
-            f"{len(rows)} queued label(s) canceled."
-            + (f" Up to {in_flight} label(s) already claimed by the "
+            f"{_count(len(rows), 'queued label', 'queued labels')} canceled."
+            + (f" Up to {_count(in_flight, 'label', 'labels')} already claimed by the "
                "printer may still come out." if in_flight else "")
             + " Resume printing brings the whole stopped run back in "
               "order, or reprint single labels from the Queue."
@@ -3125,7 +3136,7 @@ def resume_printing(
         session,
         title="Print queue",
         field="print-resume",
-        old=f"{len(rows)} job(s) resumed",
+        old=f"{_count(len(rows), 'job', 'jobs')} resumed",
         new="original order kept",
         by=(payload.requested_by or "").strip() or None,
     )
@@ -3133,7 +3144,7 @@ def resume_printing(
     return {
         "resumed": len(rows),
         "message": (
-            f"{len(rows)} stopped label(s) are back in the queue in "
+            f"{_count(len(rows), 'stopped label is', 'stopped labels are')} back in the queue in "
             f"their original order - the printer picks them up on its "
             f"next pass."
         ),
@@ -4876,8 +4887,10 @@ def add_locate_queue(
             "bundle": sku,
             "expanded": expanded,
             "message": (
-                f"{sku} is a bundle - no tags of its own. Its "
-                f"component(s) went on the locate list instead: "
+                f"{sku} is a bundle - no tags of its own. "
+                + ("Its component went" if len(expanded) == 1
+                   else "Its components went")
+                + " on the locate list instead: "
                 f"{', '.join(expanded)}."
             ),
         }
@@ -5259,8 +5272,8 @@ def lower_on_hand(
         wf = _short_date(baseline.isoformat()) if baseline else "ever"
         raise HTTPException(
             422,
-            f"Recorded sales since {wf} only account for {allowed} "
-            f"missing unit(s), and {payload.sku} has never completed a "
+            f"Recorded sales since {wf} only account for "
+            f"{_count(allowed, 'missing unit', 'missing units')}, and {payload.sku} has never completed a "
             f"batch tagging - on a first tagging an undercount usually "
             f"means boxes not tagged yet, not missing stock. Finish "
             f"tagging it first, or fix the count in Shopify admin.",
@@ -5285,7 +5298,7 @@ def lower_on_hand(
     if len(tags) > drop:
         raise HTTPException(
             422,
-            f"{len(tags)} tag(s) listed but the count only drops by "
+            f"{_count(len(tags), 'tag', 'tags')} listed but the count only drops by "
             f"{drop}.",
         )
     if payload.batch_id:
@@ -5303,10 +5316,10 @@ def lower_on_hand(
         raise HTTPException(
             409,
             f"This lowers Shopify on-hand for {payload.sku} from {live} "
-            f"to {payload.new_qty}, retires {len(tags)} silent tag(s) "
-            f"as presumed-sold, and consumes {min(drop, allowed)} "
-            f"recorded sale(s)."
-            + (f" ⚠ {unbacked} unit(s) have NO backing sale - written "
+            f"to {payload.new_qty}, retires {_count(len(tags), 'silent tag', 'silent tags')} "
+            f"as presumed-sold, and consumes "
+            f"{_count(min(drop, allowed), 'recorded sale', 'recorded sales')}."
+            + (f" ⚠ {_count(unbacked, 'unit has', 'units have')} NO backing sale - written "
                f"off as shrinkage." if unbacked else "")
             + " Undoable from History. Confirm to proceed.",
         )
@@ -5377,9 +5390,9 @@ def lower_on_hand(
         "change_id": change.id,
         "message": (
             f"Shopify on-hand for {payload.sku}: {before} to "
-            f"{payload.new_qty}, {len(moved_rows)} tag(s) retired "
+            f"{payload.new_qty}, {_count(len(moved_rows), 'tag', 'tags')} retired "
             f"presumed-sold ✓ (undo from History)"
-            + (f" · {unbacked} unit(s) had no backing sale (shrinkage)"
+            + (f" · {_count(unbacked, 'unit', 'units')} had no backing sale (shrinkage)"
                if unbacked else "")
         ),
     }
@@ -5410,8 +5423,8 @@ def undo_lower_on_hand(
         raise HTTPException(
             409,
             f"Undo sets Shopify on-hand for {row.sku} back to {old} "
-            f"(currently {live}) and restores {len(retired_rows)} "
-            f"retired tag(s) and their consumed sales. Confirm to "
+            f"(currently {live}) and restores "
+            f"{_count(len(retired_rows), 'retired tag', 'retired tags')} and their consumed sales. Confirm to "
             f"write it.",
         )
     try:
@@ -5476,7 +5489,7 @@ def undo_lower_on_hand(
         "restored": restored,
         "message": (
             f"Undone. {row.sku} on-hand back to {old}, "
-            f"{len(restored)} tag(s) live again."
+            f"{_count(len(restored), 'tag lives', 'tags live')} again."
         ),
     }
 
@@ -6987,7 +7000,7 @@ def bin_audit_complete(
         title=f"Bin audit completed: {', '.join(made)}",
         field="bin-audited",
         old=None,
-        new=f"{len(swept)} tag(s) heard",
+        new=f"{_count(len(swept), 'tag', 'tags')} heard",
         by=(payload.worker or "").strip() or None,
     )
     session.commit()
@@ -7509,7 +7522,7 @@ def bin_check(
                 sku=sku_r,
                 title=r.get("product_title"),
                 field="ledger-cleared",
-                old=f"{cleared} stale sale expectation(s)",
+                old=f"{_count(cleared, 'stale sale expectation', 'stale sale expectations')}",
                 new="audit confirmed the shelf",
                 by="bin-audit",
             )
@@ -7921,7 +7934,7 @@ def audit_dismiss_labels(
             added += 1
     session.commit()
     return {"dismissed": added,
-            "message": f"{added} label warning(s) dismissed for good."}
+            "message": f"{_count(added, 'label warning', 'label warnings')} dismissed for good."}
 
 
 class AuditCompleteIn(BaseModel):
@@ -8011,8 +8024,8 @@ def mark_bin_tagged(
     if not payload.confirmed:
         raise HTTPException(
             409,
-            f"Mark {name} as batch tagged? {len(tags)} tag(s) across "
-            f"{len(by_sku)} product(s) are recorded there. This records "
+            f"Mark {name} as batch tagged? {_count(len(tags), 'tag', 'tags')} across "
+            f"{_count(len(by_sku), 'product is', 'products are')} recorded there. This records "
             f"the shelf as done — it does NOT tag anything, print "
             f"anything, or touch Shopify. Confirm to record it.",
         )
@@ -8067,8 +8080,8 @@ def mark_bin_tagged(
         "products": len(by_sku),
         "tags": len(tags),
         "message": (
-            f"{name} recorded as batch tagged ✓ — {len(tags)} tag(s) "
-            f"across {len(by_sku)} product(s), from the tags already on "
+            f"{name} recorded as batch tagged ✓ — {_count(len(tags), 'tag', 'tags')} "
+            f"across {_count(len(by_sku), 'product', 'products')}, from the tags already on "
             f"file. Nothing was tagged, printed or written to Shopify."
         ),
     }
@@ -8828,8 +8841,9 @@ def create_batch(payload: BatchIn, session: Session = Depends(get_session)):
                     p["other_bins"] = ", ".join(others) if others else None
                 fresh.append(p)
             if moved:
-                logger.info("bin %s: %d product(s) moved since the map was "
-                            "built: %s", payload.bin, len(moved),
+                logger.info("bin %s: %s moved since the map was "
+                            "built: %s", payload.bin,
+                            _count(len(moved), "product", "products"),
                             ", ".join(moved[:10]))
             expected = fresh
         except Exception as error:
@@ -8917,8 +8931,10 @@ def create_batch(payload: BatchIn, session: Session = Depends(get_session)):
             kind=kind,
         ))
     if dropped:
-        logger.info("bin %s: skipped %d excluded bundle(s): %s",
-                    payload.bin, len(dropped), ", ".join(dropped[:10]))
+        logger.info("bin %s: skipped %s: %s", payload.bin,
+                    _count(len(dropped), "excluded bundle",
+                           "excluded bundles"),
+                    ", ".join(dropped[:10]))
     session.add_all(items)
     session.commit()
     session.refresh(batch)
@@ -11129,7 +11145,7 @@ def cleanup_silent_tags(
         **plan,
         "applied": True,
         "message": (
-            f"{len(sold_rows)} tag(s) presumed-sold against recorded "
+            f"{_count(len(sold_rows), 'tag', 'tags')} presumed-sold against recorded "
             f"sales and {len(replaced_rows)} retired as replaced - "
             f"every one restorable from History."
         ),
@@ -11542,7 +11558,7 @@ def batch_item_case(
                 422, "No sealed cases on this row to undo."
             )
         was = (
-            f"{item.case_count} case(s) of {item.case_units or '?'}"
+            f"{_count(item.case_count, 'case', 'cases')} of {item.case_units or '?'}"
         )
         item.qty_scanned += item.case_count
         item.case_count = 0
@@ -11563,7 +11579,7 @@ def batch_item_case(
             "item": item.as_dict(),
             "message": (
                 f"Sealed cases undone - the boxes count loose again "
-                f"({item.qty_scanned} scan(s) on {sku_label})."
+                f"({_count(item.qty_scanned, 'scan', 'scans')} on {sku_label})."
             ),
         }
     if payload.units is None:
@@ -11629,7 +11645,7 @@ def batch_item_case(
     ):
         raise HTTPException(
             409,
-            f"This row already counts {item.case_count} sealed case(s) "
+            f"This row already counts {_count(item.case_count, 'sealed case', 'sealed cases')} "
             f"of {item.case_units} - one row holds one case size. Undo "
             f"those first, or keep the sizes uniform.",
         )
@@ -11647,8 +11663,8 @@ def batch_item_case(
         sku=item.sku,
         title=item.product_title,
         variant_id=item.shopify_variant_id,
-        old=f"{converted} loose scan(s) converted",
-        new=f"{item.case_count} sealed case(s) of {payload.units}",
+        old=f"{_count(converted, 'loose scan', 'loose scans')} converted",
+        new=f"{_count(item.case_count, 'sealed case', 'sealed cases')} of {payload.units}",
         by=payload.changed_by,
     )
     session.commit()
@@ -11657,10 +11673,10 @@ def batch_item_case(
         "item": item.as_dict(),
         "converted": converted,
         "message": (
-            f"{payload.boxes} sealed box(es) of {payload.units} x "
+            f"{_count(payload.boxes, 'sealed box', 'sealed boxes')} of {payload.units} x "
             f"{sku_label} declared"
             + (
-                f" ({converted} loose scan(s) converted)"
+                f" ({_count(converted, 'loose scan', 'loose scans')} converted)"
                 if converted else ""
             )
             + f". Each prints ONE label reading "
@@ -12177,9 +12193,9 @@ def batch_item_resolve(
             "queued": queued,
             "item": existing.as_dict(),
             "message": (
-                f"Resolved to {title} — its {moved} box(es) merged into the "
+                f"Resolved to {title} — its {_count(moved, 'box', 'boxes')} merged into the "
                 f"row already in this batch ({existing.qty_scanned} total)."
-                + (f" {queued} label(s) queued." if queued else "")
+                + (f" {_count(queued, 'label', 'labels')} queued." if queued else "")
             ),
         }
 
@@ -12208,9 +12224,9 @@ def batch_item_resolve(
         "message": (
             (f"Refreshed from Shopify ✓ — {title}."
              if was_resolved
-             else f"Resolved to {title} ✓ — {item.qty_scanned} box(es) "
+             else f"Resolved to {title} ✓ — {_count(item.qty_scanned, 'box', 'boxes')} "
                   f"kept.")
-            + (f" {queued} label(s) queued." if queued else "")
+            + (f" {_count(queued, 'label', 'labels')} queued." if queued else "")
         ),
     }
 
@@ -12673,9 +12689,9 @@ def pull_bundles(
         field="bundles-pulled",
         old=None,
         new=(
-            f"{len(found)} bundle(s) in the app: {created} new, "
+            f"{_count(len(found), 'bundle', 'bundles')} in the app: {created} new, "
             f"{updated} updated, {unchanged} unchanged"
-            + (f"; {ledger['rows_exploded']} ledger row(s) re-booked "
+            + (f"; {_count(ledger['rows_exploded'], 'ledger row', 'ledger rows')} re-booked "
                f"as components"
                if ledger.get("rows_exploded") else "")
         ),
@@ -12690,13 +12706,13 @@ def pull_bundles(
         "local_only": local_only,
         "ledger": ledger,
         "message": (
-            f"bundles.app holds {len(found)} bundle(s): "
+            f"bundles.app holds {_count(len(found), 'bundle', 'bundles')}: "
             f"{created} built, {updated} re-synced, "
             f"{unchanged} already matched."
-            + (f" {len(local_only)} bundle(s) exist only on this "
+            + (f" {_count(len(local_only), 'bundle exists', 'bundles exist')} only on this "
                f"terminal and were left alone."
                if local_only else "")
-            + (f" {ledger['rows_exploded']} old bundle sale(s) were "
+            + (f" {_count(ledger['rows_exploded'], 'old bundle sale was', 'old bundle sales were')} "
                f"re-booked against their components for the audits."
                if ledger.get("rows_exploded") else "")
         ),
@@ -12736,7 +12752,7 @@ def set_item_kind(
     if payload.kind == "bundle" and item.paired_count:
         raise HTTPException(
             409,
-            f"{item.paired_count} RFID tag(s) are already paired to this "
+            f"{_count(item.paired_count, 'RFID tag is', 'RFID tags are')} already paired to this "
             f"row. Unpair them first — marking it a bundle would leave "
             f"tags pointing at something with no box to be on.",
         )
@@ -12830,7 +12846,7 @@ def batch_item_split(
     if item.paired_count:
         raise HTTPException(
             409,
-            f"{item.paired_count} tag(s) are already paired to this row — "
+            f"{_count(item.paired_count, 'tag is', 'tags are')} already paired to this row — "
             f"undo the pairing first, then split.",
         )
     if item.case_count:
@@ -12843,7 +12859,7 @@ def batch_item_split(
     if total != item.qty_scanned:
         raise HTTPException(
             422,
-            f"The split adds up to {total}, but {item.qty_scanned} box(es) "
+            f"The split adds up to {total}, but {_count(item.qty_scanned, 'box', 'boxes')} "
             f"were scanned. Every box has to land somewhere.",
         )
     seen_variants = {p.shopify_variant_id for p in payload.parts}
@@ -12948,7 +12964,7 @@ def set_item_skipped(
     if payload.skipped and item.paired_count:
         raise HTTPException(
             409,
-            f"{item.paired_count} tag(s) are already paired to this row, so "
+            f"{_count(item.paired_count, 'tag is', 'tags are')} already paired to this row, so "
             f"it isn't unfinished. Undo the pairing first if you really "
             f"mean to skip it.",
         )
@@ -13357,7 +13373,7 @@ def _void_and_requeue(
         session,
         title=f"Batch {batch.id} · bin {batch.bin_name}",
         field="batch-reprint",
-        old=f"{len(old_jobs)} label(s) voided",
+        old=f"{_count(len(old_jobs), 'label', 'labels')} voided",
         new=f"{len(fresh)} reprinted",
         by=requested_by,
     )
@@ -13367,10 +13383,10 @@ def _void_and_requeue(
         "queued": len(fresh),
         "tags_unlinked": unlinked,
         "message": (
-            f"{len(old_jobs)} label(s) voided"
-            + (f", {unlinked} blank-label tag record(s) unlinked"
+            f"{_count(len(old_jobs), 'label', 'labels')} voided"
+            + (f", {_count(unlinked, 'blank-label tag record', 'blank-label tag records')} unlinked"
                if unlinked else "")
-            + f" - {len(fresh)} fresh label(s) queued in the same order. "
+            + f" - {_count(len(fresh), 'fresh label', 'fresh labels')} queued in the same order. "
             "Bin the old copies."
         ),
     }
@@ -13979,7 +13995,7 @@ def receiving_prints(
         "skipped_non_taggable": skipped_non_taggable,
         "held_notes": out["held_notes"],
         "message": (
-            f"{len(jobs)} label(s) queued on receiving batch {batch.id}"
+            f"{_count(len(jobs), 'label', 'labels')} queued on receiving batch {batch.id}"
             + (f" ({tag})" if payload.reference else "")
             + (f"; {len(skipped_unknown)} unknown SKU(s) skipped"
                if skipped_unknown else "")
@@ -14053,10 +14069,10 @@ def receiving_unprinted(
         sku=None,
         title=tag,
         field="labels-not-printed",
-        old=f"{pushed_units} unit(s) booked",
-        new=(f"{len(would)} label(s) waiting on receiving batch "
+        old=f"{_count(pushed_units, 'unit', 'units')} booked",
+        new=(f"{_count(len(would), 'label', 'labels')} waiting on receiving batch "
              f"#{batch.id}"
-             + (f"; {len(would_no_bin)} product(s) need a bin first"
+             + (f"; {_count(len(would_no_bin), 'product needs', 'products need')} a bin first"
                 if would_no_bin else "")),
         by=payload.requested_by,
     )
@@ -14069,10 +14085,10 @@ def receiving_unprinted(
         "skipped_unknown": out["skipped_unknown"],
         "skipped_non_taggable": out["skipped_non_taggable"],
         "message": (
-            f"Booked {pushed_units} unit(s) on receiving batch "
+            f"Booked {_count(pushed_units, 'unit', 'units')} on receiving batch "
             f"{batch.id} with NO labels queued - resume the batch to "
-            f"print the {len(would)} waiting label(s)"
-            + (f" ({len(would_no_bin)} product(s) need a bin "
+            f"print the {_count(len(would), 'waiting label', 'waiting labels')}"
+            + (f" ({_count(len(would_no_bin), 'product needs', 'products need')} a bin "
                f"assigned first: "
                + ", ".join(would_no_bin[:4])
                + (" and more" if len(would_no_bin) > 4 else "") + ")"
@@ -14306,7 +14322,7 @@ def receiving_full_shipment(
         "skipped_unknown": intake["skipped_unknown"],
         "skipped_non_taggable": intake["skipped_non_taggable"],
         "message": (
-            f"{ref}: {len(jobs)} label(s) queued on receiving batch "
+            f"{ref}: {_count(len(jobs), 'label', 'labels')} queued on receiving batch "
             f"#{batch.id}"
             + (f"; {'; '.join(intake['held_notes'])}"
                if intake["held_notes"] else "")
@@ -14872,7 +14888,7 @@ def dismiss_sold_item(
         variant_id=item.shopify_variant_id,
         field="receiving-dismissed",
         old=f"item {item.id}",
-        new=f"sold before label - {covered} label(s) covered",
+        new=f"sold before label - {_count(covered, 'label', 'labels')} covered",
         by=(payload.worker or "").strip() or None,
     )
     session.flush()
@@ -14884,7 +14900,7 @@ def dismiss_sold_item(
         "receiving_done": receiving_done,
         "message": (
             f"{item.product_title or item.sku} dismissed - sold before "
-            f"labelling. {covered} outstanding label(s) covered; counts "
+            f"labelling. {_count(covered, 'outstanding label', 'outstanding labels')} covered; counts "
             "and Shopify untouched."
             + (" Shipment complete ✓ - the batch closed itself."
                if receiving_done else "")
@@ -14932,7 +14948,7 @@ def dismiss_sold_undo(
         variant_id=item.shopify_variant_id,
         field="receiving-dismissed",
         old="undone",
-        new=f"{removed} label(s) owed again",
+        new=f"{_count(removed, 'label', 'labels')} owed again",
         by=(payload.worker or "").strip() or None,
     )
     session.commit()
@@ -14940,7 +14956,7 @@ def dismiss_sold_undo(
         "item": item.as_dict(),
         "labels_restored": removed,
         "message": (
-            f"Dismissal undone - {removed} label(s) count as owed again."
+            f"Dismissal undone - {_count(removed, 'label', 'labels')} count as owed again."
             + (" This batch already closed itself; its story stays as "
                "completed." if batch.status == "done" else "")
         ),
@@ -15276,7 +15292,7 @@ def epcs_ignore_heard(
     _log_change(
         session,
         sku=None,
-        title=f"{len(fresh)} unpaired sticker(s) written off",
+        title=f"{_count(len(fresh), 'unpaired sticker', 'unpaired stickers')} written off",
         field="unpaired-ignored",
         old=f"sweep #{cap.id}" if cap else "C72 sweep",
         new=marker,
@@ -15287,7 +15303,7 @@ def epcs_ignore_heard(
         "ignored": len(fresh), "heard": len(heard),
         "printed_labels": len(printed), "marker": marker,
         "message": (
-            f"{len(fresh)} unpaired sticker(s) written off - they leave "
+            f"{_count(len(fresh), 'unpaired sticker', 'unpaired stickers')} written off - they leave "
             f"the locate list and stay ignored on future sweeps."
             + (f" ⚠ {len(printed)} of them were printed receiving "
                f"labels." if printed else "")
@@ -15357,7 +15373,7 @@ def epcs_not_ours(
     _log_change(
         session,
         sku=None,
-        title=f"{len(fresh)} tag(s) marked NOT OURS",
+        title=f"{_count(len(fresh), 'tag', 'tags')} marked NOT OURS",
         field="epc-not-ours",
         old=tails,
         new=marker,
@@ -15368,7 +15384,7 @@ def epcs_not_ours(
         "ignored": len(fresh), "printed_labels": len(ours),
         "marker": marker,
         "message": (
-            f"{len(fresh)} tag(s) marked not ours - off the hunt list, "
+            f"{_count(len(fresh), 'tag', 'tags')} marked not ours - off the hunt list, "
             f"ignored on every future sweep."
             + (f" ⚠ {len(ours)} refused: they are OUR printed "
                f"receiving labels." if ours else "")
@@ -15526,8 +15542,9 @@ def _packed_verdict(base: dict) -> dict:
     if ratio >= 0.5:
         return {
             "verdict": "partial",
-            "label": f"part verified: {retirable} of {owned} tagged "
-                     f"box(es) match fulfilled orders",
+            "label": f"part verified: {retirable} of "
+                     f"{_count(owned, 'tagged box', 'tagged boxes')} "
+                     f"{'matches' if retirable == 1 else 'match'} fulfilled orders",
         }
     if retirable > 0:
         return {
@@ -15676,11 +15693,11 @@ def epcs_retire_sold(
         _log_change(
             session,
             sku=None,
-            title=f"{len(to_retire)} tag(s) retired sold from sweep "
+            title=f"{_count(len(to_retire), 'tag', 'tags')} retired sold from sweep "
                 f"#{cap.id}",
             field="packed-retired",
             old=f"sweep #{cap.id}",
-            new=f"{len(to_retire)} tag(s)",
+            new=f"{_count(len(to_retire), 'tag', 'tags')}",
             by=by,
         )
     session.commit()
@@ -15689,12 +15706,12 @@ def epcs_retire_sold(
     return {
         **base, "applied": True,
         "message": (
-            f"{len(to_retire)} tag(s) retired sold against fulfilled "
+            f"{_count(len(to_retire), 'tag', 'tags')} retired sold against fulfilled "
             f"orders."
-            + (f" {skipped} heard tag(s) stayed live - no unretired "
+            + (f" {_count(skipped, 'heard tag', 'heard tags')} stayed live - no unretired "
                f"sale covers them yet; re-run after those orders "
                f"fulfill." if skipped else "")
-            + (f" {unowned} unpaired tag(s) ignored." if unowned > 0
+            + (f" {_count(unowned, 'unpaired tag', 'unpaired tags')} ignored." if unowned > 0
                else "")
         ),
     }
@@ -15771,7 +15788,7 @@ def epcs_retire_sold_undo(
     _log_change(
         session,
         sku=None,
-        title=f"{len(restored)} tag(s) restored - sweep #{cap.id} "
+        title=f"{_count(len(restored), 'tag', 'tags')} restored - sweep #{cap.id} "
             f"un-spent",
         field="packed-unretired",
         old=f"sweep #{cap.id}",
@@ -15782,7 +15799,7 @@ def epcs_retire_sold_undo(
     return {
         "restored": len(restored),
         "message": (
-            f"{len(restored)} tag(s) back live, their ledger units "
+            f"{_count(len(restored), 'tag', 'tags')} back live, their ledger units "
             f"handed back - sweep #{cap.id} can be used again."
         ),
     }
@@ -15816,7 +15833,7 @@ def epcs_ignore_heard_undo(
     _log_change(
         session,
         sku=None,
-        title=f"{len(rows)} written-off sticker(s) restored",
+        title=f"{_count(len(rows), 'written-off sticker', 'written-off stickers')} restored",
         field="unpaired-unignored",
         old=payload.marker.strip(),
         new="write-off undone",
@@ -15826,7 +15843,7 @@ def epcs_ignore_heard_undo(
     return {
         "restored": len(rows),
         "message": (
-            f"{len(rows)} sticker(s) un-ignored - they rejoin the "
+            f"{_count(len(rows), 'sticker', 'stickers')} un-ignored - they rejoin the "
             f"unpaired list on the next sweep that hears them."
         ),
     }
@@ -16104,18 +16121,18 @@ def divert_to_bin(
         "labels_held": held_count,
         "skipped_bundles": skipped,
         "message": (
-            f"{len(movers)} product(s) moved to a side trip for {wanted} — "
+            f"{_count(len(movers), 'product', 'products')} moved to a side trip for {wanted} — "
             + (
-                f"{held_count} label(s) will print WITH "
+                f"{_count(held_count, 'label', 'labels')} will print WITH "
                 f"{parent.bin_name}'s strip at the PRINT step. Keep "
                 f"working {parent.bin_name}; walk the trip once its "
                 f"labels are in hand."
                 if held else
                 (
-                    f"{len(jobs)} label(s) queued. Pair them, then close "
+                    f"{_count(len(jobs), 'label', 'labels')} queued. Pair them, then close "
                     if jobs else
                     "already tagged, so no labels are needed. Carry the "
-                    "box(es) over and close "
+                    "boxes over and close "
                 )
                 + f"it to get back to {parent.bin_name}."
             )
@@ -16253,13 +16270,13 @@ def batch_baseline(
         "strays": stray_rows[:20],
         "unknown": unknown,
         "message": (
-            f"Baseline applied ✓ — {len(swept)} tag(s) swept, {matched} "
-            f"matched to products; {tagged_products} product(s) here "
+            f"Baseline applied ✓ — {_count(len(swept), 'tag', 'tags')} swept, {matched} "
+            f"matched to products; {_count(tagged_products, 'product', 'products')} here "
             f"already carry tags"
             + (f", {done} fully done" if done else "")
-            + (f". {len(stray_rows)} tag(s) belong to products not "
+            + (f". {_count(len(stray_rows), 'tag belongs', 'tags belong')} to products not "
                f"expected in {batch.bin_name}" if stray_rows else "")
-            + (f". {unknown} tag(s) aren't in the system — printed but "
+            + (f". {_count(unknown, 'tag', 'tags')} aren't in the system — printed but "
                f"never paired, or foreign." if unknown else ".")
         ),
     }
@@ -16323,7 +16340,7 @@ def set_tagged_before(
     return {
         "item": d,
         "message": (
-            f"{payload.count} box(es) counted as already tagged — no "
+            f"{_count(payload.count, 'box', 'boxes')} counted as already tagged — no "
             f"labels will print for those."
             if payload.count else
             "Already-tagged count cleared — every scanned box gets a label."
@@ -16620,7 +16637,7 @@ def batch_item_reprint(
     if item.paired_count and not payload.old_stickers_removed:
         raise HTTPException(
             409,
-            f"{item.paired_count} tag(s) are already paired to the old "
+            f"{_count(item.paired_count, 'tag is', 'tags are')} already paired to the old "
             f"labels. Peel those stickers OFF the boxes first — a leftover "
             f"sticker would answer sweeps alongside the new one — then "
             f"confirm and try again.",
@@ -16705,9 +16722,9 @@ def batch_item_reprint(
         "voided": voided,
         "ties_released": released,
         "message": (
-            f"{voided} old label(s) voided"
-            + (f", {released} tag tie(s) released" if released else "")
-            + f" — {len(jobs)} fresh label(s) queued."
+            f"{_count(voided, 'old label', 'old labels')} voided"
+            + (f", {_count(released, 'tag tie', 'tag ties')} released" if released else "")
+            + f" — {_count(len(jobs), 'fresh label', 'fresh labels')} queued."
         ),
     }
 
@@ -16989,13 +17006,13 @@ def batch_verify(
         if r["paired_count"] < r["printed_count"]:
             r["state"] = "pairing-short"
             r["reason"] = (
-                f"{r['printed_count'] - r['paired_count']} printed "
-                f"label(s) never got a tag paired — finish pairing"
+                f"{_count(r['printed_count'] - r['paired_count'], 'printed label', 'printed labels')} "
+                f"never got a tag paired — finish pairing"
             )
         elif not na and db < r["paired_count"]:
             r["state"] = "batch-silent"
             r["reason"] = (
-                f"{r['paired_count'] - db} tag(s) paired in THIS batch "
+                f"{_count(r['paired_count'] - db, 'tag', 'tags')} paired in THIS batch "
                 f"didn't answer — find those boxes"
             )
         elif not na and do < prior_expected:
@@ -17014,21 +17031,21 @@ def batch_verify(
                 )
                 wf = _short_date(sh.get("sales_window_from")) or "tagging"
                 r["reason"] = (
-                    f"{silent} tag(s) silent, sales since {wf} "
+                    f"{_count(silent, 'tag', 'tags')} silent, sales since {wf} "
                     f"only account for {sh.get('explained', 0)}"
                     if sh.get("unexplained", 0) > 0
-                    else f"{silent} tag(s) silent, recorded sales "
+                    else f"{_count(silent, 'tag', 'tags')} silent, recorded sales "
                          f"account for {sh.get('explained', 0)}, but "
                          f"the sweep still came up short"
                 )
             elif sh is not None and sh.get("sales_gap"):
                 r["reason"] = (
-                    f"{gap} earlier tag(s) silent, no recorded sales "
+                    f"{_count(gap, 'earlier tag', 'earlier tags')} silent, no recorded sales "
                     f"in the window"
                 )
             else:
                 r["reason"] = (
-                    f"{gap} earlier tag(s) silent, likely sold or "
+                    f"{_count(gap, 'earlier tag', 'earlier tags')} silent, likely sold or "
                     f"moved before this batch"
                 )
             oh = (
@@ -17061,14 +17078,14 @@ def batch_verify(
             if sh is not None and sh.get("explained"):
                 s = sh["explained"]
                 r["reason"] = (
-                    f"{s} earlier tag(s) silent, recorded sales "
+                    f"{_count(s, 'earlier tag', 'earlier tags')} silent, recorded sales "
                     f"account for all {s}"
                 )
             elif sh is not None and sh.get("presumed_sold"):
                 # No sales history for this product: the on-hand
                 # shortfall carries the presumption, as before.
                 r["reason"] = (
-                    f"{sh['presumed_sold']} recorded tag(s) presumed sold"
+                    f"{_count(sh['presumed_sold'], 'recorded tag', 'recorded tags')} presumed sold"
                 )
             else:
                 r["reason"] = ""
@@ -17807,9 +17824,9 @@ def unbundle(
     if not payload.confirmed:
         raise HTTPException(
             409,
-            f"This un-bundles {payload.units} box(es) of {key}: "
-            f"{len(tags)} live bundle tag(s) retire as unbundled (peel "
-            f"the stickers off), and {total_labels} component label(s) "
+            f"This un-bundles {_count(payload.units, 'box', 'boxes')} of {key}: "
+            f"{_count(len(tags), 'live bundle tag', 'live bundle tags')} retire as unbundled (peel "
+            f"the stickers off), and {_count(total_labels, 'component label', 'component labels')} "
             f"print. Shopify stock is NOT touched - move the counts in "
             f"admin when the components list. Confirm to proceed.",
         )
@@ -17848,11 +17865,11 @@ def unbundle(
     session.add_all(jobs)
     _log_change(
         session, sku=key,
-        title=f"Un-bundled {payload.units} box(es) into "
-              f"{len(resolved)} component product(s)",
+        title=f"Un-bundled {_count(payload.units, 'box', 'boxes')} into "
+              f"{_count(len(resolved), 'component product', 'component products')}",
         field="unbundled",
-        old=f"{len(tags)} bundle tag(s) retired",
-        new=f"{len(jobs)} component label(s) queued",
+        old=f"{_count(len(tags), 'bundle tag', 'bundle tags')} retired",
+        new=f"{_count(len(jobs), 'component label', 'component labels')} queued",
         by=payload.worker,
     )
     session.commit()
@@ -17860,8 +17877,8 @@ def unbundle(
         "retired_tags": len(tags),
         "labels_queued": len(jobs),
         "message": (
-            f"{len(tags)} bundle tag(s) retired (peel the stickers) and "
-            f"{len(jobs)} component label(s) queued - pair each new "
+            f"{_count(len(tags), 'bundle tag', 'bundle tags')} retired (peel the stickers) and "
+            f"{_count(len(jobs), 'component label', 'component labels')} queued - pair each new "
             f"label as it goes on its box."
         ),
     }
@@ -18913,11 +18930,11 @@ def unavailable_move(
     session.commit()
     verb = ("set aside as" if payload.direction == "in"
             else "brought back from")
-    msg = (f"{moved_qty} unit(s) of {sku} {verb} {bucket_label} in "
+    msg = (f"{_count(moved_qty, 'unit', 'units')} of {sku} {verb} {bucket_label} in "
            f"Shopify. On-hand is unchanged; the shelf now expects "
-           f"{moved_qty} fewer box(es)."
+           f"{_count(moved_qty, 'fewer box', 'fewer boxes')}."
            if payload.direction == "in" else
-           f"{moved_qty} unit(s) of {sku} {verb} {bucket_label} — "
+           f"{_count(moved_qty, 'unit', 'units')} of {sku} {verb} {bucket_label} — "
            f"back in available (sellable) stock. On-hand total is "
            f"unchanged.")
     if comment_note:
@@ -19441,7 +19458,7 @@ def product_history(
             "worker": None,
             "detail": f"{sr.quantity} × sold on order "
                       f"{sr.order_name or sr.order_id}"
-                      + (f" · {sr.retired} tag(s) since marked sold"
+                      + (f" · {_count(sr.retired, 'tag', 'tags')} since marked sold"
                          if sr.retired else ""),
             "shopify": True,
             # Structured ride-alongs for the card's chain dropdown
@@ -19593,7 +19610,7 @@ def product_history(
         if batch.id in heard_by_batch:
             detail += f", sweep heard {heard_by_batch[batch.id]}"
         if item.paired_count:
-            detail += f", {item.paired_count} tag(s) paired"
+            detail += f", {_count(item.paired_count, 'tag', 'tags')} paired"
         detail += f" · batch #{batch.id} {batch.status}"
         events.append({
             "at": iso(batch.completed_at or batch.created_at),
@@ -19976,7 +19993,7 @@ def history(
         # with the sweep write-off (same dismissal rows underneath).
         elif c.changed_field == "epc-not-ours":
             event["detail"] = (
-                f"{c.product_title or 'foreign tag(s) marked not ours'}"
+                f"{c.product_title or 'foreign tags marked not ours'}"
                 + (f" · {c.old_barcode}" if c.old_barcode else "")
             )
             if c.new_barcode and c.new_barcode in ui_live:
@@ -20009,12 +20026,12 @@ def history(
         # old notes keep their story, without an undo.
         elif c.changed_field == "backorder-debt":
             event["detail"] = (
-                f"Shopify on-hand ran {c.new_barcode} unit(s) behind "
+                f"Shopify on-hand ran {_count(c.new_barcode, 'unit', 'units')} behind "
                 f"the shelf (customer backorder filled by this delivery)"
             )
         elif c.changed_field == "backorder-debt-clear":
             event["detail"] = (
-                f"backorder note cleared ({c.new_barcode} unit(s))"
+                f"backorder note cleared ({_count(c.new_barcode, 'unit', 'units')})"
             )
         elif c.changed_field == "tag-unretired" and c.old_barcode:
             event["detail"] = (
@@ -20273,7 +20290,7 @@ def history(
                 "sku": None,
                 "title": "Receiving",
                 "detail": f"Receiving #{b.id}"
-                          + (f" · {tie_count} tag(s) tied"
+                          + (f" · {_count(tie_count, 'tag', 'tags')} tied"
                              if tie_count else ""),
                 "undo": undo,
             })
@@ -20287,7 +20304,7 @@ def history(
                     "sku": None,
                     "title": "Receiving",
                     "detail": f"Receiving #{b.id}"
-                              + (f" · {tie_count} tag(s) tied"
+                              + (f" · {_count(tie_count, 'tag', 'tags')} tied"
                                  if tie_count else ""),
                     "undo": undo,
                 })
@@ -20307,7 +20324,7 @@ def history(
             "sku": None,
             "title": f"Bin {b.bin_name}",
             "detail": what
-                      + (f" · {tie_count} tag(s) tied" if tie_count else ""),
+                      + (f" · {_count(tie_count, 'tag', 'tags')} tied" if tie_count else ""),
             "undo": undo,
         })
         if b.verified_at:
@@ -20318,7 +20335,7 @@ def history(
                 "sku": None,
                 "title": f"Bin {b.bin_name}",
                 "detail": f"{what} swept and checked"
-                          + (f" · {tie_count} tag(s) tied" if tie_count
+                          + (f" · {_count(tie_count, 'tag', 'tags')} tied" if tie_count
                              else ""),
                 "undo": undo,
             })
@@ -20335,7 +20352,7 @@ def history(
                 "sku": None,
                 "title": f"Bin {b.bin_name}",
                 "detail": what
-                          + (f" · {tie_count} tag(s) still tied"
+                          + (f" · {_count(tie_count, 'tag', 'tags')} still tied"
                              if tie_count else ""),
                 "undo": undo,
             })
@@ -20418,7 +20435,7 @@ def _oneleft_detail(oc: OneLeftCheck) -> str:
     else:
         body = (
             f"1-left check auto-cleared (as {oc.employee}) — evidence "
-            f"{oc.evidence_units} unit(s) vs claimed "
+            f"{_count(oc.evidence_units, 'unit', 'units')} vs claimed "
             f"{oc.claimed if oc.claimed is not None else '?'}"
         )
     if oc.evidence:
