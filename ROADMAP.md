@@ -156,6 +156,25 @@ iterated over the "Audits Tab Redesign" preview artifact, 3 rounds):**
   removed (packing goes through an audit sweep; the server's
   /api/packing/* endpoints and the web pane stay).
 
+**ROUND 15 (Nick, 2026-09-29) — ✅ BUILT: the C72 Audit tab lands on
+a rack picker; the audit window is scoped to one rack (C72 4.24).**
+- Entering the Audit tab, or leaving an audit, lands on a picker
+  shaped like the batch tab's menu: a rack/bin box with autofill
+  (racks by prefix; a rack's bins once a dash is typed), then the
+  web's recommended racks as cards (Option A of the previews) in
+  the web's order - overdue by drift, then up to date - each with
+  age, bin count, mismatches, "Drift: N", open stock checks, and
+  "in progress · 2 of 5" / "next: I1-3" / "continue · I1-2" chips.
+- Tapping a rack (or typing one, or a bin, or scanning a BIN
+  barcode) opens today's audit window with a rack strip: ◀ RACKS,
+  RACK I1, "bin 2 of 5", the drift chip. The arrows walk only that
+  rack's bins and stop at the ends. LOG AUDIT returns to the
+  landing with the rack's next bin remembered on its card.
+- Server: GET /api/audit/racks - the audit queue rolled up per rack
+  (batch-done bins only, same as the web), open 1-left checks per
+  rack (fail-soft), open walk sessions, and EVERY mapped rack's
+  bins in natural order for the arrows. dev/tests/test_auditracks.py.
+
 **ROUND 14 (Nick, 2026-09-29) — ✅ BUILT: the Audits hub tightened
 (iterated over live previews, approved). Web only.**
 - Tiles first; one slim row under them: Up-to-date chip + Locate

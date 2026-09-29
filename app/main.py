@@ -8289,6 +8289,120 @@ def audit_bins(session: Session = Depends(get_session)):
     }
 
 
+@app.get("/api/audit/racks", dependencies=[Depends(require_user)])
+def audit_racks(session: Session = Depends(get_session)):
+    """The C72 Audit landing (Nick, 2026-09-29): the scored queue rolled
+    up per RACK in the web terminal's order - overdue racks by drift,
+    then the up-to-date ones by drift - with each rack's open 1-left
+    checks, any open walk session, and its bins in natural order (the
+    gun's arrows walk only those). `racks` carries EVERY rack in the bin
+    map, tagged or not, so a typed rack always resolves."""
+    data = audit_bins(session)
+    threshold = data["threshold_days"]
+
+    def rack_of(bin_name: str) -> str:
+        return ((bin_name or "").split("-")[0] or bin_name or "").upper()
+
+    # Every rack's bins, from the whole map (typed racks + the arrows).
+    all_bins: dict[str, set] = {}
+    map_bin_by_sku: dict[str, str] = {}
+    for e in session.scalars(
+        select(BinMapEntry).where(BinMapEntry.bin.isnot(None))
+    ):
+        b = (e.bin or "").strip()
+        if not b:
+            continue
+        all_bins.setdefault(rack_of(b), set()).add(b)
+        if e.sku:
+            map_bin_by_sku.setdefault(_up(e.sku), b)
+    racks_bins = {
+        r: sorted(bs, key=_bin_sort_key) for r, bs in all_bins.items()
+    }
+
+    # The rollup: only bins that completed a batch tagging count, same
+    # rule as the web's recommended racks.
+    agg: dict[str, dict] = {}
+    for b in data["bins"]:
+        if not b["batch_done"]:
+            continue
+        r = agg.setdefault(rack_of(b["bin"]), {
+            "rack": rack_of(b["bin"]), "score": 0, "bins": 0,
+            "mismatched": 0, "overdue": False, "last_audited_at": None,
+            "any_never": False, "worst_bin": None, "worst_score": -1,
+        })
+        r["score"] += b["score"]
+        r["bins"] += 1
+        r["mismatched"] += b["mismatched_count"]
+        r["overdue"] = r["overdue"] or b["overdue"]
+        if b["last_audited_at"] is None:
+            r["any_never"] = True
+        elif (r["last_audited_at"] is None
+              or b["last_audited_at"] < r["last_audited_at"]):
+            r["last_audited_at"] = b["last_audited_at"]
+        if b["score"] > r["worst_score"]:
+            r["worst_score"] = b["score"]
+            r["worst_bin"] = b["bin"]
+
+    # Open 1-left checks per rack (fail-soft: the dashboard being down
+    # just means no chips).
+    checks: dict[str, int] = {}
+    try:
+        pend = oneleft.get_pending()
+        if pend.get("ok"):
+            for item in pend.get("items") or []:
+                b = (item.get("stock_bin") or "").strip() or \
+                    map_bin_by_sku.get(_up(item.get("sku")), "")
+                if b:
+                    checks[rack_of(b)] = checks.get(rack_of(b), 0) + 1
+    except Exception:  # noqa: BLE001 - chips are decoration
+        pass
+
+    # Open walk sessions, keyed by the rack their bins live on.
+    sessions: dict[str, dict] = {}
+    for s in session.scalars(
+        select(AuditSession).where(
+            AuditSession.status == "open", AuditSession.kind == "bins"
+        ).order_by(AuditSession.id.desc())
+    ):
+        items = session.scalars(
+            select(AuditSessionItem)
+            .where(AuditSessionItem.session_id == s.id)
+            .order_by(AuditSessionItem.id)
+        ).all()
+        if not items:
+            continue
+        r = rack_of(items[0].key)
+        nxt = next((i.key for i in items if not i.done), None)
+        sessions.setdefault(r, {
+            "id": s.id, "name": s.name,
+            "done": sum(1 for i in items if i.done), "total": len(items),
+            "next": nxt,
+        })
+
+    def finish(r: dict) -> dict:
+        r.pop("worst_score", None)
+        r["bin_names"] = racks_bins.get(r["rack"], [])
+        r["checks_open"] = checks.get(r["rack"], 0)
+        r["session"] = sessions.get(r["rack"])
+        return r
+
+    overdue = sorted(
+        (finish(r) for r in agg.values() if r["overdue"]),
+        key=lambda r: (-r["score"], r["rack"]),
+    )
+    fresh = sorted(
+        (finish(r) for r in agg.values() if not r["overdue"]),
+        key=lambda r: (-r["score"], r["rack"]),
+    )
+    return {
+        "threshold_days": threshold,
+        "recommended": overdue,
+        "fresh": fresh,
+        "racks": racks_bins,
+        "checks_open": checks,
+    }
+
+
 @app.get("/api/audit/unavailable", dependencies=[Depends(require_user)])
 def audit_unavailable(session: Session = Depends(get_session)):
     """Every product with units in Shopify's Unavailable bucket (Nick,

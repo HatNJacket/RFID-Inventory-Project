@@ -14364,9 +14364,11 @@ public class MainActivity extends Activity {
         } else if (activeTab == TAB_AUDIT) {
             helpDialog("Audit",
                     "Square a shelf against the system:\n\n"
-                    + "• Type or ◀ ▶ a bin or rack - the list shows "
-                    + "every product expected there, worst first (red, "
-                    + "yellow, green).\n"
+                    + "\u2022 The tab opens on the rack list - the web's audit "
+                    + "order, with each rack's drift and open checks. Tap a "
+                    + "rack, or type a rack or bin, to audit it; \u25c0 \u25b6 "
+                    + "then walk only that rack's bins, worst product first "
+                    + "(red, yellow, green). \u25c0 RACKS comes back here.\n"
                     + "• TRIGGER sweeps; stopping re-checks by itself. "
                     + "CHECK re-runs it any time.\n"
                     + "• Barcode any box WITHOUT a sticker - it's noted "
@@ -16077,6 +16079,20 @@ public class MainActivity extends Activity {
             auditItemEpcs = new java.util.HashMap<>();
     private JSONArray auditFinds = null;      // active finds, server truth
     private List<String> auditBinNames = null;
+    // The Audit landing (Nick, 2026-09-29): rack picker + autofill, and
+    // the audit window scoped to ONE rack's bins.
+    private LinearLayout auditLanding, auditWork, auditSuggest, auditRackList;
+    private LinearLayout auditCtx;
+    private EditText auditRackIn;
+    private TextView auditCtxRack, auditCtxPos, auditCtxDrift;
+    private JSONObject auditRacksData = null;   // /api/audit/racks
+    private boolean auditRacksLoading = false;
+    private boolean auditLandingShown = true;
+    private String auditRack = null;            // rack the arrows walk
+    private List<String> auditRackBins = new ArrayList<>();
+    // rack -> the bin to open next after a LOG (its card says so)
+    private final java.util.HashMap<String, String> auditRackResume =
+            new java.util.HashMap<>();
     private boolean auditPairMode = false;
     private JSONObject auditPairProduct = null;
 
@@ -16085,14 +16101,112 @@ public class MainActivity extends Activity {
         v.setOrientation(LinearLayout.VERTICAL);
 
         auditCount = new TextView(this);
-        auditCount.setText("0 tags");
+        auditCount.setText("Audit");
         auditCount.setTextSize(20);
         auditCount.setTypeface(null, Typeface.BOLD);
         auditCount.setTextColor(C_BLUE);
         v.addView(tabHeader(null, auditCount));
 
-        // Location row: ◀ bin/rack ▶ (Nick, 2026-09-01: LOAD is gone -
-        // Enter on the field or an arrow tap loads the location).
+        // ---- the landing (Nick, 2026-09-29): one rack/bin box with
+        // autofill, then the web's recommended racks as picker cards.
+        // Entering the tab or leaving an audit lands here.
+        auditLanding = new LinearLayout(this);
+        auditLanding.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout inRow = new LinearLayout(this);
+        auditRackIn = themedEdit();
+        auditRackIn.setHint("Rack or bin (I1, F1-2)");
+        auditRackIn.setTextSize(15);
+        auditRackIn.setInputType(InputType.TYPE_CLASS_TEXT
+                | InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS);
+        auditRackIn.setImeOptions(
+                android.view.inputmethod.EditorInfo.IME_ACTION_GO);
+        auditRackIn.setOnEditorActionListener((tv, actionId, ev) -> {
+            auditOpenTyped(auditRackIn.getText().toString());
+            hideSoftKeyboard();
+            return true;
+        });
+        auditRackIn.addTextChangedListener(new android.text.TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int a, int b,
+                    int c) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence s, int a, int b, int c) {
+            }
+
+            @Override
+            public void afterTextChanged(android.text.Editable s) {
+                auditSuggestUpdate(s.toString());
+            }
+        });
+        inRow.addView(auditRackIn, weight());
+        Button go = smallBtn("GO");
+        makePrimary(go);
+        go.setOnClickListener(x -> {
+            auditOpenTyped(auditRackIn.getText().toString());
+            hideSoftKeyboard();
+        });
+        LinearLayout.LayoutParams goLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.MATCH_PARENT);
+        goLp.leftMargin = dp(6);
+        inRow.addView(go, goLp);
+        auditLanding.addView(inRow);
+        auditSuggest = new LinearLayout(this);
+        auditSuggest.setOrientation(LinearLayout.VERTICAL);
+        auditSuggest.setVisibility(View.GONE);
+        auditLanding.addView(auditSuggest);
+        ScrollView lScroll = new ScrollView(this);
+        auditRackList = new LinearLayout(this);
+        auditRackList.setOrientation(LinearLayout.VERTICAL);
+        auditRackList.setPadding(0, dp(4), 0, dp(6));
+        lScroll.addView(auditRackList);
+        auditLanding.addView(lScroll, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        v.addView(auditLanding, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        // ---- the audit window: today's screen plus the rack strip.
+        auditWork = new LinearLayout(this);
+        auditWork.setOrientation(LinearLayout.VERTICAL);
+        auditWork.setVisibility(View.GONE);
+
+        auditCtx = new LinearLayout(this);
+        auditCtx.setOrientation(LinearLayout.HORIZONTAL);
+        auditCtx.setGravity(Gravity.CENTER_VERTICAL);
+        auditCtx.setBackground(rr(C_CARD, C_LINE, 8));
+        auditCtx.setPadding(dp(8), dp(6), dp(10), dp(6));
+        Button back = chipBtn("◀ RACKS");
+        back.setOnClickListener(x -> auditShowLanding());
+        auditCtx.addView(back);
+        auditCtxRack = new TextView(this);
+        auditCtxRack.setTextSize(15);
+        auditCtxRack.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+        auditCtxRack.setTextColor(C_BLUE_DK);
+        LinearLayout.LayoutParams crl = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        crl.leftMargin = dp(10);
+        auditCtx.addView(auditCtxRack, crl);
+        auditCtxPos = new TextView(this);
+        auditCtxPos.setTextSize(12);
+        auditCtxPos.setTextColor(C_MUTED);
+        LinearLayout.LayoutParams cpl = new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        cpl.leftMargin = dp(8);
+        auditCtx.addView(auditCtxPos, cpl);
+        auditCtxDrift = auditChip("", C_MUTED, C_PRESS);
+        auditCtx.addView(auditCtxDrift);
+        LinearLayout.LayoutParams ctxLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        ctxLp.bottomMargin = dp(6);
+        auditWork.addView(auditCtx, ctxLp);
+
+        // Location row: ◀ bin ▶ - the arrows walk the rack's
+        // bins (Nick, 2026-09-01: LOAD is gone - Enter on the field or
+        // an arrow tap loads the location).
         LinearLayout locRow = new LinearLayout(this);
         Button prev = smallBtn("◀");
         prev.setOnClickListener(x -> auditStep(-1));
@@ -16106,6 +16220,7 @@ public class MainActivity extends Activity {
                 android.view.inputmethod.EditorInfo.IME_ACTION_GO);
         auditBin.setOnEditorActionListener((tv, actionId, ev) -> {
             auditLoad();
+            auditCtxUpdate();
             hideSoftKeyboard();
             return true;
         });
@@ -16113,7 +16228,7 @@ public class MainActivity extends Activity {
         Button next = smallBtn("▶");
         next.setOnClickListener(x -> auditStep(1));
         locRow.addView(next);
-        v.addView(locRow);
+        auditWork.addView(locRow);
 
         // Contextual banner: PRINT while labels are owed, the pair-mode
         // exit while pairing, hidden otherwise (Nick, 2026-09-01).
@@ -16127,14 +16242,14 @@ public class MainActivity extends Activity {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT);
         abl.topMargin = dp(6);
-        v.addView(auditBanner, abl);
+        auditWork.addView(auditBanner, abl);
 
         ScrollView scroll = new ScrollView(this);
         auditList = new LinearLayout(this);
         auditList.setOrientation(LinearLayout.VERTICAL);
         auditList.setPadding(0, dp(6), 0, dp(6));
         scroll.addView(auditList);
-        v.addView(scroll, new LinearLayout.LayoutParams(
+        auditWork.addView(scroll, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
 
         // Bottom bar: sweep plumbing behind ⋯, CHECK refreshes the live
@@ -16166,7 +16281,9 @@ public class MainActivity extends Activity {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT);
         bl2.topMargin = dp(6);
-        v.addView(bottom, bl2);
+        auditWork.addView(bottom, bl2);
+        v.addView(auditWork, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
         return v;
     }
 
@@ -16284,18 +16401,515 @@ public class MainActivity extends Activity {
     }
 
     private void auditEnterTab() {
-        status.setText(auditRep != null
-                ? "AUDIT " + auditLoc + " - trigger to sweep (stopping "
-                  + "re-checks), barcode any tagless box, LOG AUDIT to "
-                  + "sign the shelf off."
-                : "AUDIT: trigger to sweep, barcode tagless boxes. Type "
-                  + "or ◀ ▶ a bin/rack to compare against it.");
+        // The tab always opens on the landing (Nick, 2026-09-29); an
+        // audit in progress is one tap away - its rack card says where.
         auditRefreshFinds();
-        auditRender();
+        auditShowLanding();
+    }
+
+    // ---- the Audit landing (Nick, 2026-09-29) -------------------------------
+    /** Entering the tab, or leaving an audit, lands here: the rack box
+     *  with autofill and the web's recommended racks as picker cards.
+     *  An audit in progress is one tap away - its card says where. */
+    private void auditShowLanding() {
+        auditLandingShown = true;
+        if (auditLanding == null) return;
+        auditLanding.setVisibility(View.VISIBLE);
+        auditWork.setVisibility(View.GONE);
+        auditSuggest.setVisibility(View.GONE);
+        auditCount.setText("Audit");
+        status.setText("Tap a rack below, or type a rack or bin - the "
+                + "arrows then walk only that rack's bins.");
+        if (auditRacksData == null) auditLoadRacks(false);
+        else auditRenderLanding();
+        btInput.requestFocus();
+    }
+
+    private void auditLoadRacks(boolean force) {
+        if (auditRacksLoading) return;
+        auditRacksLoading = true;
+        if (auditRacksData == null || force) {
+            auditRackList.removeAllViews();
+            TextView t = new TextView(this);
+            t.setText("Loading racks…");
+            t.setTextSize(12);
+            t.setTextColor(C_MUTED);
+            t.setPadding(dp(4), dp(8), 0, 0);
+            auditRackList.addView(t);
+        }
+        new Thread(() -> {
+            try {
+                final JSONObject resp = api("GET", "/api/audit/racks", null);
+                ui.post(() -> {
+                    auditRacksLoading = false;
+                    auditRacksData = resp;
+                    if (auditLandingShown) auditRenderLanding();
+                });
+            } catch (Exception e) {
+                ui.post(() -> {
+                    auditRacksLoading = false;
+                    auditRackList.removeAllViews();
+                    auditRackList.addView(emptyBox(
+                            "Could not load racks: " + e.getMessage(),
+                            "Type a rack or bin above to audit it anyway."));
+                });
+            }
+        }).start();
+    }
+
+    private void auditRenderLanding() {
+        auditRackList.removeAllViews();
+        if (auditRacksData == null) return;
+        int thr = auditRacksData.optInt("threshold_days", 14);
+        JSONArray rec = auditRacksData.optJSONArray("recommended");
+        JSONArray fresh = auditRacksData.optJSONArray("fresh");
+        int nRec = rec == null ? 0 : rec.length();
+        int nFresh = fresh == null ? 0 : fresh.length();
+        LinearLayout.LayoutParams cardLp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        cardLp.topMargin = dp(6);
+        if (nRec > 0) {
+            auditRackList.addView(auditGroupLabel(
+                    "RECOMMENDED · OVER " + thr + " DAYS OR NEVER", C_OVER));
+            for (int i = 0; i < nRec; i++) {
+                auditRackList.addView(auditRackCard(rec.optJSONObject(i)),
+                        cardLp);
+            }
+        }
+        if (nFresh > 0) {
+            auditRackList.addView(auditGroupLabel(
+                    "UP TO DATE · INSIDE " + thr + " DAYS", C_OK));
+            for (int i = 0; i < nFresh; i++) {
+                auditRackList.addView(auditRackCard(fresh.optJSONObject(i)),
+                        cardLp);
+            }
+        }
+        if (nRec + nFresh == 0) {
+            auditRackList.addView(emptyBox("No batch-tagged racks yet.",
+                    "Type a rack or bin above to audit it anyway."), cardLp);
+        }
+        Button refresh = smallBtn("↻ REFRESH · "
+                + plural(nRec + nFresh, "rack", "racks"));
+        refresh.setTextSize(11);
+        refresh.setTextColor(C_MUTED);
+        refresh.setOnClickListener(x -> auditLoadRacks(true));
+        LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        rl.topMargin = dp(10);
+        auditRackList.addView(refresh, rl);
+    }
+
+    private TextView auditGroupLabel(String text, int dotColor) {
+        TextView t = new TextView(this);
+        android.text.SpannableString s =
+                new android.text.SpannableString("● " + text);
+        s.setSpan(new android.text.style.ForegroundColorSpan(dotColor),
+                0, 1, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        t.setText(s);
+        t.setTextSize(10.5f);
+        t.setTypeface(null, Typeface.BOLD);
+        t.setTextColor(C_MUTED);
+        t.setPadding(dp(4), dp(12), 0, dp(2));
+        return t;
+    }
+
+    /** Small pill: the same shape the batch picker's badges use. */
+    private TextView auditChip(String text, int ink, int bg) {
+        TextView c = new TextView(this);
+        c.setText(text);
+        c.setTextSize(10.5f);
+        c.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+        c.setTextColor(ink);
+        c.setBackground(rr(bg, 0, 10));
+        c.setPadding(dp(7), dp(2), dp(7), dp(2));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.rightMargin = dp(5);
+        c.setLayoutParams(lp);
+        return c;
+    }
+
+    /** One picker card (Option A): rack chip, two fact lines, the
+     *  drift / open-check / in-progress chips, chevron. Tap = audit. */
+    private View auditRackCard(final JSONObject r) {
+        final String rack = r.optString("rack");
+        int score = r.optInt("score");
+        int bins = r.optInt("bins");
+        int mism = r.optInt("mismatched");
+        boolean overdue = r.optBoolean("overdue");
+        boolean never = r.optBoolean("any_never");
+        String last = r.isNull("last_audited_at") ? null
+                : r.optString("last_audited_at", null);
+        int checks = r.optInt("checks_open");
+        JSONObject sess = r.optJSONObject("session");
+
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.HORIZONTAL);
+        card.setGravity(Gravity.CENTER_VERTICAL);
+        card.setBackground(btnBg(C_CARD, C_LINE, C_PRESS, 8));
+        card.setPadding(dp(10), dp(9), dp(10), dp(9));
+
+        TextView chip = new TextView(this);
+        chip.setText(rack);
+        chip.setTextSize(16);
+        chip.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+        chip.setTextColor(C_BLUE_DK);
+        chip.setBackground(rr(C_SOFT, 0, 6));
+        chip.setPadding(dp(9), dp(8), dp(9), dp(8));
+        card.addView(chip);
+
+        LinearLayout mid = new LinearLayout(this);
+        mid.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams ml = new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        ml.leftMargin = dp(10);
+        card.addView(mid, ml);
+
+        TextView l1 = new TextView(this);
+        String when = never && last == null ? "Never audited"
+                : never ? "Some bins never audited"
+                : "Oldest audit " + ago(last);
+        l1.setText(when + " · " + plural(bins, "bin", "bins"));
+        l1.setTextSize(12);
+        l1.setTextColor(C_TEXT);
+        mid.addView(l1);
+        TextView l2 = new TextView(this);
+        l2.setText(mism == 0 ? "All match"
+                : plural(mism, "mismatched product", "mismatched products"));
+        l2.setTextSize(11);
+        l2.setTextColor(C_MUTED);
+        mid.addView(l2);
+
+        LinearLayout chips = new LinearLayout(this);
+        chips.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams cl = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        cl.topMargin = dp(5);
+        if (score == 0) {
+            chips.addView(auditChip("All match ✓", C_OK, C_OK_BG));
+        } else if (overdue || score >= 5) {
+            chips.addView(auditChip("Drift: " + score, C_OVER, C_OVER_BG));
+        } else {
+            chips.addView(auditChip("Drift: " + score, C_WARN, C_WARN_BG));
+        }
+        if (checks > 0) {
+            chips.addView(auditChip(plural(checks, "stock check",
+                    "stock checks") + " open", C_WARN, C_WARN_BG));
+        }
+        if (sess != null) {
+            chips.addView(auditChip("in progress · " + sess.optInt("done")
+                    + " of " + sess.optInt("total"), C_BLUE_DK, C_SOFT));
+        } else if (auditRackResume.containsKey(rack)) {
+            chips.addView(auditChip("next: " + auditRackResume.get(rack),
+                    C_BLUE_DK, C_SOFT));
+        } else if (rack.equals(auditRack) && auditRep != null) {
+            chips.addView(auditChip("continue · "
+                    + auditBin.getText().toString().trim(), C_BLUE_DK, C_SOFT));
+        }
+        mid.addView(chips, cl);
+
+        TextView chev = new TextView(this);
+        chev.setText("›");
+        chev.setTextSize(22);
+        chev.setTextColor(C_MUTED);
+        card.addView(chev);
+        card.setOnClickListener(x -> auditOpenRack(rack, null));
+        return card;
+    }
+
+    private static int indexOfIgnoreCase(List<String> list, String s) {
+        for (int i = 0; i < list.size(); i++) {
+            if (list.get(i).equalsIgnoreCase(s)) return i;
+        }
+        return -1;
+    }
+
+    /** The rack's rollup from the landing feed (null = not tagged). */
+    private JSONObject auditRackInfo(String rack) {
+        if (auditRacksData == null || rack == null) return null;
+        for (String key : new String[] {"recommended", "fresh"}) {
+            JSONArray arr = auditRacksData.optJSONArray(key);
+            for (int i = 0; arr != null && i < arr.length(); i++) {
+                JSONObject r = arr.optJSONObject(i);
+                if (r != null && rack.equalsIgnoreCase(r.optString("rack"))) {
+                    return r;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** Autofill under the box: racks that start with what's typed, or
+     *  a rack's bins once a dash is in - each row a tap away. */
+    private void auditSuggestUpdate(String raw) {
+        if (!auditLandingShown || auditSuggest == null) return;
+        String q = raw.trim().toUpperCase(java.util.Locale.ROOT);
+        auditSuggest.removeAllViews();
+        JSONObject racks = auditRacksData == null ? null
+                : auditRacksData.optJSONObject("racks");
+        if (q.isEmpty() || racks == null) {
+            auditSuggest.setVisibility(View.GONE);
+            return;
+        }
+        List<String> matches = new ArrayList<>();
+        if (q.contains("-")) {
+            JSONArray bins = racks.optJSONArray(
+                    q.substring(0, q.indexOf('-')));
+            for (int i = 0; bins != null && i < bins.length(); i++) {
+                String b = bins.optString(i);
+                if (b.toUpperCase(java.util.Locale.ROOT).startsWith(q)) {
+                    matches.add(b);
+                }
+            }
+        } else {
+            List<String> names = new ArrayList<>();
+            java.util.Iterator<String> it = racks.keys();
+            while (it.hasNext()) names.add(it.next());
+            java.util.Collections.sort(names, (a, b) -> {
+                String pa = a.replaceAll("\\d+$", "");
+                String pb = b.replaceAll("\\d+$", "");
+                if (!pa.equals(pb)) return pa.compareTo(pb);
+                try {
+                    return Integer.compare(
+                            Integer.parseInt(a.substring(pa.length())),
+                            Integer.parseInt(b.substring(pb.length())));
+                } catch (NumberFormatException e) {
+                    return a.compareTo(b);
+                }
+            });
+            for (String n : names) {
+                if (n.toUpperCase(java.util.Locale.ROOT).startsWith(q)) {
+                    matches.add(n);
+                }
+            }
+        }
+        if (matches.isEmpty()) {
+            auditSuggest.setVisibility(View.GONE);
+            return;
+        }
+        for (int i = 0; i < Math.min(6, matches.size()); i++) {
+            final String m = matches.get(i);
+            String rackOf = m.contains("-") ? m.substring(0, m.indexOf('-')) : m;
+            JSONObject info = auditRackInfo(rackOf);
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setBackground(btnBg(C_CARD, C_LINE, C_PRESS, 6));
+            row.setPadding(dp(12), dp(8), dp(12), dp(8));
+            TextView name = new TextView(this);
+            name.setText(m);
+            name.setTextSize(14);
+            name.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+            name.setTextColor(C_TEXT);
+            row.addView(name);
+            TextView meta = new TextView(this);
+            String metaText;
+            if (info == null) {
+                JSONArray bins = racks.optJSONArray(rackOf);
+                metaText = m.contains("-") ? ""
+                        : plural(bins == null ? 0 : bins.length(), "bin", "bins")
+                          + " · not batch-tagged";
+            } else {
+                int sc = info.optInt("score");
+                int ck = info.optInt("checks_open");
+                metaText = plural(info.optInt("bins"), "bin", "bins") + " · "
+                        + (info.optBoolean("any_never") ? "never audited"
+                           : ago(info.optString("last_audited_at", "")))
+                        + " · " + (sc == 0 ? "all match ✓"
+                                        : "Drift: " + sc)
+                        + (ck > 0 ? " · " + ck + " chk" : "");
+            }
+            meta.setText(metaText);
+            meta.setTextSize(11);
+            meta.setTextColor(C_MUTED);
+            meta.setGravity(Gravity.END);
+            LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(
+                    0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+            mlp.leftMargin = dp(10);
+            row.addView(meta, mlp);
+            row.setOnClickListener(x -> {
+                auditRackIn.setText("");
+                hideSoftKeyboard();
+                auditOpenTyped(m);
+            });
+            LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            rl.topMargin = dp(4);
+            auditSuggest.addView(row, rl);
+        }
+        auditSuggest.setVisibility(View.VISIBLE);
+    }
+
+    /** A typed (or scanned) location: a bin opens inside its rack, a
+     *  bare token is the rack. */
+    private void auditOpenTyped(String raw) {
+        String q = raw.trim().toUpperCase(java.util.Locale.ROOT);
+        if (q.isEmpty()) {
+            beep(SOUND_ERR);
+            status.setText("Type a rack (I1) or a bin (F1-2), or tap a "
+                    + "rack below.");
+            return;
+        }
+        if (q.contains("-")) auditOpenRack(q.substring(0, q.indexOf('-')), q);
+        else auditOpenRack(q, null);
+    }
+
+    /** Open the audit window on one rack: the arrows walk its bins
+     *  only. Starts on the asked bin, else where a LOG left off, else
+     *  where you were, else the open walk's next bin, else bin 1. */
+    private void auditOpenRack(final String rack, final String startBin) {
+        List<String> bins = new ArrayList<>();
+        JSONObject racks = auditRacksData == null ? null
+                : auditRacksData.optJSONObject("racks");
+        JSONArray arr = racks == null ? null : racks.optJSONArray(rack);
+        for (int i = 0; arr != null && i < arr.length(); i++) {
+            bins.add(arr.optString(i));
+        }
+        if (bins.isEmpty()) {
+            // Not in the landing feed (or it failed): the plain bin list
+            // knows every bin, prefix-matched to the rack.
+            if (auditBinNames == null) {
+                status.setText("Loading " + rack + "…");
+                new Thread(() -> {
+                    try {
+                        JSONObject resp = api("GET", "/api/bins/names", null);
+                        JSONArray a2 = resp.optJSONArray("bins");
+                        List<String> names = new ArrayList<>();
+                        for (int i = 0; a2 != null && i < a2.length(); i++) {
+                            names.add(a2.getString(i));
+                        }
+                        ui.post(() -> {
+                            auditBinNames = names;
+                            auditOpenRack(rack, startBin);
+                        });
+                    } catch (Exception e) {
+                        ui.post(() -> {
+                            auditBinNames = new ArrayList<>();
+                            auditOpenRack(rack, startBin);
+                        });
+                    }
+                }).start();
+                return;
+            }
+            for (String b : auditBinNames) {
+                if (b.toUpperCase(java.util.Locale.ROOT).startsWith(rack + "-")) {
+                    bins.add(b);
+                }
+            }
+        }
+        String first;
+        if (startBin != null) {
+            first = startBin;
+        } else if (auditRackResume.containsKey(rack)) {
+            first = auditRackResume.get(rack);
+        } else if (rack.equals(auditRack) && auditRep != null
+                && !auditBin.getText().toString().trim().isEmpty()) {
+            first = auditBin.getText().toString().trim();
+        } else {
+            JSONObject info = auditRackInfo(rack);
+            JSONObject sess = info == null ? null : info.optJSONObject("session");
+            String nxt = sess == null || sess.isNull("next") ? null
+                    : sess.optString("next", null);
+            first = nxt != null ? nxt : (bins.isEmpty() ? rack : bins.get(0));
+        }
+        auditRack = rack;
+        auditRackBins = bins;
+        auditLandingShown = false;
+        auditLanding.setVisibility(View.GONE);
+        auditWork.setVisibility(View.VISIBLE);
+        auditSuggest.setVisibility(View.GONE);
+        auditBin.setText(first);
+        auditCtxUpdate();
+        auditLoad();
+    }
+
+    /** The strip under the header: which rack, which bin of how many,
+     *  the rack's drift. */
+    private void auditCtxUpdate() {
+        if (auditCtx == null) return;
+        if (auditRack == null) {
+            auditCtx.setVisibility(View.GONE);
+            return;
+        }
+        auditCtx.setVisibility(View.VISIBLE);
+        auditCtxRack.setText("RACK " + auditRack);
+        String cur = auditBin.getText().toString().trim();
+        int idx = indexOfIgnoreCase(auditRackBins, cur);
+        auditCtxPos.setText(auditRackBins.isEmpty() ? "whole rack"
+                : idx < 0 ? plural(auditRackBins.size(), "bin", "bins")
+                : "bin " + (idx + 1) + " of " + auditRackBins.size());
+        JSONObject info = auditRackInfo(auditRack);
+        if (info == null) {
+            auditCtxDrift.setVisibility(View.GONE);
+            return;
+        }
+        int score = info.optInt("score");
+        auditCtxDrift.setVisibility(View.VISIBLE);
+        if (score == 0) {
+            auditCtxDrift.setText("All match ✓");
+            auditCtxDrift.setTextColor(C_OK);
+            auditCtxDrift.setBackground(rr(C_OK_BG, 0, 10));
+        } else if (info.optBoolean("overdue") || score >= 5) {
+            auditCtxDrift.setText("Drift: " + score);
+            auditCtxDrift.setTextColor(C_OVER);
+            auditCtxDrift.setBackground(rr(C_OVER_BG, 0, 10));
+        } else {
+            auditCtxDrift.setText("Drift: " + score);
+            auditCtxDrift.setTextColor(C_WARN);
+            auditCtxDrift.setBackground(rr(C_WARN_BG, 0, 10));
+        }
+    }
+
+    /** LOG signed a bin off: remember the rack's next bin (its card
+     *  offers it), refresh the drift, back to the landing. */
+    private void auditAfterSignOff(String loc, String msg) {
+        String nextBin = null;
+        if (auditRack != null && !auditRackBins.isEmpty()) {
+            int idx = indexOfIgnoreCase(auditRackBins, loc.trim());
+            if (idx >= 0 && idx + 1 < auditRackBins.size()) {
+                nextBin = auditRackBins.get(idx + 1);
+                auditRackResume.put(auditRack, nextBin);
+            } else {
+                auditRackResume.remove(auditRack);
+            }
+        }
+        final String rack = auditRack;
+        auditRacksData = null;   // drift moved - refetch on the landing
+        auditShowLanding();
+        status.setText("✓ " + msg + (nextBin != null
+                ? " Tap " + rack + " to continue at " + nextBin + "."
+                : rack != null ? " Rack " + rack + " walked to the end."
+                : ""));
     }
 
     // ---- location + arrows -------------------------------------------------
     private void auditStep(int dir) {
+        // Inside a rack the arrows walk ITS bins and stop at the ends
+        // (Nick, 2026-09-29); the store-wide walk below stays for a
+        // location typed without a rack.
+        if (auditRack != null && !auditRackBins.isEmpty()) {
+            String cur = auditBin.getText().toString().trim();
+            int idx = indexOfIgnoreCase(auditRackBins, cur);
+            int nxt = idx < 0 ? (dir > 0 ? 0 : auditRackBins.size() - 1)
+                    : idx + dir;
+            if (nxt < 0 || nxt >= auditRackBins.size()) {
+                beep(SOUND_OTHER);
+                status.setText(nxt < 0
+                        ? "First bin of rack " + auditRack + "."
+                        : "Last bin of rack " + auditRack
+                          + " - LOG AUDIT, or \u25c0 RACKS for another rack.");
+                return;
+            }
+            auditBin.setText(auditRackBins.get(nxt));
+            auditCtxUpdate();
+            auditLoad();
+            return;
+        }
         if (auditBinNames == null) {
             new Thread(() -> {
                 try {
@@ -16486,6 +17100,7 @@ public class MainActivity extends Activity {
                                 .toUpperCase(java.util.Locale.ROOT), set);
                     }
                     auditRender();
+                    auditCtxUpdate();
                     int n = items == null ? 0 : items.length();
                     String where = rep.optBoolean("rack")
                             ? "Rack " + loc + " ("
@@ -17259,6 +17874,10 @@ public class MainActivity extends Activity {
 
     // ---- tagless finds -----------------------------------------------------
     private void auditBarcode(String code) {
+        if (auditLandingShown && looksLikeBin(code)) {
+            auditOpenTyped(code);
+            return;
+        }
         if (auditPairMode) {
             auditPairFocus(code);
             return;
@@ -17594,9 +18213,7 @@ public class MainActivity extends Activity {
                                     Toast.makeText(this,
                                             "Audit logged \u2713",
                                             Toast.LENGTH_LONG).show();
-                                    status.setText("\u2713 " + msg
-                                            + " Arrow \u25b6 to the "
-                                            + "next bin.");
+                                    auditAfterSignOff(loc, msg);
                                 });
                             } catch (Exception e) {
                                 ui.post(() -> {
