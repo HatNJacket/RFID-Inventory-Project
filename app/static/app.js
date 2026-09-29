@@ -14912,7 +14912,11 @@ async function loadAuditSessions() {
 async function loadAuditSessionsDone() {
   try {
     const data = await apiJson("/api/audit-sessions?status=done");
-    audSessDone = data.sessions;
+    // Abandoned walks stay on record (History keeps their events) but
+    // never show as "finished" (Nick, 2026-09-29).
+    audSessDone = (data.sessions || []).filter(
+      (s) => s.status !== "abandoned"
+    );
   } catch (err) {
     audSessDone = [];
   }
