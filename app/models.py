@@ -1577,6 +1577,27 @@ class AuditUnsure(Base):
     )
 
 
+class AuditUnavailNote(Base):
+    """"This product's unavailable units aren't on this shelf" (Nick,
+    2026-09-29, F9160A): the C72's one-tap answer when Shopify's
+    Unavailable bucket explains an audit's shortfall. The check reads
+    the notes left since the bin's last completed audit and treats that
+    many units as set aside elsewhere - the card goes green when that
+    was the only difference."""
+
+    __tablename__ = "rfid_audit_unavail_notes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sku: Mapped[str] = mapped_column(String(100), index=True, nullable=False)
+    bin: Mapped[str] = mapped_column(String(100), index=True, nullable=False)
+    qty: Mapped[int] = mapped_column(nullable=False, default=0)
+    note: Mapped[str | None] = mapped_column(String(500))
+    created_by: Mapped[str | None] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class AppSetting(Base):
     """Server-stored key/value switches the web UI can flip without an
     app-settings change (no restart, no az CLI). First user: the 1-left

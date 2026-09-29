@@ -57,6 +57,7 @@ from app.models import (
     BatchItem,
     BinMapEntry,
     BundleContent,
+    AuditUnavailNote,
     AuditUnsure,
     BundleInfo,
     CaseCode,
@@ -7494,9 +7495,35 @@ def bin_check(
         s_n = r.get("sold_unretired", 0)
         r["range_lo"] = min(exp, r["units_here"] - s_n)
         r["range_hi"] = max(exp, r["units_here"] - s_n)
+        # The SHELF range (Nick, 2026-09-29, F9160A): Unavailable units
+        # may sit on this shelf or be set aside elsewhere, so they only
+        # widen the top - the floor stays the sellable expectation. Both
+        # UIs show this range; in_range tests the sweep against it.
+        un = r.get("unavailable") or 0
+        r["shelf_lo"] = max(0, r["range_lo"])
+        r["shelf_hi"] = max(0, r["range_hi"]) + un
         r["in_range"] = (
-            (r["range_lo"] <= r["detected_units"] <= r["range_hi"])
+            (r["shelf_lo"] <= r["detected_units"] <= r["shelf_hi"])
             if swept else None
+        )
+    # "Unavailable, not on this shelf" notes left since the bin's last
+    # completed audit (the C72's one-tap answer): per SKU, how many units
+    # the operator said are set aside elsewhere.
+    _un_since = (_bin_anchor.audited_at
+                 if _bin_anchor is not None and _bin_anchor.audited_at
+                 else None)
+    _un_notes: dict[str, int] = {}
+    _un_q = select(AuditUnavailNote).where(
+        func.lower(AuditUnavailNote.bin).in_(bin_keys)
+    ).order_by(AuditUnavailNote.created_at, AuditUnavailNote.id)
+    if _un_since is not None:
+        _un_q = _un_q.where(AuditUnavailNote.created_at > _un_since)
+    for _n in session.scalars(_un_q):
+        # The newest note per SKU stands (a re-note replaces).
+        _un_notes[_up(_n.sku)] = _n.qty or 0
+    for r in report:
+        r["unavailable_noted"] = min(
+            _un_notes.get(_up(r.get("sku")), 0), r.get("unavailable") or 0
         )
     # Silent tags already parked as UNSURE (Nick, 2026-09-29) - the gun
     # shows them as marked instead of offering the button again.
@@ -8541,6 +8568,47 @@ def audit_unsure_list(
     if changed:
         session.commit()
     return {"entries": out, "count": len(out)}
+
+
+class AuditUnavailNoteIn(BaseModel):
+    sku: str = Field(min_length=1, max_length=100)
+    bin: str = Field(min_length=1, max_length=100)
+    qty: int = Field(ge=0, le=100000)
+    note: str | None = Field(default=None, max_length=500)
+    by: str | None = Field(default=None, max_length=100)
+
+
+@app.post("/api/audit/unavailable-note",
+          dependencies=[Depends(require_user)])
+def audit_unavailable_note(
+    payload: AuditUnavailNoteIn, session: Session = Depends(get_session)
+):
+    """The audit's quick answer for Unavailable stock (Nick, 2026-09-29,
+    F9160A): "qty unavailable units of this product aren't on this
+    shelf". A local note only - no tag, stock or Shopify change. The
+    bin's checks treat that many units as set aside until its next
+    completed audit; qty 0 withdraws it."""
+    row = AuditUnavailNote(
+        sku=payload.sku.strip(),
+        bin=payload.bin.strip().upper(),
+        qty=payload.qty,
+        note=(payload.note or "").strip() or None,
+        created_by=payload.by,
+    )
+    session.add(row)
+    _log_change(
+        session,
+        sku=row.sku,
+        field="unavailable-noted",
+        old=row.bin,
+        new=(f"{_count(row.qty, 'unavailable unit', 'unavailable units')} "
+             f"set aside, not on the shelf"
+             if row.qty else "note withdrawn")
+            + (f" - {row.note}" if row.note else ""),
+        by=payload.by,
+    )
+    session.commit()
+    return {"id": row.id, "sku": row.sku, "bin": row.bin, "qty": row.qty}
 
 
 class AuditUnsureResolveIn(BaseModel):
@@ -19714,7 +19782,7 @@ def product_history(
             # locate list, tag-sold and scan notes are local markers only.
             "shopify": c.changed_field
             not in ("rfid-scan", "locate-list", "tag-sold", "scan-note",
-                    "audit-unsure",
+                    "audit-unsure", "unavailable-noted",
                     "tag-retired", "tag-unretired", "tag-released",
                     "tag-reapplied", "ledger-cleared", "non-taggable",
                     "unlabelable-box", "mislabel-flag", "box-set",

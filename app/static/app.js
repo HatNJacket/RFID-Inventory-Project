@@ -427,6 +427,7 @@ const EVENT_META = {
   "bundles-pulled": ["Bundles Pulled", "#6f42c1"],
   "locate-list": ["Locate List", "#5561c9"],
   "audit-unsure": ["Marked Unsure", "#b07d12"],
+  "unavailable-noted": ["Unavailable Noted", "#8a6d1f"],
   "locate-paired": ["Locate Assigned Tag", "#2f9e6e"],
   "receiving-dismissed": ["Sold Before Label", "#5c5f62"],
   "unpaired-ignored": ["Unpaired Write-off", "#7a7d80"],
@@ -12861,8 +12862,12 @@ function binAuditScoreRow(r) {
     bump("warn");
   }
   if (r.in_range === false) {
-    const lo = (r.range_lo != null ? r.range_lo : r.expected_qty) + unav;
-    const hi = (r.range_hi != null ? r.range_hi : r.expected_qty) + unav;
+    // The server's shelf range: unavailable units only widen the top
+    // (they may be set aside elsewhere - Nick, 2026-09-29, F9160A).
+    const lo = r.shelf_lo != null ? r.shelf_lo
+      : (r.range_lo != null ? r.range_lo : r.expected_qty);
+    const hi = r.shelf_hi != null ? r.shelf_hi
+      : (r.range_hi != null ? r.range_hi : r.expected_qty) + unav;
     flag(
       "warn",
       `<b>Heard ${countNoun(det, "unit", "units")} - outside the expected ` +
@@ -12905,16 +12910,14 @@ function binAuditRowHtml({ r, flags, untagged, tone }) {
   let expCell = "\u2014";
   let expTitle = "";
   if (exp != null) {
-    const lo = (r.range_lo != null
-      ? r.range_lo
-      : Math.min(r.expected_qty, r.units_here - sold)) + unav;
-    const hi = (r.range_hi != null
-      ? r.range_hi
-      : Math.max(r.expected_qty, r.units_here - sold)) + unav;
+    const lo = r.shelf_lo != null ? r.shelf_lo
+      : Math.min(r.expected_qty, r.units_here - sold);
+    const hi = r.shelf_hi != null ? r.shelf_hi
+      : Math.max(r.expected_qty, r.units_here - sold) + unav;
     expCell = lo === hi ? String(lo) : `${lo}\u2013${hi}`;
     expTitle =
       `Shopify carries ${exp}` +
-      (unav ? ` (incl. ${unav} unavailable)` : "") +
+      (unav ? ` (incl. ${unav} unavailable, which may be set aside elsewhere)` : "") +
       (sold ? `; ${sold} sold since the last audit` : "") +
       `. The shelf should hold somewhere in this range.`;
   }

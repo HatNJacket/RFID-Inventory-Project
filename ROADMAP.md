@@ -212,6 +212,20 @@ a rack picker; the audit window is scoped to one rack (C72 4.24).**
     unsure_epcs; BinCheckIn.fresh. Web: "Marked unsure" beside Locate
     list (count badge) - Unpair / Sold / Locate / Dismiss per row; rows
     whose tag is gone resolve themselves. dev/tests/test_audit_unsure.py.
+  - Unavailable stock (F9160A: 1 unavailable, not on the shelf, showed
+    "expect 1"): the server now sends the SHELF range - shelf_lo =
+    the sellable floor, shelf_hi = top + unavailable - and in_range
+    tests against it; both UIs display it. On the C72, up to
+    <unavailable> of a swept shelf's missing units are "explainable":
+    a yellow "N unavailable units in Shopify - set aside, not on this
+    shelf?" [Note it] row; one tap files rfid_audit_unavail_notes
+    (POST /api/audit/unavailable-note, History "Unavailable Noted",
+    read by the bin's checks until its next completed audit) and the
+    card goes green when that was the only difference - otherwise the
+    remaining silence runs the usual sales / pickup / unexplained
+    flags and label-owed counts against the sellable expectation. The
+    old auto-green "likely the set-aside unit" is gone on the C72 (the
+    web keeps its old flag wording). dev/tests/test_unavail_shelf.py.
 
 **ROUND 14 (Nick, 2026-09-29) — ✅ BUILT: the Audits hub tightened
 (iterated over live previews, approved). Web only.**

@@ -17725,12 +17725,24 @@ public class MainActivity extends Activity {
             }
             det += newly;
             detUnits += newly;
-            int silent = here - det;
+            int silentAll = here - det;
+            // Unavailable stock (Nick, 2026-09-29, F9160A): Shopify's
+            // Unavailable units may be set aside off this shelf. Up to
+            // that many of the shelf's missing units are "explainable"
+            // - one tap notes them (server-side, until the next LOG) and
+            // the rest of the story runs on what's left: green when the
+            // set-aside was the only difference, the usual flags if not.
+            final int unCover = swept && unavail > 0 && exp >= 0
+                    ? Math.min(unavail, Math.max(0, exp - (detUnits + gh)))
+                    : 0;
+            final boolean unNoted = unCover > 0
+                    && it.optInt("unavailable_noted") >= unCover;
+            int silent = silentAll - Math.min(Math.max(0, silentAll),
+                    unCover);
+            final int expShelf = exp >= 0 ? exp - unCover : exp;
             boolean salesCover = silent > 0 && sold >= silent;
-            boolean unavailOk = silent > 0 && sold == 0
-                    && silent <= unavail;
-            boolean pickupOk = silent > 0 && !salesCover && !unavailOk
-                    && silent <= sold + unavail + pickup && pickup > 0;
+            boolean pickupOk = silent > 0 && !salesCover
+                    && silent <= sold + pickup && pickup > 0;
             boolean rangeOff = swept && !it.isNull("in_range")
                     && !it.optBoolean("in_range") && newly == 0;
 
@@ -17743,14 +17755,14 @@ public class MainActivity extends Activity {
             StringBuilder count = new StringBuilder();
             count.append(det).append("/").append(here).append(" heard");
             if (exp >= 0) {
-                int lo = (it.isNull("range_lo")
-                        ? Math.min(it.optInt("expected_qty"),
-                                unitsHere - sold)
-                        : it.optInt("range_lo")) + unavail;
-                int hi = (it.isNull("range_hi")
-                        ? Math.max(it.optInt("expected_qty"),
-                                unitsHere - sold)
-                        : it.optInt("range_hi")) + unavail;
+                // The server's SHELF range: unavailable units only widen
+                // the top (F9160A: 1 unavailable, not here -> 0-1).
+                int lo = !it.isNull("shelf_lo") ? it.optInt("shelf_lo")
+                        : Math.min(it.optInt("expected_qty"),
+                                unitsHere - sold);
+                int hi = !it.isNull("shelf_hi") ? it.optInt("shelf_hi")
+                        : Math.max(it.optInt("expected_qty"),
+                                unitsHere - sold) + unavail;
                 count.append(" \u00b7 expect ")
                         .append(lo == hi ? String.valueOf(lo)
                                 : lo + "\u2013" + hi);
@@ -17772,8 +17784,24 @@ public class MainActivity extends Activity {
             final String fTitle = it.optString("product_title", sku);
             final List<String> silAll = new ArrayList<>();
             JSONArray silArr = it.optJSONArray("silent_epcs");
-            for (int j = 0; silArr != null && j < silArr.length(); j++) {
+            // Oldest-heard first: sales explain the oldest silences; the
+            // newest ones are left for the set-aside units.
+            for (int j = 0; silArr != null && j < silArr.length()
+                    && silAll.size() < Math.max(0, silent); j++) {
                 silAll.add(silArr.optString(j));
+            }
+            if (unCover > 0 && !unNoted && !sku.isEmpty()) {
+                final int unN = unCover;
+                frows.add(auditFlagRowView(plural(unN,
+                        "unavailable unit", "unavailable units")
+                        + " in Shopify - set aside, not on this shelf?",
+                        C_WARN, "Note it",
+                        () -> auditActUnavailNote(it, loc, unN)));
+                warn = true;
+            } else if (unCover > 0) {
+                auditFlagLine(sub, "✓ " + plural(unCover,
+                        "unavailable unit", "unavailable units")
+                        + " noted - set aside elsewhere", C_OK);
             }
             if (gh > 0) {
                 final List<String> ghostEpcs = new ArrayList<>();
@@ -17817,11 +17845,6 @@ public class MainActivity extends Activity {
                             "Mark sold",
                             () -> auditActMarkSold(fSku, silAll)));
                     warn = true;
-                } else if (unavailOk) {
-                    frows.add(auditFlagRowView(silent + " silent - "
-                            + "likely the set-aside/unavailable unit"
-                            + (silent == 1 ? "" : "s"), C_OK, null,
-                            null));
                 } else if (pickupOk) {
                     frows.add(auditFlagRowView(silent + " silent - "
                             + "sold/pickup orders cover it (" + sold
@@ -17853,9 +17876,10 @@ public class MainActivity extends Activity {
             // The shelf carries more stock than tag records: some boxes
             // never got a sticker - print exactly the missing labels
             // (the neutral W9177 path).
-            final int unitsHereF = unitsHere;
-            if (exp >= 0 && unitsHere < exp && !sku.isEmpty()) {
-                final int kMiss = exp - unitsHere;
+            // Against the shelf's expectation: set-aside units the
+            // shortfall is laid on need no label here.
+            if (expShelf >= 0 && unitsHere < expShelf && !sku.isEmpty()) {
+                final int kMiss = expShelf - unitsHere;
                 frows.add(auditFlagRowView(kMiss + " box"
                         + (kMiss == 1 ? "" : "es") + " never got a "
                         + "label (pairing never changes on-hand)",
@@ -19099,8 +19123,11 @@ public class MainActivity extends Activity {
         // than tag records): stick it, sweep again, and the sweep offers
         // to pair it. Defaults to the owed count when there is one.
         if (!sku.isEmpty()) {
-            final int owedLabels = exp >= 0 && unitsHere < exp
-                    ? exp - unitsHere : 0;
+            // Noted set-aside units need no label on this shelf.
+            final int expShelf = exp - Math.min(unavail,
+                    it.optInt("unavailable_noted"));
+            final int owedLabels = exp >= 0 && unitsHere < expShelf
+                    ? expShelf - unitsHere : 0;
             labels.add(owedLabels > 0
                     ? "Print " + plural(owedLabels, "label", "labels")
                       + " (expected, not paired)"
@@ -19405,6 +19432,44 @@ public class MainActivity extends Activity {
                         (d, w) -> auditRefreshProduct(loc, sku))
                 .setNegativeButton("BACK", null)
                 .show();
+    }
+
+    /** "Note it" (Nick, 2026-09-29, F9160A): one tap - the product's
+     *  unavailable units are set aside off this shelf. The server keeps
+     *  it until the bin's next LOG AUDIT; the card repaints right away
+     *  (green when that was the only difference) and the walk goes on. */
+    private void auditActUnavailNote(final JSONObject it, final String loc,
+            final int qty) {
+        final String sku = it.optString("sku");
+        // The bin being audited; a rack-wide check notes the product's
+        // own bin.
+        final String bin = loc != null && loc.contains("-") ? loc
+                : auditItemFirstBin(it, loc);
+        try {
+            it.put("unavailable_noted", qty);
+        } catch (Exception ignored) {
+        }
+        auditRender();
+        new Thread(() -> {
+            try {
+                api("POST", "/api/audit/unavailable-note", new JSONObject()
+                        .put("sku", sku)
+                        .put("bin", bin == null ? loc : bin)
+                        .put("qty", qty)
+                        .put("by", prefs.getString("device", "C72")));
+                ui.post(() -> beep(SOUND_OK));
+            } catch (Exception e) {
+                ui.post(() -> {
+                    try {
+                        it.put("unavailable_noted", 0);
+                    } catch (Exception ignored) {
+                    }
+                    auditRender();
+                    beep(SOUND_ERR);
+                    alertStatus("Couldn't save the note: " + e.getMessage());
+                });
+            }
+        }).start();
     }
 
     /** A silent-tag row's small button: no 88dp minimum width. */
