@@ -4320,6 +4320,8 @@ button.ph-order:hover { border-color: var(--accent); }
   background: var(--card); border: 1px solid var(--line); border-radius: 12px;
   box-shadow: var(--shadow); overflow: hidden; cursor: pointer;
   transition: border-color 0.12s; text-align: left;
+  /* the whole card is the Start-audit button now (2026-09-29) */
+  font: inherit; color: inherit; width: 100%; padding: 0 0 14px;
 }
 .rack:hover { border-color: var(--accent); }
 .rack__top { display: flex; align-items: center; gap: 10px; padding: 12px 14px 4px; }
@@ -4340,23 +4342,6 @@ button.ph-order:hover { border-color: var(--accent); }
   background: var(--card-2); border: 1px solid var(--line); color: var(--ink-dim);
 }
 .rack__chip--warn { background: var(--warn-bg); border-color: transparent; color: var(--warn-ink); }
-.rack__foot { display: flex; align-items: center; gap: 8px; padding: 10px 14px 12px; }
-.rack__foot .rack__hint { font-size: 11.5px; color: var(--ink-dim); margin-left: auto; }
-.rack__bins { display: grid; grid-template-rows: 0fr; transition: grid-template-rows 0.18s ease; border-top: 0 solid var(--line); }
-.rack--open .rack__bins { grid-template-rows: 1fr; border-top-width: 1px; }
-.rack__bins > div { overflow: hidden; min-height: 0; }
-.binstrip { display: flex; gap: 6px; flex-wrap: wrap; padding: 10px 14px 12px; }
-.binpill {
-  font-family: var(--mono); font-size: 12px; border-radius: 8px;
-  padding: 4px 9px; border: 1px solid var(--line); background: var(--card-2);
-  color: var(--ink); display: inline-flex; gap: 6px; align-items: center;
-  cursor: pointer; font-weight: 400;
-}
-.binpill:hover { border-color: var(--accent); }
-.binpill i { font-style: normal; font-weight: 700; }
-.binpill--bad i { color: var(--bad-ink); }
-.binpill--warn i { color: var(--warn-ink); }
-.binpill--ok i { color: var(--ok-ink); }
 
 .onebin { display: flex; gap: 8px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
 .onebin label { font-size: 12.5px; color: var(--ink-dim); }
@@ -4370,7 +4355,6 @@ button.ph-order:hover { border-color: var(--accent); }
 .sess__name:hover { color: var(--accent); }
 .sess__meta { font-size: 12px; color: var(--ink-dim); }
 .sess__row .sess__grow { flex: 1; }
-.sess .binstrip { padding: 8px 0 0; }
 .audsess__bar {
   height: 6px; border-radius: 999px; background: var(--card-2);
   border: 1px solid var(--line); margin: 10px 0 6px; overflow: hidden;
@@ -4394,24 +4378,61 @@ button.ph-order:hover { border-color: var(--accent); }
 .ring .ring__trk { stroke: var(--card-2); }
 .ring .ring__val { stroke: var(--accent); stroke-linecap: round; transition: stroke-dashoffset 0.6s ease; }
 .ring .ring__pct { position: absolute; inset: 0; display: grid; place-items: center; font-size: 20px; font-weight: 700; }
-.ring--sm { width: 88px; height: 88px; }
-.ring--sm .ring__pct { font-size: 16px; }
-.rackview__facts { display: grid; gap: 6px; font-size: 13px; }
-.rackview__facts .rackview__lab { color: var(--ink-dim); font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; }
-.rackview__worst { border-left: 4px solid var(--bad-ink); background: var(--card-2); border-radius: 8px; padding: 8px 12px; font-size: 12.5px; }
-.rackview__worst--ok { border-left-color: var(--ok-ink); }
+/* Round 14 (Nick, 2026-09-29): the In-progress card - name inside the
+   ring, Finish/Abandon under it, Resume bottom-right, and the bins as
+   a full-width segmented RUNWAY of big hover-lit click targets. */
+.ring--walk { width: 116px; height: 116px; }
+.ring__mid {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; line-height: 1.15;
+}
+.ring__nm {
+  font-family: var(--mono); font-weight: 700; font-size: 15px;
+  max-width: 82px; overflow: hidden; white-space: nowrap;
+}
+.ring__pc { font-family: var(--mono); font-weight: 700; font-size: 19px; color: var(--accent); }
+.sesswalk { display: flex; gap: 18px; align-items: stretch; flex-wrap: wrap; }
+.sesswalk__left { display: flex; flex-direction: column; align-items: center; gap: 6px; flex: none; }
+.sesswalk__acts { display: flex; gap: 6px; }
+.sesswalk__acts .reset { padding: 5px 14px; font-size: 12.5px; border-radius: 999px; }
+.sesswalk__acts .audsess-finish { color: var(--ok-ink); }
+.sesswalk__acts .audsess-finish:hover { border-color: var(--ok-ink); background: var(--ok-bg); }
+.sesswalk__abandon { color: var(--bad-ink); }
+.sesswalk__abandon:hover { border-color: var(--bad-ink); background: var(--bad-bg); }
+.sesswalk__foot .reset { border-radius: 999px; padding: 7px 20px; font-weight: 700; }
+.sesswalk__foot .audsess-resume {
+  background: var(--accent-soft); border-color: var(--accent); color: var(--accent);
+}
+.sesswalk__foot .audsess-resume:hover { background: var(--accent); color: #fff; }
+.sesswalk__main { flex: 1 1 320px; min-width: 260px; display: flex; flex-direction: column; gap: 8px; }
+.sesswalk__started { font-size: 11.5px; color: var(--ink-dim); text-align: right; }
+.sesswalk__foot { display: flex; align-items: center; }
+.sesswalk__grow { flex: 1; }
+.sesswalk__done { color: var(--ok-ink); border-color: var(--ok-ink); background: var(--ok-bg); font-weight: 700; }
 
-/* Round 11 (Nick, 2026-09-28): the In-progress card carries the rack
-   view - ring + facts + Finish/Abandon on the left, progress bar and
-   bin chips on the right. */
-.sess__body { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; margin-top: 10px; }
-.sess__left { display: flex; flex-direction: column; gap: 10px; flex: 0 1 360px; min-width: 260px; }
-.sess__rackview { display: flex; gap: 14px; align-items: center; }
-.sess__side { flex: 1 1 260px; min-width: 220px; }
-.sess__side .audsess__bar { margin-top: 4px; }
-.sess__acts { display: flex; gap: 8px; }
-.sess--walk .sess__name { cursor: default; }
-.sess--walk .sess__name:hover { color: inherit; }
+.rw { display: flex; flex: 1; align-items: stretch; min-height: 78px; }
+.rw__seg {
+  flex: 1; display: flex; flex-direction: column; justify-content: flex-end;
+  gap: 5px; border: none; background: none; color: inherit; font: inherit;
+  cursor: pointer; padding: 16px 0 0; min-width: 0; border-radius: 8px 8px 0 0;
+}
+.rw__lab {
+  font-family: var(--mono); font-weight: 700; font-size: 12px;
+  color: var(--ink-dim); text-align: center; overflow: hidden;
+  white-space: nowrap; text-overflow: ellipsis; padding: 0 2px;
+}
+.rw__seg--done .rw__lab { color: var(--ok-ink); }
+.rw__seg--cur .rw__lab { color: var(--accent); }
+.rw__cell {
+  display: block; height: 26px; background: var(--card-2);
+  border-block: 1px solid var(--line); border-right: 2px solid var(--card);
+}
+.rw__seg:first-child .rw__cell { border-radius: 999px 0 0 999px; border-left: 1px solid var(--line); }
+.rw__seg:last-child .rw__cell { border-radius: 0 999px 999px 0; border-right: 1px solid var(--line); }
+.rw__seg--done .rw__cell { background: var(--accent); border-block-color: var(--accent); }
+.rw__seg:hover { background: var(--accent-soft); }
+.rw__seg:hover .rw__lab { color: var(--accent); }
+.rw__seg:hover .rw__cell { box-shadow: inset 0 0 0 1px var(--accent); }
 
 /* The expected list a sweepless bin opens with (round 11). */
 .ba-expected { margin-top: 12px; }
@@ -4709,3 +4730,19 @@ tr.bvx-fam .chip { margin-left: 6px; }
 /* The kit card stacks header-over-members - the list's flex-li layout
    must not put them side by side (the round-10 sess lesson). */
 .batch__items li.bundlecard { display: block; }
+
+/* --- audits hub polish (Nick, 2026-09-29) ----------------------------- */
+.audtop { margin-top: 12px; align-items: center; }
+.audtop .freshtag { margin: 0; }
+.onebin--main {
+  align-items: flex-start; gap: 12px; background: var(--card);
+  border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: var(--shadow); padding: 12px 16px; margin: 16px 0 4px;
+  max-width: 520px;
+}
+.onebin__ico { font-size: 22px; line-height: 1.4; }
+.onebin__body { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 220px; }
+.onebin__lab { font-weight: 700; font-size: 14px; color: var(--ink); }
+.onebin__row { display: flex; gap: 8px; flex-wrap: wrap; }
+.onebin__input { flex: 1; min-width: 160px; font-family: var(--mono); }
+.onebin__hint { font-size: 12px; color: var(--ink-dim); }

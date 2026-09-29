@@ -1305,14 +1305,6 @@
              four), the recommended-rack cards, session cards with bin
              strips, finished audits behind the icon. Tool pane ids and
              the audSetCard num/sub ids are unchanged. -->
-        <div id="audhub-fresh" class="freshtag" hidden></div>
-        <div class="home__minor u-mb10">
-          <button class="reset home__minorlink" id="review-locate-btn" type="button"
-                  title="Products queued for a physical tag hunt on the C72's Locate tab">📡 Locate list</button>
-          <button class="reset home__minorlink" id="review-ordersync" type="button"
-                  title="Pull fulfilled orders (read-only) and refresh the sold ledger. Runs by itself hourly.">↻ Sync orders</button>
-        </div>
-        <p class="review-note" id="review-sync-note" hidden></p>
         <div class="tiles tiles--aud">
           <button class="tile" type="button" data-pane="checks">
             <span class="tile__badge tile__badge--info" id="ahc-checks-num">–</span>
@@ -1339,35 +1331,42 @@
             <span class="audcard__sub" id="ahc-unavail-sub">loading…</span>
           </button>
         </div>
+        <!-- Freshness chip + audit actions, one slim row under the
+             tiles (Nick, 2026-09-29). -->
+        <div class="home__minor audtop u-mb10">
+          <div id="audhub-fresh" class="freshtag" hidden></div>
+          <button class="reset home__minorlink" id="review-locate-btn" type="button"
+                  title="Products queued for a physical tag hunt on the C72's Locate tab">📡 Locate list</button>
+          <button class="reset home__minorlink" id="review-ordersync" type="button"
+                  title="Pull fulfilled orders (read-only) and refresh the sold ledger. Runs by itself hourly.">↻ Sync orders</button>
+        </div>
+        <p class="review-note" id="review-sync-note" hidden></p>
         <div class="sess-head">
           <h2>Audit sessions <span class="recent__note" id="audsess-meta"></span></h2>
           <span class="sess-head__spacer"></span>
-          <button class="print__btn" id="audsess-newbtn" type="button">+ New audit</button>
           <button class="iconbtn" id="audsess-toggle" type="button"
                   title="Finished audits">&#128452; <span id="audsess-fincount">0</span></button>
         </div>
-        <!-- No naming step (Nick, 2026-09-08): an audit IS its scope -
-             the rack or bins (or vendor) name it automatically. -->
-        <div id="audsess-new" class="linkbox__actions linkbox__actions--tight u-mb10" hidden>
-          <select id="audsess-kind" class="reset">
-            <option value="bins">Walk-scan bins</option>
-            <option value="oneleft">1-left checks</option>
-            <option value="packed">Audit packed orders</option>
-          </select>
-          <input id="audsess-scope" class="recent__search u-maxw220" type="text"
-                 placeholder="Bins or rack prefix, e.g. I1" />
-          <button class="reset" id="audsess-create" type="button">Start</button>
-          <button class="reset" id="audsess-cancel" type="button">Cancel</button>
+        <!-- The custom-audit entry (Nick, 2026-09-29): the one box
+             replaces the New-audit menu, first thing under the header.
+             A bin opens its audit; a rack prefix starts a walk session
+             over all its bins. -->
+        <div class="onebin onebin--main">
+          <span class="onebin__ico" aria-hidden="true">&#127919;</span>
+          <div class="onebin__body">
+            <label class="onebin__lab" for="aud-onebin">Audit a bin or rack</label>
+            <div class="onebin__row">
+              <input id="aud-onebin" class="recent__search onebin__input" type="text"
+                     placeholder="e.g. F1-3, or a whole rack: F1" autocomplete="off" />
+              <button class="print__btn" id="aud-onebin-go" type="button">Audit</button>
+            </div>
+            <span class="onebin__hint">A bin opens its audit right away - a rack starts a walk session covering all its bins.</span>
+          </div>
         </div>
         <!-- Recommended racks: the scored queue rolled up per rack -
-             overdue first, then the rest, both by drift. -->
+             overdue first, then the rest, both by drift. One tap on a
+             card starts that rack's walk. -->
         <div id="aud-reco"></div>
-        <div class="onebin">
-          <label for="aud-onebin">Or audit one bin:</label>
-          <input id="aud-onebin" class="recent__search u-maxw150" type="text"
-                 placeholder="e.g. F1-3" autocomplete="off" />
-          <button class="reset" id="aud-onebin-go" type="button">Open</button>
-        </div>
         <div class="grouplab" id="audsess-openlab" hidden>In progress</div>
         <!-- A plain div: recent__list's flex-row li styling flattened
              the session cards (Nick's screenshot, 2026-09-28). -->
@@ -1454,6 +1453,8 @@
                 title="Run one auto pass right now - only checks the evidence fully answers are cleared">Clear answered checks now</button>
         <button class="reset" id="ol-answered" type="button">Show RFID-answered only</button>
         <button class="reset" id="ol-reload" type="button">↻ Reload</button>
+        <button class="reset" id="ol-session" type="button"
+                title="Snapshot the pending queue (optionally one vendor) as a tracked walk session - the New-audit menu's old 1-left option">Start a 1-left session…</button>
       </div>
       <div id="ol-status" class="linkbox__text"></div>
       <ul class="recent__list binlist u-maxh440" id="ol-list"></ul>

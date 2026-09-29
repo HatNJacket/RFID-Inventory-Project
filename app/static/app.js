@@ -14760,129 +14760,83 @@ let audSessDone = [];
 let audSessShowDone = false;
 let audSessOpenId = null;
 
-function audBinInfo(bin) {
-  if (!auditData) return null;
-  const up = (bin || "").toUpperCase();
-  return (
-    auditData.bins.find((b) => (b.bin || "").toUpperCase() === up) || null
-  );
-}
-
-function audBinPillHtml(i) {
-  const b = audBinInfo(i.key);
-  const score = b ? b.score : null;
-  const cls = i.done
-    ? "binpill--ok"
-    : score == null
-      ? ""
-      : score >= 5
-        ? "binpill--bad"
-        : score > 0
-          ? "binpill--warn"
-          : "binpill--ok";
-  const mark = i.done
-    ? "\u2713"
-    : score == null
-      ? "\u00b7"
-      : score === 0
-        ? "\u2713"
-        : String(score);
-  return `<button class="binpill ${cls} aud-binjump" type="button"
-    data-bin="${escapeHtml(i.key)}"
-    title="Open the bin audit with ${escapeHtml(i.key)} loaded">${escapeHtml(
-      i.key
-    )} <i>${mark}</i></button>`;
-}
-
-// The In-progress card IS the walk's view (Nick, 2026-09-28 round 11):
-// the rack ring, drift facts and worst-open-bin note sit on the card
-// with Finish/Abandon under them, the progress bar and bin chips move
-// right to make room, and Resume opens the bin audit on the first bin
-// still standing. The old Rack/Bins detail toggle is gone; finished
-// walks reuse this card read-only.
+// The In-progress card IS the walk's view (Nick, round 11; reshaped
+// 2026-09-29 round 14): the session's short name lives INSIDE the
+// ring ("J2" over "40%"), Finish/Abandon stack under the ring, Resume
+// sits bottom-right in the same button style, the started-line tucks
+// into the corner, and the bins render as a full-width segmented
+// RUNWAY - equal slices, bin label above each, the whole slice a big
+// hover-lit click target that opens that bin's audit.
 function audSessCardHtml(sn, readonly) {
   const pct = sn.total ? Math.round((sn.done / sn.total) * 100) : 0;
-  const next = (sn.items || []).find((i) => !i.done) || null;
-  let drift = 0;
-  let mism = 0;
-  let known = 0;
-  let worst = null;
-  (sn.items || []).forEach((i) => {
-    const b = audBinInfo(i.key);
-    if (!b) return;
-    known++;
-    drift += b.score;
-    mism += b.mismatched_count;
-    if (!i.done && (!worst || b.score > worst.b.score)) {
-      worst = { key: i.key, b };
-    }
-  });
-  const C = 2 * Math.PI * 36;
-  const ring = `<div class="ring ring--sm"><svg width="88" height="88" viewBox="0 0 88 88">
-      <circle class="ring__trk" cx="44" cy="44" r="36" fill="none" stroke-width="9"/>
-      <circle class="ring__val" cx="44" cy="44" r="36" fill="none" stroke-width="9"
+  const items = sn.items || [];
+  const next = items.find((i) => !i.done) || null;
+  const C = 2 * Math.PI * 49;
+  // "Rack J2" reads as J2 inside the ring; anything longer than the
+  // ring's mouth trims to its tail so B18A-2-style names still fit.
+  let short = sn.name.replace(/^(Rack|Bins|Bin)\s+/i, "").split(/[+,]/)[0].trim();
+  if (short.length > 7) short = "\u2026" + short.slice(-6);
+  const ring = `<div class="ring ring--walk"><svg width="116" height="116" viewBox="0 0 116 116">
+      <circle class="ring__trk" cx="58" cy="58" r="49" fill="none" stroke-width="11"/>
+      <circle class="ring__val" cx="58" cy="58" r="49" fill="none" stroke-width="11"
         stroke-dasharray="${C.toFixed(1)}" stroke-dashoffset="${(
           C * (1 - pct / 100)
         ).toFixed(1)}"/></svg>
-    <div class="ring__pct">${pct}%</div></div>`;
-  const facts = `<div class="rackview__facts">
-      <div><span class="rackview__lab">Bins</span><br>${sn.done} of ${sn.total} walked</div>
-      <div><span class="rackview__lab">Drift</span><br>${
-        known
-          ? `score ${drift} across ${mism} mismatched product(s)`
-          : "open the Audit queue once for live scores"
-      }</div>
-      ${
-        worst && worst.b.score > 0
-          ? `<div class="rackview__worst">Worst open bin: <b>${escapeHtml(
-              worst.key
-            )}</b> - score ${worst.b.score}${
-              worst.b.last_audited_at
-                ? `, audited ${escapeHtml(fmtAgo(worst.b.last_audited_at))}`
-                : ", never audited"
-            }.</div>`
-          : !readonly && !next
-            ? `<div class="rackview__worst rackview__worst--ok">\u2713 Every bin walked - finish the audit.</div>`
-            : ""
-      }</div>`;
-  const strip = (sn.items || []).length
-    ? `<div class="binstrip">${sn.items.map(audBinPillHtml).join("")}</div>`
+    <div class="ring__mid"><span class="ring__nm" title="${escapeHtml(sn.name)}">${escapeHtml(short)}</span><span class="ring__pc">${pct}%</span></div></div>`;
+  const runway = items.length
+    ? `<div class="rw">${items
+        .map((i) => {
+          const cls = i.done
+            ? " rw__seg--done"
+            : next && i.id === next.id
+              ? " rw__seg--cur"
+              : "";
+          return `<button class="rw__seg${cls} aud-binjump" type="button"
+            data-bin="${escapeHtml(i.key)}"
+            title="${escapeHtml(i.key)}${
+              i.done
+                ? " - walked" + (i.done_by ? " by " + i.done_by : "") + ". Click to reopen its audit"
+                : " - click to open its audit"
+            }">
+            <span class="rw__lab">${escapeHtml(i.key)}${i.done ? " \u2713" : ""}</span>
+            <i class="rw__cell"></i>
+          </button>`;
+        })
+        .join("")}</div>`
     : "";
   const acts = readonly
     ? ""
-    : `<div class="sess__acts">
-         <button class="reset audsess-finish" type="button" data-sid="${sn.id}">Finish audit</button>
-         <button class="reset audsess-abandon" type="button" data-sid="${sn.id}">Abandon</button>
+    : `<div class="sesswalk__acts">
+         <button class="reset audsess-finish" type="button" data-sid="${sn.id}">Finish</button>
+         <button class="reset sesswalk__abandon audsess-abandon" type="button" data-sid="${sn.id}">Abandon</button>
        </div>`;
+  const goBtn = readonly
+    ? ""
+    : next
+      ? `<button class="reset audsess-resume" type="button" data-sid="${sn.id}"
+           title="Open the bin audit on ${escapeHtml(next.key)}, the first bin not walked yet">Resume</button>`
+      : `<button class="reset sesswalk__done audsess-finish" type="button" data-sid="${sn.id}"
+           title="Every bin walked - close this audit out">\u2713 Finish audit</button>`;
   return `
-    <div class="sess__row">
-      <span class="sess__name">${escapeHtml(sn.name)}</span>
-      <span class="sess__meta">bin walk \u00b7 ${
-        readonly
-          ? escapeHtml(sn.status) +
-            " " +
-            escapeHtml(fmtAgo(sn.finished_at || sn.created_at))
-          : `started ${escapeHtml(fmtAgo(sn.created_at))}${
-              sn.created_by ? " by " + escapeHtml(sn.created_by) : ""
-            }`
-      }</span>
-      <span class="sess__grow"></span>
-      ${
-        !readonly && next
-          ? `<button class="print__btn audsess-resume" type="button" data-sid="${sn.id}"
-               title="Open the bin audit on ${escapeHtml(next.key)}, the first bin not walked yet">Resume</button>`
-          : ""
-      }
-    </div>
-    <div class="sess__body">
-      <div class="sess__left">
-        <div class="sess__rackview">${ring}${facts}</div>
+    <div class="sesswalk">
+      <div class="sesswalk__left">
+        ${ring}
         ${acts}
       </div>
-      <div class="sess__side">
-        <div class="audsess__bar"><div class="audsess__fill" style="width:${pct}%"></div></div>
-        <div class="audsess__nums"><span>${sn.done} of ${sn.total} walked</span><span>${pct}%</span></div>
-        ${strip}
+      <div class="sesswalk__main">
+        <span class="sesswalk__started">${
+          readonly
+            ? escapeHtml(
+                sn.status.charAt(0).toUpperCase() + sn.status.slice(1)
+              ) +
+              " " +
+              escapeHtml(fmtAgo(sn.finished_at || sn.created_at))
+            : `Started ${escapeHtml(fmtAgo(sn.created_at))}${
+                sn.created_by ? " by " + escapeHtml(sn.created_by) : ""
+              }`
+        }</span>
+        ${runway}
+        <div class="sesswalk__foot"><span class="sesswalk__grow"></span>${goBtn}</div>
       </div>
     </div>`;
 }
@@ -14908,7 +14862,7 @@ function renderAuditSessions() {
       card.innerHTML = `
         <div class="sess__row">
           <span class="sess__name audsess-open" data-sid="${sn.id}">${escapeHtml(sn.name)}</span>
-          <span class="sess__meta">${sn.total} check(s) \u00b7 started ${escapeHtml(
+          <span class="sess__meta">${countNoun(sn.total, "check")} \u00b7 Started ${escapeHtml(
             fmtAgo(sn.created_at)
           )}${sn.created_by ? " by " + escapeHtml(sn.created_by) : ""}</span>
           <span class="sess__grow"></span>
@@ -15033,6 +14987,14 @@ function audRackAgg() {
   return [...racks.values()];
 }
 
+// Chip copy rules (Nick, 2026-09-29): Capitalized, "Label: value"
+// shape, and REAL plurals - never "check(s)".
+function countNoun(n, noun, plural) {
+  return `${n} ${n === 1 ? noun : plural || noun + "s"}`;
+}
+
+// One tap on the whole card starts the rack's walk (Nick, 2026-09-29:
+// the Start-audit button and the bin-strip toggle are gone).
 function audRackCardHtml(r, overdue, checks) {
   const nChecks = checks[r.rack] || 0;
   const scoreCls =
@@ -15047,42 +15009,31 @@ function audRackCardHtml(r, overdue, checks) {
       : r.anyNever
         ? "<b>Some bins never audited</b>"
         : `Oldest audit <b>${escapeHtml(fmtAgo(r.last))}</b>`;
-  const pills = r.bins
-    .slice()
-    .sort((a, b2) => b2.score - a.score)
-    .map((b) =>
-      audBinPillHtml({ key: b.bin, done: false })
-    )
-    .join("");
-  return `<div class="rack" data-rack="${escapeHtml(r.rack)}">
+  return `<button class="rack" type="button" data-rack="${escapeHtml(r.rack)}"
+    title="Start a walk-scan session covering every bin on this rack">
     <div class="rack__top"><span class="rack__name">${escapeHtml(r.rack)}</span>
       <span class="rack__score ${scoreCls}">${
-        r.score === 0 ? "all match \u2713" : "score " + r.score
+        r.score === 0 ? "All match \u2713" : "Drift: " + r.score
       }</span></div>
-    <div class="rack__meta">${when} \u00b7 ${r.bins.length} bin(s) \u00b7 ${
-      r.mismatched
-    } mismatched product(s)</div>
+    <div class="rack__meta">${when} \u00b7 ${countNoun(
+      r.bins.length, "bin"
+    )} \u00b7 ${countNoun(r.mismatched, "mismatched product")}</div>
     ${
       nChecks || (r.worst && r.worst.score > 0)
         ? `<div class="rack__chips">${
             nChecks
-              ? `<span class="rack__chip rack__chip--warn">${nChecks} stock check(s) open</span>`
+              ? `<span class="rack__chip rack__chip--warn">${countNoun(
+                  nChecks, "stock check"
+                )} open</span>`
               : ""
           }${
             r.worst && r.worst.score > 0
-              ? `<span class="rack__chip">worst bin ${escapeHtml(r.worst.bin)}</span>`
+              ? `<span class="rack__chip">Worst bin: ${escapeHtml(r.worst.bin)}</span>`
               : ""
           }</div>`
         : ""
     }
-    <div class="rack__foot">
-      <button class="${overdue ? "print__btn" : "reset"} aud-reco-start"
-        type="button" data-rack="${escapeHtml(r.rack)}"
-        title="Start a walk-scan session covering every bin on this rack">Start audit</button>
-      <span class="rack__hint">tap card for bins</span>
-    </div>
-    <div class="rack__bins"><div><div class="binstrip">${pills}</div></div></div>
-  </div>`;
+  </button>`;
 }
 
 function renderAuditReco() {
@@ -15127,7 +15078,7 @@ function renderAuditReco() {
            .join("")}</div>`
       : "") +
     (over.length > 6 || fresh.length > 6
-      ? `<p class="result">${over.length + fresh.length} rack(s) total - the Audit queue tile lists every bin, scored.</p>`
+      ? `<p class="result">${countNoun(over.length + fresh.length, "rack")} total - the Audit queue tile lists every bin, scored.</p>`
       : "");
 }
 
@@ -15158,23 +15109,18 @@ async function audStartRackAudit(rack, btn) {
 }
 
 document.getElementById("aud-reco").addEventListener("click", (e) => {
-  const start = e.target.closest(".aud-reco-start");
-  if (start) {
-    audStartRackAudit(start.dataset.rack, start);
-    return;
-  }
-  const pill = e.target.closest(".aud-binjump");
-  if (pill) {
-    jumpToBinAudit(pill.dataset.bin);
-    return;
-  }
   const card = e.target.closest(".rack");
-  if (card) card.classList.toggle("rack--open");
+  if (card) audStartRackAudit(card.dataset.rack, card);
 });
 
-document.getElementById("aud-onebin-go").addEventListener("click", () => {
-  const v = document.getElementById("aud-onebin").value.trim();
-  if (v) jumpToBinAudit(v.toUpperCase());
+document.getElementById("aud-onebin-go").addEventListener("click", (ev) => {
+  const v = document.getElementById("aud-onebin").value.trim().toUpperCase();
+  if (!v) return;
+  // A dash means a bin - straight into its audit. A bare token is a
+  // rack: start a walk session over all its bins (Nick, 2026-09-29 -
+  // this box replaced the New-audit menu).
+  if (v.includes("-")) jumpToBinAudit(v);
+  else audStartRackAudit(v, ev.currentTarget);
 });
 document.getElementById("aud-onebin").addEventListener("keydown", (e) => {
   if (e.key === "Enter") {
@@ -15247,7 +15193,7 @@ function renderAuditSessionDetail(sn) {
       if (
         openCount > 0 &&
         !window.confirm(
-          `${openCount} item(s) are still open - finish anyway?`
+          `${countNoun(openCount, "item is", "items are")} still open - finish anyway?`
         )
       )
         return;
@@ -15288,7 +15234,7 @@ async function audSessClose(sid, verb, btn) {
   const msg =
     verb === "finish"
       ? left > 0
-        ? `${left} bin(s) are still open - finish anyway?`
+        ? `${countNoun(left, "bin is", "bins are")} still open - finish anyway?`
         : null
       : "Abandon this audit? Its ticks are kept for the record.";
   if (msg && !window.confirm(msg)) return;
@@ -15380,82 +15326,35 @@ document.getElementById("audsess-toggle").addEventListener("click", () => {
   renderAuditSessionsDone();
 });
 
-const audsessKindEl = document.getElementById("audsess-kind");
-const audsessScopeEl = document.getElementById("audsess-scope");
-// Packed-orders audits have no scope to type (Nick, 2026-09-14: the
-// sweep IS the scope) - the input box leaves with that selection.
-function syncAudsessKind() {
-  const kind = audsessKindEl.value;
-  audsessScopeEl.hidden = kind === "packed";
-  audsessScopeEl.placeholder = kind === "bins"
-    ? "Bins or rack prefix, e.g. I1"
-    : "Vendor (blank = the whole queue)";
-}
-audsessKindEl.addEventListener("change", syncAudsessKind);
-document.getElementById("audsess-newbtn").addEventListener("click", () => {
-  const form = document.getElementById("audsess-new");
-  form.hidden = !form.hidden;
-  syncAudsessKind();
-  if (!form.hidden && !audsessScopeEl.hidden) audsessScopeEl.focus();
-});
-document.getElementById("audsess-cancel").addEventListener("click", () => {
-  document.getElementById("audsess-new").hidden = true;
-});
-document.getElementById("audsess-create").addEventListener("click", async (ev) => {
-  const kind = audsessKindEl.value;
-  const scope = audsessScopeEl.value.trim();
-  // Packed orders is a one-shot audit, not a tracked session: Start
-  // opens its pane with the recent sweeps ready to pick.
-  if (kind === "packed") {
-    document.getElementById("audsess-new").hidden = true;
-    audShowPane("packed");
-    packedOpen();
-    return;
-  }
-  // No naming step (Nick, 2026-09-08): the audit IS its scope, so the
-  // name derives from what the user specified - rack, bins or vendor.
-  const payload = { kind, worker: operatorEl.value || null };
-  if (kind === "bins") {
-    // Tokens with a dash are bins ("I1-3"); a bare token is a rack prefix.
-    const tokens = scope.split(",").map((t) => t.trim()).filter(Boolean);
-    payload.bins = tokens.filter((t) => t.includes("-"));
-    const rack = tokens.find((t) => !t.includes("-"));
-    if (rack) payload.rack = rack.toUpperCase();
-    if (!payload.bins.length && !payload.rack) {
-      alert("Name at least one bin, or a rack prefix like I1.");
-      return;
-    }
-    payload.name = payload.rack
-      ? `Rack ${payload.rack}` +
-        (payload.bins.length ? ` + ${payload.bins.join(", ")}` : "")
-      : payload.bins.length === 1
-        ? `Bin ${payload.bins[0]}`
-        : `Bins ${payload.bins.join(", ")}`;
-  } else {
-    if (scope) payload.vendor = scope;
-    payload.name = scope ? `1-left: ${scope}` : "1-left checks";
-  }
+// The New-audit menu is gone (Nick, 2026-09-29): the bin-or-rack box
+// on the hub is the custom entry, and 1-left sessions start from a
+// button inside the checks pane. The packed-orders audit has NO entry
+// for now - it moves into the Packing pane when that gets built
+// (Nick's call, 2026-09-29); packedOpen() and its pane stay wired.
+document.getElementById("ol-session").addEventListener("click", async (ev) => {
+  const vendor = prompt(
+    "Start a 1-left walk session from the pending queue.\n\n" +
+      "Vendor to narrow to (leave empty for the whole queue):",
+    ""
+  );
+  if (vendor === null) return;
+  const v = vendor.trim();
   ev.currentTarget.disabled = true;
   try {
-    const s = await postJson("/api/audit-sessions", payload);
-    document.getElementById("audsess-new").hidden = true;
-    audsessScopeEl.value = "";
+    const s = await postJson("/api/audit-sessions", {
+      kind: "oneleft",
+      vendor: v || undefined,
+      name: v ? `1-left: ${v}` : "1-left checks",
+      worker: operatorEl.value || null,
+    });
     audSessShowDone = false;
     await loadAuditSessions();
-    if (s.kind === "bins") {
-      // Straight into the walk (round 11): first bin, expected list
-      // ready even before any sweep.
-      const next = (s.items || []).find((i) => !i.done);
-      if (next) jumpToBinAudit(next.key);
-    } else {
-      renderAuditSessionDetail(s);
-      audShowPane("session");
-    }
+    renderAuditSessionDetail(s);
+    audShowPane("session");
   } catch (err) {
     alert(err.message);
   }
-  ev.currentTarget && (ev.currentTarget.disabled = false);
-  document.getElementById("audsess-create").disabled = false;
+  document.getElementById("ol-session").disabled = false;
 });
 
 // === History tab ============================================================

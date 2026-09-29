@@ -156,6 +156,29 @@ iterated over the "Audits Tab Redesign" preview artifact, 3 rounds):**
   removed (packing goes through an audit sweep; the server's
   /api/packing/* endpoints and the web pane stay).
 
+**ROUND 14 (Nick, 2026-09-29) — ✅ BUILT: the Audits hub tightened
+(iterated over live previews, approved). Web only.**
+- Tiles first; one slim row under them: Up-to-date chip + Locate
+  list + Sync orders.
+- New-audit button/dropdown REMOVED. The promoted "Audit a bin or
+  rack" box (under the sessions header) is the custom entry: bin
+  token opens its audit, rack token starts the walk session.
+  1-left sessions moved to a button in the checks pane; the
+  packed-orders audit has NO entry until it lives in Packing
+  (Nick's call - packedOpen() and its pane stay wired).
+- Rack reco cards: one tap on the card starts the walk (button
+  card; Start-audit button, bins hint and pill strip retired).
+- In-progress card rebuilt: session short name INSIDE the ring
+  ("J2" / "40%", tail-trim past 7 chars), Finish/Abandon pills
+  under the ring, Resume bottom-right (accent pill; turns into a
+  green Finish audit at 100%), Started-line tucked top-right, and
+  a full-width segmented RUNWAY - one 78px hover-lit slice per
+  bin, styled labels above dividers, walked slices filled, whole
+  slice clicks through to that bin's audit.
+- Copy rules landed + memorized: chips read "Label: value"
+  capitalized ("Drift: 9", "Worst bin: X"); never "(s)" plurals -
+  countNoun() in app.js. Global "(s)" sweep is a TODO below.
+
 **ROUND 13 (Nick, 2026-09-28) — ✅ BUILT: bundle cards in the batch
 steps (Design C) + the three-way display setting.**
 - A kit renders as one purple card with its component rows tucked
@@ -3579,6 +3602,12 @@ the REAL prod numbers (dev/tests/test_ledger_flow.py, 41 checks).
 - **TODO next web-terminal build (Nick 2026-08-24): strip every em dash
   ("—") from UI copy** — replace with a plain hyphen or reword. New
   strings written this session already comply.
+- **TODO copy sweep (Nick 2026-09-29): kill every "(s)" plural in
+  user-facing copy** — words are singular or plural by count, never
+  "bin(s)"; app.js has countNoun() for it. Same rule pass for chips:
+  capitalized "Label: value" shape ("Drift: 9", "Worst bin: X"),
+  never bare lowercase fragments. Audits-hub surfaces already comply
+  (2026-09-29); the rest of the app is the sweep.
 
 ## 📦 Sold detection + Nick's big batch (2026-08-18, second session)
 
