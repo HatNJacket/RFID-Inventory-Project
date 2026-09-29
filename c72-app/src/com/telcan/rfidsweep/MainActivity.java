@@ -16142,6 +16142,10 @@ public class MainActivity extends Activity {
     // crosses the Wi-Fi exactly once per sweep, not once per press.
     private int auditSavedCapId = 0;
     private int auditSavedHash = 0;
+    // EPCs the server's capture already has (sent, kept or dropped):
+    // a re-sweep sends only the rest (2026-09-29).
+    private final java.util.HashSet<String> auditSent =
+            new java.util.HashSet<>();
     // Set when the shown report came from a SAVED sweep (opening a bin
     // with nothing collected): {id, created_at} - the render marks it,
     // stale when it is from another day.
@@ -16924,6 +16928,10 @@ public class MainActivity extends Activity {
             auditCacheClear();
             auditTagSet.addAll(auditDropped);
             auditDropped.clear();
+            // The saved capture was filtered for the old rack - the next
+            // check starts a new one for this rack.
+            auditSavedCapId = 0;
+            auditSent.clear();
         }
         auditRack = rack;
         auditRackBins = bins;
@@ -17129,21 +17137,49 @@ public class MainActivity extends Activity {
      *  synchronized since the rack prefetch checks in parallel. */
     private synchronized int auditEnsureCapture(String loc) throws Exception {
         if (auditTagSet.isEmpty()) return 0;
-        int h = auditTagSet.hashCode();
-        if (h == auditSavedHash && auditSavedCapId > 0) {
-            return auditSavedCapId;
+        // Only what the server hasn't got (Nick, 2026-09-29): a re-sweep
+        // appends its NEW tags to the audit's capture instead of saving
+        // the whole pile again, and the server sorts them by rack.
+        final List<String> fresh = new ArrayList<>();
+        for (String e : new ArrayList<>(auditTagSet)) {
+            if (!auditSent.contains(e)) fresh.add(e);
         }
-        JSONObject resp = api("POST", "/api/epc-captures",
-                new JSONObject()
-                        .put("device", prefs.getString("device", "C72"))
-                        .put("note", "AUDIT " + loc)
-                        .put("bin", loc)
-                        .put("epcs", new JSONArray(
-                                new ArrayList<>(auditTagSet))));
-        auditSavedCapId = resp.optInt("id");
-        auditSavedHash = h;
-        auditLastSentHash = h;
-        return auditSavedCapId;
+        if (fresh.isEmpty()) {
+            return auditSavedCapId > 0 ? auditSavedCapId : -1;
+        }
+        JSONObject body = new JSONObject()
+                .put("device", prefs.getString("device", "C72"))
+                .put("epcs", new JSONArray(fresh));
+        if (auditRack != null) body.put("rack", auditRack);
+        JSONObject resp;
+        if (auditSavedCapId > 0) {
+            resp = api("POST", "/api/epc-captures/" + auditSavedCapId
+                    + "/append", body);
+        } else {
+            body.put("note", "AUDIT " + loc).put("bin", loc);
+            resp = api("POST", "/api/epc-captures", body);
+            if (!resp.isNull("id")) auditSavedCapId = resp.optInt("id");
+        }
+        auditSent.addAll(fresh);
+        auditLastSentHash = auditTagSet.hashCode();
+        // Other racks' tags come back as "dropped": out of the collected
+        // set (the evidence key doesn't move - see auditEvidenceKey).
+        final JSONArray dropped = resp.optJSONArray("dropped");
+        if (dropped != null && dropped.length() > 0) {
+            ui.post(() -> {
+                int n = 0;
+                for (int i = 0; i < dropped.length(); i++) {
+                    String e = dropped.optString(i)
+                            .toUpperCase(java.util.Locale.ROOT);
+                    if (auditTagSet.remove(e)) {
+                        auditDropped.add(e);
+                        n++;
+                    }
+                }
+                if (n > 0) auditRender();
+            });
+        }
+        return auditSavedCapId > 0 ? auditSavedCapId : -1;
     }
 
     // ---- the rack cache (Nick, 2026-09-29) ----------------------------------
@@ -17266,10 +17302,12 @@ public class MainActivity extends Activity {
             } catch (Exception ignored) {
                 // Saving is an optimization - fall back to the full list.
             }
+            // -1: everything heard belonged to other racks.
             body = saved > 0
                     ? new JSONObject().put("capture_id", saved)
-                    : new JSONObject().put("epcs", new JSONArray(
-                            new ArrayList<>(auditTagSet)));
+                    : new JSONObject().put("epcs", saved < 0
+                            ? new JSONArray()
+                            : new JSONArray(new ArrayList<>(auditTagSet)));
         }
         if (refreshSku != null) {
             body.put("fresh", true);
@@ -17654,6 +17692,7 @@ public class MainActivity extends Activity {
                     auditEvidenceAt = null;
                     auditSavedCapId = 0;
                     auditSavedHash = 0;
+                    auditSent.clear();
                     auditShownSweep = null;
                     auditRender();
                     status.setText("Cleared - ready for the next sweep.");
@@ -18687,7 +18726,9 @@ public class MainActivity extends Activity {
                                         ? new JSONObject().put(
                                                 "capture_id", capId)
                                         : new JSONObject().put("epcs",
-                                                new JSONArray(
+                                                capId < 0
+                                                ? new JSONArray()
+                                                : new JSONArray(
                                                     new ArrayList<>(
                                                         auditTagSet)));
                                 JSONObject resp = api("POST",

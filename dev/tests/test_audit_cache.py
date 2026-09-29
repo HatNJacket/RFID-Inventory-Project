@@ -89,8 +89,10 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
     for b in ("I1-1", "I1-2", "I1-3"):
         cl.post(f"/api/bins/{b}/check", json={"capture_id": cap["id"]})
     M._stamp_heard = real
-    check("one capture checked against three bins stamps once",
-          len(calls) == 1, len(calls))
+    # Creating the capture stamped its tags (2026-09-29, append work):
+    # checking it against any number of bins stamps nothing more.
+    check("a capture checked against three bins never re-stamps",
+          len(calls) == 0, len(calls))
 
 print()
 if fails:

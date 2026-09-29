@@ -18010,6 +18010,59 @@ class CaptureIn(BaseModel):
     # The bin or rack an audit sweep covered (Nick, 2026-09-28): the
     # location keeps its own sweep history.
     bin: str | None = Field(default=None, max_length=100)
+    # An audit walking one RACK (Nick, 2026-09-29): tags paired to
+    # products living on OTHER racks are left out of the capture and
+    # handed back as "dropped" so the gun stops carrying them. Unpaired
+    # and retired tags always stay (printed labels, ghosts).
+    rack: str | None = Field(default=None, max_length=50)
+
+
+def _split_by_rack(
+    session: Session, epcs: list[str], rack: str | None
+) -> tuple[list[str], list[str]]:
+    """(kept, dropped): dropped = tags paired to a product whose recorded
+    bin sits on a different rack. No rack given keeps everything."""
+    rk = (rack or "").strip().upper()
+    if not rk or not epcs:
+        return list(epcs), []
+    homes: dict[str, str] = {}
+    for i in range(0, len(epcs), 900):   # stay under SQL Server's 2100 params
+        chunk = epcs[i:i + 900]
+        for rid, bl in session.execute(
+            select(RfidAssignment.rfid_id, RfidAssignment.bin_location)
+            .where(ci_in(RfidAssignment.rfid_id, chunk))
+        ):
+            homes[_up(rid)] = bl or ""
+    kept: list[str] = []
+    dropped: list[str] = []
+    for e in epcs:
+        bl = homes.get(e)
+        if bl:
+            racks = {
+                t.split("-")[0].strip().upper()
+                for t in re.split(r"[,;/\s]+", bl) if t.strip()
+            }
+            if racks and rk not in racks:
+                dropped.append(e)
+                continue
+        kept.append(e)
+    return kept, dropped
+
+
+def _capture_side_effects(session: Session, epcs: list[str], device) -> dict:
+    """What every newly captured tag triggers: its last-heard stamp, the
+    unlinked-stickers stash, a (throttled) 1-left pass."""
+    extra: dict = {}
+    _stamp_heard(session, epcs)
+    session.commit()
+    try:
+        added = _stash_unlinked_tags(session, epcs, device)
+        if added:
+            extra["unlinked_stashed"] = added
+    except Exception as error:  # noqa: BLE001
+        logger.warning("unlinked-tag stash failed: %s", error)
+    oneleft.kick("C72 sweep", device)
+    return extra
 
 
 @app.post(
@@ -18027,6 +18080,10 @@ def create_capture(payload: CaptureIn, session: Session = Depends(get_session)):
             epcs.append(epc)
     if not epcs:
         raise HTTPException(422, "No usable EPCs in the sweep.")
+    epcs, dropped = _split_by_rack(session, epcs, payload.rack)
+    if not epcs:
+        # Everything heard belongs to other racks - nothing to keep.
+        return {"id": None, "epc_count": 0, "dropped": dropped}
     row = EpcCapture(
         device=(payload.device or "").strip() or None,
         note=(payload.note or "").strip() or None,
@@ -18036,23 +18093,57 @@ def create_capture(payload: CaptureIn, session: Session = Depends(get_session)):
         epcs="\n".join(epcs),
     )
     session.add(row)
-    _stamp_heard(session, epcs)
     session.commit()
     session.refresh(row)
-    # Every sweep also stashes its ownerless EPCs on the unlinked-
-    # stickers locate entry (Nick, 2026-09-09) - applied-but-never-
-    # paired labels stop being invisible. Fail-soft: the capture itself
-    # never waits on it.
+    # Stamped here, so checks of this capture don't stamp it again.
+    _first_stamp_of_capture(row.id)
     result = row.as_dict()
-    try:
-        added = _stash_unlinked_tags(session, epcs, payload.device)
-        if added:
-            result["unlinked_stashed"] = added
-    except Exception as error:  # noqa: BLE001
-        logger.warning("unlinked-tag stash failed: %s", error)
-    # A sweep is a shelf physically read — old tags heard now are stock
-    # discovered now, which may clear 1-left checks.
-    oneleft.kick("C72 sweep", payload.device)
+    # Every sweep also stashes its ownerless EPCs on the unlinked-
+    # stickers locate entry (Nick, 2026-09-09), and a sweep is a shelf
+    # physically read - old tags heard now may clear 1-left checks.
+    result.update(_capture_side_effects(session, epcs, payload.device))
+    if payload.rack:
+        result["dropped"] = dropped
+    return result
+
+
+class CaptureAppendIn(BaseModel):
+    epcs: list[str] = Field(default_factory=list, max_length=20000)
+    rack: str | None = Field(default=None, max_length=50)
+    device: str | None = Field(default=None, max_length=100)
+
+
+@app.post(
+    "/api/epc-captures/{capture_id}/append",
+    dependencies=[Depends(require_user)],
+)
+def append_capture(
+    capture_id: int, payload: CaptureAppendIn,
+    session: Session = Depends(get_session),
+):
+    """Add a re-sweep's NEW tags to an audit's saved capture (Nick,
+    2026-09-29): the gun sends only what it heard since the last send,
+    not the whole pile again. Same rack filter as creating one; only
+    the new tags get stamped and stashed."""
+    row = session.get(EpcCapture, capture_id)
+    if row is None:
+        raise HTTPException(404, "No such sweep on the server.")
+    have = {e.strip().upper() for e in (row.epcs or "").split("\n")
+            if e.strip()}
+    fresh: list[str] = []
+    for raw in payload.epcs:
+        e = _up(raw)
+        if e and e not in have:
+            have.add(e)
+            fresh.append(e)
+    fresh, dropped = _split_by_rack(session, fresh, payload.rack)
+    result = {"id": row.id, "added": len(fresh), "dropped": dropped}
+    if fresh:
+        row.epcs = ((row.epcs + "\n") if row.epcs else "") + "\n".join(fresh)
+        row.epc_count = (row.epc_count or 0) + len(fresh)
+        session.commit()
+        result.update(_capture_side_effects(session, fresh, payload.device))
+    result["epc_count"] = row.epc_count
     return result
 
 
