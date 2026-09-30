@@ -76,7 +76,7 @@ import requests
 # confirmed label-by-label from the odometer's order (no more per-label
 # pauses). Bump on behavior changes - the server compares this against
 # its own copy to drive auto-update.
-AGENT_VERSION = "8"
+AGENT_VERSION = "9"
 
 
 def _count(n, one, many=None):
@@ -1155,6 +1155,22 @@ class AppClient:
             timeout=30,
         ).raise_for_status()
 
+    def complete_many(self, job_ids: list, create_assignment: bool) -> None:
+        """v9: every label one odometer poll passed, in ONE call. Falls
+        back to one call per label against an app too old to know it."""
+        r = requests.post(
+            f"{self.base}/api/print-jobs/complete-many",
+            json={"ids": list(job_ids),
+                  "create_assignment": bool(create_assignment)},
+            headers=self.headers,
+            timeout=30,
+        )
+        if r.status_code in (404, 405, 422):
+            for jid in job_ids:
+                self.complete(jid, create_assignment)
+            return
+        r.raise_for_status()
+
     def fail(self, job_id: int, error: str) -> None:
         requests.post(
             f"{self.base}/api/print-jobs/{job_id}/fail",
@@ -1165,6 +1181,9 @@ class AppClient:
 
 
 # ------------------------------------------------------------- the agent ----
+# v9: queue the next claim once the printer's buffer is down to this many
+# formats, so a long run never stops between bursts.
+REFILL_AT = 2
 LABEL_SETTLE_TIMEOUT = 45  # s a healthy printer gets to drain one format
 UPDATE_COOLDOWN = 300      # s between self-update attempts
 
@@ -1244,23 +1263,33 @@ class Agent:
         if count is None:
             return confirmed
         delta = min(count - base, len(jobs))
-        while confirmed < delta:
-            job = jobs[confirmed]
-            confirmed += 1
-            try:
-                self.client.complete(job["id"],
-                                     create_assignment=self.encode_rfid)
+        if delta <= confirmed:
+            return confirmed
+        passed = jobs[confirmed:delta]
+        # v9 (Nick, 2026-09-30: the queue trailed the paper): everything
+        # this poll passed reports in ONE call, not one call per label.
+        try:
+            report = getattr(self.client, "complete_many", None)
+            if report is not None:
+                report([j["id"] for j in passed], self.encode_rfid)
+            else:
+                for job in passed:
+                    self.client.complete(job["id"],
+                                         create_assignment=self.encode_rfid)
+            for job in passed:
                 self._mark_done(self._desc(job), "confirmed")
-            except requests.RequestException as error:
-                # The label IS on paper; only the report was lost. Keep
-                # the confirm (never reprint it) and leave the row
-                # claimed for the operator.
-                self.last_error = str(error)
+        except requests.RequestException as error:
+            # The labels ARE on paper; only the report was lost. Keep
+            # the confirms (never reprint them) and leave the rows
+            # claimed for the operator.
+            self.last_error = str(error)
+            for job in passed:
                 log(f"! {self._desc(job)}: printed but couldn't report "
                     f"back: {error}")
-        return confirmed
+        return delta
 
-    def _deliver_burst(self, jobs: list[dict]) -> tuple[int, str]:
+    def _deliver_burst(self, jobs: list[dict],
+                       refill=None) -> tuple[int, str]:
         """Send every job as ONE continuous run (v7: no per-label
         pauses - Nick, 2026-09-23) and watch the printer work through
         it, completing each label as the odometer passes it. Returns
@@ -1272,6 +1301,7 @@ class Agent:
         for job in jobs:
             self.tr.send(self._zpl(job))
         confirmed = 0
+        queue_empty = refill is None
         deadline = time.time() + LABEL_SETTLE_TIMEOUT
         prev_formats = None
         misses = 0
@@ -1311,6 +1341,27 @@ class Agent:
             if formats != prev_formats or confirmed > was:
                 deadline = time.time() + LABEL_SETTLE_TIMEOUT
             prev_formats = formats
+            # v9: top the printer up while it's still printing - the next
+            # labels queue behind the current ones, no stop between
+            # bursts. Only while the buffer is busy, or once everything
+            # so far is confirmed: a swallowed label mid-run would shift
+            # the odometer's order onto the refill.
+            if (not queue_empty and base is not None
+                    and ((0 < formats <= REFILL_AT)
+                         or (formats == 0 and confirmed >= len(jobs)))):
+                try:
+                    more = refill()
+                except requests.RequestException as error:
+                    self.last_error = str(error)
+                    more = []
+                if more:
+                    for job in more:
+                        self.tr.send(self._zpl(job))
+                    jobs.extend(more)
+                    self.holding = len(jobs) - confirmed
+                    deadline = time.time() + LABEL_SETTLE_TIMEOUT
+                    continue
+                queue_empty = True
             if formats > 0:
                 continue
             # Buffer drained: everything left either printed-uncounted
@@ -1334,6 +1385,11 @@ class Agent:
             confirmed = self._advance_confirms(jobs, base, confirmed)
             return confirmed, "ok"
         return confirmed, "stalled"
+
+    def _refill(self) -> list[dict]:
+        """The next labels to queue behind a running burst (v9)."""
+        batch = max(1, min(20, int(getattr(self.args, "batch", 10))))
+        return self.client.claim(limit=batch)
 
     def _print_burst(self, jobs: list[dict]) -> None:
         if not jobs:
@@ -1368,7 +1424,8 @@ class Agent:
             self.holding = len(pending)
             try:
                 self._wait_ready()
-                confirmed, outcome = self._deliver_burst(pending)
+                confirmed, outcome = self._deliver_burst(
+                    pending, refill=self._refill)
             except OSError as error:
                 # Unknown state mid-burst: fail what we can't vouch for
                 # (worst case a duplicate label, never a silent loss)

@@ -3661,6 +3661,38 @@ def merge_products(
     }
 
 
+class CompleteManyIn(BaseModel):
+    ids: list[int] = Field(min_length=1, max_length=100)
+    create_assignment: bool = True
+
+
+# Registered BEFORE /{job_id}/complete so "complete-many" never tries to
+# parse as a job id.
+@app.post(
+    "/api/print-jobs/complete-many",
+    dependencies=[Depends(require_agent_key)],
+)
+def complete_print_jobs_many(
+    payload: CompleteManyIn, session: Session = Depends(get_session)
+):
+    """Agent v9 (Nick, 2026-09-30: the queue trailed the paper by a few
+    labels): every label the odometer passed in one poll confirms in ONE
+    call, in order, through the same per-job logic. Already-done jobs
+    count as done (a retried report); unknown ids are skipped."""
+    done: list[int] = []
+    skipped: list[int] = []
+    for jid in payload.ids:
+        try:
+            complete_print_job(jid, payload.create_assignment, session)
+            done.append(jid)
+        except HTTPException as error:
+            if error.status_code == 409:
+                done.append(jid)      # already done - a repeated report
+            else:
+                skipped.append(jid)
+    return {"done": done, "skipped": skipped}
+
+
 @app.post(
     "/api/print-jobs/{job_id}/complete",
     dependencies=[Depends(require_agent_key)],

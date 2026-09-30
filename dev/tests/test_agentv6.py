@@ -199,6 +199,8 @@ class FakeClient:
     def complete(self, job_id, create_assignment): self.completed.append(job_id)
     def fail(self, job_id, why): self.failed.append((job_id, why))
     def post_result(self, cid, ok, output): self.results.append((cid, ok, output))
+    # v9 refills mid-burst; an empty queue by default.
+    def claim(self, limit=5): return []
     # Track the CURRENT version dynamically: a hardcoded old version here
     # once made _self_update run FOR REAL and clobber the repo's
     # print_agent.py with this one-liner (2026-09-23). Never again.
@@ -322,6 +324,38 @@ check("v8 claims 10 labels per burst",
       ag.client.limits[:3] == [10, 10, 10], ag.client.limits)
 check("v8 skips the poll sleep after a full batch, sleeps after a short one",
       _sleeps.count(ag.args.poll) == 1, _sleeps)
+
+# v9 (2026-09-30): the printer is topped up while it's still printing
+# (no stop between bursts), and every label an odometer poll passed
+# confirms in ONE call.
+class RefillClient(FakeClient):
+    def __init__(self, more):
+        super().__init__(); self.more = list(more); self.batches = []
+    def claim(self, limit=5):
+        return self.more.pop(0) if self.more else []
+    def complete_many(self, ids, create_assignment):
+        self.batches.append(list(ids)); self.completed.extend(ids)
+
+ag = mk_agent(FakeTr([HS_OK, HS_BUSY, HS_BUSY, HS_OK], [100, 101, 102, 104]))
+ag.client = RefillClient([[mk_job(3), mk_job(4)]])
+ag._print_burst([mk_job(1), mk_job(2)])
+check("v9 refills mid-run: all four labels sent in one continuous run",
+      len(ag.tr.sent) == 4, len(ag.tr.sent))
+check("v9 refill labels confirm in order behind the first burst",
+      ag.client.completed == [1, 2, 3, 4] and not ag.client.failed,
+      str(ag.client.__dict__)[:250])
+check("v9 confirms each poll's labels in one call (3 and 4 together)",
+      ag.client.batches == [[1], [2], [3, 4]], ag.client.batches)
+
+# A swallowed label mid-run blocks the refill: the buffer drained with
+# job 2 unconfirmed, so nothing new may queue behind it.
+ag = mk_agent(FakeTr([HS_OK], [100, 101]))
+ag.client = RefillClient([[mk_job(9)]])
+ag._print_burst([mk_job(1), mk_job(2)])
+check("v9 never refills behind an unconfirmed (swallowed) label",
+      9 not in ag.client.completed and all(
+          b"SKU-9" not in (z if isinstance(z, bytes) else z.encode())
+          for z in ag.tr.sent), ag.client.completed)
 
 print()
 print(f"{'FAIL' if fails else 'OK'}  {len(fails)} failing")
