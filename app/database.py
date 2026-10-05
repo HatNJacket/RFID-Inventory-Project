@@ -173,7 +173,19 @@ def init_db() -> None:
     migrations once the schema churns harder."""
     from app import models  # noqa: F401  (register models on Base)
 
-    Base.metadata.create_all(bind=get_engine())
+    # Two gunicorn workers boot at once and both see a new table as
+    # missing; the loser's CREATE fails with "There is already an object
+    # named ..." (2026-10-05, rfid_users: that worker exited, gunicorn's
+    # master took the whole container down with it, prod sat on 502
+    # until a restart). The table exists either way - log and carry on.
+    try:
+        Base.metadata.create_all(bind=get_engine())
+    except Exception:  # noqa: BLE001 - lost the create race
+        import logging
+        logging.getLogger("rfid.db").warning(
+            "create_all failed (another worker probably created the "
+            "table first) - continuing", exc_info=True,
+        )
     _apply_column_upgrades(get_engine())
 
 
