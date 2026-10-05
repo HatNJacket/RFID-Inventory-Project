@@ -581,7 +581,13 @@ intentional session, not a pass inside a big batch.
   move 1 unavailable->available AND raise on-hand to 4, one Resolve
   button, both in the History row; cards must display it that way).
   If the product's unavailable metafield carries a staff comment,
-  Resolve shows it first and asks to proceed. (c) Red "nothing
+  Resolve shows it first and asks to proceed. IMPLEMENTATION RULE:
+  always MOVE unavailable->available (inventoryMoveQuantities, on-hand
+  preserved) and then SET on-hand to the counted value; never adjust
+  unavailable directly - Shopify admin's unavailable editor is an
+  adjustment that also lowers on-hand (Nick hit Unavail 1 / On-hand 0
+  -> clearing it gave On-hand -1, a 2-unit fix-up). A negative
+  available (oversold) shows plainly on the card as its own problem. (c) Red "nothing
   explains it" Resolve = ONE window: Shopify on-hand, tags heard,
   sales since last audit, collapsible timeline since last audit, and
   the counter preset to heard with a Confirm that writes whatever the
