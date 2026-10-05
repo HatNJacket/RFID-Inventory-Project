@@ -33,6 +33,7 @@ FILES = [
     "app/static/tc-rfid-sweep.apk.idsig",
     "app/static/apk-version.json",
     "app/templates/index.html",
+    "app/templates/login.html",
     "inspect_db.py",
     "load_astronomik.py",
     "print_agent.py",
