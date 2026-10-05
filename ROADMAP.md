@@ -451,6 +451,84 @@ open pointed at prod. Once 4.18 is confirmed on the gun, delete the
    explicit sessions (lean rolling); barcode scans allowed but
    badged "no tag" (no retirement precision).
 
+## 🧭 Audit UI overhaul — PLANNING (Nick, 2026-10-05) — nothing built yet
+
+Trigger: bins like K4-2 hold solid-metal products that block RFID and
+need box-by-box sweeping. An AUTOMATIC scan-difficulty score was
+proposed and REJECTED ("too much, will cause problems"): flags are set
+by hand. Mockups (8 artboards, gun + web) live on the Design canvas
+"Audit UI Overhaul Previews" https://claude.ai/artifact/DeWUN8TQKrCxPMGZKz81oJ
+(private to Nick until shared). Order of work Nick set: **1. user
+authentication, 2. everything below.** Each starred item gets its OWN
+intentional session, not a pass inside a big batch.
+
+**Decided:**
+- One state per product card, one primary action (Match / Short /
+  Covered / Over / Needs labels / Count by hand / Not in RFID); the rest
+  one tap deeper (Fix / Investigate / Flags).
+- A "Count by hand" divider in the same bin list: RFID-incompatible and
+  non-taggable products show on-hand + a counted stepper (− n +, tap the
+  number for a keypad, a barcode scan adds 1); hard-to-scan ones also keep
+  a "Heard tags: X/Y" counter and still flag silent tags. Count by hand
+  is the DEFAULT for incompatible products, with a way to sweep them
+  anyway if the operator thinks it will work.
+- Audit sessions (Finish/Abandon, runways, finished-audits drawer) are
+  DROPPED on both surfaces: opening a bin or rack IS the audit; "logged
+  N of M" on the rack card is the progress.
+- Gun audit = racks + 1-left checks ONLY; Packing and Unavailable stock
+  stay web-only. Web hub keeps its four tiles; recommended racks are the
+  main body; "Audit a bin or rack" shrinks into the button row.
+- Both rack lists stay in drift order (the preview had G3 under F9 - a
+  mockup slip, not the rule).
+- Web keeps desk-only powers (bundles + connected inventory, ghost
+  cleanup, batch-tagged record) but NOT in a side "Desk tools" box -
+  fold them into the product cards/list. Nick dislikes the preview's bin
+  page as drawn; ★ redo it with SEVERAL preview variants.
+- Gun ⋯ menu: Pull latest / Pick + merge / Send sweep GONE (sweeps save
+  as the trigger stops). Clear becomes a main-screen button. ★ Plan the
+  menu around what users do there 90% of the time: pick/clear/switch
+  sweeps; optional, hidden-by-default sweep label/name; bin flags.
+- ONE Locate function: audit (silent tags, one product, whole list) opens
+  Locate preloaded with its values; no separate "audit locate". ★ Plan the
+  product → list → silent-tags workflow and Locate's own controls.
+- Product window: keep Refresh/Back, the image header and the Confirm
+  Stock Level stepper; descriptive text moves behind [?] icons.
+- ★ [?] help system (LARGE, later, once the C72 is settled): replace the
+  plaintext bullet help with per-window help - a tap-an-option overlay
+  or a dictionary of functions with illustrations/screenshots.
+- Flags sheet: one-sentence (max two-line) descriptions are fine HERE.
+  ★ Review which flags are really needed vs solved elsewhere.
+- **RFID-incompatible simplification** (warehouse discussion; full team
+  meeting 2026-10-06 finalises): ONE flag "RFID-incompatible" replaces
+  Hard-to-scan + Can't-scan, with per-product toggles: "Print RFID tag /
+  Print paper tag" and "One label per box / One label for the listing"
+  (with a little illustration that changes: one label → bag of many vs
+  many labels → many boxes). Case 1 = too small/annoying to tag each
+  (thumbscrews: one label for the listing gives the bag a bin). Case 2 =
+  won't scan or hard in multiples (Optolong holographic filters, Askar
+  metal brackets/dovetails: one label per box). Non-taggable stays the
+  thumbscrew-bag flag. ★ Replan after the meeting.
+- ★ Expected range + verification logic: "Needs labels: N boxes never got
+  a label" is wrong more often than right - rooted in how Expected is
+  built. Walk through expected_qty/shelf_lo/shelf_hi/in_range vs heard
+  counts case by case. Same session: bin load speed and RE-SWEEPS (a
+  second sweep re-checks everything instead of folding in the new tags;
+  suspect GraphQL lookups vs the DB and the DB's size).
+- Bottom bar buttons and the card UI itself: ★ redesign in the Expected
+  session.
+- **Navigation:** standalone site = tabs along the TOP (the sidebar
+  "doesn't do anything"); inside Shopify admin = tabs in Shopify's app
+  sidebar like EasyScan (Barcodes & SKUs / Orders / ... as nav items).
+- **Customizable hubs** (team ask): move/hide/show functions, tiles vs
+  buttons, per user. Needs per-user identity first → auth is step 1.
+
+**Auth findings (2026-10-05):** today = shared STATION_KEY (browser +
+gun + agent) or a Shopify App Bridge session token (app/auth.py); the
+operator is a localStorage dropdown (OPERATORS env). telescopescanada.ca
+mail is hosted on Microsoft 365 (MX → mail.protection.outlook.com), NOT
+Google: Google sign-in cannot authenticate that domain's accounts as-is.
+Plan options are in the 2026-10-05 session notes; decision pending.
+
 ## 🏠 Home landing page + sidebar navigation — ✅ ON PROD 2026-09-28 (the WIP-badge bundle)
 
 Nick (09-24): the terminal is finicky to learn - it should open to a

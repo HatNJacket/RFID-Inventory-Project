@@ -21,6 +21,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from functools import lru_cache
+from urllib.parse import urlencode as _urlencode
 from pathlib import Path
 from typing import Literal
 
@@ -38,7 +39,9 @@ from starlette.requests import Request
 
 from app import (config, oneleft, orders_sync, planner, shipstation,
                  shopify)
+from app import auth as _auth
 from app.auth import require_user
+from fastapi.responses import RedirectResponse
 from app.database import (
     ci_in,
     DatabaseNotConfigured,
@@ -61,6 +64,7 @@ from app.models import (
     BinMapEntry,
     BundleContent,
     AuditStockConfirm,
+    RfidUser,
     AuditUnavailNote,
     AuditUnsure,
     BundleInfo,
@@ -331,6 +335,18 @@ class AssignmentIn(BaseModel):
 # ------------------------------------------------------------------ pages ---
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request):
+    # Sign-in (Nick, 2026-10-05): outside Shopify admin the terminal shows
+    # nothing until you're signed in. Inside admin (the ?host= App Bridge
+    # load) the session token carries the identity instead.
+    if (_auth.auth_enabled() and _auth.current_user(request) is None
+            and not request.query_params.get("host")):
+        nxt = request.url.path
+        if request.url.query:
+            nxt += "?" + request.url.query
+        return RedirectResponse(
+            "/login?" + _urlencode({"next": nxt}) if nxt != "/" else "/login",
+            status_code=303,
+        )
     missing = config.check_shopify_env()
     return templates.TemplateResponse(
         request,
@@ -354,6 +370,265 @@ def index(request: Request):
             ),
         },
     )
+
+
+_LOGIN_ERRORS = {
+    "notlisted": "{email} isn't on the users list. Ask a teammate to add "
+                 "it under Settings, Users.",
+    "denied": "The sign-in was cancelled.",
+    "state": "That sign-in link expired. Try again.",
+    "token": "The sign-in service sent back something we couldn't verify. "
+             "Try again.",
+    "unverified": "That Google account's email isn't verified.",
+    "noemail": "The sign-in didn't include an email address.",
+    "provider": "That sign-in provider isn't configured.",
+}
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request):
+    """The sign-in landing page: one button per configured provider."""
+    if not _auth.auth_enabled():
+        return RedirectResponse("/", status_code=303)
+    if _auth.current_user(request) is not None:
+        return RedirectResponse("/", status_code=303)
+    err = request.query_params.get("err") or ""
+    email = request.query_params.get("email") or ""
+    message = _LOGIN_ERRORS.get(err, "")
+    if message:
+        message = message.replace("{email}", email or "That address")
+    nxt = request.query_params.get("next") or "/"
+    if not nxt.startswith("/") or nxt.startswith("//"):
+        nxt = "/"
+    return templates.TemplateResponse(
+        request,
+        "login.html",
+        {
+            "providers": _auth.providers(),
+            "message": message,
+            "next": nxt,
+            "asset_version": ASSET_VERSION,
+        },
+    )
+
+
+@app.get("/auth/login/{provider}")
+def auth_login(provider: str, request: Request, next: str = "/"):
+    url, cookie = _auth.begin_login(request, provider, next)
+    resp = RedirectResponse(url, status_code=303)
+    resp.set_cookie(
+        _auth.OAUTH_COOKIE, cookie, max_age=600, httponly=True,
+        secure=_auth.cookie_secure(request), samesite="lax", path="/auth",
+    )
+    return resp
+
+
+@app.get("/auth/callback/{provider}")
+def auth_callback(
+    provider: str, request: Request, session: Session = Depends(get_session),
+):
+    try:
+        ident = _auth.finish_login(request, provider)
+    except HTTPException as error:
+        code = str(error.detail) if error.status_code < 500 else "token"
+        if code not in _LOGIN_ERRORS:
+            code = "token"
+        resp = RedirectResponse("/login?err=" + code, status_code=303)
+        resp.delete_cookie(_auth.OAUTH_COOKIE, path="/auth")
+        return resp
+    user = session.scalar(
+        select(RfidUser).where(RfidUser.email == ident["email"])
+    )
+    if user is None:
+        resp = RedirectResponse(
+            "/login?" + _urlencode({"err": "notlisted",
+                                    "email": ident["email"]}),
+            status_code=303,
+        )
+        resp.delete_cookie(_auth.OAUTH_COOKIE, path="/auth")
+        return resp
+    if not user.name and ident["name"]:
+        user.name = ident["name"][:100]
+    user.provider = provider
+    user.subject = ident["subject"][:200] or None
+    user.last_seen_at = datetime.now(timezone.utc)
+    session.commit()
+    resp = RedirectResponse(ident["next"] or "/", status_code=303)
+    resp.set_cookie(
+        _auth.SESSION_COOKIE,
+        _auth.session_cookie_value(user.id, user.email, user.name),
+        max_age=_auth.SESSION_DAYS * 86400, httponly=True,
+        secure=_auth.cookie_secure(request), samesite="lax", path="/",
+    )
+    resp.delete_cookie(_auth.OAUTH_COOKIE, path="/auth")
+    return resp
+
+
+@app.post("/auth/logout")
+def auth_logout(request: Request):
+    resp = RedirectResponse("/login", status_code=303)
+    resp.delete_cookie(_auth.SESSION_COOKIE, path="/")
+    return resp
+
+
+@app.get("/api/me")
+def who_am_i(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    session: Session = Depends(get_session),
+):
+    """Who this browser is: the signed-in user, or inside Shopify admin
+    the staff member the session token is linked to (shopify_sub is
+    handed back unlinked so the page can offer the one-time 'I am'
+    pick). Never 401s - the page decides what to show."""
+    out = {
+        "auth_enabled": _auth.auth_enabled(),
+        "providers": [
+            {"name": k, "label": v["label"]}
+            for k, v in _auth.providers().items()
+        ],
+        "user": None,
+    }
+    user = _auth.current_user(request)
+    if user:
+        row = session.get(RfidUser, user["uid"])
+        if row is not None:
+            out["user"] = row.as_dict()
+            return out
+    if authorization and authorization.startswith("Bearer "):
+        payload = _auth.session_token_payload(
+            authorization.removeprefix("Bearer "))
+        if payload and payload.get("sub"):
+            sub = str(payload["sub"])
+            out["shopify_sub"] = sub
+            row = session.scalar(
+                select(RfidUser).where(RfidUser.shopify_sub == sub)
+            )
+            if row is not None:
+                out["user"] = row.as_dict()
+    return out
+
+
+class LinkShopifyIn(BaseModel):
+    user_id: int
+
+
+@app.post("/api/me/link-shopify")
+def link_shopify_staff(
+    payload: LinkShopifyIn,
+    authorization: str | None = Header(default=None),
+    session: Session = Depends(get_session),
+):
+    """Inside Shopify admin, the one-time 'I am ...' pick: remember this
+    staff id against a users-list row."""
+    token_payload = None
+    if authorization and authorization.startswith("Bearer "):
+        token_payload = _auth.session_token_payload(
+            authorization.removeprefix("Bearer "))
+    if not token_payload or not token_payload.get("sub"):
+        raise HTTPException(401, "Open the app from Shopify admin first.")
+    row = session.get(RfidUser, payload.user_id)
+    if row is None:
+        raise HTTPException(404, "No such user.")
+    sub = str(token_payload["sub"])
+    for other in session.scalars(
+            select(RfidUser).where(RfidUser.shopify_sub == sub)):
+        other.shopify_sub = None
+    row.shopify_sub = sub
+    row.last_seen_at = datetime.now(timezone.utc)
+    session.commit()
+    return {"user": row.as_dict()}
+
+
+# ---- the users list (Settings, Users) ----------------------------------------
+
+class UserIn(BaseModel):
+    email: str = Field(min_length=3, max_length=200)
+    name: str | None = Field(default=None, max_length=100)
+    worker: str | None = Field(default=None, max_length=100)
+
+
+class UserRenameIn(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    worker: str | None = Field(default=None, max_length=100)
+
+
+@app.get("/api/users", dependencies=[Depends(require_user)])
+def list_users(session: Session = Depends(get_session)):
+    rows = session.scalars(
+        select(RfidUser).order_by(func.lower(RfidUser.name), RfidUser.email)
+    ).all()
+    return {"users": [r.as_dict() for r in rows]}
+
+
+@app.get("/api/users/names", dependencies=[Depends(require_user)])
+def list_user_names(session: Session = Depends(get_session)):
+    """Just the names, for the gun's "who's using this?" picker."""
+    rows = session.scalars(
+        select(RfidUser).order_by(func.lower(RfidUser.name), RfidUser.email)
+    ).all()
+    names = []
+    for r in rows:
+        n = (r.name or r.email.split("@")[0]).strip()
+        if n and n not in names:
+            names.append(n)
+    return {"names": names}
+
+
+@app.post("/api/users", status_code=201, dependencies=[Depends(require_user)])
+def add_user(
+    payload: UserIn, request: Request,
+    session: Session = Depends(get_session),
+):
+    email = payload.email.strip().lower()
+    if "@" not in email or " " in email:
+        raise HTTPException(422, "That doesn't look like an email address.")
+    if session.scalar(select(RfidUser).where(RfidUser.email == email)):
+        raise HTTPException(409, f"{email} is already on the list.")
+    by = _auth.actor_name(request, payload.worker)
+    name = (payload.name or "").strip() or None
+    row = RfidUser(email=email, name=name, added_by=by)
+    session.add(row)
+    _log_change(session, field="user-added", new=email,
+                title=name or email, by=by)
+    session.commit()
+    return {"user": row.as_dict()}
+
+
+@app.patch("/api/users/{user_id}", dependencies=[Depends(require_user)])
+def rename_user(
+    user_id: int, payload: UserRenameIn, request: Request,
+    session: Session = Depends(get_session),
+):
+    row = session.get(RfidUser, user_id)
+    if row is None:
+        raise HTTPException(404, "No such user.")
+    old = row.name
+    row.name = payload.name.strip()
+    _log_change(session, field="user-renamed", old=old, new=row.name,
+                title=row.email, by=_auth.actor_name(request, payload.worker))
+    session.commit()
+    return {"user": row.as_dict()}
+
+
+@app.delete("/api/users/{user_id}", dependencies=[Depends(require_user)])
+def remove_user(
+    user_id: int, request: Request, worker: str | None = None,
+    session: Session = Depends(get_session),
+):
+    row = session.get(RfidUser, user_id)
+    if row is None:
+        raise HTTPException(404, "No such user.")
+    me = getattr(request.state, "user", None)
+    if me and me.get("uid") == row.id:
+        raise HTTPException(409, "You can't remove yourself. Ask a teammate.")
+    _log_change(session, field="user-removed", old=row.email,
+                new="removed", title=row.name or row.email,
+                by=_auth.actor_name(request, worker))
+    session.delete(row)
+    session.commit()
+    _auth.forget_user(row.id)
+    return {"ok": True}
 
 
 @app.get("/health")
@@ -20187,6 +20462,7 @@ def product_history(
             "shopify": c.changed_field
             not in ("rfid-scan", "locate-list", "tag-sold", "scan-note",
                     "audit-unsure", "unavailable-noted", "stock-confirmed",
+                    "user-added", "user-removed", "user-renamed",
                     "tag-retired", "tag-unretired", "tag-released",
                     "tag-reapplied", "ledger-cleared", "non-taggable",
                     "unlabelable-box", "mislabel-flag", "box-set",

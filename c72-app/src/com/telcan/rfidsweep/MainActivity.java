@@ -908,6 +908,23 @@ public class MainActivity extends Activity {
         tabScroll.addView(tabList);
         drawerPanel.addView(tabScroll, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        // Who's scanning (Nick, 2026-10-05): the name every record this
+        // gun writes is stamped with. Asked once at launch, switchable
+        // here mid-shift. Documentation only - never access.
+        workerBtn = smallBtn("");
+        workerBtn.setTextSize(13);
+        workerBtn.setMinimumHeight(dp(44));
+        workerBtn.setOnClickListener(v -> {
+            closeDrawer();
+            workerPick(true);
+        });
+        LinearLayout.LayoutParams wl = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        wl.topMargin = dp(14);
+        drawerPanel.addView(workerBtn, wl);
+        paintWorkerBtn();
+
         gearBtn = smallBtn("⚙  Settings");
         gearBtn.setTextSize(14);
         gearBtn.setMinimumHeight(dp(44));
@@ -918,7 +935,7 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams gl = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT);
-        gl.topMargin = dp(14);
+        gl.topMargin = dp(8);
         drawerPanel.addView(gearBtn, gl);
 
         // Which build is actually on this device. Read from the package
@@ -978,6 +995,7 @@ public class MainActivity extends Activity {
                 FrameLayout.LayoutParams.MATCH_PARENT));
 
         setContentView(outer);
+        workerCheckAtLaunch();
 
         restoreMap("saved_tags", tags);
         // Land where the operator last was (Nick, 2026-09-28): the BT
@@ -1602,7 +1620,7 @@ public class MainActivity extends Activity {
                         api("DELETE", "/api/rfid-assignments/"
                                 + encPath(epc)
                                 + "?by=" + URLEncoder.encode(
-                                        prefs.getString("device", "C72"),
+                                        workerName(),
                                         "UTF-8"), null);
                         ui.post(() -> {
                             beep(SOUND_OK);
@@ -1664,7 +1682,7 @@ public class MainActivity extends Activity {
                         new JSONObject()
                                 .put("condition", slug)
                                 .put("worker",
-                                        prefs.getString("device", "C72")));
+                                        workerName()));
                 final String msg = resp.optString("message", "Saved.");
                 ui.post(() -> {
                     beep(SOUND_OK);
@@ -1798,7 +1816,7 @@ public class MainActivity extends Activity {
                         new JSONObject()
                                 .put("code", code)
                                 .put("changed_by",
-                                        prefs.getString("device", "C72")));
+                                        workerName()));
                 final String added = r.getJSONObject("added")
                         .optString("sku", code);
                 ui.post(() -> resolveMislabelPick(added, onResolved));
@@ -3177,7 +3195,7 @@ public class MainActivity extends Activity {
                         JSONObject body = new JSONObject()
                                 .put("epcs", new JSONArray(epcs))
                                 .put("dismissed_by",
-                                        prefs.getString("device", "C72"));
+                                        workerName());
                         JSONObject resp = api("POST",
                                 "/api/epcs/ignore-heard", body);
                         final String msg = resp.optString("message",
@@ -3656,7 +3674,7 @@ public class MainActivity extends Activity {
                                 .put("epc", epc)
                                 .put("code", code)
                                 .put("worker",
-                                        prefs.getString("device", "C72")));
+                                        workerName()));
                 final String msg = resp.optString("message", "Paired ✓");
                 final int item = resp.optInt("bumped_item_id", 0);
                 ui.post(() -> {
@@ -3730,7 +3748,7 @@ public class MainActivity extends Activity {
                         new JSONObject()
                                 .put("epcs", new JSONArray().put(epc))
                                 .put("worker",
-                                        prefs.getString("device", "C72")));
+                                        workerName()));
                 final String msg = resp.optString("message", "Marked.");
                 final boolean did = resp.optInt("ignored", 0) > 0;
                 ui.post(() -> {
@@ -3796,7 +3814,7 @@ public class MainActivity extends Activity {
                                 + "/items/" + r.optInt("item_id")
                                 + "/dismiss-sold",
                         new JSONObject().put("worker",
-                                prefs.getString("device", "C72")));
+                                workerName()));
                 final String msg = resp.optString("message",
                         "Dismissed.");
                 ui.post(() -> {
@@ -3910,7 +3928,7 @@ public class MainActivity extends Activity {
                         JSONObject body = new JSONObject()
                                 .put("epc", epc)
                                 .put("worker",
-                                        prefs.getString("device", "C72"));
+                                        workerName());
                         if (item > 0) body.put("item_id", item);
                         api("POST", "/api/locate/pair-unlinked/undo",
                                 body);
@@ -4121,7 +4139,7 @@ public class MainActivity extends Activity {
                     try {
                         api("DELETE", "/api/locate-queue/" + id
                                 + "?worker=" + URLEncoder.encode(
-                                        prefs.getString("device", "C72"),
+                                        workerName(),
                                         "UTF-8"), null);
                         ui.post(() -> {
                             list.removeView(card);
@@ -4904,7 +4922,7 @@ public class MainActivity extends Activity {
     }
 
     private void postOpenboxAnswer(int retId, String epc, String answer) {
-        final String device = prefs.getString("device", "C72");
+        final String device = workerName();
         new Thread(() -> {
             try {
                 JSONObject resp = api("POST",
@@ -5136,7 +5154,7 @@ public class MainActivity extends Activity {
                                     .put("target", sku)
                                     .put("bin", bin)
                                     .put("changed_by",
-                                            prefs.getString("device", "C72"));
+                                            workerName());
                             api("POST", "/api/bin-updates", body);
                             ui.post(() -> {
                                 beep(SOUND_OK);
@@ -5399,7 +5417,7 @@ public class MainActivity extends Activity {
                         .put("comment", comment)
                         .put("confirmed", true)
                         .put("changed_by",
-                                prefs.getString("device", "C72"));
+                                workerName());
                 JSONObject resp = api("POST", "/api/products/"
                         + encPath(sku) + "/unavailable-move", body);
                 ui.post(() -> {
@@ -5442,7 +5460,7 @@ public class MainActivity extends Activity {
                                 .put("kind", kind)
                                 .put("note", "From C72 locate")
                                 .put("changed_by",
-                                        prefs.getString("device", "C72"));
+                                        workerName());
                         api("POST", "/api/assignments/retire", body);
                         ui.post(() -> dropTagFromHunt(epc, sold
                                 ? "Marked presumed sold ✓ "
@@ -5471,7 +5489,7 @@ public class MainActivity extends Activity {
                     try {
                         api("DELETE", "/api/rfid-assignments/" + epc
                                 + "?by=" + URLEncoder.encode(
-                                        prefs.getString("device", "C72"),
+                                        workerName(),
                                         "UTF-8"), null);
                         ui.post(() -> dropTagFromHunt(epc,
                                 "Unlinked ✓ " + epcTail(epc)
@@ -6191,7 +6209,7 @@ public class MainActivity extends Activity {
                 JSONObject body = new JSONObject()
                         .put("label_name", name)
                         .put("placement", mode)
-                        .put("updated_by", prefs.getString("device", "C72"));
+                        .put("updated_by", workerName());
                 api("PUT", "/api/label-names/"
                         + encPath(sku), body);
                 ui.post(() -> editMsg.setText(name.isEmpty()
@@ -6334,7 +6352,7 @@ public class MainActivity extends Activity {
                             .put("target", target)
                             .put("new_barcode", newBc)
                             .put("changed_by",
-                                    prefs.getString("device", "C72"))
+                                    workerName())
                             .put("confirmed", true));
                 }
                 if (skuChanged) {
@@ -6342,7 +6360,7 @@ public class MainActivity extends Activity {
                             .put("target", bcChanged ? newBc : target)
                             .put("new_sku", newSku)
                             .put("changed_by",
-                                    prefs.getString("device", "C72"))
+                                    workerName())
                             .put("confirmed", true));
                     // Pull the new SKU into the batch row so its labels
                     // print the NEW code. Shopify's search can trail the
@@ -6413,7 +6431,7 @@ public class MainActivity extends Activity {
                                         : it.barcode)
                                 .put("bin", batchBin)
                                 .put("changed_by",
-                                        prefs.getString("device", "C72"));
+                                        workerName());
                         api("POST", "/api/bin-updates", body);
                         ui.post(() -> {
                             beep(SOUND_OK);
@@ -6549,7 +6567,7 @@ public class MainActivity extends Activity {
                 JSONObject body = new JSONObject()
                         .put("target", it.sku != null ? it.sku : it.barcode)
                         .put("bin", bin)
-                        .put("changed_by", prefs.getString("device", "C72"));
+                        .put("changed_by", workerName());
                 api("POST", "/api/bin-updates", body);
                 ui.post(() -> {
                     beep(SOUND_OK);
@@ -6853,7 +6871,7 @@ public class MainActivity extends Activity {
                         .put("undo", undo)
                         .put("boxes", boxes)
                         .put("changed_by",
-                                prefs.getString("device", "C72"));
+                                workerName());
                 if (!undo) body.put("units", units);
                 if (contains != null && !contains.isEmpty()) {
                     body.put("contains", contains);
@@ -7920,7 +7938,7 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             try {
                 JSONObject body = new JSONObject()
-                        .put("created_by", prefs.getString("device", "C72"))
+                        .put("created_by", workerName())
                         .put("finalize", true);
                 api("POST", "/api/batches/" + batchId + "/complete", body);
                 final String bin = batchBin;
@@ -9323,7 +9341,7 @@ public class MainActivity extends Activity {
                             + r.itemId + "/tagged-before",
                             new JSONObject().put("count", 0).put(
                                     "updated_by",
-                                    prefs.getString("device", "C72")));
+                                    workerName()));
                 }
                 ui.post(() -> {
                     beep(SOUND_OK);
@@ -9349,7 +9367,7 @@ public class MainActivity extends Activity {
         new Thread(() -> {
             try {
                 JSONObject body = new JSONObject().put("created_by",
-                        prefs.getString("device", "C72"));
+                        workerName());
                 api("POST", "/api/batches/" + batchId + "/complete", body);
                 // A 2xx means an older server closed it outright.
                 final String bin = batchBin;
@@ -9608,7 +9626,7 @@ public class MainActivity extends Activity {
                             .put("epc", epc)
                             .put("item_id", target.id)
                             .put("created_by",
-                                    prefs.getString("device", "C72"));
+                                    workerName());
                     JSONObject resp = api("POST",
                             "/api/batches/" + batchId + "/pair", body);
                     // Companion labels confirm, never count (multi-box
@@ -9802,7 +9820,7 @@ public class MainActivity extends Activity {
                     return;
                 }
                 JSONObject body = new JSONObject().put("bin", bin)
-                        .put("created_by", prefs.getString("device", "C72"));
+                        .put("created_by", workerName());
                 api("POST", "/api/batches", body);
                 ui.post(() -> {
                     beep(SOUND_OK);
@@ -10147,7 +10165,7 @@ public class MainActivity extends Activity {
                 JSONObject body = new JSONObject()
                         .put("order", ref)
                         .put("requested_by",
-                                prefs.getString("device", "C72"));
+                                workerName());
                 if (scanOrder != null && !scanOrder.isEmpty()) {
                     body.put("scan_order", new JSONArray(scanOrder));
                 }
@@ -10231,7 +10249,7 @@ public class MainActivity extends Activity {
             try {
                 JSONObject resp = api("POST", "/api/batches/" + id
                         + "/settle-shipment", new JSONObject().put(
-                        "created_by", prefs.getString("device", "C72")));
+                        "created_by", workerName()));
                 final JSONArray unpaired = resp.optJSONArray("unpaired");
                 final int total = resp.optInt("total_unpaired");
                 ui.post(() -> showSettleResult(unpaired, total));
@@ -10350,7 +10368,7 @@ public class MainActivity extends Activity {
                         .put("epcs", new JSONArray(epcs))
                         .put("unpair_owned", unpairOwned)
                         .put("created_by",
-                                prefs.getString("device", "C72"));
+                                workerName());
                 JSONObject resp = api("POST", "/api/batches/" + id
                         + "/held-list", body);
                 final String msg = resp.optString("message", "Held.");
@@ -10504,7 +10522,7 @@ public class MainActivity extends Activity {
                         "/api/receiving/sort-match", new JSONObject()
                                 .put("counts", counts)
                                 .put("requested_by",
-                                        prefs.getString("device", "C72")));
+                                        workerName()));
                 ui.post(() -> {
                     if (!sortMode) return;
                     sortResp = resp;
@@ -12012,7 +12030,7 @@ public class MainActivity extends Activity {
             try {
                 JSONObject body = new JSONObject()
                         .put("count", count)
-                        .put("updated_by", prefs.getString("device", "C72"));
+                        .put("updated_by", workerName());
                 JSONObject resp = api("PUT", "/api/batches/" + batchId
                         + "/items/" + it.id + "/tagged-before", body);
                 final BItem fresh = BItem.from(resp.getJSONObject("item"));
@@ -12714,7 +12732,7 @@ public class MainActivity extends Activity {
                 JSONObject r = api("GET", "/api/planner/on-order/"
                         + encPath(item.sku)
                         + "?operator=" + URLEncoder.encode(
-                                prefs.getString("device", "C72"), "UTF-8"),
+                                workerName(), "UTF-8"),
                         null);
                 final int remaining = r.optInt("total_remaining", 0);
                 if (!r.optBoolean("ok") || remaining <= 0) return;
@@ -12926,7 +12944,7 @@ public class MainActivity extends Activity {
                 JSONObject body = new JSONObject()
                         .put("epc", epc)
                         .put("item_id", target.id)
-                        .put("created_by", prefs.getString("device", "C72"));
+                        .put("created_by", workerName());
                 JSONObject resp = api("POST",
                         "/api/batches/" + batchId + "/pair", body);
                 // Box 2..N of a multi-box unit: the sticker is
@@ -13193,7 +13211,7 @@ public class MainActivity extends Activity {
                     try {
                         JSONObject body = new JSONObject().put(
                                 "requested_by",
-                                prefs.getString("device", "C72"));
+                                workerName());
                         JSONObject resp = api("POST", "/api/batches/"
                                 + batchId + "/queue-labels", body);
                         final int queued = resp.optInt("count");
@@ -13817,7 +13835,7 @@ public class MainActivity extends Activity {
                         .put("bin", batchBin == null
                                 ? JSONObject.NULL : batchBin)
                         .put("worker",
-                                prefs.getString("device", "C72"));
+                                workerName());
                 if (ingredient && mainSku != null
                         && !mainSku.isEmpty()) {
                     // Names the draft "SKU DRAFT BUNDLE COMPONENT ->
@@ -13891,7 +13909,7 @@ public class MainActivity extends Activity {
                 api("POST", "/api/barcode-aliases", new JSONObject()
                         .put("alias_barcode", scanned)
                         .put("target", target)
-                        .put("created_by", prefs.getString("device", "C72")));
+                        .put("created_by", workerName()));
             } catch (Exception e) {
                 ui.post(() -> {
                     beep(SOUND_ERR);
@@ -13928,7 +13946,7 @@ public class MainActivity extends Activity {
                         .put("target", p.isNull("sku")
                                 ? p.optString("barcode") : p.optString("sku"))
                         .put("new_barcode", scanned)
-                        .put("changed_by", prefs.getString("device", "C72"))
+                        .put("changed_by", workerName())
                         // The endpoint refuses to touch Shopify without
                         // this; the operator just answered the dialog above.
                         .put("confirmed", true);
@@ -14069,7 +14087,7 @@ public class MainActivity extends Activity {
                 JSONObject body = new JSONObject()
                         .put(unlab ? "flagged" : "non_taggable", true)
                         .put("changed_by",
-                                prefs.getString("device", "C72"));
+                                workerName());
                 api("PUT", "/api/products/" + encPath(it.sku)
                         + (unlab ? "/unlabelable-box" : "/non-taggable"),
                         body);
@@ -14109,7 +14127,7 @@ public class MainActivity extends Activity {
                         JSONObject r = api("POST", "/api/products/"
                                 + encPath(it.sku) + "/box-label",
                                 new JSONObject().put("changed_by",
-                                        prefs.getString("device", "C72")));
+                                        workerName()));
                         ui.post(() -> {
                             beep(SOUND_OK);
                             status.setText(r.optString("message",
@@ -14154,7 +14172,7 @@ public class MainActivity extends Activity {
                     JSONObject body = new JSONObject()
                             .put("incompatible", want)
                             .put("changed_by",
-                                    prefs.getString("device", "C72"));
+                                    workerName());
                     api("PUT", "/api/products/"
                             + encPath(it.sku)
                             + "/rfid-incompatible", body);
@@ -14528,7 +14546,7 @@ public class MainActivity extends Activity {
             try {
                 JSONObject body = new JSONObject()
                         .put("flagged", flagged)
-                        .put("flagged_by", prefs.getString("device", "C72"));
+                        .put("flagged_by", workerName());
                 if (note != null && !note.isEmpty()) body.put("note", note);
                 api("PUT", "/api/bins/"
                         + encPath(bin) + "/flagged", body);
@@ -14869,7 +14887,7 @@ public class MainActivity extends Activity {
                         .put("target", target)
                         .put("bin", bin)
                         .put("changed_by",
-                                prefs.getString("device", "C72"));
+                                workerName());
                 api("POST", "/api/bin-updates", body);
                 ui.post(() -> {
                     beep(SOUND_OK);
@@ -14906,7 +14924,7 @@ public class MainActivity extends Activity {
                 JSONObject body = new JSONObject()
                         .put("target", target)
                         .put("bin", batchBin)
-                        .put("changed_by", prefs.getString("device", "C72"));
+                        .put("changed_by", workerName());
                 api("POST", "/api/bin-updates", body);
                 ui.post(() -> {
                     beep(SOUND_OK);
@@ -14962,7 +14980,7 @@ public class MainActivity extends Activity {
                 try {
                     JSONObject body = new JSONObject().put("bin", bin)
                             .put("created_by",
-                                    prefs.getString("device", "C72"));
+                                    workerName());
                     JSONObject resp = api("POST",
                             "/api/batches/" + fromId + "/divert", body);
                     JSONObject side = resp.getJSONObject("batch");
@@ -15733,7 +15751,7 @@ public class MainActivity extends Activity {
                                 d.optString("title", ""))
                         .put("create_draft", true)
                         .put("created_by",
-                                prefs.getString("device", "C72"));
+                                workerName());
                 if (withTag) {
                     body.put("peel_old", true)
                             .put("epc", d.optString("epc"))
@@ -15801,7 +15819,7 @@ public class MainActivity extends Activity {
                 JSONObject body = new JSONObject()
                         .put("target", target)
                         .put("bin", bin)
-                        .put("changed_by", prefs.getString("device", "C72"));
+                        .put("changed_by", workerName());
                 api("POST", "/api/bin-updates", body);
                 ui.post(() -> {
                     beep(SOUND_OK);
@@ -15927,7 +15945,7 @@ public class MainActivity extends Activity {
                                 p.isNull("bin_location") ? JSONObject.NULL
                                         : p.optString("bin_location"))
                         .put("assigned_by",
-                                prefs.getString("device", "C72"));
+                                workerName());
                 JSONObject resp = api("POST",
                         "/api/rfid-assignments/sweep", body);
                 final int done = resp.optInt("count");
@@ -16004,7 +16022,7 @@ public class MainActivity extends Activity {
                                 p.isNull("bin_location") ? JSONObject.NULL
                                         : p.optString("bin_location"))
                         .put("assigned_by",
-                                prefs.getString("device", "C72"));
+                                workerName());
                 JSONObject resp = api("POST", "/api/rfid-assignments", body);
                 final boolean suspect = resp.optBoolean("suspect");
                 // Over-pair guard (Nick, 2026-09-14): the pair stands,
@@ -18431,7 +18449,7 @@ public class MainActivity extends Activity {
             try {
                 JSONObject body = new JSONObject()
                         .put("code", code)
-                        .put("by", prefs.getString("device", "C72"))
+                        .put("by", workerName())
                         .put("auto_print", auditAutoPrint);
                 JSONObject resp = api("POST", "/api/audit/finds", body);
                 final JSONObject find = resp.optJSONObject("find");
@@ -18535,7 +18553,7 @@ public class MainActivity extends Activity {
             try {
                 JSONObject resp = api("POST", "/api/audit/finds/print-all",
                         new JSONObject().put("by",
-                                prefs.getString("device", "C72")));
+                                workerName()));
                 final int queued = resp.optInt("queued");
                 final JSONArray skipped = resp.optJSONArray("skipped");
                 ui.post(() -> {
@@ -18663,7 +18681,7 @@ public class MainActivity extends Activity {
                                 p.isNull("bin_location") ? JSONObject.NULL
                                         : p.optString("bin_location"))
                         .put("assigned_by",
-                                prefs.getString("device", "C72"));
+                                workerName());
                 JSONObject resp = api("POST", "/api/rfid-assignments",
                         body);
                 final String warn = resp.optString("warning", "");
@@ -18827,7 +18845,7 @@ public class MainActivity extends Activity {
      *  covered by recorded sales, retired in one confirmed pass. */
     private void auditMarkAllSold(final String loc,
                                   final List<Object[]> entries) {
-        final String device = prefs.getString("device", "C72");
+        final String device = workerName();
         StringBuilder msg = new StringBuilder();
         int units = 0;
         for (Object[] e : entries) {
@@ -19050,7 +19068,7 @@ public class MainActivity extends Activity {
                 JSONObject body = new JSONObject()
                         .put("sku", sku)
                         .put("label", title)
-                        .put("worker", prefs.getString("device", "C72"));
+                        .put("worker", workerName());
                 if (epcs != null && epcs.length() > 0) {
                     body.put("epcs", epcs);
                 }
@@ -19182,7 +19200,7 @@ public class MainActivity extends Activity {
                             .put("bin_location",
                                     bin == null ? JSONObject.NULL : bin)
                             .put("assigned_by",
-                                    prefs.getString("device", "C72")));
+                                    workerName()));
                     ok++;
                 } catch (Exception e) {
                     err = sku + ": " + e.getMessage();
@@ -19226,7 +19244,7 @@ public class MainActivity extends Activity {
                 .put("bin_location", !p.isNull("bin_location")
                         ? p.optString("bin_location")
                         : bin == null ? JSONObject.NULL : bin)
-                .put("requested_by", prefs.getString("device", "C72")));
+                .put("requested_by", workerName()));
     }
 
     /** An item's own first bin (falls back to the checked location) -
@@ -19685,7 +19703,7 @@ public class MainActivity extends Activity {
                         .put("sku", sku)
                         .put("bin", bin == null ? loc : bin)
                         .put("qty", qty)
-                        .put("by", prefs.getString("device", "C72")));
+                        .put("by", workerName()));
                 ui.post(() -> beep(SOUND_OK));
             } catch (Exception e) {
                 ui.post(() -> {
@@ -21813,6 +21831,11 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        // Closing the app properly forgets who was scanning; the home
+        // button, the screen going dark and a theme recreate don't.
+        if (isFinishing()) {
+            prefs.edit().remove("worker_name").apply();
+        }
         try {
             if (scanning) reader.stopInventory();
             if (readerReady) reader.free();
@@ -21822,5 +21845,125 @@ public class MainActivity extends Activity {
             if (tones != null) tones.release();
         } catch (Exception ignored) {
         }
+    }
+
+    // ------------------------------------------------------ who's scanning --
+    // The name stamped on everything this gun records (Nick, 2026-10-05).
+    // Asked once per launch: it survives the home button and the display
+    // powering down, and resets when the app is closed properly or the
+    // gun is shut down (a reboot moves the boot clock, so a name saved
+    // before it is dropped). The list comes from the server's users
+    // table, cached on the gun for when Wi-Fi is slow.
+    private Button workerBtn;
+
+    private String workerName() {
+        String w = prefs.getString("worker_name", "");
+        return w.isEmpty() ? workerName() : w;
+    }
+
+    private void paintWorkerBtn() {
+        if (workerBtn == null) return;
+        String w = prefs.getString("worker_name", "");
+        workerBtn.setText(w.isEmpty() ? "👤  Who's scanning?"
+                : "👤  Scanning as " + w);
+    }
+
+    private void workerCheckAtLaunch() {
+        long bootAt = System.currentTimeMillis()
+                - android.os.SystemClock.elapsedRealtime();
+        long savedBoot = prefs.getLong("worker_boot", -1L);
+        if (Math.abs(savedBoot - bootAt) > 120000L) {
+            // A different boot: the gun was shut down since the name
+            // was picked.
+            prefs.edit().remove("worker_name").putLong("worker_boot", bootAt)
+                    .apply();
+        }
+        paintWorkerBtn();
+        if (prefs.getString("worker_name", "").isEmpty()) {
+            ui.postDelayed(() -> workerPick(false), 400);
+        }
+    }
+
+    private void workerPick(final boolean cancellable) {
+        final List<String> names = new ArrayList<>();
+        for (String n : prefs.getString("worker_list", "").split("\n")) {
+            if (!n.trim().isEmpty()) names.add(n.trim());
+        }
+        // Refresh the cached list in the background; the dialog opens
+        // with what's on the gun and reopens itself only if it was empty.
+        new Thread(() -> {
+            try {
+                JSONObject resp = api("GET", "/api/users/names", null);
+                JSONArray arr = resp.optJSONArray("names");
+                if (arr == null) return;
+                StringBuilder sb = new StringBuilder();
+                List<String> fresh = new ArrayList<>();
+                for (int i = 0; i < arr.length(); i++) {
+                    String n = arr.optString(i).trim();
+                    if (n.isEmpty()) continue;
+                    fresh.add(n);
+                    sb.append(n).append('\n');
+                }
+                prefs.edit().putString("worker_list", sb.toString()).apply();
+                if (names.isEmpty() && !fresh.isEmpty()) {
+                    ui.post(() -> workerPick(cancellable));
+                }
+            } catch (Exception ignored) {
+            }
+        }).start();
+        if (names.isEmpty()) {
+            if (!cancellable) {
+                // No cached list yet: the server call above reopens the
+                // picker as soon as names arrive.
+                status.setText("Fetching the users list…");
+            }
+            workerTypeName(cancellable);
+            return;
+        }
+        final String current = prefs.getString("worker_name", "");
+        int checked = names.indexOf(current);
+        final String[] items = new String[names.size() + 1];
+        for (int i = 0; i < names.size(); i++) items[i] = names.get(i);
+        items[names.size()] = "Someone else…";
+        AlertDialog.Builder b = new AlertDialog.Builder(this)
+                .setTitle("WHO'S SCANNING?")
+                .setCancelable(cancellable)
+                .setSingleChoiceItems(items, checked, (d, w) -> {
+                    d.dismiss();
+                    if (w == names.size()) {
+                        workerTypeName(cancellable);
+                        return;
+                    }
+                    workerSet(names.get(w));
+                });
+        if (cancellable) b.setNegativeButton("CANCEL", null);
+        b.show();
+    }
+
+    private void workerTypeName(final boolean cancellable) {
+        final EditText in = new EditText(this);
+        in.setHint("Your name");
+        in.setSingleLine(true);
+        in.setText(prefs.getString("worker_name", ""));
+        AlertDialog.Builder b = new AlertDialog.Builder(this)
+                .setTitle("WHO'S SCANNING?")
+                .setView(in)
+                .setCancelable(cancellable)
+                .setPositiveButton("OK", (d, w) -> {
+                    String n = in.getText().toString().trim();
+                    if (n.isEmpty()) {
+                        if (!cancellable) workerTypeName(false);
+                        return;
+                    }
+                    workerSet(n);
+                });
+        if (cancellable) b.setNegativeButton("CANCEL", null);
+        b.show();
+    }
+
+    private void workerSet(String name) {
+        prefs.edit().putString("worker_name", name).apply();
+        paintWorkerBtn();
+        status.setText("Scanning as " + name + ".");
     }
 }

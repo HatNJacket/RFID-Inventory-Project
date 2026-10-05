@@ -52,14 +52,32 @@
         <button class="reset printerbtn" id="printer-btn" type="button" hidden
                 title="Choose which printer prints this device's labels">🖨</button>
         
-        <select class="operator" id="operator" title="Who's using the station">
-          <!-- Placeholder face of the closed select — hidden from the open
-               list, so picking is a one-way door to a real name. -->
-          <option value="" disabled hidden>Who's scanning?</option>
-          {% for name in operators %}
-          <option value="{{ name }}">{{ name }}</option>
-          {% endfor %}
-        </select>
+        <!-- Who's using the station. With sign-in configured (2026-10-05)
+             the account card takes over and the dropdown is hidden: the
+             name comes from the login, not a pick. Inside Shopify admin
+             an unlinked staff member gets the one-time "Who are you?"
+             pick instead. The dropdown stays for local dev (no sign-in). -->
+        <div class="account" id="account">
+          <select class="operator" id="operator" title="Who's using the station">
+            <!-- Placeholder face of the closed select — hidden from the open
+                 list, so picking is a one-way door to a real name. -->
+            <option value="" disabled hidden>Who's scanning?</option>
+            {% for name in operators %}
+            <option value="{{ name }}">{{ name }}</option>
+            {% endfor %}
+          </select>
+          <div class="account__card" id="account-card" hidden>
+            <span class="account__who">
+              <span class="account__name" id="account-name"></span>
+              <span class="account__email" id="account-email"></span>
+            </span>
+            <button class="reset account__out" id="account-signout" type="button" title="Sign out of the RFID terminal">Sign out</button>
+          </div>
+          <label class="account__link" id="account-link" hidden>
+            <span class="account__linklbl">Who are you?</span>
+            <select class="operator" id="account-pick"></select>
+          </label>
+        </div>
       </div>
       </div><!-- /head__rows -->
     </header>
@@ -1926,6 +1944,20 @@
               🎨 Event colours
               <span class="settingspage__chev" aria-hidden="true">›</span>
             </button>
+
+            <!-- Users (2026-10-05): who may sign in. Shared by every
+                 device - not a per-browser preference. -->
+            <div class="users" id="users-panel" hidden>
+              <h3 class="users__title">Users</h3>
+              <p class="settingspage__hint">Who can sign in to this terminal, and the names the gun offers at launch. Anyone here can add or remove others; every change is in History.</p>
+              <div class="users__list" id="users-list"></div>
+              <form class="users__add" id="users-add">
+                <input class="users__input" id="users-email" type="email" placeholder="email@telescopescanada.ca" autocomplete="off" required />
+                <input class="users__input users__input--name" id="users-name" type="text" placeholder="Name" autocomplete="off" />
+                <button class="users__addbtn" type="submit">Add user</button>
+              </form>
+              <p class="users__note" id="users-note" hidden></p>
+            </div>
                 </div>
 
       <div class="settingspage__colors" hidden>

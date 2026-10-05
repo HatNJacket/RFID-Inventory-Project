@@ -19,6 +19,18 @@ os.environ["SHOPIFY_WRITE_MODE"] = (
 os.environ["ONELEFT_MODE"] = "confirm"  # the bridge itself is faked below
 os.environ.pop("STATION_KEY", None)
 os.environ.pop("PRINT_AGENT_KEY", None)
+# --auth (2026-10-05): sign-in ON, against a fake identity provider served
+# by this same process, so the login page, the account card and Settings,
+# Users can be checked in a browser. The fake provider's page lets you
+# pick which email "signs in".
+AUTH = "--auth" in sys.argv
+if AUTH:
+    os.environ["AUTH_SESSION_SECRET"] = "local-dev-secret"
+    os.environ["MS_TENANT_ID"] = "tenant"
+    os.environ["MS_CLIENT_ID"] = "mscid"
+    os.environ["MS_CLIENT_SECRET"] = "x"
+    os.environ["GOOGLE_CLIENT_ID"] = "gcid"
+    os.environ["GOOGLE_CLIENT_SECRET"] = "x"
 
 from app.main import app  # noqa: E402  (env must be set first)
 from app.database import get_engine  # noqa: E402
@@ -631,6 +643,65 @@ _sh.get_quantity_breakdown = lambda sku: {
     "available": 1, "committed": 1, "on_hand": 2,
     "unavailable": 1 if (sku or "").upper() == "MIS-1" else 0,
 }
+
+if AUTH:
+    import base64 as _b64  # noqa: E402
+    import json as _json  # noqa: E402
+    import time as _time  # noqa: E402
+    from fastapi import Request as _Req  # noqa: E402
+    from fastapi.responses import (  # noqa: E402
+        HTMLResponse as _HTML, RedirectResponse as _Redir)
+    from app import auth as _auth  # noqa: E402
+    from app.models import RfidUser  # noqa: E402
+
+    with Session(get_engine()) as s:
+        s.add(RfidUser(email="nick@telescopescanada.ca", name="Nick",
+                       added_by="seed"))
+        s.add(RfidUser(email="stephen@telescopescanada.ca", name="Steve",
+                       added_by="seed"))
+        s.commit()
+
+    _FAKE = {"email": "", "name": "", "nonce": "", "aud": "", "iss": ""}
+    _ISS = {"microsoft": "https://login.microsoftonline.com/tenant/v2.0",
+            "google": "https://accounts.google.com"}
+    _auth._endpoints = lambda name: {
+        "authorization_endpoint": "/dev/fake-idp/" + name,
+        "token_endpoint": "fake://token",
+        "issuer": _ISS[name],
+    }
+
+    def _fake_token_post(url, data):
+        claims = {
+            "iss": _FAKE["iss"], "aud": _FAKE["aud"], "nonce": _FAKE["nonce"],
+            "exp": int(_time.time()) + 600, "email": _FAKE["email"],
+            "email_verified": True, "name": _FAKE["name"],
+            "sub": "fake-" + _FAKE["email"],
+        }
+        body = _b64.urlsafe_b64encode(
+            _json.dumps(claims).encode()).decode().rstrip("=")
+        return {"id_token": "h." + body + ".s"}
+    _auth._token_post = _fake_token_post
+
+    @app.get("/dev/fake-idp/{name}", response_class=_HTML)
+    def fake_idp(name: str, request: _Req):
+        q = request.query_params
+        _FAKE.update(nonce=q.get("nonce", ""), aud=q.get("client_id", ""),
+                     iss=_ISS.get(name, ""))
+        cb = q.get("redirect_uri", "")
+        state = q.get("state", "")
+        people = [("nick@telescopescanada.ca", "Nick Drapak"),
+                  ("stephen@telescopescanada.ca", "Stephen Drapak"),
+                  ("stranger@gmail.com", "A Stranger")]
+        rows = "".join(
+            f'<li><a href="/dev/fake-idp-pick?who={e}&name={n}'
+            f'&cb={cb}&state={state}">{e}</a></li>' for e, n in people)
+        return (f"<h2>Fake {name} sign-in</h2><p>Pick who signs in:</p>"
+                f"<ul>{rows}</ul>")
+
+    @app.get("/dev/fake-idp-pick")
+    def fake_idp_pick(who: str, name: str, cb: str, state: str):
+        _FAKE.update(email=who, name=name)
+        return _Redir(f"{cb}?code=ok&state={state}", status_code=303)
 
 import uvicorn  # noqa: E402
 uvicorn.run(app, host="127.0.0.1", port=8123)

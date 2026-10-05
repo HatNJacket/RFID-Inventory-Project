@@ -4762,3 +4762,56 @@ tr.bvx-fam .chip { margin-left: 6px; }
 .onebin__row { display: flex; gap: 8px; flex-wrap: wrap; }
 .onebin__input { flex: 1; min-width: 160px; font-family: var(--mono); }
 .onebin__hint { font-size: 12px; color: var(--ink-dim); }
+
+/* ---- Sign-in (2026-10-05) ------------------------------------------------ */
+/* The login landing page: nothing of the terminal shows until you're in. */
+.loginpage { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); }
+.login { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px 16px; box-sizing: border-box; }
+.login__card { width: 100%; max-width: 420px; background: var(--card); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow); padding: 28px 28px 24px; display: flex; flex-direction: column; gap: 12px; }
+.login__brand { margin-bottom: 4px; }
+.login__title { margin: 0; font-size: 24px; font-weight: 700; letter-spacing: -0.01em; }
+.login__hint { margin: 0; font-size: 13px; color: var(--ink-dim); line-height: 1.45; }
+.login__error { margin: 0; padding: 10px 12px; border-radius: 8px; background: var(--bad-bg); color: var(--bad-ink); font-size: 13px; line-height: 1.4; }
+.login__buttons { display: flex; flex-direction: column; gap: 10px; margin-top: 6px; }
+.login__btn { display: flex; flex-direction: column; gap: 2px; padding: 12px 14px; border: 1.5px solid var(--line); border-radius: 10px; background: var(--card-2); color: var(--ink); text-decoration: none; min-height: 44px; box-sizing: border-box; }
+.login__btn:hover { border-color: var(--accent); background: var(--accent-soft); }
+.login__btn:focus-visible { outline: 3px solid var(--accent-soft); outline-offset: 1px; }
+.login__btnlabel { font-weight: 650; font-size: 14px; }
+.login__btnhint { font-size: 12px; color: var(--ink-dim); }
+
+/* The account card in the header: who's signed in, and the way out. */
+.account { display: flex; align-items: center; gap: 8px; }
+.account__card { display: flex; align-items: center; gap: 10px; padding: 4px 6px 4px 10px; border: 1.5px solid var(--line); border-radius: 8px; background: var(--card); }
+.account__who { display: flex; flex-direction: column; line-height: 1.15; }
+.account__name { font-size: 13px; font-weight: 650; color: var(--ink); }
+.account__email { font-size: 11px; color: var(--ink-dim); }
+.account__out { font-size: 12px; font-weight: 600; color: var(--accent); padding: 6px 8px; border-radius: 6px; cursor: pointer; }
+.account__out:hover { background: var(--accent-soft); }
+.account__link { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ink-dim); }
+.account__linklbl { white-space: nowrap; }
+
+/* Settings, Users. */
+.users { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px; }
+.users__title { margin: 0; font-size: 15px; font-weight: 700; }
+.users__list { display: flex; flex-direction: column; gap: 6px; }
+.users__row { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(180px, 1.4fr) auto auto auto; gap: 10px; align-items: center; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); font-size: 13px; }
+.users__name { font-weight: 650; color: var(--ink); text-align: left; cursor: pointer; padding: 2px 4px; border-radius: 4px; }
+.users__name:hover { background: var(--accent-soft); }
+.users__you { font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ok-ink); background: var(--ok-bg); padding: 1px 6px; border-radius: 8px; margin-left: 4px; }
+.users__email { font-family: var(--mono); font-size: 12px; color: var(--ink); word-break: break-all; }
+.users__meta { font-size: 11px; color: var(--ink-dim); white-space: nowrap; }
+.users__remove { font-size: 12px; font-weight: 600; color: var(--bad-ink); padding: 6px 8px; border-radius: 6px; cursor: pointer; }
+.users__remove:hover:not(:disabled) { background: var(--bad-bg); }
+.users__remove:disabled { opacity: 0.45; cursor: default; }
+.users__empty { font-size: 13px; color: var(--ink-dim); padding: 8px 2px; }
+.users__add { display: flex; gap: 8px; flex-wrap: wrap; }
+.users__input { flex: 1 1 220px; min-height: 36px; box-sizing: border-box; padding: 6px 10px; border: 1.5px solid var(--line); border-radius: 8px; background: var(--card); color: var(--ink); font-size: 13px; font-family: var(--sans); }
+.users__input--name { flex: 0 1 160px; }
+.users__input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.users__addbtn { min-height: 36px; padding: 6px 14px; border: 0; border-radius: 8px; background: var(--btn-bg); color: var(--btn-ink); font-weight: 650; font-size: 13px; cursor: pointer; }
+.users__note { margin: 0; font-size: 13px; color: var(--ok-ink); }
+.users__note--bad { color: var(--bad-ink); }
+@media (max-width: 720px) {
+  .users__row { grid-template-columns: 1fr auto; }
+  .users__meta { white-space: normal; }
+}

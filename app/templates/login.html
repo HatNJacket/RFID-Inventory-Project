@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RFID Inventory - Sign in</title>
+  <link rel="stylesheet" href="/static/styles.css?v={{ asset_version }}" />
+</head>
+<body class="loginpage">
+  <main class="login">
+    <div class="login__card">
+      <div class="brand login__brand">
+        <span class="brand__mark" aria-hidden="true"></span>
+        <span class="brand__name">RFID Inventory</span>
+      </div>
+      <h1 class="login__title">Sign in</h1>
+      <p class="login__hint">Telescopes Canada staff only. Use your telescopescanada.ca account, or the Google account a teammate added for you.</p>
+      {% if message %}
+      <p class="login__error" role="alert">{{ message }}</p>
+      {% endif %}
+      <div class="login__buttons">
+        {% for name, p in providers.items() %}
+        <a class="login__btn login__btn--{{ name }}" href="/auth/login/{{ name }}?next={{ next|urlencode }}">
+          <span class="login__btnlabel">{{ p.label }}</span>
+          <span class="login__btnhint">{{ p.hint }}</span>
+        </a>
+        {% endfor %}
+      </div>
+    </div>
+  </main>
+</body>
+</html>

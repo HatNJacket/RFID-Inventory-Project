@@ -46,6 +46,26 @@ PRINT_AGENT_KEY = os.getenv("PRINT_AGENT_KEY")
 # Shopify session token (embedded admin use). Unset = open, for local dev.
 STATION_KEY = os.getenv("STATION_KEY")
 
+# Sign-in (Nick, 2026-10-05): the terminal asks who you are before it
+# shows anything. Microsoft for telescopescanada.ca accounts (the company
+# mail is Microsoft 365, tenant MS_TENANT_ID), Google for everyone else.
+# Sign-in is live once AUTH_SESSION_SECRET and at least one provider's
+# client id + secret are set; until then only STATION_KEY applies.
+AUTH_SESSION_SECRET = os.getenv("AUTH_SESSION_SECRET")
+MS_TENANT_ID = os.getenv("MS_TENANT_ID")
+MS_CLIENT_ID = os.getenv("MS_CLIENT_ID")
+MS_CLIENT_SECRET = os.getenv("MS_CLIENT_SECRET")
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
+
+
+def auth_enabled() -> bool:
+    return bool(AUTH_SESSION_SECRET) and bool(
+        (MS_CLIENT_ID and MS_CLIENT_SECRET)
+        or (GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET)
+    )
+
+
 # Shopify write protection, enforced server-side (hiding buttons in the
 # browser is not enough). New features must never touch the live store
 # until explicitly promoted:

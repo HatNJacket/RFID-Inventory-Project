@@ -222,10 +222,212 @@ operatorEl.addEventListener("change", () => {
 
 function requireOperator() {
   if (operatorEl.value) return operatorEl.value;
-  setResult("Pick who's scanning (top right) first.", "err");
+  setResult(
+    ME_STATE.authEnabled
+      ? "Sign in first (top right)."
+      : "Pick who's scanning (top right) first.",
+    "err"
+  );
   operatorEl.focus();
   return null;
 }
+
+// --- Account (sign-in, 2026-10-05) -----------------------------------------
+// /api/me says who this browser is. Signed in: the account card replaces
+// the dropdown and the operator value IS the signed-in name, so every
+// "worker" stamp on the site comes from the login. Inside Shopify admin
+// the session token carries a staff id; until it's linked to a user we
+// show a one-time "Who are you?" pick. Sign-in off (local dev): the old
+// dropdown stays.
+const ME_STATE = { authEnabled: false, user: null, shopifySub: null };
+
+function setOperatorName(name) {
+  if (!name) return;
+  if (![...operatorEl.options].some((o) => o.value === name)) {
+    const opt = document.createElement("option");
+    opt.value = name;
+    opt.textContent = name;
+    operatorEl.appendChild(opt);
+  }
+  operatorEl.value = name;
+  localStorage.setItem("operator", name);
+}
+
+function paintAccount() {
+  const card = document.getElementById("account-card");
+  const link = document.getElementById("account-link");
+  const u = ME_STATE.user;
+  if (u) {
+    const name = u.name || u.email.split("@")[0];
+    setOperatorName(name);
+    document.getElementById("account-name").textContent = name;
+    document.getElementById("account-email").textContent = u.email;
+    operatorEl.hidden = true;
+    link.hidden = true;
+    card.hidden = false;
+    // Inside Shopify admin there's no cookie to clear - the staff login
+    // is the login - so the button has nothing honest to do.
+    document.getElementById("account-signout").hidden =
+      !!document.body.classList.contains("embedded");
+    return;
+  }
+  card.hidden = true;
+  if (ME_STATE.shopifySub) {
+    operatorEl.hidden = true;
+    link.hidden = false;
+    return;
+  }
+  link.hidden = true;
+  operatorEl.hidden = false;
+}
+
+async function loadMe() {
+  let data;
+  try {
+    const r = await apiFetch("/api/me");
+    if (!r.ok) return;
+    data = await r.json();
+  } catch (e) {
+    return;
+  }
+  ME_STATE.authEnabled = !!data.auth_enabled;
+  ME_STATE.user = data.user || null;
+  ME_STATE.shopifySub = data.shopify_sub || null;
+  const embedded = document.body.classList.contains("embedded");
+  if (ME_STATE.authEnabled && !ME_STATE.user && !embedded) {
+    // The cookie expired under an open page: back to the sign-in page.
+    location.href = "/login";
+    return;
+  }
+  if (ME_STATE.shopifySub && !ME_STATE.user) {
+    const pick = document.getElementById("account-pick");
+    pick.innerHTML = '<option value="" disabled selected hidden>Who are you?</option>';
+    try {
+      const r = await apiFetch("/api/users");
+      const d = await r.json();
+      (d.users || []).forEach((row) => {
+        const opt = document.createElement("option");
+        opt.value = row.id;
+        opt.textContent = row.name || row.email;
+        pick.appendChild(opt);
+      });
+    } catch (e) { /* the pick stays empty; the dropdown is still there */ }
+  }
+  paintAccount();
+  // A ?tab=settings load reaches the Settings loader before this answer
+  // lands; the Users panel shows once we know sign-in is on.
+  const settings = document.getElementById("tab-settings");
+  if (settings && !settings.hidden) renderUsers();
+}
+
+document.getElementById("account-signout").addEventListener("click", async () => {
+  try {
+    await fetch("/auth/logout", { method: "POST", redirect: "manual" });
+  } catch (e) { /* the cookie clears server-side; go to the login page anyway */ }
+  location.href = "/login";
+});
+
+document.getElementById("account-pick").addEventListener("change", async (ev) => {
+  const id = Number(ev.target.value);
+  if (!id) return;
+  const r = await apiFetch("/api/me/link-shopify", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: id }),
+  });
+  if (r.ok) {
+    const d = await r.json();
+    ME_STATE.user = d.user;
+    paintAccount();
+  }
+});
+
+loadMe();
+
+// Settings, Users: the list of who may sign in (and the names the gun
+// offers). Shown only when sign-in is configured - without it the
+// list would promise something the server isn't enforcing.
+async function renderUsers() {
+  const panel = document.getElementById("users-panel");
+  panel.hidden = !ME_STATE.authEnabled && !ME_STATE.shopifySub;
+  if (panel.hidden) return;
+  const list = document.getElementById("users-list");
+  const note = document.getElementById("users-note");
+  note.hidden = true;
+  let users = [];
+  try {
+    const r = await apiFetch("/api/users");
+    users = (await r.json()).users || [];
+  } catch (e) {
+    list.innerHTML = '<div class="users__empty">Couldn\'t load the users list.</div>';
+    return;
+  }
+  list.innerHTML = "";
+  if (!users.length) {
+    list.innerHTML = '<div class="users__empty">Nobody yet. Add the first email below.</div>';
+  }
+  users.forEach((u) => {
+    const row = document.createElement("div");
+    row.className = "users__row";
+    const me = ME_STATE.user && ME_STATE.user.id === u.id;
+    row.innerHTML = `
+      <button class="reset users__name" type="button" title="Rename">${escapeHtml(u.name || "(no name)")}${me ? ' <span class="users__you">you</span>' : ""}</button>
+      <span class="users__email">${escapeHtml(u.email)}</span>
+      <span class="users__meta">Added: ${u.added_at ? escapeHtml(new Date(u.added_at).toLocaleDateString()) : "-"} by ${escapeHtml(u.added_by || "-")}</span>
+      <span class="users__meta">Last seen: ${u.last_seen_at ? escapeHtml(fmtAgo(u.last_seen_at)) : "never"}</span>
+      <button class="reset users__remove" type="button" ${me ? "disabled title=\"Ask a teammate to remove you\"" : ""}>Remove</button>`;
+    row.querySelector(".users__name").addEventListener("click", async () => {
+      const name = prompt(`Name for ${u.email}`, u.name || "");
+      if (name === null || !name.trim()) return;
+      const r = await apiFetch(`/api/users/${u.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name.trim(), worker: operatorEl.value || null }),
+      });
+      if (!r.ok) usersSay(await r.text(), true);
+      renderUsers();
+    });
+    row.querySelector(".users__remove").addEventListener("click", async () => {
+      if (!confirm(`Remove ${u.name || u.email} from the users list? They won't be able to sign in until someone adds them back.`)) return;
+      const r = await apiFetch(
+        `/api/users/${u.id}?worker=${encodeURIComponent(operatorEl.value || "")}`,
+        { method: "DELETE" }
+      );
+      if (!r.ok) usersSay(await r.text(), true);
+      renderUsers();
+    });
+    list.appendChild(row);
+  });
+}
+
+function usersSay(text, bad) {
+  const note = document.getElementById("users-note");
+  let msg = text;
+  try { msg = JSON.parse(text).detail || text; } catch (e) { /* plain text */ }
+  note.textContent = msg;
+  note.classList.toggle("users__note--bad", !!bad);
+  note.hidden = false;
+}
+
+document.getElementById("users-add").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const email = document.getElementById("users-email").value.trim();
+  const name = document.getElementById("users-name").value.trim();
+  if (!email) return;
+  const r = await apiFetch("/api/users", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, name: name || null, worker: operatorEl.value || null }),
+  });
+  if (r.ok) {
+    document.getElementById("users-email").value = "";
+    document.getElementById("users-name").value = "";
+    usersSay(`${email} can sign in now.`, false);
+  } else {
+    usersSay(await r.text(), true);
+  }
+  renderUsers();
+});
 
 // === Refresh buttons =========================================================
 // One parent behavior every refresh-ish button on the site shares
@@ -364,6 +566,9 @@ const EVENT_META = {
   "vendor-updated": ["Updated Vendor", "#b98900"],
   "manual-recount": ["Manual Recount", "#8a6116"],
   "rfid-flag-changed": ["RFID Flag", "#d72c0d"],
+  "user-added": ["User Added", "#0b6e99"],
+  "user-removed": ["User Removed", "#d72c0d"],
+  "user-renamed": ["User Renamed", "#5c5f62"],
   "non-taggable": ["Non-taggable", "#8a6116"],
   "unlabelable-box": ["Un-labelable Box", "#8a6116"],
   "box-set": ["Multi-box Set", "#0b6e99"],
@@ -717,6 +922,7 @@ const tabLoaders = {
   settings: () => {
     const panel = document.querySelector(".settingspage__colors");
     if (panel && !panel.hidden) renderEvColorList();
+    renderUsers();
   },
   batch: () => enterBatchTab(),
   inventory: () => loadInventory(),
@@ -20167,7 +20373,7 @@ function labelSvg(header, centre, barcode, binText, otherBins, dirtyParts) {
   const T = (x, y, size, text, anchor = "middle") =>
     `<text x="${x}" y="${y + size * 0.78}" font-size="${size * 0.94}" ` +
     `font-family="'Arial Narrow','Roboto Condensed',Arial,sans-serif" ` +
-    `text-anchor="${anchor}" fill="#111">${esc(text)}</text>`;
+    `text-anchor="${anchor}" fill="#111">${escapeHtml(text)}</text>`;
   const seg = { header: "", desc: "", barcode: "", bin: "" };
   const warns = [];
   // header

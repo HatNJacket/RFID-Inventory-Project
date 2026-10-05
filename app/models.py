@@ -1618,6 +1618,56 @@ class AuditStockConfirm(Base):
     )
 
 
+class RfidUser(Base):
+    """Who may sign in to the web terminal (Nick, 2026-10-05) and the
+    names the gun offers at launch. One row per email; Microsoft
+    (telescopescanada.ca) or Google signs them in, this list decides
+    whether they get past the login page. Everyone is admin for now
+    ("we're all trusted"); the role column is here for later. prefs
+    will hold per-user hub layouts once hubs become customizable.
+    Created by init_db's create_all - no ALTER needed on prod."""
+
+    __tablename__ = "rfid_users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    email: Mapped[str] = mapped_column(
+        String(200), unique=True, index=True, nullable=False
+    )
+    name: Mapped[str | None] = mapped_column(String(100))
+    role: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="admin", server_default="admin"
+    )
+    # Which service last signed this person in, and its stable subject id.
+    provider: Mapped[str | None] = mapped_column(String(20))
+    subject: Mapped[str | None] = mapped_column(String(200))
+    # The Shopify staff id (session token "sub") linked to this person,
+    # so the embedded app knows who's clicking without a second login.
+    shopify_sub: Mapped[str | None] = mapped_column(String(100), index=True)
+    added_by: Mapped[str | None] = mapped_column(String(100))
+    added_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    last_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    prefs: Mapped[str | None] = mapped_column(Text)
+
+    def as_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "email": self.email,
+            "name": self.name,
+            "role": self.role,
+            "provider": self.provider,
+            "shopify_linked": bool(self.shopify_sub),
+            "added_by": self.added_by,
+            "added_at": self.added_at.isoformat() if self.added_at else None,
+            "last_seen_at": (
+                self.last_seen_at.isoformat() if self.last_seen_at else None
+            ),
+        }
+
+
 class AppSetting(Base):
     """Server-stored key/value switches the web UI can flip without an
     app-settings change (no restart, no az CLI). First user: the 1-left
