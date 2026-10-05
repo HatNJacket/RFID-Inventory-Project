@@ -516,6 +516,45 @@ intentional session, not a pass inside a big batch.
   suspect GraphQL lookups vs the DB and the DB's size).
 - Bottom bar buttons and the card UI itself: ★ redesign in the Expected
   session.
+- **Expected session groundwork (2026-10-05, after Nick read the
+  logic summary).** Decided: three numbers per card (Shopify / Tagged
+  here / Heard), one verdict ladder; Expected becomes ONE number
+  (on-hand trued up live for the whole bin at rack open, age shown),
+  no range. In-range still prompts "check this product" and offers a
+  one-tap resolve: set on-hand to heard, retire the silent tags as
+  SOLD where orders/fulfilment cover them, else as MISSING. Heard
+  means heard HERE (other bins' tags go under "also heard"). Compute
+  sweeps on the gun from one rack fetch; the ledger auto-clear leaves
+  the check. One shared verdict function for both surfaces.
+  Causes of heard != true, by evidence (build the explanation lines
+  from A+B, flag only the residual, C is the user's call, D by
+  stamping the sweep time and freezing the records for re-sweeps):
+  A records know: shipped since last audit; local pickup staged;
+  Unavailable bucket (+ noted); received not shelved; returned item's
+  old tag answering (ghost); label printed never applied / paired then
+  stuck to nothing / reprint paired twice; POS + manual non-shipped
+  fulfilments (GAP: ShipStation never sees them); order edits that
+  swapped the item; cancel/refund restocked; sealed-case units;
+  bundles; manual on-hand edits in Shopify.
+  B the sweep shows: tag not read (metal, position, power, stopped
+  early; 1-2 read answers = near miss); tag read from the neighbouring
+  shelf; tag recorded in bin A but box in bin B; hard-to-scan /
+  incompatible (silence expected); dead tags.
+  C only a person: box moved elsewhere (packing zone, demo, desk);
+  sticker peeled/transferred; vendor mislabel / shared barcode;
+  split-shelf product (one on-hand, two bins, split unknown).
+  D timing: 3 h snapshot + 1 h ledger + 3 h bin map lag; sale between
+  sweep and check; mid-audit actions changing records between sweeps;
+  the sales-window anchor differing before/after a bin's first Log.
+  Pre-session read-only checks: how many of last month's fulfilments
+  were non-shipped and whether the ledger has them; how many products
+  live on split shelves.
+- **Ledger wedge fixed 2026-10-05 (080aa8d):** the hourly ShipStation
+  sync had failed since 10-02 16:07 UTC (a SKU the varchar column
+  stored as "ZWO FD-M54-?" re-inserted hourly, duplicate key, batch
+  rolled back). SKUs now fold to the DB's spelling; each shipment
+  commits alone. 72 rows landed on the first good run. Audits run
+  10-02..10-05 saw no sales after the 2nd.
 - **Navigation:** standalone site = tabs along the TOP (the sidebar
   "doesn't do anything"); inside Shopify admin = tabs in Shopify's app
   sidebar like EasyScan (Barcodes & SKUs / Orders / ... as nav items).
