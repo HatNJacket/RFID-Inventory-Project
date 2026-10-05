@@ -549,6 +549,28 @@ intentional session, not a pass inside a big batch.
   Pre-session read-only checks: how many of last month's fulfilments
   were non-shipped and whether the ledger has them; how many products
   live on split shelves.
+  **SUPERSEDED the same evening by Nick's direction: weight the
+  PREVIOUS and CURRENT COUNTS, not a pile of explanations.** Anchor:
+  Last count (the Log baseline; never audited = tags paired here) ->
+  Expected now = last count - sold since (ledger) + received since
+  (receiving records), nothing else moves it. Heard = heard HERE.
+  Shopify on-hand = reference line with age + "set on-hand to N",
+  never the verdict's input. Three priorities, in order: (1) silent
+  tags covered by order history: pair silent tags' last-heard with
+  sales since the last count, one tap Mark sold retires exactly those
+  tags and consumes exactly those ledger rows; a tag heard after its
+  supposed sale is just not covered. (2) Unavailable stock: silent +
+  covered = green with "N set aside"; a HEARD unavailable unit offers
+  "Return N to available" (existing confirmed write) so the bucket
+  gets fixed as it's scanned; set-aside units found elsewhere get a
+  location. (3) Problem vs simple fix, from facts: received-not-put-
+  away (receiving record since last count, units unpaired -> Print/
+  Pair); it's-somewhere-else (NEW: stamp WHERE a tag was last heard -
+  sweeps, locate, packing scans all know their location -> "last heard
+  at Packing 10:40 today" + Locate); nothing explains it -> red
+  "missing since <date>", the only red, with Confirm stock. Dropped:
+  the range, pickup/bundle folds in the arithmetic, explanation lines
+  for every cause. First build step: the last-heard location stamp.
 - **Ledger wedge fixed 2026-10-05 (080aa8d):** the hourly ShipStation
   sync had failed since 10-02 16:07 UTC (a SKU the varchar column
   stored as "ZWO FD-M54-?" re-inserted hourly, duplicate key, batch
