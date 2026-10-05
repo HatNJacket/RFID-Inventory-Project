@@ -364,17 +364,16 @@ def explode_bundle_items(defs: dict, items: list[dict]) -> list[dict]:
     inside a bundle stays as itself) so the ledger only ever records
     things that physically carry tags. Non-bundle items pass through
     untouched."""
-    if not defs:
-        return items
+    # Every line leaves here spelled the way the ledger stores SKUs.
     out: list[dict] = []
     for it in items:
         key = (it.get("sku") or "").strip().upper()
-        contents = defs.get(key)
+        contents = defs.get(key) if defs else None
         if not contents:
-            out.append(it)
+            out.append({**it, "sku": _db_sku(it.get("sku"))})
             continue
         for comp, per in contents:
-            out.append({**it, "sku": comp,
+            out.append({**it, "sku": _db_sku(comp),
                         "qty": (it.get("qty") or 0) * per})
     return out
 
@@ -409,6 +408,7 @@ def explode_ledger_bundles(session: Session) -> dict:
                 ship_map = {}
             # Merge into an existing row for the same (order, component)
             # rather than double-recording a mixed order.
+            comp = _db_sku(comp)
             existing = session.scalars(
                 select(SoldRecord).where(
                     SoldRecord.order_id == r.order_id,
@@ -484,6 +484,38 @@ def _ss_recompute(row: SoldRecord, keep_floor: int | None = None) -> None:
     row.quantity = max(q, row.retired or 0)
 
 
+# The ledger's SKU column is varchar on prod (SQL_Latin1_General_CP1 =
+# Windows-1252): a character outside that codepage is stored as "?".
+# Every lookup and insert must use the spelling the database KEEPS, or
+# the same order line is "new" every hour, its insert trips the unique
+# key, the hour's batch rolls back and the cursor never moves (2026-10-02
+# to 10-05: order ss:784679634, "ZWO FD-M54-?" - three days of sales
+# never reached the ledger, so audits saw silent tags "unexplained by
+# sales"). sqlite (tests, local) stores anything; nothing to fold there.
+_SKU_CODEPAGE: str | None = None
+
+
+def _sku_codepage() -> str:
+    global _SKU_CODEPAGE
+    if _SKU_CODEPAGE is None:
+        try:
+            from app.database import get_engine
+            _SKU_CODEPAGE = (
+                "cp1252" if get_engine().dialect.name == "mssql" else ""
+            )
+        except Exception:  # noqa: BLE001 - no engine yet: fold nothing
+            _SKU_CODEPAGE = ""
+    return _SKU_CODEPAGE
+
+
+def _db_sku(sku):
+    """`sku` as the database will spell it (see _SKU_CODEPAGE)."""
+    cp = _sku_codepage()
+    if not sku or not cp:
+        return sku
+    return sku.encode(cp, "replace").decode(cp)
+
+
 def _ss_rows_for_order(session: Session, ss_order_id) -> dict[str, SoldRecord]:
     return {
         (r.sku or "").strip().upper(): r
@@ -557,6 +589,7 @@ def sync_shipstation(session: Session) -> dict:
             continue
         if sh["store_id"] in excluded_ids:
             continue
+        mark = len(new_rows)   # rolled back with the shipment on failure
         manual = sh["store_id"] not in shopify_ids
         num = _norm_order_no(sh["order_number"])
         by_sku: dict[str, dict] = {}
@@ -641,7 +674,23 @@ def sync_shipstation(session: Session) -> dict:
                 cur = _as_utc(row.fulfilled_at)
                 if cur is None or f < cur:
                     row.fulfilled_at = f
-        session.flush()
+        # Each shipment lands on its own: one bad line (a duplicate the
+        # database refuses, a value a column can't take) loses THAT
+        # shipment, logged and counted, never the hour's batch or the
+        # cursor. Re-runs are safe - rows are keyed by shipment id.
+        try:
+            session.commit()
+        except Exception as error:  # noqa: BLE001 - skip this shipment
+            session.rollback()
+            del new_rows[mark:]
+            stats["ss_failed_shipments"] = (
+                stats.get("ss_failed_shipments", 0) + 1
+            )
+            logger.warning(
+                "shipstation shipment %s (order %s) skipped: %s",
+                sh.get("shipment_id"), sh.get("ss_order_id"),
+                str(error)[:300],
+            )
 
     # Voided-after-recording labels: remove exactly those label ids and
     # recompute (the void path may LOWER, unlike the forward feed).
@@ -675,7 +724,18 @@ def sync_shipstation(session: Session) -> dict:
                 session.delete(row)
         if touched:
             stats["ss_voids_applied"] += 1
-        session.flush()
+        try:
+            session.commit()
+        except Exception as error:  # noqa: BLE001 - skip this void
+            session.rollback()
+            stats["ss_failed_shipments"] = (
+                stats.get("ss_failed_shipments", 0) + 1
+            )
+            logger.warning(
+                "shipstation void %s (order %s) skipped: %s",
+                sh.get("shipment_id"), sh.get("ss_order_id"),
+                str(error)[:300],
+            )
 
     # First-run backfill: settle what history already accounted for.
     if first_run and new_rows:
