@@ -571,6 +571,27 @@ intentional session, not a pass inside a big batch.
   "missing since <date>", the only red, with Confirm stock. Dropped:
   the range, pickup/bundle folds in the arithmetic, explanation lines
   for every cause. First build step: the last-heard location stamp.
+  Three more rules (Nick, same evening): (a) ANY Shopify mismatch is
+  YELLOW with a resolution, even when the count anchor agrees -
+  Shopify is the source everyone uses, so if it's wrong we must know;
+  green = Shopify, records and shelf all agree. (b) Unavailable stock
+  resolves TOWARD the truth: default = clear the unavailable units
+  and set on-hand to what the audit believes (Shopify model: on-hand
+  INCLUDES unavailable, so e.g. Unavail 1 / On-hand 3 / 4 heard =
+  move 1 unavailable->available AND raise on-hand to 4, one Resolve
+  button, both in the History row; cards must display it that way).
+  If the product's unavailable metafield carries a staff comment,
+  Resolve shows it first and asks to proceed. (c) Red "nothing
+  explains it" Resolve = ONE window: Shopify on-hand, tags heard,
+  sales since last audit, collapsible timeline since last audit, and
+  the counter preset to heard with a Confirm that writes whatever the
+  user enters - no "doesn't make sense" guardrails (inventory can be
+  fixed later). Only exception: entered count LOWER than tags heard
+  in this audit -> prompt a re-sweep of that product; still high ->
+  edge-case workflow (locate each heard tag: mis-paired tag vs missed
+  box), to be designed. Implication: the first-tagging lower ban does
+  not apply to audit resolutions (treated as decided unless Nick
+  says otherwise).
 - **Ledger wedge fixed 2026-10-05 (080aa8d):** the hourly ShipStation
   sync had failed since 10-02 16:07 UTC (a SKU the varchar column
   stored as "ZWO FD-M54-?" re-inserted hourly, duplicate key, batch
