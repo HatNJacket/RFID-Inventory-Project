@@ -527,7 +527,23 @@ gun + agent) or a Shopify App Bridge session token (app/auth.py); the
 operator is a localStorage dropdown (OPERATORS env). telescopescanada.ca
 mail is hosted on Microsoft 365 (MX → mail.protection.outlook.com), NOT
 Google: Google sign-in cannot authenticate that domain's accounts as-is.
-Plan options are in the 2026-10-05 session notes; decision pending.
+
+**Sign-in BUILT + DEPLOYED (dormant) 2026-10-05**, commit e35d8e1:
+Microsoft (company tenant 22fdb4d9..., a GoDaddy-resold M365 - the
+domain is FEDERATED, so the Microsoft login page may bounce via
+GoDaddy) + Google, hand-rolled OIDC in app/auth.py (no new deps),
+rfid_users table, /login landing page, account card replaces the
+dropdown, Settings → Users tab, gun 4.34 "Who's scanning?" picker +
+drawer switch. Everyone admin. Seeded: stephen, nick, matt, clay,
+kevin, evie @telescopescanada.ca; Alex (no company email) gets added
+from Settings → Users later. sdrapak@gmail.com deliberately NOT added.
+Goes live once the app settings carry AUTH_SESSION_SECRET + MS_TENANT_ID
++ MS_CLIENT_ID/SECRET + GOOGLE_CLIENT_ID/SECRET (Entra app registration
++ Google OAuth client still to be created). Verify locally with launch
+config rfid-uiverify-auth (fake IdP). Deploy lesson (c925f76): a new
+table's create_all RACES between the two gunicorn workers - the loser
+used to exit and take the container down (25 min of 502); init_db now
+tolerates it.
 
 ## 🏠 Home landing page + sidebar navigation — ✅ ON PROD 2026-09-28 (the WIP-badge bundle)
 
