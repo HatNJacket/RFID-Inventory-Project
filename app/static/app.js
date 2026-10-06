@@ -6068,6 +6068,37 @@ function audioPrime() {
 document.addEventListener("keydown", audioPrime, { passive: true });
 document.addEventListener("pointerdown", audioPrime, { passive: true });
 
+// The sorter's own tones (Nick, 2026-10-06: the batch tones were too
+// quiet at 100% on the warehouse PC): full-gain, richer waveforms, and
+// longer. OK = a bright rising two-note blip; bad = a low double buzz.
+function sorterSound(ok) {
+  try {
+    audioPrime();
+    const tone = (freq, at, dur, type, vol) => {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = type;
+      osc.frequency.value = freq;
+      const t = audioCtx.currentTime + at;
+      gain.gain.setValueAtTime(vol, t);
+      gain.gain.setValueAtTime(vol, t + dur * 0.7);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      osc.connect(gain).connect(audioCtx.destination);
+      osc.start(t);
+      osc.stop(t + dur + 0.02);
+    };
+    if (ok) {
+      tone(1047, 0, 0.16, "triangle", 1.0);
+      tone(1568, 0.14, 0.26, "triangle", 1.0);
+    } else {
+      tone(220, 0, 0.3, "sawtooth", 0.9);
+      tone(165, 0.32, 0.4, "sawtooth", 0.9);
+    }
+  } catch (err) {
+    /* sound is best-effort */
+  }
+}
+
 function batchSound(kind) {
   try {
     audioCtx =
@@ -18053,11 +18084,7 @@ function sortShipRecentLoad() {
 function sortShipRecentAdd(term, out) {
   // A blip for a box that landed, a buzz for one that didn't (Nick,
   // 2026-10-06): the same tones batch tagging uses.
-  try {
-    batchSound(out && out.ok ? "ok" : "bad");
-  } catch (err) {
-    /* no audio here */
-  }
+  sorterSound(!!(out && out.ok));
   sortShipRecent.unshift({
     term,
     text: (out && out.text) || "",
