@@ -76,9 +76,11 @@ import requests
 # confirmed label-by-label from the odometer's order (no more per-label
 # pauses). v10: a lost printer status mid-run reconciles against the
 # odometer - labels the printer counted stay printed, only the rest
-# fail. Bump on behavior changes - the server compares this against
+# fail. v11: --paper mode drives the Munbyn paper printer (TSPL bitmap
+# labels, exclusive paper-only claims); the Zebra path is unchanged.
+# Bump on behavior changes - the server compares this against
 # its own copy to drive auto-update.
-AGENT_VERSION = "10"
+AGENT_VERSION = "11"
 
 
 def _count(n, one, many=None):
@@ -1052,6 +1054,222 @@ def send_windows(zpl: str, printer_name: str) -> None:
 
 
 # --------------------------------------------------------------- app I/O ----
+# ------------------------------------------------------ paper labels ----
+# v11 (2026-10-06): the PAPER printer - a Munbyn ITPP941 (TSPL, no RFID)
+# for RFID-incompatible products. Tested at the printer with Steve: the
+# Munbyn FREEZES (power cycle needed) on TSPL's BOX command and/or its
+# small built-in fonts, while one BITMAP prints cleanly every time. So a
+# paper label is drawn here as ONE image (Pillow, imported only in paper
+# mode) and sent as a TSPL BITMAP. Layout tuned dot by dot at the printer:
+# 2.25 x 1.125 in label at 203 dpi, content in the 2.0 x 1.0 in middle
+# plus 1 mm more top and bottom; the SKU line may run to 440 dots (about
+# 1 mm from each edge) and shrinks 27 -> 15 px before refusing.
+PAPER_DPI = 203
+PAPER_W, PAPER_H = int(2.25 * PAPER_DPI), int(1.125 * PAPER_DPI)  # 456 x 228
+PAPER_SAFE_X = (PAPER_W - 2 * PAPER_DPI) // 2
+PAPER_SAFE_Y = (PAPER_H - PAPER_DPI) // 2
+PAPER_LINE_W = 440           # widest a text line may run (tested)
+PAPER_HEADER_W = 352         # header stays clear of the no-scan mark
+PAPER_MIN_PX = 15            # smallest text that still read well
+PAPER_USB_DEVICE = "vid_09c6"  # the Munbyn's USB vendor id
+PAPER_READY_TIMEOUT = 30     # s for the printer to report ready again
+
+_C128 = [
+    "212222", "222122", "222221", "121223", "121322", "131222", "122213",
+    "122312", "132212", "221213", "221312", "231212", "112232", "122132",
+    "122231", "113222", "123122", "123221", "223211", "221132", "221231",
+    "213212", "223112", "312131", "311222", "321122", "321221", "312212",
+    "322112", "322211", "212123", "212321", "232121", "111323", "131123",
+    "131321", "112313", "132113", "132311", "211313", "231113", "231311",
+    "112133", "112331", "132131", "113123", "113321", "133121", "313121",
+    "211331", "231131", "213113", "213311", "213131", "311123", "311321",
+    "331121", "312113", "312311", "332111", "314111", "221411", "431111",
+    "111224", "111422", "121124", "121421", "141122", "141221", "112214",
+    "112412", "122114", "122411", "142112", "142211", "241211", "221114",
+    "413111", "241112", "134111", "111242", "121142", "121241", "114212",
+    "124112", "124211", "411212", "421112", "421211", "212141", "214121",
+    "412121", "111143", "111341", "131141", "114113", "114311", "411113",
+    "411311", "113141", "114131", "311141", "411131", "211412", "211214",
+    "211232", "2331112",
+]
+
+
+class PaperLabelError(ValueError):
+    """The label can't be drawn on paper (too long, unprintable barcode).
+    The job fails with this message instead of printing something wrong."""
+
+
+def code128b_widths(text: str) -> list[int]:
+    """Bar/space widths (in modules) for Code 128 set B."""
+    if not text or any(not (32 <= ord(c) <= 126) for c in text):
+        raise PaperLabelError(
+            f"barcode {text!r} has characters a paper label can't encode")
+    codes = [104] + [ord(c) - 32 for c in text]
+    check = (104 + sum(i * c for i, c in enumerate(codes[1:], 1))) % 103
+    widths: list[int] = []
+    for c in codes + [check, 106]:
+        widths += [int(w) for w in _C128[c]]
+    return widths
+
+
+_paper_fonts: dict = {}
+
+
+def _paper_font(size: int, bold: bool = True):
+    from PIL import ImageFont
+    key = (size, bold)
+    if key not in _paper_fonts:
+        names = (["arialbd.ttf", "DejaVuSans-Bold.ttf"] if bold
+                 else ["arial.ttf", "DejaVuSans.ttf"])
+        font = None
+        for name in names:
+            try:
+                font = ImageFont.truetype(name, size)
+                break
+            except OSError:
+                continue
+        _paper_fonts[key] = font or ImageFont.load_default(size)
+    return _paper_fonts[key]
+
+
+def _paper_fit(text: str, max_px: int, width: int, bold: bool = True):
+    """Largest size (max_px down to PAPER_MIN_PX) at which text fits."""
+    for size in range(max_px, PAPER_MIN_PX - 1, -1):
+        if _paper_font(size, bold).getlength(text) <= width:
+            return size
+    return None
+
+
+def _paper_ellipsize(text: str, width: int) -> str:
+    font = _paper_font(PAPER_MIN_PX)
+    while text and font.getlength(text + "...") > width:
+        text = text[:-1]
+    return text.rstrip() + "..."
+
+
+def paper_label_lines(job: dict) -> dict:
+    """The same words the Zebra label carries, chosen by the same rules
+    (saved label name + placement, explicit centre line, case units),
+    flattened to one line each - a paper label has no room for two."""
+    def txt(value) -> str:
+        return " ".join(str(value or "").replace("|", " ").split())
+
+    label = txt(job.get("label_name"))
+    placement = (job.get("label_placement") or "header").strip().lower()
+    header, centre = "Telescopes Canada", txt(job.get("sku")) or "-"
+    if label and placement == "sku":
+        centre = label
+    elif label and placement == "both":
+        header = centre = label
+    elif label:
+        header = label
+    if txt(job.get("label_sku")):
+        centre = txt(job.get("label_sku"))
+    if job.get("case_units"):
+        centre = f"{job['case_units']} x {centre}"
+    barcode = txt(job.get("barcode")) or txt(job.get("sku"))
+    bin_text = txt(job.get("bin_location")) or "-"
+    others = txt(job.get("other_bins"))
+    bin_line = (f"BIN: {bin_text}. Other: {others}" if others
+                else f"BIN: {bin_text}")
+    return {"header": header, "centre": centre, "barcode": barcode,
+            "bin": bin_line}
+
+
+def render_paper_label(job: dict, noscan: bool = True):
+    """The paper label as a 1-bit Pillow image (456 x 228 dots)."""
+    from PIL import Image, ImageDraw
+    lines = paper_label_lines(job)
+    img = Image.new("1", (PAPER_W, PAPER_H), 1)
+    d = ImageDraw.Draw(img)
+
+    def centred(y, text, size):
+        f = _paper_font(size)
+        d.text(((PAPER_W - f.getlength(text)) / 2, y), text, font=f, fill=0)
+
+    top_y = PAPER_SAFE_Y - 8                      # 1 mm more at the top
+    header = lines["header"]
+    hsize = _paper_fit(header, 29, PAPER_HEADER_W)
+    if hsize is None:
+        header, hsize = _paper_ellipsize(header, PAPER_HEADER_W), PAPER_MIN_PX
+    centred(top_y + 1 + (29 - hsize) // 2, header, hsize)
+
+    centre = lines["centre"]
+    csize = _paper_fit(centre, 27, PAPER_LINE_W)
+    if csize is None:
+        raise PaperLabelError(
+            f"the line {centre!r} is too long for a paper label even at "
+            f"the smallest size - shorten the label's centre line in the "
+            f"label editor, then reprint")
+    centred(top_y + 36 + (27 - csize) // 2, centre, csize)
+
+    barcode = lines["barcode"]
+    if barcode:
+        widths = code128b_widths(barcode)
+        module = 2 if sum(widths) * 2 <= PAPER_LINE_W else 1
+        total = sum(widths) * module
+        if total > PAPER_LINE_W:
+            raise PaperLabelError(
+                f"barcode {barcode!r} is too long to fit a paper label")
+        x, top, bh, black = (PAPER_W - total) // 2, top_y + 76, 82, True
+        for w in widths:
+            if black:
+                d.rectangle([x, top, x + w * module - 1, top + bh], fill=0)
+            x += w * module
+            black = not black
+        f16 = _paper_font(16, bold=False)
+        d.text(((PAPER_W - f16.getlength(barcode)) / 2, top + bh + 3),
+               barcode, font=f16, fill=0)
+
+    bottom_y = PAPER_SAFE_Y + PAPER_DPI + 8       # 1 mm more at the bottom
+    bin_line = lines["bin"]
+    bsize = _paper_fit(bin_line, 28, PAPER_LINE_W)
+    if bsize is None:
+        bin_line, bsize = _paper_ellipsize(bin_line, PAPER_LINE_W), PAPER_MIN_PX
+    centred(bottom_y - 26 + (28 - bsize) // 2, bin_line, bsize)
+
+    if noscan:
+        # The no-scan mark: crossed signal arcs in the top right corner.
+        cx, cy, r = PAPER_SAFE_X + 2 * PAPER_DPI - 22, top_y + 20, 16
+        for rad in (7, 13):
+            d.arc([cx - rad - 4, cy - rad, cx - 4 + rad, cy + rad],
+                  120, 240, fill=0, width=3)
+            d.arc([cx + 4 - rad, cy - rad, cx + 4 + rad, cy + rad],
+                  -60, 60, fill=0, width=3)
+        d.line([cx - r, cy + r, cx + r, cy - r], fill=0, width=3)
+    return img
+
+
+def paper_tspl(img) -> bytes:
+    """One TSPL job printing img as a BITMAP (0 bits print black)."""
+    width_bytes = (PAPER_W + 7) // 8
+    px = img.load()
+    raw = bytearray()
+    for y in range(PAPER_H):
+        for xb in range(width_bytes):
+            byte = 0
+            for bit in range(8):
+                x = xb * 8 + bit
+                white = 1 if x >= PAPER_W or px[x, y] else 0
+                byte = (byte << 1) | white
+            raw.append(byte)
+    head = ("SIZE 2.25,1.125\r\nGAP 0.08,0\r\nCLS\r\n"
+            f"BITMAP 0,0,{width_bytes},{PAPER_H},0,").encode("ascii")
+    return head + bytes(raw) + b"\r\nPRINT 1\r\n"
+
+
+# TSPL status byte (ESC !?): 0x20 = printing; everything else is a fault.
+_TSPL_FAULTS = [
+    (0x01, "head open"), (0x02, "paper jam"), (0x04, "out of paper"),
+    (0x08, "out of ribbon"), (0x10, "paused"), (0x40, "cover open"),
+    (0x80, "printer error"),
+]
+
+
+def tspl_faults(status: int) -> list[str]:
+    return [name for bit, name in _TSPL_FAULTS if status & bit]
+
+
 class AppClient:
     def __init__(self, base_url: str, agent_key: str | None,
                  printer_id: str | None = None,
@@ -1064,6 +1282,8 @@ class AppClient:
         # the pre-picker behavior.
         self.printer_id = printer_id
         self.printer_kind = printer_kind
+        # v11 paper agent: claim ONLY paper jobs aimed at this printer.
+        self.exclusive = False
 
     def claim(self, limit: int = 5) -> list[dict]:
         params: dict = {"limit": limit}
@@ -1071,6 +1291,8 @@ class AppClient:
             params["printer"] = self.printer_id
             if self.printer_kind:
                 params["kind"] = self.printer_kind
+        if self.exclusive:
+            params["exclusive"] = "true"
         r = requests.post(
             f"{self.base}/api/print-jobs/claim",
             params=params,
@@ -1761,6 +1983,187 @@ class Agent:
             time.sleep(self.args.poll)
 
 
+class PaperAgent(Agent):
+    """v11: drives the Munbyn paper printer. One label per job, drawn as
+    an image (render_paper_label) and sent as one TSPL BITMAP over direct
+    USB; the job completes only once the printer answers "ready" again.
+    Claims are EXCLUSIVE (paper jobs aimed at this printer only), and a
+    paper label never creates a tag record. Zebra-only paths (odometer,
+    ~HS, ZPL commands) are never used here: ZPL froze the Munbyn."""
+
+    def __init__(self, args, client: AppClient, transport):
+        super().__init__(args, client, transport)
+        self.encode_rfid = False
+
+    # ---- printer status --------------------------------------------------
+    def _status_byte(self) -> int | None:
+        """The TSPL status byte, or None when the printer said nothing.
+        The Munbyn answers every other query, so ask twice."""
+        for _ in range(2):
+            raw = self.tr.query(b"\x1b!?", first_timeout_ms=1500)
+            if raw:
+                return raw[-1]
+        return None
+
+    def _await_ready(self, timeout: float) -> str | None:
+        """Poll until the printer reports ready. Returns None when ready,
+        else what is wrong (a fault list, or that it went silent)."""
+        deadline = time.time() + timeout
+        last = "the printer stopped answering"
+        while time.time() < deadline:
+            st = self._status_byte()
+            if st == 0:
+                return None
+            if st is not None:
+                faults = tspl_faults(st)
+                if faults:
+                    last = ", ".join(faults)
+                    return last
+            time.sleep(0.5)
+        return last
+
+    def _hold_until_ready(self) -> None:
+        """While faulted, keep the server informed (and commands flowing)
+        and re-check every few seconds; claim nothing until it clears."""
+        while self.fault:
+            self._pulse(status=None)
+            try:
+                problem = self._await_ready(5)
+            except OSError as error:
+                problem = f"USB: {error}"
+                self._reconnect()
+            if problem is None:
+                log(f"  paper printer recovered ({self.fault} cleared)")
+                self.fault = None
+                return
+            if problem != self.fault:
+                log(f"! paper printer: {problem}")
+                self.fault = problem
+            time.sleep(3)
+
+    def _reconnect(self) -> None:
+        try:
+            self.tr.reconnect()
+        except Exception as error:  # noqa: BLE001 - retried next round
+            self.last_error = f"USB reconnect failed: {error}"
+
+    # ---- one label -------------------------------------------------------
+    def _print_one(self, job: dict) -> None:
+        desc = self._desc(job)
+        if (job.get("kind") or "") != "paper":
+            # Only a server older than v11's routing could hand one over.
+            self.client.fail(job["id"], "not a paper label - the paper "
+                             "printer refused it; reprint it as RFID")
+            self.counters["failed"] += 1
+            return
+        try:
+            data = paper_tspl(render_paper_label(job))
+        except PaperLabelError as error:
+            self.client.fail(job["id"], f"paper label: {error}")
+            self.counters["failed"] += 1
+            log(f"! {desc} refused: {error}")
+            return
+        problem = self._await_ready(PAPER_READY_TIMEOUT)
+        if problem is not None:
+            # Not printed: put it back as failed so Reprint is one click.
+            self.client.fail(job["id"], f"paper printer not ready: {problem}")
+            self.counters["failed"] += 1
+            self.fault = problem
+            log(f"! {desc} not sent - printer: {problem}")
+            return
+        self.tr.write(data, timeout_ms=20000)
+        time.sleep(1.0)
+        problem = self._await_ready(PAPER_READY_TIMEOUT)
+        if problem is not None:
+            self.client.fail(job["id"], f"after this label: {problem} - "
+                             "check the paper printer and reprint if "
+                             "nothing came out")
+            self.counters["failed"] += 1
+            self.fault = problem
+            log(f"! {desc}: after sending, {problem}")
+            return
+        self.client.complete(job["id"], create_assignment=False)
+        self.counters["done"] += 1
+        self.last_print_at = time.time()
+        log(f"  printed {desc} on paper")
+
+    def _handle_command(self, cmd: dict) -> None:
+        kind = cmd.get("kind")
+        if kind in ("feed", "zpl", "testlabel", "query", "purge"):
+            cmd_id = cmd.get("id")
+            ok, output = True, ""
+            try:
+                if kind == "feed":
+                    self.tr.write(b"FORMFEED\r\n")
+                    output = "fed one label (TSPL FORMFEED)"
+                elif kind == "testlabel":
+                    self.tr.write(paper_tspl(render_paper_label({
+                        "sku": "PAPER TEST", "barcode": "TEST-0001",
+                        "bin_location": "TEST",
+                    })), timeout_ms=20000)
+                    output = "paper test label sent"
+                elif kind == "query":
+                    st = self._status_byte()
+                    output = ("no reply" if st is None else
+                              f"status 0x{st:02x}: "
+                              + (", ".join(tspl_faults(st)) or "ready"))
+                else:
+                    ok, output = False, (f"'{kind}' is a Zebra command - "
+                                         "the paper printer doesn't take it")
+            except Exception as error:  # noqa: BLE001 - report, don't die
+                ok, output = False, f"{type(error).__name__}: {error}"
+            if cmd_id:
+                self.client.post_result(cmd_id, ok, output)
+            return
+        super()._handle_command(cmd)
+
+    # ---- the loop --------------------------------------------------------
+    def run(self) -> None:
+        while True:
+            self._cycles += 1
+            if self._cycles % 200 == 0:
+                _rotate_log_if_big()
+            if self.fault:
+                self._hold_until_ready()
+            self._pulse(status=None)
+            try:
+                jobs = self.client.claim(limit=5)
+            except requests.RequestException as error:
+                log(f"! can't reach app: {error}")
+                jobs = []
+            for i, job in enumerate(jobs):
+                try:
+                    self._print_one(job)
+                except OSError as error:
+                    self.last_error = f"USB: {error}"
+                    self.fault = f"USB: {error}"
+                    log(f"! USB trouble on {self._desc(job)}: {error}")
+                    for left in jobs[i:]:
+                        try:
+                            self.client.fail(left["id"], "paper printer "
+                                             f"USB trouble: {error}")
+                        except requests.RequestException:
+                            pass
+                    self._reconnect()
+                    break
+                except requests.RequestException as error:
+                    self.last_error = str(error)
+                    log(f"! can't report {self._desc(job)}: {error}")
+                if self.fault:
+                    for left in jobs[i + 1:]:
+                        try:
+                            self.client.fail(left["id"], "paper printer "
+                                             f"faulted: {self.fault}")
+                        except requests.RequestException:
+                            pass
+                    break
+            if self.args.once:
+                break
+            if len(jobs) >= 5 and not self.fault:
+                continue
+            time.sleep(self.args.poll)
+
+
 # ------------------------------------------------------------------ CLI -----
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -1816,6 +2219,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true",
         help="Print ZPL to the terminal instead of a printer (still marks "
              "jobs done - use for wiring tests, not real stock)",
+    )
+    parser.add_argument(
+        "--paper", action="store_true",
+        help="v11: drive the PAPER printer (Munbyn ITPP941, TSPL). Labels "
+             "print as one image over direct USB, only paper jobs aimed "
+             "at --printer-id are claimed, nothing is RFID-encoded. Needs "
+             "Pillow (py -m pip install pillow) and --printer-id.",
     )
     parser.add_argument(
         "--no-rfid", action="store_true",
@@ -1881,6 +2291,36 @@ def make_transport(args):
         return SpoolerTransport(args.printer_name)
 
 
+def run_paper_agent(args) -> None:
+    """v11 --paper: the Munbyn paper printer's own agent. Its own printer
+    id (claims are exclusive to it), direct USB to the Munbyn, Pillow for
+    drawing. Never sends ZPL: the backfeed and re-align setup the Zebra
+    gets at startup would freeze the Munbyn."""
+    if not args.printer_id:
+        sys.exit("--paper needs --printer-id (e.g. warehouse-paper)")
+    try:
+        import PIL  # noqa: F401 - fail at startup, not on the first label
+    except ImportError:
+        sys.exit("--paper needs Pillow: py -m pip install pillow")
+    device = (args.usb_device if args.usb_device not in (None, "vid_0a5f")
+              else PAPER_USB_DEVICE)
+    if args.dry_run:
+        sys.exit("--paper has no dry-run: render a preview with "
+                 "dev/paper_label_prototype.py instead")
+    try:
+        transport = UsbTransport(device)
+    except OSError as error:
+        sys.exit(f"paper printer not found on USB ({device}): {error}")
+    transport.readback = "status"
+    args.no_rfid = True
+    kind = args.printer_kind or "Munbyn ITPP941 · paper labels"
+    client = AppClient(args.app, args.agent_key, args.printer_id, kind)
+    client.exclusive = True
+    log(f"print agent v{AGENT_VERSION} PAPER mode watching {args.app} as "
+        f"{args.printer_id} ({transport.describe()}). Ctrl+C to stop.")
+    PaperAgent(args, client, transport).run()
+
+
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
@@ -1894,6 +2334,10 @@ def main() -> None:
     if not args.dry_run and not (args.printer_host or args.printer_name
                                  or args.transport in ("auto", "usb")):
         parser.error("need --printer-host, --printer-name, or --dry-run")
+
+    if args.paper:
+        run_paper_agent(args)
+        return
 
     transport = make_transport(args)
 

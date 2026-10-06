@@ -2531,7 +2531,29 @@ def _apply_label_notes(jobs: list) -> list:
 
 # Filter for every count of a batch's printed labels: companion labels
 # are physical stickers but never counting units.
-_NOT_COMPANION = (PrintJob.kind.is_(None)) | (PrintJob.kind != "companion")
+# Labels that stand for a TAG waiting to be paired. Companion labels (box
+# 2+ of a multi-box unit) and paper labels (no chip at all; the
+# RFID-incompatible flag's "Paper label" option) never count as owed
+# pairings, so every unpaired / labels-to-pair sum filters them out.
+PAPER_KIND = "paper"
+_NOT_COMPANION = (PrintJob.kind.is_(None)) | (
+    PrintJob.kind.notin_(("companion", PAPER_KIND))
+)
+# The paper printer (a Munbyn ITPP941 on the warehouse laptop, driven by
+# a second print agent started with --paper). Paper jobs are aimed at it
+# by name and ONLY its exclusive claims take them; RFID agents never do.
+PAPER_PRINTER = (os.getenv("PAPER_PRINTER") or "warehouse-paper").strip()
+
+
+def _apply_stock(fields: dict) -> dict:
+    """Turn the request's label stock into job columns: a paper label is
+    kind "paper", aimed at the paper printer (whatever printer the
+    browser had picked). RFID is the default and changes nothing."""
+    stock = fields.pop("stock", None) or "rfid"
+    if stock == "paper":
+        fields["kind"] = PAPER_KIND
+        fields["printer"] = PAPER_PRINTER
+    return fields
 
 
 class PrintJobIn(BaseModel):
@@ -2556,6 +2578,9 @@ class PrintJobIn(BaseModel):
     # before the next barcode reset shares it, and the Queue tab groups
     # a product's loose jobs by it.
     print_session: str | None = Field(default=None, max_length=24)
+    # "paper" = a plain barcode label on the paper printer (no chip, never
+    # paired); "rfid" (default) = the normal tag label.
+    stock: Literal["rfid", "paper"] = "rfid"
 
     @field_validator("shopify_variant_id", "product_title")
     @classmethod
@@ -2584,7 +2609,7 @@ def create_print_jobs(
     comps = _bundle_print_components(session, payload.sku)
     if comps:
         return _print_bundle_components(session, payload, comps)
-    fields = payload.model_dump(exclude={"quantity"})
+    fields = _apply_stock(payload.model_dump(exclude={"quantity"}))
     jobs = _make_label_jobs(session, fields, payload.quantity)
     session.add_all(jobs)
     session.commit()
@@ -2648,8 +2673,10 @@ def _print_bundle_components(
             f"{payload.sku} x{payload.quantity} would print {total} "
             f"component labels - over {_BUNDLE_PRINT_MAX}. Print fewer.",
         )
-    keep = {k: v for k, v in payload.model_dump(exclude={"quantity"}).items()
-            if k in ("requested_by", "printer", "print_session")}
+    keep = _apply_stock({
+        k: v for k, v in payload.model_dump(exclude={"quantity"}).items()
+        if k in ("requested_by", "printer", "print_session", "stock")
+    })
     plan = []
     for comp_sku, per_kit in comps:
         try:
@@ -2766,6 +2793,9 @@ def _resumable_stopped_jobs(session: Session) -> list[PrintJob]:
 # claim means the printer PC is up. In-memory is fine — after an app
 # restart the next poll repopulates it within seconds.
 _agent_last_seen: float | None = None
+# Per printer (2026-10-06, the paper agent): the RFID agent's status must
+# not read "online" just because the paper agent claimed.
+_agent_seen_by: dict[str, float] = {}
 
 # What a claim from an agent too old to send --printer-id registers as.
 # Keeps the single-printer warehouse on the picker without touching it.
@@ -2986,25 +3016,24 @@ def get_agent_command_result(command_id: str):
 
 
 @app.get("/api/print-agent/status", dependencies=[Depends(require_user)])
-def print_agent_status(session: Session = Depends(get_session)):
-    seen = _agent_last_seen
-    cmd_seen = max(_commands_last_polled.values(), default=None)
-    version = (
-        next(iter(_agent_versions.values()), None)
-        if _agent_versions else None
-    )
-    # Freshest Windows-queue report (v4 agents; None until one polls).
-    win = None
-    for w in _printer_win_queue.values():
-        if win is None or w["at"] > win["at"]:
-            win = w
+def print_agent_status(
+    printer: str | None = None, session: Session = Depends(get_session)
+):
+    """The RFID printer's agent by default (?printer= for another one).
+    Before the paper agent every lookup took the freshest report from
+    ANY agent; with two agents that would blend their stories, so each
+    printer now reads only its own. The paper printer's short summary
+    rides along as "paper"."""
+    name = (printer or DEFAULT_PRINTER).strip()
+    seen = _agent_seen_by.get(name)
+    cmd_seen = _commands_last_polled.get(name)
+    version = _agent_versions.get(name)
+    # This printer's Windows-queue report (v4 agents; None until one polls).
+    win = _printer_win_queue.get(name)
     win_fresh = win is not None and time.time() - win["at"] < 35
-    # Freshest v6 heartbeat: the PRINTER's own story (fault flags, held
-    # labels, transport, confirmed-print counters).
-    hb = None
-    for h in _agent_heartbeats.values():
-        if hb is None or h["at"] > hb["at"]:
-            hb = h
+    # This printer's v6 heartbeat: the PRINTER's own story (fault flags,
+    # held labels, transport, confirmed-print counters).
+    hb = _agent_heartbeats.get(name)
     hb_fresh = hb is not None and time.time() - hb["at"] < 90
     latest = _agent_latest_version()
     return {
@@ -3054,6 +3083,33 @@ def print_agent_status(session: Session = Depends(get_session)):
         # trip labels until the main bin's PRINT so one strip covers
         # the whole batch. Defined below with its own endpoints.
         "strip_at_once": _strip_at_once(session),
+        "printer": name,
+        "paper": _paper_printer_summary(session) if name != PAPER_PRINTER
+        else None,
+    }
+
+
+def _paper_printer_summary(session: Session) -> dict:
+    """The paper printer in one glance for the Queue tab: online, its
+    printer's fault, the agent's last error, and what is waiting."""
+    now = time.time()
+    seen = _agent_seen_by.get(PAPER_PRINTER)
+    hb = _agent_heartbeats.get(PAPER_PRINTER)
+    hb_fresh = hb is not None and now - hb["at"] < 90
+    waiting = session.scalar(
+        select(func.count()).select_from(PrintJob).where(
+            PrintJob.kind == PAPER_KIND,
+            PrintJob.status.in_(("pending", "printing")),
+        )
+    ) or 0
+    return {
+        "name": PAPER_PRINTER,
+        "online": seen is not None and now - seen < 35,
+        "last_seen_seconds": None if seen is None else int(now - seen),
+        "fault": hb["fault"] if hb_fresh else None,
+        "last_error": hb["last_error"] if hb_fresh else None,
+        "version": _agent_versions.get(PAPER_PRINTER),
+        "waiting": int(waiting),
     }
 
 
@@ -3326,6 +3382,9 @@ def list_printers(session: Session = Depends(get_session)):
             **p.as_dict(),
             "online": age is not None and age < PRINTER_ONLINE_SECONDS,
             "last_seen_seconds": None if age is None else int(age),
+            # The paper printer never takes picked jobs (its agent only
+            # claims paper labels), so the picker leaves it out.
+            "paper": p.name == PAPER_PRINTER,
         })
     return {"count": len(printers), "printers": printers}
 
@@ -3479,17 +3538,24 @@ def claim_print_jobs(
     limit: int = 5,
     printer: str | None = None,
     kind: str | None = None,
+    exclusive: bool = False,
     session: Session = Depends(get_session),
 ):
     """Agent: take the oldest pending jobs and mark them printing.
 
     An agent that names its printer claims only jobs aimed at it (or at
     no printer in particular). A legacy agent names nothing: it registers
-    as DEFAULT_PRINTER and claims EVERYTHING, exactly as before the
-    picker existed — right for a warehouse with one physical printer."""
+    as DEFAULT_PRINTER and claims every RFID job still pending, exactly
+    as before the picker existed - the single-printer warehouse.
+
+    Paper labels (2026-10-06): an EXCLUSIVE claim (the --paper agent on
+    the Munbyn) takes only paper jobs aimed at its own name, never an
+    untargeted job - a stray RFID label printed on paper would carry no
+    chip. Every other claim skips paper jobs, whatever they target."""
     global _agent_last_seen
     _agent_last_seen = time.time()
     printer = (printer or "").strip()[:100] or None
+    _agent_seen_by[printer or DEFAULT_PRINTER] = _agent_last_seen
     _touch_printer(session, printer or DEFAULT_PRINTER, kind)
     stmt = (
         select(PrintJob)
@@ -3497,10 +3563,20 @@ def claim_print_jobs(
         .order_by(PrintJob.id)
         .limit(min(limit, 20))
     )
-    if printer:
+    if exclusive:
+        if not printer:
+            return {"count": 0, "jobs": []}
         stmt = stmt.where(
-            (PrintJob.printer.is_(None)) | (PrintJob.printer == printer)
+            PrintJob.printer == printer, PrintJob.kind == PAPER_KIND
         )
+    else:
+        stmt = stmt.where(
+            PrintJob.kind.is_(None) | (PrintJob.kind != PAPER_KIND)
+        )
+        if printer:
+            stmt = stmt.where(
+                (PrintJob.printer.is_(None)) | (PrintJob.printer == printer)
+            )
     rows = session.scalars(stmt).all()
     for job in rows:
         job.status = "printing"
@@ -4131,7 +4207,9 @@ def complete_print_job(
 
     job.status = "done"
     job.printed_at = datetime.now(timezone.utc)
-    if not create_assignment:
+    # A paper label has no chip: its placeholder EPC must never become a
+    # tag record, whatever the reporting agent asked for.
+    if not create_assignment or job.kind == PAPER_KIND:
         session.commit()
         return {"job": job.as_dict(), "assignment": None}
     assignment = RfidAssignment(

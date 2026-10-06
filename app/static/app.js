@@ -3221,7 +3221,12 @@ async function fetchPrinters(force = false) {
     return printersCache.printers;
   try {
     const data = await apiJson("/api/printers");
-    printersCache = { at: Date.now(), printers: data.printers || [] };
+    // The paper printer only takes paper labels (RFID-incompatible
+    // products), so it is never a pickable "print everything here" target.
+    printersCache = {
+      at: Date.now(),
+      printers: (data.printers || []).filter((p) => !p.paper),
+    };
   } catch (err) {
     /* offline app — keep the stale list */
   }
@@ -11298,6 +11303,8 @@ function queueJobRow(j, child) {
         <td class="mono">${j.batch_id ? "#" + j.batch_id : "—"}</td>
         <td>${escapeHtml(j.requested_by || "—")}</td>
         <td><span class="chip-status chip-status--${escapeHtml(j.status)}">${escapeHtml(j.status)}</span>${
+          j.kind === "paper" ? ` <span class="pchip" title="Prints on the paper printer: no chip, never paired">Label: Paper</span>` : ""
+        }${
           j.error ? ` <span class="recent__meta" title="${escapeHtml(j.error)}">ⓘ</span>` : ""
         }</td>
         <td class="recent__meta">${escapeHtml(fmtWhen(j.printed_at || j.created_at))}</td>
@@ -11327,7 +11334,10 @@ function queueJobRow(j, child) {
       const reprintBtn = tr.querySelector('[data-act="reprint"]');
       if (reprintBtn)
         reprintBtn.addEventListener("click", async () => {
-          if (!confirm(`Reprint one label for ${j.sku || j.product_title}? (New EPC - the damaged label's tag stays unassigned.)`)) return;
+          const paper = j.kind === "paper";
+          if (!confirm(paper
+            ? `Reprint one paper label for ${j.sku || j.product_title}?`
+            : `Reprint one label for ${j.sku || j.product_title}? (New EPC - the damaged label's tag stays unassigned.)`)) return;
           try {
             await postJson("/api/print-jobs", {
               quantity: 1,
@@ -11343,6 +11353,7 @@ function queueJobRow(j, child) {
               label_sku: j.label_sku || null,
               requested_by: operatorEl.value || j.requested_by,
               printer: selectedPrinter || null,
+              stock: paper ? "paper" : "rfid",
             });
             loadQueue();
           } catch (err) {
