@@ -4815,3 +4815,13 @@ tr.bvx-fam .chip { margin-left: 6px; }
   .users__row { grid-template-columns: 1fr auto; }
   .users__meta { white-space: normal; }
 }
+
+/* Shipment sort: recently scanned (2026-10-06). */
+.sortrecent { margin: 8px 0 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); padding: 8px 10px; display: flex; flex-direction: column; gap: 3px; max-height: 220px; overflow-y: auto; }
+.sortrecent__head { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-dim); margin-bottom: 2px; }
+.sortrecent__row { display: grid; grid-template-columns: 52px minmax(90px, 160px) 1fr; gap: 10px; align-items: baseline; font-size: 12px; padding: 2px 0; border-left: 3px solid var(--ok-ink); padding-left: 8px; }
+.sortrecent__row--bad { border-left-color: var(--warn-ink); }
+.sortrecent__time { color: var(--ink-dim); font-variant-numeric: tabular-nums; }
+.sortrecent__code { font-family: var(--mono); color: var(--ink); word-break: break-all; }
+.sortrecent__text { color: var(--ink); }
+.sortrecent__row--bad .sortrecent__text { color: var(--warn-ink); }

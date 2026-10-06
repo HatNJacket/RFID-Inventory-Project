@@ -18016,6 +18016,81 @@ async function sortShipScan(code) {
     setSortShipStatus(msg);
     return { ok: true, text: msg };
   }
+  const out = await sortShipScanRun(term);
+  sortShipRecentAdd(term, out);
+  return out;
+}
+
+// What was scanned, newest first, so nobody has to guess what the last
+// few boxes were (Nick, 2026-10-06). Kept with the pile until Clear.
+let sortShipRecent = [];
+const SORTSHIP_RECENT_MAX = 15;
+
+function sortShipRecentLoad() {
+  try {
+    sortShipRecent = JSON.parse(localStorage.getItem("sortship_recent") || "[]") || [];
+  } catch (err) {
+    sortShipRecent = [];
+  }
+}
+
+function sortShipRecentAdd(term, out) {
+  // A blip for a box that landed, a buzz for one that didn't (Nick,
+  // 2026-10-06): the same tones batch tagging uses.
+  try {
+    batchSound(out && out.ok ? "ok" : "bad");
+  } catch (err) {
+    /* no audio here */
+  }
+  sortShipRecent.unshift({
+    term,
+    text: (out && out.text) || "",
+    ok: !!(out && out.ok),
+    at: new Date().toISOString(),
+  });
+  sortShipRecent = sortShipRecent.slice(0, SORTSHIP_RECENT_MAX);
+  try {
+    localStorage.setItem("sortship_recent", JSON.stringify(sortShipRecent));
+  } catch (err) {
+    /* fine */
+  }
+  sortShipRecentRender();
+}
+
+function sortShipRecentClear() {
+  sortShipRecent = [];
+  try {
+    localStorage.removeItem("sortship_recent");
+  } catch (err) {
+    /* fine */
+  }
+  sortShipRecentRender();
+}
+
+function sortShipRecentRender() {
+  const box = document.getElementById("sortship-recent");
+  if (!box) return;
+  if (!sortShipRecent.length) {
+    box.hidden = true;
+    box.innerHTML = "";
+    return;
+  }
+  box.hidden = false;
+  box.innerHTML =
+    `<div class="sortrecent__head">Recently scanned</div>` +
+    sortShipRecent
+      .map((r) => {
+        const t = new Date(r.at);
+        const hm = isNaN(t) ? "" : t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        return `<div class="sortrecent__row sortrecent__row--${r.ok ? "ok" : "bad"}">` +
+          `<span class="sortrecent__time">${escapeHtml(hm)}</span>` +
+          `<span class="sortrecent__code">${escapeHtml(r.term)}</span>` +
+          `<span class="sortrecent__text">${escapeHtml(r.text)}</span></div>`;
+      })
+      .join("");
+}
+
+async function sortShipScanRun(term) {
   sortShipBusy = true;
   try {
     let product = null;
@@ -18216,6 +18291,8 @@ function sortShipGroups() {
 }
 
 function renderSortShip() {
+  if (!sortShipRecent.length) sortShipRecentLoad();
+  sortShipRecentRender();
   const host = document.getElementById("sortship-groups");
   if (!host) return;
   const { orders, unexplained, bundles } = sortShipGroups();
@@ -18845,6 +18922,7 @@ document.getElementById("sortship-clear").addEventListener("click", () => {
   } catch (err) {
     /* fine */
   }
+  sortShipRecentClear();
   renderSortShip();
   setSortShipStatus("");
   document.getElementById("sortship-scan").focus();
