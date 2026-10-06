@@ -598,6 +598,46 @@ intentional session, not a pass inside a big batch.
   box), to be designed. Implication: the first-tagging lower ban does
   not apply to audit resolutions (treated as decided unless Nick
   says otherwise).
+  **Verdict spec settled 2026-10-06 (planning only, nothing built):**
+  numbers per product/shelf: Last count (Log baseline; never logged =
+  batch-tagging count), Sold since, Received since (planner receiving
+  history = truth; a rise between our 3-hourly snapshots with no stock
+  order shows as "on-hand rose by N, no stock order", never as
+  received; batches not used until robust; Shopify inventory history
+  only if the API exposes it - verify), Expected now = last - sold +
+  received, Heard here, Heard elsewhere (listed, never counted),
+  Shopify on-hand/available/committed/unavailable live at rack open
+  with age. Card shows at most Expected · Heard · Shopify + verdict
+  lines; the rest is in the product/Resolve windows. Ladder (first
+  match; rows 3-6 stack): 1 retired tag answered (red, Un-retire);
+  2 heard > expected (yellow, Resolve preset heard); 3 silent paired
+  with a sale since last count (Mark sold, NO confirm when the
+  pairing is clean, consumes exactly those ledger rows, undoable);
+  4 unavailable covers it (Resolve unavailable: move then set, staff
+  comment first - product metafield "Staff Comments", look up its
+  namespace/key read-only); 5 received not shelved ONLY with a stock-
+  order receipt record (Print/Pair); 6 silent tag heard elsewhere
+  recently (Locate); 7 nothing explains it (red "missing since",
+  Resolve window: Shopify figures, heard, sold since, collapsible
+  timeline, counter preset heard, Confirm writes freely; count below
+  heard -> re-sweep -> tag-by-tag locate flow TBD); 8 Shopify
+  disagrees after all of the above (yellow, Set on-hand, evaluated
+  LAST); 9 match (green); 10 incompatible/non-taggable -> hand count.
+  Several lines on one card: stacked, each with its button, worst
+  colour wins, plus "Resolve all" that runs them in ladder order after
+  one summary and pauses only for input (comment, count), recomputing
+  after each step. Timing: sweep time is the reference; records
+  frozen at rack open; actions refresh only that product; Log writes
+  Last count = heard (or the hand count) + time, and takes over the
+  ledger auto-clear. Runs: one rack fetch (numbers, EPC lists with
+  recorded shelf + last-heard, sales since, receipts) -> the gun
+  computes every sweep locally; one shared ladder function on the
+  server for the web. Data changes: last-heard (action, location,
+  time) on tags - "last heard during F9-2 audit / D7-2 batch tag sweep
+  / packing scan / locate", stamped by every read incl. other bins'
+  tags heard during an audit; receipts per SKU per shelf with
+  paired/unpaired; sale<->tag consumption records for Mark sold;
+  Log baseline gains time + hand counts.
 - **Ledger wedge fixed 2026-10-05 (080aa8d):** the hourly ShipStation
   sync had failed since 10-02 16:07 UTC (a SKU the varchar column
   stored as "ZWO FD-M54-?" re-inserted hourly, duplicate key, batch
