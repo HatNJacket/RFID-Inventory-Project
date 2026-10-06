@@ -634,6 +634,21 @@ intentional session, not a pass inside a big batch.
     the 47-char Optolong L-PRO name). The check is by measured width, not
     character count; the label editor should still warn when a paper
     label's line would be refused.
+  - PAPER PATH LIVE 2026-10-06 (e18aa82, agent v11): stock="paper" jobs
+    (kind "paper", printer "warehouse-paper") print only through the
+    paper agent's exclusive claims; RFID agents skip them; no tag
+    record, never owed pairing; per-printer agent status with a "paper"
+    summary; the web picker hides the paper printer. Warehouse laptop:
+    C:fid\paper\ holds its own print_agent.py copy (self-updates
+    separately), run_paper_agent.cmd (--paper --printer-id
+    warehouse-paper, log C:fid\paper\paper_agent.log), started from
+    the TCWarehouse Startup folder ("RFID Paper Agent.cmd") exactly like
+    the Zebra agent. Pillow installed there by Steve. FINDING: the Zebra
+    agent also runs from that Startup folder as the non-admin tcwarehouse
+    user (the shell channel can't read or create scheduled tasks), not
+    as the SYSTEM task the CLAUDE.md note describes. First live paper
+    label (job 4726) printed end to end. Still to build: the flag UI
+    that queues paper jobs.
   - Audits: incompatible products are ALWAYS hand counted (stepper,
     keypad, barcode scan adds 1). Heard tags are ignored entirely: no
     "Heard X of Y", no silent-tag rows, no "sweep anyway" option.
