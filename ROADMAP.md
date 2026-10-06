@@ -579,6 +579,21 @@ A 69-label ZWO order queued 219 labels. Three faults, three fixes:
 - **OPEN - why ~HS goes quiet under v9/v10's continuous feed.** Watch
   the agent log for "no ~HS answer"; if it recurs, make the mid-run
   refill opt-out and fall back to v8 pacing.
+- **OPEN - OPEN BOX labels on new SO 969 stock (found 2026-10-06).**
+  Cause: three open-box listings wore the NEW product's SKU as their
+  BARCODE (e.g. "ZWO ASI678MC OPEN BOX" had barcode "ZWO ASI678MC"),
+  and lookup tries barcodes before SKUs, so receiving resolved the
+  planner's SKU to the open-box twin. Steve fixed the two Minis in
+  Shopify (open-box barcodes now 6977641320481-O / 6977641320474-O);
+  the ASI678MC open-box barcode was STILL "ZWO ASI678MC" at last check
+  (suggested 6977641320375-O). The Home product card's new Refresh
+  from Shopify button (b42cb4e) pulls such fixes in at once. AWAITING
+  STEVE'S GO-AHEAD: (1) repair - move the 3 ASI678MC tags paired to the
+  open-box listing to the new one, switch batch lines 4746/4748 (batch
+  363) and 4733 (batch 361) to the new listings, void the OPEN BOX
+  labels and reprint; (2) safeguard - a main listing's exact SKU match
+  beats an open-box/used/demo listing's barcode match, and receiving
+  holds a line instead of printing OPEN BOX on new stock.
 
 ## 📦 Shipment sorter polish — ✅ DEPLOYED 2026-10-06
 
