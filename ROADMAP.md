@@ -681,6 +681,19 @@ intentional session, not a pass inside a big batch.
     (resolves through 8).
   Resolve all summary: "Un-retire 1 tag · Mark 1 sold against #50527
   · Clear 1 unavailable · Set on-hand 3".
+  **BUILD STATUS (2026-10-06):** stage 1 DONE (034113f: app/verdicts.py
+  rack_model + judge + copy, GET /api/audit/model/{loc}, POST
+  /api/audit/verdicts/{loc}, rfid_assignments.last_heard_ctx stamped by
+  every sweep, test_verdicts.py). Stage 2 DONE (gun 4.35: the ladder
+  judged on the gun from one model fetch per rack, Card B, the Resolve
+  window with Resolve all / Count instead, OnHandLowerIn.resolution).
+  Still to do: stage 3 = the web bin page on the same ladder (the
+  shared server function) and the staff-comment true-up
+  (custom.staff_comments) into the model; stage 4 = retire the per-bin
+  bin_check from the gun's open/sweep path (LOG + saved sweeps keep
+  working today) and make LOG write the last count + hand counts;
+  sale<->tag consumption records for Mark sold; the tag-by-tag locate
+  flow for "counted below heard".
 - **Ledger wedge fixed 2026-10-05 (080aa8d):** the hourly ShipStation
   sync had failed since 10-02 16:07 UTC (a SKU the varchar column
   stored as "ZWO FD-M54-?" re-inserted hourly, duplicate key, batch
