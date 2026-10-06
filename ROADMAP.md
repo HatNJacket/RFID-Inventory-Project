@@ -451,13 +451,56 @@ open pointed at prod. Once 4.18 is confirmed on the gun, delete the
    explicit sessions (lean rolling); barcode scans allowed but
    badged "no tag" (no retirement precision).
 
-## 🎞 Strip pairing box (Nick, 2026-10-06) — PLANNED, Nick builds the hardware after work
+## 🎞 Pair-at-print reader on the Zebra (Nick + team, 2026-10-06) — PLANNED, hardware first
 
 Labels print barcode-only (no encoding printer), so every tag is paired
-by hand, one antenna touch per label. The box pairs a whole printed
-strip in one pass: the strip feeds past a shielded window, the gun
-reads one tag at a time, and the print order says which job each tag
-belongs to. Agreed design:
+by hand, one antenna touch per label. **Current plan (supersedes the
+feed box below, team decision 2026-10-06):** a shielded ramp attachment
+on the FRONT of the Zebra with a UHF reader module under a window, so
+each label is read as it is printed and paired right there.
+
+- **Reader:** YRM100 (external-antenna version, US 902-928 MHz) set to
+  its 18 dBm floor + a **15 dB SMA attenuator** = 3 dBm (20 dB spare),
+  U.FL-to-SMA pigtail, stubby 2 dBi 915 MHz antenna. Cheap modules
+  bottom out at 15-18 dBm; the pad is how you get to gun-like power.
+  RSSI only as loud vs quiet. Clean power: own 3.3 V regulator,
+  470-1000 µF + 0.1 µF at the module's pins. Reads: a decoded EPC is
+  CRC-protected (never wrong); the failure mode is a MISS.
+- **Ramp:** short printed ramp off the printer's exit, aluminium tape
+  on the ramp AND the printer's front face (plastic body - the roll and
+  the next labels sit a few cm behind the window). Window a couple of
+  cm past the tear bar where the inlay sits for this stock (measure per
+  stock). Reader in a taped pocket UNDER the ramp, antenna up through
+  the liner; labels face up so a barcode camera can look down later.
+  Tear teeth on the ramp end are fine.
+- **Controller: none.** The module plugs into the warehouse PC via a
+  CP2102 USB-UART ($5) and the PRINT AGENT reads it - the agent already
+  knows the job order and confirms each label from the odometer.
+  Pairing rule: each new EPC at the window zips to the next odometer-
+  confirmed job; `complete` then carries the EPC so the tag record
+  exists the moment the label prints (the encoding-printer experience
+  for ~$80). Edge cases: odometer moved, no EPC = dead tag -> job done
+  with no tag, Queue tab says "tag not read, pair by hand"; two EPCs
+  for one label -> pair the loud one, flag; EPC with no odometer move
+  (tear-off yank, stray) -> log, ignore. Speed: ZD220 at 4 ips = 250 ms
+  per 1-inch label, plenty for tens-of-ms reads; `^PR2` (2 ips) as a
+  per-run knob if needed.
+- **Optional step 3:** GM65-class barcode camera above the ramp
+  (~$30) - pairs "next unpaired job OF THIS SKU" instead of "next job",
+  so reprints and retries can't shift the order; barcode + no EPC =
+  dead tag; foreign SKU = wrong strip.
+- **Order of work:** (1) ramp + reader on the PC + a 20-line script
+  printing EPC/RSSI during a normal run - the go/no-go is ONE clean EPC
+  per label at printer speed; (2) agent reader thread + EPC on
+  complete + Queue "tag not read" state (~1 day); (3) barcode camera.
+- **Parts:** YRM100 ext-antenna, 15 + 20 dB SMA pads, U.FL-SMA pigtail,
+  stubby antenna, CP2102 adapter, 3.3 V regulator + caps, aluminium
+  tape, M3 hardware. Roughly $70-90 CAD. No stepper/ESP32/PSU.
+
+**Earlier design (kept for reference - the desk feed box):** the strip
+feeds past a shielded window in a standalone box and the gun or a
+module reads one tag at a time with the print order saying which job
+each tag belongs to. Design as agreed before the team meeting:
 
 - **Tunnel:** aluminium rectangular tube or U-channel (no printing, no
   foil seams), inside width = liner + 1-2 mm, height 2-3 mm, about
