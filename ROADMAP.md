@@ -638,6 +638,49 @@ intentional session, not a pass inside a big batch.
   tags heard during an audit; receipts per SKU per shelf with
   paired/unpaired; sale<->tag consumption records for Mark sold;
   Log baseline gains time + hand counts.
+  **Card treatment + copy (Nick, 2026-10-06; sketches on the canvas
+  row 3):** Card B wins - the list card keeps its height, one summary
+  line "N to resolve: frag · frag · frag" and one "Resolve (N)"
+  button opening the Resolve window (numbers strip Expected · Heard ·
+  Shopify · Unavailable + last count date; one row per problem in
+  ladder order with title, description, its own button; "Resolve all
+  (N)" listing the sequence; "Count instead" always present). Say
+  "unavailable", never "set aside". Copy per problem (fragment /
+  title / description / action):
+  1 "retired tag answered" / Retired tag answered / "…A41F2C was
+    retired as sold on Sep 28, but it answered this sweep. The box
+    never left." / Un-retire.
+  2 "heard 4, expected 3" / More heard than expected / "Expected 3
+    from the last count, 4 tags answered here. Check for a tag on the
+    wrong product or a box that was never counted." / Count and set.
+  3 "1 shipped" / 1 silent tag, shipped / "…7C21E0 was last heard
+    Sep 30 during the I1-2 audit. Order #50527 shipped on Oct 1." /
+    Mark sold (no confirm when clean).
+  4 "1 unavailable" / 1 silent tag, set as unavailable / "…B0D4F1 was
+    last heard Sep 30 during the I1-2 audit. Shopify holds 1 unit as
+    unavailable. Staff comment: '...'" / Clear unavailable (comment
+    first: Keep unavailable / Continue).
+  5 "2 received, not shelved" / Received, not shelved / "Stock order
+    #1003 received Oct 3: 2 units, no labels paired yet." / Print 2
+    labels.
+  6 "1 heard elsewhere" / 1 silent tag, heard elsewhere / "…D91E07
+    was last heard today 10:40 during the packing scan." / Locate.
+  7 "1 missing" / 1 tag missing since Oct 1 / "…E2A4C3 was last heard
+    Oct 1 during the I1-2 audit. No sale, no receipt, not heard
+    anywhere since." / Count and set.
+  8 "shelf 3, Shopify 4" / Shopify disagrees / "The shelf is settled
+    at 3. Shopify shows on-hand 4 (available 3, unavailable 1)." /
+    Set on-hand to 3.
+  10 "count by hand" / Count by hand / "RFID-incompatible: 6 on hand
+    in Shopify, 4 tags heard." / Confirm N.
+  a "1 label never paired" / Printed label, not paired / "A label for
+    this product was printed Oct 2 and never paired. It answered this
+    sweep." / Pair to this product · Dismiss.
+  b "oversold" / Oversold in Shopify / "Available is -1: Shopify has
+    sold one more than it holds. Setting on-hand will clear it." /
+    (resolves through 8).
+  Resolve all summary: "Un-retire 1 tag · Mark 1 sold against #50527
+  · Clear 1 unavailable · Set on-hand 3".
 - **Ledger wedge fixed 2026-10-05 (080aa8d):** the hourly ShipStation
   sync had failed since 10-02 16:07 UTC (a SKU the varchar column
   stored as "ZWO FD-M54-?" re-inserted hourly, duplicate key, batch
