@@ -18002,10 +18002,19 @@ function setSortShipStatus(text) {
 
 // Returns {ok, text} so the LINK relay can answer the gun; the wedge
 // input ignores the return value.
+// Scans that arrive while a lookup is still running queue up and run in
+// order (Nick, 2026-10-06): scan the whole stack without waiting for
+// each match to land.
+let sortShipQueue = [];
+
 async function sortShipScan(code) {
   const term = (code || "").trim();
-  if (!term || sortShipBusy) {
-    return { ok: false, text: "Scan skipped - the sorter was busy." };
+  if (!term) return { ok: false, text: "Nothing scanned." };
+  if (sortShipBusy) {
+    sortShipQueue.push(term);
+    const msg = `Queued ${term} (${sortShipQueue.length} waiting)`;
+    setSortShipStatus(msg);
+    return { ok: true, text: msg };
   }
   sortShipBusy = true;
   try {
@@ -18138,6 +18147,11 @@ async function sortShipScan(code) {
     return { ok: !!target, text: msg };
   } finally {
     sortShipBusy = false;
+    // Next in line, if the operator kept scanning.
+    if (sortShipQueue.length) {
+      const next = sortShipQueue.shift();
+      setTimeout(() => sortShipScan(next), 0);
+    }
   }
 }
 
