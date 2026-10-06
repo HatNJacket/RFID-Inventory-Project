@@ -558,8 +558,14 @@ intentional session, not a pass inside a big batch.
   Non-taggable is gone as its own idea.
   - Printed labels carry a no-scan mark (crossed signal arcs) in the
     corner; one-per-bin labels add "ALL STOCK" to the bin line.
-  - Paper labels print on the second (non-RFID) printer, which the
-    warehouse already has with a roll loaded; no EPC, no pairing.
+  - Paper labels print on the second (non-RFID) printer: a Munbyn
+    ITPP941 on the same warehouse laptop (Windows queue "Munbyn
+    ITPP941", port USB003, driver 2.6.2.1). It speaks TSPL, NOT ZPL
+    (driver DLL emits SIZE/GAP/BITMAP/PRINT), so the agent needs a TSPL
+    label builder sent RAW through the spooler; no odometer readback.
+    Roll: 2.25" x 1.125" labels, design to ~2.0" x 1.0" printable.
+    Raw TSPL test label sent 2026-10-06 (box marks the 2x1 area).
+    No EPC, no pairing.
   - Audits: incompatible products are ALWAYS hand counted (stepper,
     keypad, barcode scan adds 1). Heard tags are ignored entirely: no
     "Heard X of Y", no silent-tag rows, no "sweep anyway" option.
