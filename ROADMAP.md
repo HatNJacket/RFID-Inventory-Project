@@ -592,7 +592,11 @@ intentional session, not a pass inside a big batch.
   tools box). Top bar: bin arrows, sweep picker (replaces Pull latest
   sweep & check), bin ⋯ menu, Log audit. The list's count column is
   reduced to Heard/Shopify ("2/3") with Expected underneath and a
-  header indicator - 4 versions drawn, choice pending. "Also heard":
+  header indicator - Steve picked the BAR: "heard/Shopify" numbers
+  (hover: "N heard in this sweep" / "N on hand in Shopify", no header
+  words) over one block per Shopify unit, filled when heard, a white
+  tick at Expected; heard beyond Shopify shows as dashed extra blocks.
+  Header keeps only a tiny legend (heard / Shopify / expected). "Also heard":
   NO per-tag list or Move here (racks are too close; nearly every
   sweep hears more strays than expected tags) - just the chip, with
   the hover note "Tags heard in this sweep that belong in other
