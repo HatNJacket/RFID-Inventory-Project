@@ -596,7 +596,14 @@ intentional session, not a pass inside a big batch.
   (hover: "N heard in this sweep" / "N on hand in Shopify", no header
   words) over one block per Shopify unit, filled when heard, a white
   tick at Expected; heard beyond Shopify shows as dashed extra blocks.
-  Header keeps only a tiny legend (heard / Shopify / expected). "Also heard":
+  Header keeps only a tiny legend (heard / Shopify / expected).
+  Colours: heard units up to Expected are green once heard reaches
+  it; every other heard unit wears the product's FLAG colour from the
+  verdict ladder (missing = red, more heard than expected or Shopify
+  disagreeing = yellow), so the bar always matches the row's dot and
+  summary. Sizes: up to 5 units one line, 6-10 two lines of 5,
+  11-20 two lines of 10 half-size blocks, over 20 numbers only with
+  "expected N" underneath (units = max of heard, expected, Shopify). "Also heard":
   NO per-tag list or Move here (racks are too close; nearly every
   sweep hears more strays than expected tags) - just the chip, with
   the hover note "Tags heard in this sweep that belong in other
