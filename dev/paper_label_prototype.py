@@ -7,8 +7,9 @@ small built-in fonts (TEXT "1"/"2"); a single big TEXT line, FORMFEED and
 BITMAP all print fine. So the agent should send bitmaps only.
 
 Layout (203 dpi; 2.25 x 1.125 in label; 2.0 x 1.0 in content area plus
-1 mm more at top and bottom): header 29 px bold, SKU line 27 px bold
-(shrinks to 20 px, refuses below that: 8 of 3,526 live SKUs), Code 128
+1 mm more at top and bottom): header 29 px bold, SKU line 27 px bold,
+up to 440 dots wide (shrinks to 15 px, refuses below that; every one of
+the 3,526 live SKUs fits on 2026-10-06), Code 128
 barcode 82 dots tall with digits, BIN line 28 px bold, no-scan mark top
 right.
 
@@ -62,7 +63,9 @@ def centered(d, y, text, f):
     d.text(((W - w) / 2, y), text, font=f, fill=0)
 
 
-SKU_MAX_PX, SKU_MIN_PX, LINE_WIDTH = 27, 20, 2 * DPI  # 406 dots
+# Tested at the printer 2026-10-06: a 27 px line 437 dots wide (about 1 mm
+# from each label edge) and a 15 px line both print cleanly and read well.
+SKU_MAX_PX, SKU_MIN_PX, LINE_WIDTH = 27, 15, 440
 
 
 class SkuTooLong(ValueError):
@@ -70,20 +73,21 @@ class SkuTooLong(ValueError):
 
 
 def sku_line_size(text: str):
-    """Largest font size (27 down to 20 px) at which the line fits the 2.0 in
-    width, or None when even 20 px is too wide."""
+    """Largest font size (27 down to 15 px) at which the line fits 440 dots,
+    or None when even 15 px is too wide."""
     for size in range(SKU_MAX_PX, SKU_MIN_PX - 1, -1):
         if font(size, True).getlength(text) <= LINE_WIDTH:
             return size
     return None
 
 
-def render(header, sku, barcode_value, bin_text, noscan=True):
+def render(header, sku, barcode_value, bin_text, noscan=True, sku_size=None):
+    """sku_size forces the SKU line's font size (test prints only)."""
     img = Image.new("1", (W, H), 1)
     d = ImageDraw.Draw(img)
     top_y = SAFE_Y - 8  # 1 mm more at the top (Steve, 2026-10-06)
     centered(d, top_y + 1, header, font(29, True))
-    size = sku_line_size(sku)
+    size = sku_size or sku_line_size(sku)
     if size is None:
         raise SkuTooLong(sku)
     # A shrunk line keeps its vertical centre where the 27 px line sits.

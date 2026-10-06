@@ -568,12 +568,13 @@ intentional session, not a pass inside a big batch.
     and/or small built-in fonts FREEZE it (power cycle needed); a single
     big TEXT line and a BITMAP print fine. So paper labels go out as ONE
     rendered image (TSPL BITMAP over direct USB). Layout approved by
-    Steve, prototype in dev/paper_label_prototype.py. SKU line guardrail:
-    27 px, shrinks to 20 px, refuses below that (8 of 3,526 live SKUs,
-    e.g. the long Optolong names) - the label editor must warn and ask
-    for a shorter line before a paper print. Widest that fits at full
-    size: "PoleMasterAdapterAT_StarAdv" (27 chars); safe count for
-    all-caps is about 21 characters, but the check is by measured width.
+    Steve, prototype in dev/paper_label_prototype.py. SKU line guardrail
+    (tested at the printer): 27 px bold, up to 440 dots wide (about 1 mm
+    from each label edge), shrinking to 15 px, refusing below that. All
+    3,526 live SKUs fit: 3,476 at full size, 50 shrunk (smallest 17 px,
+    the 47-char Optolong L-PRO name). The check is by measured width, not
+    character count; the label editor should still warn when a paper
+    label's line would be refused.
   - Audits: incompatible products are ALWAYS hand counted (stepper,
     keypad, barcode scan adds 1). Heard tags are ignored entirely: no
     "Heard X of Y", no silent-tag rows, no "sweep anyway" option.
