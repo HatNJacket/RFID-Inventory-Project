@@ -451,6 +451,55 @@ open pointed at prod. Once 4.18 is confirmed on the gun, delete the
    explicit sessions (lean rolling); barcode scans allowed but
    badged "no tag" (no retirement precision).
 
+## 🎞 Strip pairing box (Nick, 2026-10-06) — PLANNED, Nick builds the hardware after work
+
+Labels print barcode-only (no encoding printer), so every tag is paired
+by hand, one antenna touch per label. The box pairs a whole printed
+strip in one pass: the strip feeds past a shielded window, the gun
+reads one tag at a time, and the print order says which job each tag
+belongs to. Agreed design:
+
+- **Tunnel:** aluminium rectangular tube or U-channel (no printing, no
+  foil seams), inside width = liner + 1-2 mm, height 2-3 mm, about
+  8 cm each side of a window cut in the top. A slot that narrow is a
+  waveguide below cutoff at 915 MHz (~2 dB/cm plus detuning), so tags
+  inside stay quiet at power 1-3. Window ≈ 3/4 of a label pitch.
+- **Path:** vertical, strip hangs from above and drops past the window;
+  gentle entry/exit flares in the scanning plane so the strip droops
+  under its own weight (no left/right turns). Labels face the gun, so
+  any curve that bends AWAY from the gun puts them on the outside of
+  the bend - keep that radius ≥ 30 mm or curve toward the gun side.
+- **Roller:** one rubber drive wheel (printed hub + O-rings or a TPU
+  tyre) against a spring-loaded idler, AT THE OUTPUT below the window,
+  pushing the spent strip out the back. Every label clears the window
+  before the tail leaves the roller. Leader card taped to the strip's
+  start for threading. NEMA 17 + A4988/DRV8825 (the 28BYJ-48 tops out
+  near 1 label/s; Nick wants a few labels/s, speed as a setting).
+- **Shielding:** adhesive aluminium tape on printed parts. Hood the
+  gun's UHF antenna head only (top module) - the Wi-Fi radio is in the
+  body and must stay in free air. Box lives away from stray tags.
+- **Controller:** ESP32 (Wi-Fi), never Bluetooth to the gun. It polls
+  the server for feeder commands exactly like the print agent polls
+  printer-commands, with its OWN device key limited to the feeder
+  endpoints. Physical jog button for threading.
+- **Gun "Pair strip" mode (1-2 days):** loads the batch's unpaired jobs
+  in print order; auto-scans at power 1; each NEW EPC (first-heard
+  order, RSSI peak time breaks ties) pairs to the next job through the
+  existing pairing call, beep per label, different tone at a SKU
+  boundary, one-tap undo. Continuous feed means it can't just count:
+  it watches CADENCE - a gap of two pitch-times = a label went by
+  unread -> tell the feeder to stop and back up two pitches, ask dead
+  tag (void the job) or retry. Two tags at once -> take the loudest,
+  warn; persistent = window too wide. Barcode check at SKU boundaries.
+- **Server (half a day):** feeder command queue + pair-strip order
+  endpoint; a manual "advance" button on the Queue tab doubles as the
+  first feeder before any motor exists.
+- **Order of work:** tunnel + cradle, hand-pull test at power 1 (one
+  tag per position is the go/no-go), then stepper + ESP32, then the
+  gun mode. Print order is only trustworthy for a run with no faults
+  (swallowed-label retries and reprints reorder the tail), which is why
+  the SKU-boundary barcode check stays.
+
 ## 🖨 SO 969 post-mortem: double booking + lost-status reprints — ✅ DEPLOYED 2026-10-06
 
 A 69-label ZWO order queued 219 labels. Three faults, three fixes:
