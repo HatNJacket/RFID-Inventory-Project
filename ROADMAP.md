@@ -535,7 +535,8 @@ intentional session, not a pass inside a big batch.
 - Gun ⋯ menu: Pull latest / Pick + merge / Send sweep GONE (sweeps save
   as the trigger stops). Clear becomes a main-screen button. ★ Plan the
   menu around what users do there 90% of the time: pick/clear/switch
-  sweeps; optional, hidden-by-default sweep label/name; bin flags.
+  sweeps; optional, hidden-by-default sweep label/name. (Bin flags
+  dropped 2026-10-06.)
 - ONE Locate function: audit (silent tags, one product, whole list) opens
   Locate preloaded with its values; no separate "audit locate". ★ Plan the
   product → list → silent-tags workflow and Locate's own controls.
@@ -546,16 +547,38 @@ intentional session, not a pass inside a big batch.
   or a dictionary of functions with illustrations/screenshots.
 - Flags sheet: one-sentence (max two-line) descriptions are fine HERE.
   ★ Review which flags are really needed vs solved elsewhere.
-- **RFID-incompatible simplification** (warehouse discussion; full team
-  meeting 2026-10-06 finalises): ONE flag "RFID-incompatible" replaces
-  Hard-to-scan + Can't-scan, with per-product toggles: "Print RFID tag /
-  Print paper tag" and "One label per box / One label for the listing"
-  (with a little illustration that changes: one label → bag of many vs
-  many labels → many boxes). Case 1 = too small/annoying to tag each
-  (thumbscrews: one label for the listing gives the bag a bin). Case 2 =
-  won't scan or hard in multiples (Optolong holographic filters, Askar
-  metal brackets/dovetails: one label per box). Non-taggable stays the
-  thumbscrew-bag flag. ★ Replan after the meeting.
+- **RFID-incompatible flag - PLANNED 2026-10-06 (team meeting agreed)**,
+  previews: Design canvas "RFID-Incompatible Flag Previews"
+  https://claude.ai/artifact/1dRBQphGXYo2EBPhx3mQmS. ONE product flag
+  replaces won't-scan (rfid_incompatible), un-labelable box and
+  non-taggable (rfid_non_taggable, both kinds). Two toggles under it:
+  "RFID tag / Paper label" and "One per product / One per bin" (the
+  illustration switches: labels each pointing at a box vs one label
+  pointing at a bag). Thumbscrews = RFID tag, one per bin.
+  Non-taggable is gone as its own idea.
+  - Printed labels carry a no-scan mark (crossed signal arcs) in the
+    corner; one-per-bin labels add "ALL STOCK" to the bin line.
+  - Paper labels print on the second (non-RFID) printer, which the
+    warehouse already has with a roll loaded; no EPC, no pairing.
+  - Audits: incompatible products are ALWAYS hand counted (stepper,
+    keypad, barcode scan adds 1). Heard tags are ignored entirely: no
+    "Heard X of Y", no silent-tag rows, no "sweep anyway" option.
+  - Locate: incompatible products only show their bin; the details and
+    the "this product is flagged" alert belong to the Locate session.
+  - Batch tagging: one-per-product stays in the batch (labels print,
+    the verify sweep skips it); one-per-bin leaves the batch and prints
+    one label for the bin.
+  - Bin-level flags are OUT (setting a whole bin incompatible would flag
+    products that scan fine). Not built, and dropped from the gun menu
+    plan.
+  - Prod state at planning: won't-scan on ZWO DESICC (+ a stray
+    "ZWO+DESICC" row to delete), 2459281, 2459286 -> RFID tag, one per
+    product; CR2032 un-labelable box -> RFID tag, one per bin; no plain
+    non-taggable rows.
+  - Printer routing RISK: jobs with no printer named go to ANY agent
+    that claims. A paper agent must never claim those, or RFID labels
+    print on paper un-encoded. Server routing has to ship BEFORE the
+    paper agent starts.
 - ★ Expected range + verification logic: "Needs labels: N boxes never got
   a label" is wrong more often than right - rooted in how Expected is
   built. Walk through expected_qty/shelf_lo/shelf_hi/in_range vs heard
