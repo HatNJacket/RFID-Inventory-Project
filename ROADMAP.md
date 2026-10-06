@@ -678,7 +678,17 @@ intentional session, not a pass inside a big batch.
   · nothing changes in Shopify or the tag records until you apply
   them". IMPLICATION: the gun's Resolve buttons (4.35) write
   immediately today; when this is built the gun must save to the same
-  server-side draft (one draft per bin, shared by gun and web). "Also heard":
+  server-side draft (one draft per bin, shared by gun and web).
+  STALE drafts are stale (Steve: a bin audit is recreated in under a
+  minute, minus hand counting): a draft goes stale when its sweep is
+  older than 2 h (window to confirm) OR a sale, receipt, on-hand change
+  or tag move touches one of its products after the change was saved.
+  A stale draft can't be applied; the bin shows its changes greyed
+  with the reason ("order #50531 shipped one since these were saved -
+  re-sweep to start fresh"); a new sweep starts a fresh draft and drops
+  the stale one; the hub never nags about them. Hand counts from a
+  stale draft show as a hint only ("counted 6 by Nick, 3 h ago"),
+  never carried into the new draft. "Also heard":
   NO per-tag list or Move here (racks are too close; nearly every
   sweep hears more strays than expected tags) - just the chip, with
   the hover note "Tags heard in this sweep that belong in other
