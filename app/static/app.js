@@ -6052,6 +6052,22 @@ bEl.abandon.addEventListener("click", async () => {
 // keystroke itself is the user gesture browsers require.
 let audioCtx = null;
 
+// Browsers only let a page start audio from inside a user gesture. The
+// sorter plays its tone AFTER an async lookup, outside the keystroke,
+// so the context must be created and resumed ON the keystroke and kept
+// warm (Nick, 2026-10-06: "I don't hear an audio ping").
+function audioPrime() {
+  try {
+    audioCtx =
+      audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "suspended") audioCtx.resume();
+  } catch (err) {
+    /* no audio here */
+  }
+}
+document.addEventListener("keydown", audioPrime, { passive: true });
+document.addEventListener("pointerdown", audioPrime, { passive: true });
+
 function batchSound(kind) {
   try {
     audioCtx =
