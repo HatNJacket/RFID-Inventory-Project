@@ -607,7 +607,16 @@ intentional session, not a pass inside a big batch.
   A full match reads green: "✓ 3/3" in green, and the line under the
   name says "Heard 3 of 3 · Shopify and the last count agree" (the
   detail panel's Heard number turns green with the check too). Mock:
-  board "B v2" on the canvas. "Also heard":
+  board "B v2" on the canvas.
+  Manual count on the WEB (Steve, 2026-10-06): the detail panel has a
+  "Your count" row for EVERY product (not only count-by-hand ones):
+  − / typed number / +, "Use heard (N)", "Clear count", and a barcode
+  scan adds 1. A count replaces Heard in the list bar and verdict
+  colour and is saved with the audit on Log. Outcomes: count below
+  the tags heard -> yellow "re-sweep this product before logging";
+  count = expected = Shopify -> green match (notes boxes with silent
+  tags); count != Shopify -> yellow "Logging the audit sets on-hand to
+  N"; count = Shopify but != expected -> yellow, Log records N. "Also heard":
   NO per-tag list or Move here (racks are too close; nearly every
   sweep hears more strays than expected tags) - just the chip, with
   the hover note "Tags heard in this sweep that belong in other
