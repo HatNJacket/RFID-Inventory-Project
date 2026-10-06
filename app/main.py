@@ -632,6 +632,50 @@ def remove_user(
     return {"ok": True}
 
 
+# ---- shipment sorter leftovers (Nick, 2026-10-06) -------------------------
+# Boxes no open stock order expected: the sorter prints their labels and
+# clears them from the pile, and this keeps the small record the Batch
+# page shows ("what did we print that nothing ordered?").
+
+class SorterLeftoverItem(BaseModel):
+    sku: str = Field(max_length=100)
+    title: str | None = Field(default=None, max_length=255)
+    qty: int = Field(ge=1, le=500)
+
+
+class SorterLeftoversIn(BaseModel):
+    items: list[SorterLeftoverItem] = Field(min_length=1, max_length=200)
+    worker: str | None = Field(default=None, max_length=100)
+
+
+@app.post("/api/sorter/leftovers", dependencies=[Depends(require_user)])
+def sorter_leftovers_record(
+    payload: SorterLeftoversIn, request: Request,
+    session: Session = Depends(get_session),
+):
+    by = _auth.actor_name(request, payload.worker)
+    for it in payload.items:
+        _log_change(
+            session, field="sorter-leftover", sku=it.sku.strip(),
+            title=it.title or it.sku,
+            new=f"{_count(it.qty, 'label', 'labels')} printed, no open stock order",
+            by=by,
+        )
+    session.commit()
+    return {"ok": True, "recorded": len(payload.items)}
+
+
+@app.get("/api/sorter/leftovers", dependencies=[Depends(require_user)])
+def sorter_leftovers_list(limit: int = 30, session: Session = Depends(get_session)):
+    rows = session.scalars(
+        select(BarcodeChange)
+        .where(BarcodeChange.changed_field == "sorter-leftover")
+        .order_by(BarcodeChange.changed_at.desc(), BarcodeChange.id.desc())
+        .limit(max(1, min(limit, 200)))
+    ).all()
+    return {"items": [r.as_dict() for r in rows]}
+
+
 # ---- audit verdicts (Nick, 2026-10-06; spec in ROADMAP) -------------------
 # The rack MODEL is one fetch of everything the ladder needs; the gun
 # runs the ladder locally per sweep (app/verdicts.judge, ported), the
@@ -20543,6 +20587,7 @@ def product_history(
             not in ("rfid-scan", "locate-list", "tag-sold", "scan-note",
                     "audit-unsure", "unavailable-noted", "stock-confirmed",
                     "user-added", "user-removed", "user-renamed",
+                    "sorter-leftover",
                     "tag-retired", "tag-unretired", "tag-released",
                     "tag-reapplied", "ledger-cleared", "non-taggable",
                     "unlabelable-box", "mislabel-flag", "box-set",

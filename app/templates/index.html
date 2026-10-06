@@ -792,6 +792,12 @@
           <p class="linkbox__text" id="sortship-status"></p>
           <div class="sortrecent" id="sortship-recent" hidden></div>
           <div id="sortship-groups"></div>
+          <!-- Boxes nothing ordered, whose labels the sorter printed and
+               cleared (2026-10-06): the small record, newest first. -->
+          <details class="sortleft" id="sortship-leftovers" hidden>
+            <summary class="sortleft__sum" id="sortship-leftovers-sum">Leftovers printed</summary>
+            <div class="sortleft__list" id="sortship-leftovers-list"></div>
+          </details>
         </div>
         <!-- Receiving batches are created by the Inventory Planner's
              "Print labels" button, never by hand (Nick, 2026-08-25) —

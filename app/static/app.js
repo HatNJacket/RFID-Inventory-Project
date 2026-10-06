@@ -567,6 +567,7 @@ const EVENT_META = {
   "manual-recount": ["Manual Recount", "#8a6116"],
   "rfid-flag-changed": ["RFID Flag", "#d72c0d"],
   "user-added": ["User Added", "#0b6e99"],
+  "sorter-leftover": ["Sorter Leftover", "#8a6116"],
   "user-removed": ["User Removed", "#d72c0d"],
   "user-renamed": ["User Renamed", "#5c5f62"],
   "non-taggable": ["Non-taggable", "#8a6116"],
@@ -18434,6 +18435,10 @@ function renderSortShip() {
           <span class="sortgroup__title">⚠ No order explains these</span>
           <span class="recent__note">${countNoun(unexplained.reduce((s, r) => s + r.unexplained, 0) +
             strayBundles.reduce((s, b) => s + b.units, 0), "unit", "units")}</span>
+          ${unexplained.some((r) => r.sku && r.unexplained > 0)
+            ? `<button class="print__btn" type="button" id="sortship-unx-print"
+                 title="Queues one label per box on the warehouse printer (home bin on each), records them under Leftovers printed, and clears these rows from the pile. Rows with no product stay.">🏷 Print ${countNoun(unexplained.filter((r) => r.sku).reduce((s, r) => s + r.unexplained, 0), "label", "labels")} + clear</button>`
+            : ""}
         </div>
         ${strayBundles.map(bundleHtml).join("")}
         ${unexplained
@@ -18922,10 +18927,88 @@ document
     }
   });
 
+// Unexplained boxes: print their labels, record them, clear them from the
+// pile (Nick, 2026-10-06). Rows with no product (unknown barcode) stay,
+// since there's nothing to print for them.
+async function sortShipPrintLeftovers() {
+  const btn = document.getElementById("sortship-unx-print");
+  if (btn) btn.disabled = true;
+  const rows = sortShipSeq
+    .map((k) => sortShipRows[k])
+    .filter((r) => r && r.sku && r.unexplained > 0 && !r.bundleKey);
+  if (!rows.length) return;
+  const who = operatorEl.value || null;
+  let queued = 0;
+  const done = [];
+  for (const row of rows) {
+    try {
+      await binAuditQueueLabels(row.sku, row.unexplained);
+      queued += row.unexplained;
+      done.push({ sku: row.sku, title: row.title, qty: row.unexplained });
+    } catch (err) {
+      setSortShipStatus(`${row.sku}: labels not queued - ${err.message || err}`);
+    }
+  }
+  if (done.length) {
+    try {
+      await postJson("/api/sorter/leftovers", { items: done, worker: who });
+    } catch (err) {
+      /* the print queue still has them; the record is best-effort */
+    }
+    done.forEach((d) => {
+      const row = Object.values(sortShipRows).find((r) => r.sku === d.sku);
+      if (!row) return;
+      row.scanned = Math.max(0, row.scanned - row.unexplained);
+      row.unexplained = 0;
+      const hasAlloc = Object.values(row.alloc || {}).some((n) => n > 0);
+      if (!hasAlloc) {
+        delete sortShipRows[row.key];
+        sortShipSeq = sortShipSeq.filter((k) => k !== row.key);
+      }
+    });
+    sortShipSave();
+    renderSortShip();
+    setSortShipStatus(`${countNoun(queued, "label", "labels")} queued and recorded under Leftovers printed.`);
+    sortShipLoadLeftovers();
+  }
+  if (btn) btn.disabled = false;
+}
+
+async function sortShipLoadLeftovers() {
+  const box = document.getElementById("sortship-leftovers");
+  const list = document.getElementById("sortship-leftovers-list");
+  const sum = document.getElementById("sortship-leftovers-sum");
+  if (!box) return;
+  let items = [];
+  try {
+    items = (await apiJson("/api/sorter/leftovers?limit=30")).items || [];
+  } catch (err) {
+    items = [];
+  }
+  box.hidden = !items.length;
+  if (!items.length) return;
+  sum.textContent = `Leftovers printed (${items.length})`;
+  list.innerHTML = items
+    .map((it) => {
+      const d = new Date(it.changed_at);
+      const when = isNaN(d) ? "" : d.toLocaleDateString([], { month: "short", day: "numeric" });
+      return `<div class="sortleft__row"><span class="sortleft__when">${escapeHtml(when)}</span>` +
+        `<span class="sortleft__sku">${escapeHtml(it.sku || "")}</span>` +
+        `<span class="sortleft__title">${escapeHtml(it.product_title || "")}</span>` +
+        `<span class="sortleft__what">${escapeHtml(it.new_barcode || "")}${it.changed_by ? " · " + escapeHtml(it.changed_by) : ""}</span></div>`;
+    })
+    .join("");
+}
+
+document.getElementById("sortship-groups").addEventListener("click", (e) => {
+  if (e.target.closest("#sortship-unx-print")) sortShipPrintLeftovers();
+});
+
 document.getElementById("sortship-open").addEventListener("click", async () => {
   document.getElementById("sortship").hidden = false;
   sortShipRestore();
   renderSortShip();
+  sortShipLoadLeftovers();
   if (sortShipSeq.length) {
     setSortShipStatus("Picked up the pile from last time - Clear pile starts fresh.");
   }
