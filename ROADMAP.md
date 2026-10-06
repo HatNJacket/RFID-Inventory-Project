@@ -556,6 +556,16 @@ intentional session, not a pass inside a big batch.
   illustration switches: labels each pointing at a box vs one label
   pointing at a bag). Thumbscrews = RFID tag, one per bin.
   Non-taggable is gone as its own idea.
+  - Web product card: Steve picked "Lookup A" on the canvas (2026-10-06).
+    The flag sits in the card's right-hand column (280 px at 1920 wide):
+    a switch row, then two pill toggles stacked ("RFID LABEL | PAPER
+    LABEL", "ONE PER BIN | ONE PER PRODUCT"; each pill is ONE button
+    that flips wherever it is clicked, not a pick-a-half control), then
+    one white picture showing the current choice with a caption ("One
+    RFID label for the whole bin"). Pictures only illustrate, never
+    click. The card also reacts: label preview gains the no-scan mark,
+    one-per-bin adds "ALL STOCK" to the bin line, the tags tile reads
+    "Tags ignored", the print line names the printer.
   - Printed labels carry a no-scan mark (crossed signal arcs) in the
     corner; one-per-bin labels add "ALL STOCK" to the bin line.
   - Paper labels print on the second (non-RFID) printer: a Munbyn
