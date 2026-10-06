@@ -564,8 +564,16 @@ intentional session, not a pass inside a big batch.
     (driver DLL emits SIZE/GAP/BITMAP/PRINT), so the agent needs a TSPL
     label builder sent RAW through the spooler; no odometer readback.
     Roll: 2.25" x 1.125" labels, design to ~2.0" x 1.0" printable.
-    Raw TSPL test label sent 2026-10-06 (box marks the 2x1 area).
-    No EPC, no pairing.
+    No EPC, no pairing. Tested at the printer 2026-10-06: TSPL's BOX
+    and/or small built-in fonts FREEZE it (power cycle needed); a single
+    big TEXT line and a BITMAP print fine. So paper labels go out as ONE
+    rendered image (TSPL BITMAP over direct USB). Layout approved by
+    Steve, prototype in dev/paper_label_prototype.py. SKU line guardrail:
+    27 px, shrinks to 20 px, refuses below that (8 of 3,526 live SKUs,
+    e.g. the long Optolong names) - the label editor must warn and ask
+    for a shorter line before a paper print. Widest that fits at full
+    size: "PoleMasterAdapterAT_StarAdv" (27 chars); safe count for
+    all-caps is about 21 characters, but the check is by measured width.
   - Audits: incompatible products are ALWAYS hand counted (stepper,
     keypad, barcode scan adds 1). Heard tags are ignored entirely: no
     "Heard X of Y", no silent-tag rows, no "sweep anyway" option.
