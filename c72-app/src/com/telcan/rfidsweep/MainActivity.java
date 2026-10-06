@@ -16979,6 +16979,9 @@ public class MainActivity extends Activity {
         auditBin.setText(first);
         auditCtxUpdate();
         auditLoad();
+        // The verdict model (2026-10-06): one fetch per rack; every
+        // sweep is then judged on the gun, instantly.
+        auditModelFetch(rack, false);
     }
 
     /** The strip under the header, between the arrows: the open bin,
@@ -17255,6 +17258,9 @@ public class MainActivity extends Activity {
 
     private void auditCacheClear() {
         auditCache.clear();
+        auditModel = null;
+        auditSavedEpcs.clear();
+        auditSavedEpcsFor = 0;
     }
 
     /** A load is running (msg != null) or done (null). While the rack
@@ -17796,7 +17802,12 @@ public class MainActivity extends Activity {
             auditRenderFindRows(null);
             return;
         }
-        auditRenderReport();
+        if (auditModel != null) {
+            // The ladder, judged here on the gun (2026-10-06).
+            auditRenderVerdicts();
+        } else {
+            auditRenderReport();
+        }
         auditRenderFindRows(null);
     }
 
@@ -18722,6 +18733,11 @@ public class MainActivity extends Activity {
             // Stopping the sweep re-checks by itself.
             auditToggleScan();
             return;
+        }
+        // Every write's re-check also refreshes the verdict model, so
+        // a resolution's effect shows on the next render.
+        if (auditModel != null && auditRack != null) {
+            auditModelFetch(auditRack, true);
         }
         // The fetch saves the sweep once and checks by id - one path
         // for LOAD, CHECK and every write's re-check (2026-09-28). Only
@@ -21845,6 +21861,864 @@ public class MainActivity extends Activity {
             if (tones != null) tones.release();
         } catch (Exception ignored) {
         }
+    }
+
+    // ------------------------------------------------------ verdicts (4.35) --
+    // The Expected + verdict ladder (Nick, 2026-10-06; spec in ROADMAP):
+    // one model fetch per rack, then every sweep is judged HERE, on the
+    // gun, with no server round trip. This is app/verdicts.judge ported
+    // line for line; keep the two in step. Card B: the list card keeps
+    // its height, one summary line, one "Resolve (N)" button that opens
+    // the window listing each problem with its own action.
+    private JSONObject auditModel = null;
+    private String auditModelRack = null;
+    private final java.util.HashSet<String> auditSavedEpcs =
+            new java.util.HashSet<>();
+    private int auditSavedEpcsFor = 0;
+
+    private void auditModelFetch(final String rack, final boolean quiet) {
+        if (rack == null || rack.isEmpty()) return;
+        new Thread(() -> {
+            try {
+                JSONObject m = api("GET", "/api/audit/model/"
+                        + encPath(rack) + "?refresh=1", null);
+                ui.post(() -> {
+                    auditModel = m;
+                    auditModelRack = rack;
+                    auditRender();
+                });
+            } catch (Exception e) {
+                if (!quiet) {
+                    ui.post(() -> statusPopShow("Verdict model: "
+                            + e.getMessage(), true));
+                }
+            }
+        }).start();
+    }
+
+    /** The EPCs the ladder judges: the live sweep, else the saved sweep
+     *  this bin is showing (fetched once per sweep id). */
+    private java.util.Set<String> auditHeardSet() {
+        if (!auditTagSet.isEmpty()) return auditTagSet;
+        if (auditShownSweep != null) {
+            final int id = auditShownSweep.optInt("id", 0);
+            if (id > 0 && id == auditSavedEpcsFor) return auditSavedEpcs;
+            if (id > 0 && id != auditSavedEpcsFor) {
+                auditSavedEpcsFor = id;
+                auditSavedEpcs.clear();
+                new Thread(() -> {
+                    try {
+                        JSONObject cap = api("GET", "/api/epc-captures/"
+                                + id, null);
+                        JSONArray eps = cap.optJSONArray("epcs");
+                        final java.util.HashSet<String> got =
+                                new java.util.HashSet<>();
+                        for (int i = 0; eps != null && i < eps.length(); i++) {
+                            got.add(eps.optString(i).toUpperCase(
+                                    java.util.Locale.ROOT));
+                        }
+                        ui.post(() -> {
+                            if (auditSavedEpcsFor == id) {
+                                auditSavedEpcs.addAll(got);
+                                auditRender();
+                            }
+                        });
+                    } catch (Exception ignored) {
+                    }
+                }).start();
+            }
+        }
+        return auditSavedEpcs;
+    }
+
+    private static java.time.Instant vWhen(String iso) {
+        if (iso == null || iso.isEmpty()) return null;
+        try {
+            return java.time.OffsetDateTime.parse(iso).toInstant();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static String vDay(java.time.Instant t) {
+        if (t == null) return "";
+        return java.time.format.DateTimeFormatter.ofPattern("MMM d",
+                java.util.Locale.ROOT).withZone(java.time.ZoneId.systemDefault())
+                .format(t);
+    }
+
+    private static String vTail(String epc) {
+        if (epc == null) return "…";
+        return "…" + epc.substring(Math.max(0, epc.length() - 6));
+    }
+
+    private static String vN(int n, String one, String many) {
+        return n + " " + (n == 1 ? one : many);
+    }
+
+    private static int vUnits(JSONObject t) {
+        return Math.max(1, t.optInt("units", 1));
+    }
+
+    private static JSONObject vProblem(String kind, int colour, String fragment,
+            String title, String text, String action) throws org.json.JSONException {
+        return new JSONObject().put("kind", kind).put("colour", colour)
+                .put("fragment", fragment).put("title", title)
+                .put("text", text).put("action", action == null
+                        ? JSONObject.NULL : action);
+    }
+
+    /** app/verdicts.judge, ported. Colour is the C_* int. */
+    private JSONObject auditJudge(JSONObject p, java.util.Set<String> heard) {
+        JSONObject out = new JSONObject();
+        try {
+            JSONObject flags = p.optJSONObject("flags");
+            JSONObject shop = p.optJSONObject("shopify");
+            if (shop == null) shop = new JSONObject();
+            JSONObject last = p.optJSONObject("last_count");
+            java.time.Instant lastAt = last == null ? null
+                    : vWhen(last.optString("at", null));
+            JSONArray tags = p.optJSONArray("tags");
+            List<JSONObject> here = new ArrayList<>();
+            List<JSONObject> heardHere = new ArrayList<>();
+            List<JSONObject> silent = new ArrayList<>();
+            int heardElsewhere = 0;
+            for (int i = 0; tags != null && i < tags.length(); i++) {
+                JSONObject t = tags.optJSONObject(i);
+                if (t == null) continue;
+                boolean h = heard.contains(t.optString("epc").toUpperCase(
+                        java.util.Locale.ROOT));
+                if (t.optBoolean("here")) {
+                    here.add(t);
+                    if (h) heardHere.add(t); else silent.add(t);
+                } else if (h) {
+                    heardElsewhere++;
+                }
+            }
+            java.util.Collections.sort(silent, (a, b) -> {
+                java.time.Instant x = vWhen(a.optString("last_heard_at", null));
+                java.time.Instant y = vWhen(b.optString("last_heard_at", null));
+                if (x == null && y == null) return 0;
+                if (x == null) return -1;
+                if (y == null) return 1;
+                return x.compareTo(y);
+            });
+            List<JSONObject> ghosts = new ArrayList<>();
+            JSONArray ret = p.optJSONArray("retired");
+            for (int i = 0; ret != null && i < ret.length(); i++) {
+                JSONObject r = ret.optJSONObject(i);
+                if (r != null && heard.contains(r.optString("epc")
+                        .toUpperCase(java.util.Locale.ROOT))) ghosts.add(r);
+            }
+            // Sales since, as a consumable pool (copied: units mutate).
+            List<JSONObject> sold = new ArrayList<>();
+            JSONArray sa = p.optJSONArray("sold_since");
+            int soldUnits = 0;
+            for (int i = 0; sa != null && i < sa.length(); i++) {
+                JSONObject s = sa.optJSONObject(i);
+                if (s == null) continue;
+                sold.add(new JSONObject(s.toString()));
+                soldUnits += s.optInt("units", 0);
+            }
+            java.util.Collections.sort(sold, (a, b) ->
+                    a.optString("when").compareTo(b.optString("when")));
+            JSONArray ra = p.optJSONArray("received_since");
+            int recvUnits = 0, recvUnpaired = 0;
+            for (int i = 0; ra != null && i < ra.length(); i++) {
+                JSONObject r = ra.optJSONObject(i);
+                if (r == null) continue;
+                recvUnits += r.optInt("units", 0);
+                recvUnpaired += r.optInt("unpaired", 0);
+            }
+            int expected = Math.max(0, (last == null ? 0 : last.optInt("qty", 0))
+                    - soldUnits + recvUnits);
+            int heardUnits = 0;
+            for (JSONObject t : heardHere) heardUnits += vUnits(t);
+            int ghostUnits = 0;
+            for (JSONObject g : ghosts) ghostUnits += vUnits(g);
+            int tagsHere = 0;
+            for (JSONObject t : here) tagsHere += vUnits(t);
+            Integer onHand = shop.isNull("on_hand") ? null : shop.optInt("on_hand");
+            int unavail = shop.optInt("unavailable", 0);
+            JSONArray probs = new JSONArray();
+            out.put("sku", p.optString("sku")).put("expected", expected)
+                    .put("heard", heardUnits).put("tags_here", tagsHere)
+                    .put("shopify", shop).put("heard_elsewhere", heardElsewhere)
+                    .put("problems", probs).put("colour", C_OK)
+                    .put("summary", "").put("hand", false);
+
+            if (flags != null && (flags.optBoolean("non_taggable")
+                    || flags.optBoolean("incompatible"))) {
+                boolean nt = flags.optBoolean("non_taggable");
+                probs.put(vProblem("hand", C_WARN, "count by hand", "Count by hand",
+                        (nt ? "Non-taggable" : "RFID-incompatible") + ": "
+                        + (onHand == null ? "?" : String.valueOf(onHand))
+                        + " on hand in Shopify" + (nt ? "." : ", "
+                        + heardUnits + " tags heard."), "Confirm count")
+                        .put("n", onHand == null ? 0 : onHand));
+                out.put("hand", true).put("colour", C_WARN)
+                        .put("summary", "count by hand");
+                return out;
+            }
+            // 1. Retired tags answering.
+            if (!ghosts.isEmpty()) {
+                JSONObject g0 = ghosts.get(0);
+                JSONArray epcs = new JSONArray();
+                for (JSONObject g : ghosts) epcs.put(g.optString("epc"));
+                String at = g0.optString("at", null);
+                probs.put(vProblem("ghost", C_OVER,
+                        ghosts.size() == 1 ? "retired tag answered"
+                                : ghosts.size() + " retired tags answered",
+                        ghosts.size() == 1 ? "Retired tag answered"
+                                : ghosts.size() + " retired tags answered",
+                        vTail(g0.optString("epc")) + " was retired as "
+                                + (g0.optString("kind", "sold").isEmpty() ? "sold"
+                                : g0.optString("kind", "sold"))
+                                + (at == null || at.isEmpty() ? "" : " on " + vDay(vWhen(at)))
+                                + ", but it answered this sweep. The box never left.",
+                        "Un-retire").put("n", ghosts.size()).put("epcs", epcs));
+            }
+            // 2. More heard than expected.
+            if (heardUnits > expected) {
+                probs.put(vProblem("over", C_WARN,
+                        "heard " + heardUnits + ", expected " + expected,
+                        "More heard than expected",
+                        "Expected " + expected + " from the last count, " + heardUnits
+                                + (heardUnits == 1 ? " tag" : " tags") + " answered here. "
+                                + "Check for a tag on the wrong product or a box that "
+                                + "was never counted.",
+                        "Count and set").put("n", heardUnits));
+            }
+            // 3. Silent tags paired with sales since the last count.
+            List<JSONObject> remaining = new ArrayList<>(silent);
+            List<JSONObject[]> shipped = new ArrayList<>();
+            for (JSONObject t : new ArrayList<>(remaining)) {
+                java.time.Instant lh = vWhen(t.optString("last_heard_at", null));
+                for (JSONObject s : sold) {
+                    if (s.optInt("units", 0) <= 0) continue;
+                    java.time.Instant sw = vWhen(s.optString("when", null));
+                    if (lh == null || sw == null || !lh.isAfter(sw)) {
+                        s.put("units", s.optInt("units", 0) - 1);
+                        shipped.add(new JSONObject[]{t, s});
+                        remaining.remove(t);
+                        break;
+                    }
+                }
+            }
+            if (!shipped.isEmpty()) {
+                JSONObject t0 = shipped.get(0)[0], s0 = shipped.get(0)[1];
+                JSONArray pairs = new JSONArray();
+                java.util.TreeSet<String> orders = new java.util.TreeSet<>();
+                for (JSONObject[] pr : shipped) {
+                    pairs.put(new JSONObject().put("epc", pr[0].optString("epc"))
+                            .put("order", pr[1].optString("order")));
+                    orders.add(pr[1].optString("order", "?"));
+                }
+                String ctx = t0.optString("last_heard_ctx", "");
+                StringBuilder others = new StringBuilder();
+                int k = 0;
+                for (String o : orders) {
+                    if (k++ == 0) continue;
+                    others.append(others.length() == 0 ? " Also #" : ", #").append(o);
+                }
+                probs.put(vProblem("shipped", C_OK,
+                        vN(shipped.size(), "shipped", "shipped"),
+                        vN(shipped.size(), "silent tag, shipped", "silent tags, shipped"),
+                        vTail(t0.optString("epc")) + " was last heard "
+                                + vDay(vWhen(t0.optString("last_heard_at", null)))
+                                + (ctx.isEmpty() ? "" : " during the " + ctx) + ". Order #"
+                                + s0.optString("order", "?") + " shipped on "
+                                + vDay(vWhen(s0.optString("when", null))) + "."
+                                + (others.length() > 0 ? others + "." : ""),
+                        "Mark sold").put("n", shipped.size()).put("tags", pairs));
+            }
+            // 4. Unavailable covers the rest.
+            int cover = remaining.isEmpty() ? 0 : Math.min(remaining.size(), unavail);
+            if (cover > 0) {
+                List<JSONObject> covered = new ArrayList<>(remaining.subList(0, cover));
+                remaining = new ArrayList<>(remaining.subList(cover, remaining.size()));
+                JSONObject t0 = covered.get(0);
+                String ctx = t0.optString("last_heard_ctx", "");
+                String comment = shop.isNull("staff_comment") ? null
+                        : shop.optString("staff_comment");
+                JSONArray epcs = new JSONArray();
+                for (JSONObject t : covered) epcs.put(t.optString("epc"));
+                probs.put(vProblem("unavailable", C_WARN,
+                        vN(cover, "unavailable", "unavailable"),
+                        vN(cover, "silent tag, set as unavailable",
+                                "silent tags, set as unavailable"),
+                        vTail(t0.optString("epc")) + " was last heard "
+                                + vDay(vWhen(t0.optString("last_heard_at", null)))
+                                + (ctx.isEmpty() ? "" : " during the " + ctx)
+                                + ". Shopify holds " + vN(unavail, "unit", "units")
+                                + " as unavailable."
+                                + (comment == null || comment.isEmpty() ? ""
+                                : " Staff comment: \"" + comment + "\"."),
+                        "Clear unavailable").put("n", cover).put("epcs", epcs)
+                        .put("comment", comment == null ? JSONObject.NULL : comment));
+            }
+            // 5. Received, not shelved (a stock-order receipt exists).
+            if (recvUnpaired > 0) {
+                JSONObject r0 = ra.optJSONObject(0);
+                probs.put(vProblem("received", C_WARN,
+                        recvUnpaired + " received, not shelved", "Received, not shelved",
+                        "Stock order #" + (r0 == null || r0.isNull("stock_order") ? "?"
+                                : r0.optString("stock_order")) + " received "
+                                + vDay(vWhen(r0 == null ? null : r0.optString("when", null)))
+                                + ": " + vN(recvUnits, "unit", "units") + ", " + recvUnpaired
+                                + " with no label paired yet.",
+                        "Print " + vN(recvUnpaired, "label", "labels"))
+                        .put("n", recvUnpaired));
+            }
+            // 6. Silent tags heard somewhere else since the last count.
+            List<JSONObject> elsewhere = new ArrayList<>();
+            JSONArray bins = p.optJSONArray("bins");
+            for (JSONObject t : new ArrayList<>(remaining)) {
+                java.time.Instant lh = vWhen(t.optString("last_heard_at", null));
+                String ctx = t.optString("last_heard_ctx", "");
+                if (lh == null || ctx.isEmpty()) continue;
+                if (lastAt != null && !lh.isAfter(lastAt)) continue;
+                boolean ownBin = false;
+                for (int i = 0; bins != null && i < bins.length(); i++) {
+                    if (ctx.toUpperCase(java.util.Locale.ROOT).contains(
+                            bins.optString(i).toUpperCase(java.util.Locale.ROOT))) {
+                        ownBin = true;
+                    }
+                }
+                if (ownBin) continue;
+                elsewhere.add(t);
+                remaining.remove(t);
+            }
+            if (!elsewhere.isEmpty()) {
+                JSONObject t0 = elsewhere.get(0);
+                JSONArray epcs = new JSONArray();
+                for (JSONObject t : elsewhere) epcs.put(t.optString("epc"));
+                probs.put(vProblem("elsewhere", C_WARN,
+                        vN(elsewhere.size(), "heard elsewhere", "heard elsewhere"),
+                        vN(elsewhere.size(), "silent tag, heard elsewhere",
+                                "silent tags, heard elsewhere"),
+                        vTail(t0.optString("epc")) + " was last heard "
+                                + vDay(vWhen(t0.optString("last_heard_at", null)))
+                                + " during the " + t0.optString("last_heard_ctx") + ".",
+                        "Locate").put("n", elsewhere.size()).put("epcs", epcs));
+            }
+            // 7. Nothing explains it.
+            if (!remaining.isEmpty()) {
+                JSONObject t0 = remaining.get(0);
+                String since = vDay(vWhen(t0.optString("last_heard_at", null)));
+                if (since.isEmpty()) since = vDay(lastAt);
+                String ctx = t0.optString("last_heard_ctx", "");
+                JSONArray epcs = new JSONArray();
+                for (JSONObject t : remaining) epcs.put(t.optString("epc"));
+                probs.put(vProblem("missing", C_OVER,
+                        vN(remaining.size(), "missing", "missing"),
+                        vN(remaining.size(), "tag", "tags") + " missing since " + since,
+                        vTail(t0.optString("epc")) + " was last heard " + since
+                                + (ctx.isEmpty() ? "" : " during the " + ctx)
+                                + ". No sale, no receipt, not heard anywhere since.",
+                        "Count and set").put("n", remaining.size()).put("epcs", epcs)
+                        .put("n_preset", heardUnits + ghostUnits));
+            }
+            // 8. Shopify disagrees with the settled shelf, last.
+            int settled = heardUnits + ghostUnits;
+            if (onHand != null && onHand != settled) {
+                Integer avail = shop.isNull("available") ? null : shop.optInt("available");
+                probs.put(vProblem("shopify", C_WARN,
+                        "shelf " + settled + ", Shopify " + onHand, "Shopify disagrees",
+                        "The shelf is settled at " + settled + ". Shopify shows on-hand "
+                                + onHand + (avail != null ? " (available " + avail
+                                + ", unavailable " + unavail + ")"
+                                : (unavail > 0 ? " (" + unavail + " unavailable)" : ""))
+                                + ".",
+                        "Set on-hand to " + settled).put("n", settled));
+                if (avail != null && avail < 0) {
+                    probs.put(vProblem("oversold", C_WARN, "oversold", "Oversold in Shopify",
+                            "Available is " + avail + ": Shopify has sold more than it "
+                                    + "holds. Setting on-hand will clear it.", null));
+                }
+            }
+            int colour = C_OK;
+            StringBuilder frag = new StringBuilder();
+            int actionable = 0;
+            for (int i = 0; i < probs.length(); i++) {
+                JSONObject pr = probs.getJSONObject(i);
+                int c = pr.optInt("colour");
+                if (c == C_OVER || (c == C_WARN && colour != C_OVER)) colour = c;
+                if (!pr.isNull("action")) {
+                    actionable++;
+                    if (frag.length() > 0) frag.append(" · ");
+                    frag.append(pr.optString("fragment"));
+                }
+            }
+            out.put("colour", colour).put("actionable", actionable)
+                    .put("summary", actionable > 0
+                            ? actionable + " to resolve: " + frag : "Match");
+        } catch (org.json.JSONException ignored) {
+        }
+        return out;
+    }
+
+    /** Products of the open bin from the model (all of them for a rack). */
+    private List<JSONObject> auditModelProducts() {
+        List<JSONObject> out = new ArrayList<>();
+        if (auditModel == null) return out;
+        String cur = auditBin.getText().toString().trim().toLowerCase(
+                java.util.Locale.ROOT);
+        JSONArray ps = auditModel.optJSONArray("products");
+        for (int i = 0; ps != null && i < ps.length(); i++) {
+            JSONObject p = ps.optJSONObject(i);
+            if (p == null) continue;
+            if (cur.isEmpty() || !cur.contains("-")) {
+                out.add(p);
+                continue;
+            }
+            JSONArray bins = p.optJSONArray("bins");
+            for (int j = 0; bins != null && j < bins.length(); j++) {
+                if (cur.equals(bins.optString(j).toLowerCase(java.util.Locale.ROOT))) {
+                    out.add(p);
+                    break;
+                }
+            }
+        }
+        return out;
+    }
+
+    private void auditRenderVerdicts() {
+        final String loc = auditBin.getText().toString().trim();
+        final java.util.Set<String> heard = auditHeardSet();
+        final boolean swept = !heard.isEmpty() || auditScanning;
+        List<JSONObject> products = auditModelProducts();
+        List<Object[]> cards = new ArrayList<>();
+        int nMatch = 0, nResolve = 0, nHand = 0;
+        for (final JSONObject p : products) {
+            final JSONObject j = auditJudge(p, heard);
+            final String sku = p.optString("sku");
+            int colour = swept ? j.optInt("colour", C_OK) : C_MUTED;
+            boolean hand = j.optBoolean("hand");
+            if (hand) nHand++;
+            else if (swept && j.optInt("actionable") > 0) nResolve++;
+            else if (swept) nMatch++;
+            JSONObject shop = j.optJSONObject("shopify");
+            String shopTxt = shop == null || shop.isNull("on_hand") ? "?"
+                    : String.valueOf(shop.optInt("on_hand"));
+            android.text.SpannableStringBuilder sub =
+                    new android.text.SpannableStringBuilder();
+            auditFlagLine(sub, (sku.isEmpty() ? "(no SKU)" : sku)
+                    + " · Expected: " + j.optInt("expected")
+                    + " · Heard: " + j.optInt("heard")
+                    + " · Shopify: " + shopTxt, C_MUTED);
+            if (!swept) {
+                auditFlagLine(sub, auditScanning ? "Sweeping - the verdicts fill in "
+                        + "when you stop" : "Not swept yet", C_MUTED);
+            } else if (hand) {
+                auditFlagLine(sub, "Count by hand", C_WARN);
+            } else if (j.optInt("actionable") == 0) {
+                auditFlagLine(sub, "Match", C_OK);
+            }
+            LinearLayout row = auditCard(p.optString("title", sku), sub,
+                    j.optInt("heard") + "/" + j.optInt("tags_here"), colour,
+                    p.optString("image", null));
+            if (swept && (j.optInt("actionable") > 0 || hand)) {
+                LinearLayout col = (LinearLayout) row.getChildAt(2);
+                int n = hand ? 1 : j.optInt("actionable");
+                View fv = auditFlagRowView(j.optString("summary"), colour,
+                        hand ? "Confirm count" : "Resolve (" + n + ")",
+                        () -> auditResolveSheet(loc, p, j));
+                LinearLayout.LayoutParams fl = new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT);
+                fl.topMargin = dp(4);
+                col.addView(fv, fl);
+            }
+            row.setOnClickListener(x -> auditResolveSheet(loc, p, j));
+            int rank = !swept ? 2 : hand ? 3 : colour == C_OVER ? 0
+                    : colour == C_WARN ? 1 : 2;
+            cards.add(new Object[]{rank, sku, row});
+        }
+        java.util.Collections.sort(cards, (a, b2) -> {
+            int r = Integer.compare((Integer) a[0], (Integer) b2[0]);
+            if (r != 0) return r;
+            return ((String) a[1]).compareToIgnoreCase((String) b2[1]);
+        });
+        // Summary strip: products / all match / to resolve / by hand.
+        LinearLayout strip = new LinearLayout(this);
+        strip.setBackground(rr(C_CARD, C_LINE, 10));
+        strip.setPadding(dp(12), dp(8), dp(12), dp(8));
+        strip.setGravity(Gravity.CENTER_VERTICAL);
+        String[][] stats = new String[][]{
+                {String.valueOf(cards.size()), "products", null},
+                {String.valueOf(swept ? nMatch : 0), "all match", "ok"},
+                {String.valueOf(swept ? nResolve : 0), "to resolve",
+                        nResolve > 0 ? "bad" : null},
+                {String.valueOf(nHand), "by hand", nHand > 0 ? "warn" : null},
+        };
+        for (String[] st : stats) {
+            LinearLayout cell = new LinearLayout(this);
+            cell.setOrientation(LinearLayout.VERTICAL);
+            cell.setGravity(Gravity.CENTER_HORIZONTAL);
+            TextView num = new TextView(this);
+            num.setText(st[0]);
+            num.setTextSize(19);
+            num.setTypeface(null, Typeface.BOLD);
+            num.setGravity(Gravity.CENTER);
+            num.setTextColor("ok".equals(st[2]) ? C_OK
+                    : "bad".equals(st[2]) ? C_OVER
+                    : "warn".equals(st[2]) ? C_WARN : C_TEXT);
+            cell.addView(num);
+            TextView lbl = new TextView(this);
+            lbl.setText(st[1].toUpperCase(java.util.Locale.ROOT));
+            lbl.setTextSize(9);
+            lbl.setGravity(Gravity.CENTER);
+            lbl.setTextColor(C_MUTED);
+            cell.addView(lbl);
+            strip.addView(cell, weight());
+        }
+        auditList.addView(strip, auditRowLp());
+        if (!swept) {
+            auditList.addView(auditRowView("Not swept yet - pull the trigger to "
+                    + "sweep this shelf, release it to judge.", C_MUTED), auditRowLp());
+        } else if (nResolve == 0 && nHand == 0 && !cards.isEmpty()) {
+            auditList.addView(auditRowView("✓ ALL CLEAR - every product "
+                    + "matches. LOG AUDIT signs the shelf off.", C_OK), auditRowLp());
+        }
+        for (Object[] c : cards) auditList.addView((View) c[2], auditRowLp());
+        // Also heard on this shelf: other bins' tags, in one line.
+        int elsewhere = 0;
+        for (JSONObject p : products) {
+            elsewhere += auditJudge(p, heard).optInt("heard_elsewhere", 0);
+        }
+        if (elsewhere > 0) {
+            auditList.addView(auditRowView("Also heard here: " + vN(elsewhere,
+                    "tag", "tags") + " recorded on other shelves (not counted).",
+                    C_MUTED), auditRowLp());
+        }
+    }
+
+    // ---- the Resolve window --------------------------------------------
+    private void auditResolveSheet(final String loc, final JSONObject p,
+            final JSONObject j) {
+        final String sku = p.optString("sku");
+        final JSONArray probs = j.optJSONArray("problems");
+        final JSONObject shop = j.optJSONObject("shopify");
+        final Integer onHand = shop == null || shop.isNull("on_hand") ? null
+                : shop.optInt("on_hand");
+        final int unavail = shop == null ? 0 : shop.optInt("unavailable", 0);
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(14), dp(10), dp(14), dp(6));
+        scroll.addView(box);
+        // Numbers strip.
+        LinearLayout strip = new LinearLayout(this);
+        strip.setBackground(rr(C_CARD, C_LINE, 8));
+        String[][] nums = {
+                {String.valueOf(j.optInt("expected")), "EXPECTED"},
+                {String.valueOf(j.optInt("heard")), "HEARD"},
+                {onHand == null ? "?" : String.valueOf(onHand), "SHOPIFY"},
+                {String.valueOf(unavail), "UNAVAILABLE"},
+        };
+        for (String[] n : nums) {
+            LinearLayout cell = new LinearLayout(this);
+            cell.setOrientation(LinearLayout.VERTICAL);
+            cell.setGravity(Gravity.CENTER_HORIZONTAL);
+            cell.setPadding(0, dp(6), 0, dp(6));
+            TextView v = new TextView(this);
+            v.setText(n[0]);
+            v.setTextSize(18);
+            v.setTypeface(null, Typeface.BOLD);
+            v.setTextColor(C_TEXT);
+            v.setGravity(Gravity.CENTER);
+            cell.addView(v);
+            TextView l = new TextView(this);
+            l.setText(n[1]);
+            l.setTextSize(9);
+            l.setTextColor(C_MUTED);
+            l.setGravity(Gravity.CENTER);
+            cell.addView(l);
+            strip.addView(cell, weight());
+        }
+        box.addView(strip);
+        JSONObject last = p.optJSONObject("last_count");
+        TextView meta = new TextView(this);
+        meta.setTextSize(11);
+        meta.setTextColor(C_MUTED);
+        meta.setPadding(0, dp(6), 0, dp(6));
+        meta.setText("Last count " + (last == null ? "?" : last.optInt("qty"))
+                + (last == null || last.isNull("at") ? ""
+                : " on " + vDay(vWhen(last.optString("at"))))
+                + " · Shopify figures "
+                + (shop == null || shop.isNull("as_of") ? "from the snapshot"
+                : "as of " + vDay(vWhen(shop.optString("as_of")))));
+        box.addView(meta);
+        final List<Runnable> chain = new ArrayList<>();
+        final List<String> chainLabels = new ArrayList<>();
+        for (int i = 0; probs != null && i < probs.length(); i++) {
+            final JSONObject pr = probs.optJSONObject(i);
+            if (pr == null) continue;
+            LinearLayout rowBox = new LinearLayout(this);
+            rowBox.setOrientation(LinearLayout.VERTICAL);
+            rowBox.setPadding(dp(10), dp(8), dp(10), dp(8));
+            LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            rl.topMargin = dp(6);
+            rowBox.setBackground(btnBg(C_CARD, pr.optInt("colour", C_LINE),
+                    C_PRESS, 8));
+            TextView title = new TextView(this);
+            title.setText(pr.optString("title"));
+            title.setTextSize(14);
+            title.setTypeface(null, Typeface.BOLD);
+            title.setTextColor(C_TEXT);
+            rowBox.addView(title);
+            TextView text = new TextView(this);
+            text.setText(pr.optString("text"));
+            text.setTextSize(11);
+            text.setTextColor(C_MUTED);
+            rowBox.addView(text);
+            if (!pr.isNull("action")) {
+                final Runnable act = auditResolveAction(loc, p, j, pr, null);
+                Button b = smallBtn(pr.optString("action"));
+                b.setMinimumHeight(dp(40));
+                LinearLayout.LayoutParams bl = new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT);
+                bl.topMargin = dp(6);
+                bl.gravity = Gravity.END;
+                rowBox.addView(b, bl);
+                b.setOnClickListener(v -> act.run());
+                chain.add(act);
+                chainLabels.add(pr.optString("action"));
+            }
+            box.addView(rowBox, rl);
+        }
+        final AlertDialog.Builder bld = dlg()
+                .setTitle("RESOLVE · " + (chain.isEmpty() ? sku
+                        : vN(chain.size(), "PROBLEM", "PROBLEMS")))
+                .setView(scroll)
+                .setNegativeButton("BACK", null)
+                .setNeutralButton("COUNT INSTEAD", (d, w) -> auditCountAndSet(
+                        loc, p, j, j.optInt("heard"), null));
+        if (chain.size() > 1) {
+            bld.setPositiveButton("RESOLVE ALL (" + chain.size() + ")", (d, w) ->
+                    dlg().setTitle("RESOLVE ALL")
+                            .setMessage(android.text.TextUtils.join(" · ", chainLabels)
+                                    + "\n\nEach step runs in order; a step that needs "
+                                    + "your input asks first.")
+                            .setPositiveButton("GO", (d2, w2) -> auditResolveChain(
+                                    loc, p, j, probs, 0))
+                            .setNegativeButton("CANCEL", null).show());
+        }
+        final AlertDialog dialog = bld.create();
+        dialog.show();
+        auditResolveDialog = dialog;
+    }
+
+    private AlertDialog auditResolveDialog = null;
+
+    private void auditResolveClose() {
+        if (auditResolveDialog != null) {
+            try {
+                auditResolveDialog.dismiss();
+            } catch (Exception ignored) {
+            }
+            auditResolveDialog = null;
+        }
+    }
+
+    /** The action for one problem row. `next` runs afterwards when the
+     *  window is resolving everything in order. */
+    private Runnable auditResolveAction(final String loc, final JSONObject p,
+            final JSONObject j, final JSONObject pr, final Runnable next) {
+        final String sku = p.optString("sku");
+        final String kind = pr.optString("kind");
+        final List<String> epcs = new ArrayList<>();
+        JSONArray ea = pr.optJSONArray("epcs");
+        for (int i = 0; ea != null && i < ea.length(); i++) epcs.add(ea.optString(i));
+        JSONArray pairs = pr.optJSONArray("tags");
+        for (int i = 0; pairs != null && i < pairs.length(); i++) {
+            JSONObject t = pairs.optJSONObject(i);
+            if (t != null) epcs.add(t.optString("epc"));
+        }
+        final String bin = auditItemFirstBin(p, loc);
+        final JSONObject shop = j.optJSONObject("shopify");
+        final int onHand = shop == null || shop.isNull("on_hand") ? 0
+                : shop.optInt("on_hand");
+        switch (kind) {
+            case "ghost":
+                return () -> auditQuiet("/api/assignments/unretire",
+                        new String[]{"epcs"}, new Object[]{new JSONArray(epcs)},
+                        "Un-retired ✓", next);
+            case "shipped":
+                return () -> auditQuiet("/api/assignments/mark-sold",
+                        new String[]{"sku", "epcs"},
+                        new Object[]{sku, new JSONArray(epcs)},
+                        vN(epcs.size(), "tag", "tags") + " marked sold ✓", next);
+            case "unavailable": {
+                final int n = pr.optInt("n", 1);
+                final String comment = pr.isNull("comment") ? null
+                        : pr.optString("comment");
+                final Runnable move = () -> auditQuiet("/api/products/"
+                        + encPath(sku) + "/unavailable-move",
+                        new String[]{"bucket", "direction", "qty", "confirmed"},
+                        new Object[]{"auto", "out", n, true},
+                        "Cleared " + vN(n, "unavailable unit", "unavailable units")
+                                + " ✓", next);
+                if (comment == null || comment.isEmpty()) return move;
+                return () -> dlg().setTitle("STAFF COMMENT ON " + sku)
+                        .setMessage(comment + "\n\nStill clear "
+                                + vN(n, "unavailable unit", "unavailable units") + "?")
+                        .setPositiveButton("CONTINUE", (d, w) -> move.run())
+                        .setNegativeButton("KEEP UNAVAILABLE", (d, w) -> {
+                            if (next != null) next.run();
+                        }).show();
+            }
+            case "received":
+                return () -> {
+                    auditResolveClose();
+                    auditPrintMissingLabels(sku, bin, pr.optInt("n", 1));
+                };
+            case "elsewhere":
+                return () -> auditActLocate(sku, p.optString("title", sku),
+                        new JSONArray(epcs));
+            case "missing":
+                return () -> auditCountAndSet(loc, p, j,
+                        pr.optInt("n_preset", j.optInt("heard")), epcs);
+            case "over":
+                return () -> auditCountAndSet(loc, p, j, pr.optInt("n",
+                        j.optInt("heard")), null);
+            case "hand":
+                return () -> auditCountAndSet(loc, p, j, pr.optInt("n", onHand), null);
+            case "shopify":
+                return () -> auditSetOnHand(sku, bin, pr.optInt("n", 0), onHand,
+                        null, next);
+            default:
+                return () -> {
+                    if (next != null) next.run();
+                };
+        }
+    }
+
+    /** Resolve all: the rows in ladder order, each handing to the next.
+     *  A row that needs the counter ends the chain there. */
+    private void auditResolveChain(final String loc, final JSONObject p,
+            final JSONObject j, final JSONArray probs, final int idx) {
+        if (probs == null || idx >= probs.length()) {
+            auditResolveClose();
+            auditCheck();
+            return;
+        }
+        final JSONObject pr = probs.optJSONObject(idx);
+        if (pr == null || pr.isNull("action")) {
+            auditResolveChain(loc, p, j, probs, idx + 1);
+            return;
+        }
+        Runnable next = () -> auditResolveChain(loc, p, j, probs, idx + 1);
+        auditResolveAction(loc, p, j, pr, next).run();
+    }
+
+    /** One quiet server write with a status popup; no confirm dialog
+     *  (the Resolve window already said what it does). */
+    private void auditQuiet(final String path, final String[] keys,
+            final Object[] vals, final String okMsg, final Runnable next) {
+        new Thread(() -> {
+            try {
+                JSONObject body = new JSONObject();
+                for (int i = 0; i < keys.length; i++) body.put(keys[i], vals[i]);
+                body.put("changed_by", workerName());
+                body.put("worker", workerName());
+                api("POST", path, body);
+                ui.post(() -> {
+                    beep(SOUND_OK);
+                    statusPopShow(okMsg, false);
+                    if (next != null) next.run();
+                    else {
+                        auditResolveClose();
+                        auditCheck();
+                    }
+                });
+            } catch (Exception e) {
+                ui.post(() -> {
+                    beep(SOUND_ERR);
+                    statusPopShow(e.getMessage(), true);
+                });
+            }
+        }).start();
+    }
+
+    /** Set Shopify on-hand to `n` (raise or lower; lowering is an audit
+     *  resolution, so the first-tagging refusal does not apply). */
+    private void auditSetOnHand(final String sku, final String bin, final int n,
+            final int cur, final List<String> retireMissing, final Runnable next) {
+        final Runnable after = () -> {
+            if (retireMissing != null && !retireMissing.isEmpty()) {
+                auditQuiet("/api/assignments/retire",
+                        new String[]{"epcs", "kind", "note"},
+                        new Object[]{new JSONArray(retireMissing), "not-in-storage",
+                                "Audit: counted " + n + " on the shelf"},
+                        vN(retireMissing.size(), "tag", "tags") + " retired as missing",
+                        next);
+            } else if (next != null) {
+                next.run();
+            } else {
+                auditResolveClose();
+                auditCheck();
+            }
+        };
+        if (n == cur) {
+            after.run();
+            return;
+        }
+        if (n > cur) {
+            auditQuiet("/api/onhand-updates", new String[]{"sku", "new_qty", "confirmed"},
+                    new Object[]{sku, n, true}, "Shopify on-hand set to " + n + " ✓",
+                    after);
+        } else {
+            auditQuiet("/api/onhand-updates/lower",
+                    new String[]{"sku", "bin_name", "new_qty", "confirmed", "resolution"},
+                    new Object[]{sku, bin == null ? "" : bin, n, true, true},
+                    "Shopify on-hand lowered to " + n + " ✓", after);
+        }
+    }
+
+    /** "Count and set" / "Count instead": the counter preset, one
+     *  Confirm that writes whatever the user enters. Only exception: a
+     *  count below the tags heard asks for a re-sweep first. */
+    private void auditCountAndSet(final String loc, final JSONObject p,
+            final JSONObject j, final int preset, final List<String> missingEpcs) {
+        final String sku = p.optString("sku");
+        final String bin = auditItemFirstBin(p, loc);
+        final JSONObject shop = j.optJSONObject("shopify");
+        final int onHand = shop == null || shop.isNull("on_hand") ? 0
+                : shop.optInt("on_hand");
+        final int heard = j.optInt("heard");
+        final int[] val = {Math.max(0, preset)};
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(16), dp(8), dp(16), 0);
+        TextView t = new TextView(this);
+        t.setText("How many " + sku + " are on the shelf?\nShopify on-hand " + onHand
+                + " · tags heard " + heard
+                + (missingEpcs == null || missingEpcs.isEmpty() ? ""
+                : " · " + vN(missingEpcs.size(), "tag", "tags") + " missing"));
+        t.setTextSize(12);
+        t.setTextColor(C_MUTED);
+        box.addView(t);
+        box.addView(auditCountStepper(val, 100000));
+        dlg().setTitle("COUNT " + sku).setView(box)
+                .setPositiveButton("CONFIRM", (d, w) -> {
+                    int n = val[0];
+                    if (n < heard) {
+                        dlg().setTitle("MORE TAGS ANSWERED")
+                                .setMessage(heard + " tags answered here but you counted "
+                                        + n + ". Sweep this product again; if it still "
+                                        + "reads high, a tag may be on the wrong product.")
+                                .setPositiveButton("OK", null).show();
+                        return;
+                    }
+                    auditSetOnHand(sku, bin, n, onHand,
+                            n <= heard ? missingEpcs : null, null);
+                })
+                .setNegativeButton("CANCEL", null).show();
     }
 
     // ------------------------------------------------------ who's scanning --

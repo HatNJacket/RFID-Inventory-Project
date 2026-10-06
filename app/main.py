@@ -5665,6 +5665,10 @@ class OnHandLowerIn(BaseModel):
     # Sweep evidence timestamp for the stale-sweep guard (see
     # OnHandUpdateIn.sweep_at).
     sweep_at: str | None = Field(default=None, max_length=40)
+    # An audit RESOLUTION (Nick, 2026-10-05): the operator counted the
+    # shelf and wants that number written, so the first-tagging refusal
+    # below does not apply. Inventory can always be fixed later.
+    resolution: bool = False
 
     @field_validator("sku", "bin_name")
     @classmethod
@@ -5763,7 +5767,7 @@ def lower_on_hand(
     # trusted number by then, and the unbacked units are shrinkage.
     # On a FIRST tagging the old refusal stands.
     unbacked = max(0, drop - allowed)
-    if unbacked and not _prior_tagged_skus(
+    if unbacked and not payload.resolution and not _prior_tagged_skus(
         session, [payload.sku], payload.batch_id
     ):
         wf = _short_date(baseline.isoformat()) if baseline else "ever"
