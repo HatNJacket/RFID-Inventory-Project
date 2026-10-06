@@ -612,6 +612,7 @@ const EVENT_META = {
   "receiving-started": ["Started Receiving", "#7a5c0e"],
   "receiving-completed": ["Completed Receiving", "#29845a"],
   "receiving-abandoned": ["Abandoned Receiving", "#6d7175"],
+  "receiving-restored": ["Receiving Restored", "#2f7a5e"],
   "bin-check": ["Bin Check", "#7a5c0e"],
   "already-tagged-set": ["Already-tagged Count", "#6f42c1"],
   "review-opened": ["Opened Review", "#8a6116"],
