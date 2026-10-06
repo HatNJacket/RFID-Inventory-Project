@@ -139,6 +139,10 @@ _COLUMN_UPGRADES = [
     # Scored audit queue (2026-09-28): when a sweep last heard each tag.
     # DATETIMEOFFSET on Azure SQL; sqlite accepts the name as-is.
     ("rfid_assignments", "last_heard_at", "DATETIMEOFFSET NULL"),
+    # Where/what heard it last (2026-10-06): "I1-2 audit", "D7-2 batch
+    # tag sweep", "packing scan", "locate" - the verdict ladder's "heard
+    # elsewhere" row reads it.
+    ("rfid_assignments", "last_heard_ctx", "NVARCHAR(120) NULL"),
 ]
 
 

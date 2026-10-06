@@ -83,6 +83,12 @@ class RfidAssignment(Base):
     last_heard_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
+    # What heard it last and where (2026-10-06): "I1-2 audit", "D7-2
+    # batch tag sweep", "packing scan", "locate". The gun can't know a
+    # position, only what it was doing and where it was told it was;
+    # that's enough for the ladder's "heard elsewhere" row. Prod column
+    # via init_db's upgrade list.
+    last_heard_ctx: Mapped[str | None] = mapped_column(String(120))
 
     def as_dict(self) -> dict:
         return {

@@ -40,6 +40,7 @@ from starlette.requests import Request
 from app import (config, oneleft, orders_sync, planner, shipstation,
                  shopify)
 from app import auth as _auth
+from app import verdicts as _verdicts
 from app.auth import require_user
 from fastapi.responses import RedirectResponse
 from app.database import (
@@ -629,6 +630,69 @@ def remove_user(
     session.commit()
     _auth.forget_user(row.id)
     return {"ok": True}
+
+
+# ---- audit verdicts (Nick, 2026-10-06; spec in ROADMAP) -------------------
+# The rack MODEL is one fetch of everything the ladder needs; the gun
+# runs the ladder locally per sweep (app/verdicts.judge, ported), the
+# web asks the server to run it. Read-only: resolutions are the
+# existing endpoints.
+
+class VerdictsIn(BaseModel):
+    epcs: list[str] = Field(default_factory=list)
+    capture_id: int | None = None
+    # Refresh Shopify's figures for the covered products first.
+    refresh: bool = False
+
+
+def _true_up_model(session: Session, model: dict) -> None:
+    """Live Shopify figures for the model's products (one bulk query),
+    fail-soft: the snapshot stays when Shopify doesn't answer."""
+    skus = [p["sku"] for p in model.get("products") or [] if p.get("sku")]
+    if not skus:
+        return
+    try:
+        info = shopify.get_stock_info_by_skus(skus)
+    except Exception as error:  # noqa: BLE001
+        logger.warning("verdict true-up failed: %s", error)
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    for p in model["products"]:
+        d = info.get(_up(p["sku"])) or info.get(p["sku"])
+        if not d:
+            continue
+        shelf = d.get("on_hand")   # the helper returns on-hand MINUS unavailable
+        un = d.get("unavailable") or 0
+        if shelf is not None:
+            p["shopify"]["on_hand"] = shelf + un
+            p["shopify"]["unavailable"] = un
+            p["shopify"]["as_of"] = now
+
+
+@app.get("/api/audit/model/{loc}", dependencies=[Depends(require_user)])
+def audit_model(loc: str, refresh: bool = False,
+                session: Session = Depends(get_session)):
+    model = _verdicts.rack_model(session, loc)
+    if refresh:
+        _true_up_model(session, model)
+    return model
+
+
+@app.post("/api/audit/verdicts/{loc}", dependencies=[Depends(require_user)])
+def audit_verdicts(loc: str, payload: VerdictsIn,
+                   session: Session = Depends(get_session)):
+    heard = {_up(e) for e in payload.epcs if e}
+    if payload.capture_id:
+        cap = session.get(EpcCapture, payload.capture_id)
+        if cap is None:
+            raise HTTPException(404, "No such sweep on the server.")
+        heard |= {_up(e) for e in (cap.epcs or "").split("\n") if e.strip()}
+    model = _verdicts.rack_model(session, loc)
+    if payload.refresh:
+        _true_up_model(session, model)
+    out = _verdicts.judge_all(model, heard)
+    out["swept"] = len(heard)
+    return out
 
 
 @app.get("/health")
@@ -7363,7 +7427,7 @@ def bin_audit_complete(
         }
         if not cap.bin and loc:
             cap.bin = loc.upper()[:100]
-    _stamp_heard(session, swept)
+    _stamp_heard(session, swept, f"{loc.upper()} audit" if loc else None)
     if not loc:
         raise HTTPException(422, "Which bin?")
     bin_keys = [loc.lower()]
@@ -7467,19 +7531,24 @@ def _first_stamp_of_capture(capture_id: int) -> bool:
         return True
 
 
-def _stamp_heard(session: Session, epcs) -> int:
-    """Stamp last_heard_at=now on every KNOWN tag in a sweep (scored
-    audit queue, 2026-09-28). One bulk UPDATE, fail-soft: hearing is
-    bookkeeping and must never break the sweep that carried it. The
-    caller commits (or the next commit on the session carries it)."""
+def _stamp_heard(session: Session, epcs, ctx: str | None = None) -> int:
+    """Stamp last_heard_at=now (and what/where heard it: `ctx`, e.g.
+    "I1-2 audit", "packing scan") on every KNOWN tag in a sweep (scored
+    audit queue, 2026-09-28; context 2026-10-06). One bulk UPDATE,
+    fail-soft: hearing is bookkeeping and must never break the sweep
+    that carried it. The caller commits (or the next commit on the
+    session carries it)."""
     ups = sorted({_up(e) for e in epcs if e and str(e).strip()})
     if not ups:
         return 0
     try:
+        values = {"last_heard_at": datetime.now(timezone.utc)}
+        if ctx:
+            values["last_heard_ctx"] = str(ctx).strip()[:120]
         result = session.execute(
             update(RfidAssignment)
             .where(_ci_in(RfidAssignment.rfid_id, ups))
-            .values(last_heard_at=datetime.now(timezone.utc))
+            .values(**values)
             .execution_options(synchronize_session=False)
         )
         return result.rowcount or 0
@@ -7554,7 +7623,7 @@ def bin_check(
     # the same tags per bin was a full-table UPDATE each time.
     if swept and (not payload.capture_id
                   or _first_stamp_of_capture(payload.capture_id)):
-        if _stamp_heard(session, swept):
+        if _stamp_heard(session, swept, f"{loc.upper()} audit" if loc else None):
             session.commit()
     bin_keys = [loc.lower()]
     rack = False
@@ -10749,7 +10818,8 @@ def batch_shelf_sweep(
     session: Session = Depends(get_session),
 ):
     batch = _get_batch(session, batch_id)
-    if _stamp_heard(session, payload.epcs):
+    if _stamp_heard(session, payload.epcs,
+                    f"{(batch.bin_name or '').upper()} batch tag sweep".strip()):
         session.commit()  # a preview sweep still physically read the shelf
     result = _shelf_reconcile(session, batch, payload.epcs)
     if payload.apply:
@@ -18456,11 +18526,13 @@ def _split_by_rack(
     return kept, dropped
 
 
-def _capture_side_effects(session: Session, epcs: list[str], device) -> dict:
-    """What every newly captured tag triggers: its last-heard stamp, the
-    unlinked-stickers stash, a (throttled) 1-left pass."""
+def _capture_side_effects(session: Session, epcs: list[str], device,
+                          ctx: str | None = None) -> dict:
+    """What every newly captured tag triggers: its last-heard stamp
+    (with where/what: `ctx`), the unlinked-stickers stash, a
+    (throttled) 1-left pass."""
     extra: dict = {}
-    _stamp_heard(session, epcs)
+    _stamp_heard(session, epcs, ctx)
     session.commit()
     try:
         added = _stash_unlinked_tags(session, epcs, device)
@@ -18508,7 +18580,9 @@ def create_capture(payload: CaptureIn, session: Session = Depends(get_session)):
     # Every sweep also stashes its ownerless EPCs on the unlinked-
     # stickers locate entry (Nick, 2026-09-09), and a sweep is a shelf
     # physically read - old tags heard now may clear 1-left checks.
-    result.update(_capture_side_effects(session, epcs, payload.device))
+    result.update(_capture_side_effects(
+        session, epcs, payload.device,
+        f"{(payload.rack or row.bin or '').upper()} sweep".strip()))
     if payload.rack:
         result["dropped"] = dropped
     return result
@@ -18549,7 +18623,9 @@ def append_capture(
         row.epcs = ((row.epcs + "\n") if row.epcs else "") + "\n".join(fresh)
         row.epc_count = (row.epc_count or 0) + len(fresh)
         session.commit()
-        result.update(_capture_side_effects(session, fresh, payload.device))
+        result.update(_capture_side_effects(
+            session, fresh, payload.device,
+            f"{(payload.rack or row.bin or '').upper()} sweep".strip()))
     result["epc_count"] = row.epc_count
     return result
 
@@ -18637,7 +18713,7 @@ def packing_scan(
     )
     if tag is not None:
         epc, sku, title = tag.rfid_id, tag.sku, tag.product_title
-        _stamp_heard(session, [epc])
+        _stamp_heard(session, [epc], "packing scan")
     else:
         try:
             product = product_by_barcode(code)
