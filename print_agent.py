@@ -74,9 +74,11 @@ import requests
 # v6: direct-USB transport + printer-confirmed dones + heartbeat/command
 # cloud control + self-update. v7: bursts print as one continuous run,
 # confirmed label-by-label from the odometer's order (no more per-label
-# pauses). Bump on behavior changes - the server compares this against
+# pauses). v10: a lost printer status mid-run reconciles against the
+# odometer - labels the printer counted stay printed, only the rest
+# fail. Bump on behavior changes - the server compares this against
 # its own copy to drive auto-update.
-AGENT_VERSION = "9"
+AGENT_VERSION = "10"
 
 
 def _count(n, one, many=None):
@@ -1298,6 +1300,11 @@ class Agent:
         'stalled' when nothing progressed for LABEL_SETTLE_TIMEOUT with
         no fault flag raised."""
         base = self.tr.label_count() if self.tr.supports_count else None
+        # v10: the caller's recovery path reads these when the run dies
+        # mid-way - what the odometer stood at before the burst and how
+        # far the confirms got.
+        self._burst_base = base
+        self._burst_confirmed = 0
         for job in jobs:
             self.tr.send(self._zpl(job))
         confirmed = 0
@@ -1310,6 +1317,7 @@ class Agent:
             st = self.tr.status()
             if st is None:
                 misses += 1
+                log(f"! no ~HS answer mid-burst (miss {misses} of 6)")
                 if misses >= 6:
                     raise OSError("printer stopped answering ~HS mid-burst")
                 continue
@@ -1333,6 +1341,7 @@ class Agent:
             was = confirmed
             if base is not None:
                 confirmed = self._advance_confirms(jobs, base, confirmed)
+                self._burst_confirmed = confirmed
             formats = st.get("formats") or 0
             # The deadline only extends on PROGRESS (formats moving or
             # labels counted) - a format wedged in the buffer with no
@@ -1427,14 +1436,17 @@ class Agent:
                 confirmed, outcome = self._deliver_burst(
                     pending, refill=self._refill)
             except OSError as error:
-                # Unknown state mid-burst: fail what we can't vouch for
-                # (worst case a duplicate label, never a silent loss)
-                # and let the transport heal itself.
+                # Unknown state mid-burst: let the transport heal, then
+                # ask the odometer what actually printed (v10, 2026-10-06,
+                # SO 969: v9 failed the WHOLE run here, including labels
+                # it had itself confirmed seconds earlier, and the next
+                # print pass printed them all again). Only labels the
+                # printer never counted fail - worst case a duplicate
+                # label, never a silent loss.
                 self.last_error = str(error)
                 log(f"! burst failed: {error}")
                 self._transport_trouble()
-                for job in pending:
-                    self._mark_failed(job, self._desc(job), str(error))
+                self._settle_after_fault(pending, str(error))
                 return
             rest = pending[confirmed:]
             if outcome == "stalled":
@@ -1472,6 +1484,32 @@ class Agent:
         log(f"  printed {desc}{suffix}" + (
             "" if self.encode_rfid else " (barcode only - scan tag to link)"
         ))
+
+    def _settle_after_fault(self, pending: list[dict], why: str) -> None:
+        """After a burst died mid-run: confirm what the odometer says
+        printed (the confirms so far, plus anything it counted while
+        the status channel was dead), fail only the rest."""
+        confirmed = int(getattr(self, "_burst_confirmed", 0) or 0)
+        base = getattr(self, "_burst_base", None)
+        if base is not None and getattr(self.tr, "supports_count", False):
+            try:
+                count = self.tr.label_count()
+            except Exception:  # noqa: BLE001 - the printer may still be out
+                count = None
+            if count is not None:
+                delta = max(confirmed, min(count - base, len(pending)))
+                if delta > confirmed:
+                    log(f"  odometer says {delta - confirmed} more of the "
+                        f"run printed while the status was lost")
+                    try:
+                        confirmed = self._advance_confirms(pending, base,
+                                                           confirmed)
+                    except OSError:
+                        pass   # counted once, lost again: fail the rest
+        if confirmed:
+            log(f"  {_count(confirmed, 'label of the run stays', 'labels of the run stay')} printed")
+        for job in pending[confirmed:]:
+            self._mark_failed(job, self._desc(job), why)
 
     def _mark_failed(self, job: dict, desc: str, why: str) -> None:
         self.counters["failed"] += 1

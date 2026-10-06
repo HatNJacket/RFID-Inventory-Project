@@ -583,6 +583,7 @@ const EVENT_META = {
   "condition-set": ["Box Condition", "#4a7a6a"],
   "printing-stopped": ["Stopped Printing", "#d72c0d"],
   "printing-resumed": ["Resumed Printing", "#116329"],
+  "stopped-cleared": ["Stopped Labels Cleared", "#6d7175"],
   "strip-mode": ["Strip Mode", "#5b5b8a"],
   "case-declared": ["Sealed Cases", "#3f5b6d"],
   "return-processed": ["Return Processed", "#2f5f6f"],
@@ -11128,6 +11129,42 @@ document
     loadQueue();
   });
 
+// Clear stopped (Nick, 2026-10-06): let a stopped run go for good. The
+// stopped labels stay canceled, leave the list, and Resume switches off.
+document
+  .getElementById("printer-clear-stopped")
+  .addEventListener("click", async () => {
+    const n = (queueData && queueData.resumable_stopped) || 0;
+    if (
+      !confirm(
+        `Clear ${countNoun(n, "stopped label", "stopped labels")}?\n\nThey stay canceled ` +
+          `and leave this list, and Resume printing switches off. ` +
+          `Nothing printed is touched; a label still wanted reprints ` +
+          `from its batch.`
+      )
+    )
+      return;
+    const btn = document.getElementById("printer-clear-stopped");
+    btn.disabled = true;
+    try {
+      const res = await postJson("/api/print-jobs/clear-stopped", {
+        requested_by: operatorEl.value || null,
+      });
+      alert(res.message);
+    } catch (err) {
+      alert(err.message);
+    }
+    loadQueue();
+  });
+
+// A stopped label the operator cleared is history, not queue.
+const STOPPED_CLEARED = "stopped by operator - cleared";
+function queueVisibleJobs(jobs) {
+  return (jobs || []).filter(
+    (j) => !(j.status === "canceled" && j.error === STOPPED_CLEARED)
+  );
+}
+
 // Re-align (Nick, 2026-08-25): a rip at the tear bar drags the liner
 // forward a random amount, so the next two labels print off-center and a
 // third feeds blank while the printer finds itself again. This queues a
@@ -11756,6 +11793,9 @@ async function loadQueue() {
     // can't hide them) - Nick, 2026-08-26.
     document.getElementById("printer-resume").disabled =
       !(data.resumable_stopped > 0);
+    document.getElementById("printer-clear-stopped").disabled =
+      !(data.resumable_stopped > 0);
+    data.jobs = queueVisibleJobs(data.jobs);
     queueData = data;
     renderQueue();
   } catch (err) {

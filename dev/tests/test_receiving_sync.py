@@ -147,6 +147,50 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
         n_open = s.scalar(select(func.count()).select_from(Batch).where(
             Batch.kind == "receiving", Batch.status != "done"))
     check("  ...on a fresh batch for the SO", n_open == 1)
+    # 2026-10-06 (SO 965): a finished batch still shows what it printed,
+    # so the planner draws "8 printed" rather than a dead "Print 0".
+    st = cl.get("/api/receiving/so-labels", params={"reference": "SO 964"}).json()
+    a = sku_row(st, "93230")
+    check("a closed batch still reports its printed labels",
+          a["booked_units"] == 9 and a["labels_queued"] == 8 and a["labels_owed"] == 1, a)
+
+    # 2026-10-06 (SO 969): ABANDONING a batch throws its units away for
+    # good - they stop counting as booked, so they book again elsewhere.
+    with Session(get_engine()) as s:
+        fresh = s.scalar(select(Batch).where(Batch.kind == "receiving",
+                                             Batch.status != "done"))
+        fresh.status = "abandoned"
+        s.commit()
+    st = cl.get("/api/receiving/so-labels", params={"reference": "SO 964"}).json()
+    check("an abandoned batch's units stop counting",
+          sku_row(st, "93230")["booked_units"] == 8 and st["labels_owed"] == 0, st)
+    out = cl.post("/api/receiving/sync", json={"reference": ref, "items": items}).json()
+    check("  ...so the late unit books again on a new batch",
+          sum(x["quantity"] for x in out["booked"]) == 1, out["booked"])
+
+    # 2026-10-06 (SO 969): two syncs for one SO at the same moment - the
+    # planner's Save booking and a Print all 24 s later overlapped and
+    # each made a batch with the whole order on it. Now the second waits
+    # for the first: one batch, every unit booked once.
+    import threading
+    race_items = [{"sku": "81035", "barcode": "050234810357", "received_total": 5}]
+    results = []
+    def race():
+        results.append(cl.post("/api/receiving/sync", json={
+            "reference": "SO 990 · Celestron", "items": race_items,
+            "print": True}).json())
+    ts = [threading.Thread(target=race) for _ in range(2)]
+    for t in ts: t.start()
+    for t in ts: t.join()
+    with Session(get_engine()) as s:
+        race_batches = s.scalars(select(Batch).where(
+            Batch.created_by == "TC-Planner · SO 990 · Celestron")).all()
+    booked_total = sum(sum(x["quantity"] for x in r.get("booked", [])) for r in results)
+    queued_total = sum(r.get("queued", 0) for r in results)
+    check("two simultaneous syncs make ONE batch",
+          len(race_batches) == 1, [(b.id, b.status) for b in race_batches])
+    check("  ...book the units once and queue the labels once",
+          booked_total == 5 and queued_total == 5, (booked_total, queued_total))
 
     # A full-shipment order is left alone.
     with Session(get_engine()) as s:

@@ -2320,6 +2320,9 @@ body {
   font-weight: 650;
 }
 .queue-resume[disabled] { opacity: 0.45; cursor: default; }
+/* Clear stopped: lets a stopped run go; quiet, next to Resume */
+.queue-clear:not([disabled]) { font-weight: 650; }
+.queue-clear[disabled] { opacity: 0.45; cursor: default; }
 
 /* The two small receiving windows: product preview + [−] number [+] */
 .recvmodal__product { display: flex; align-items: center; gap: 10px; margin: 10px 0 14px; }

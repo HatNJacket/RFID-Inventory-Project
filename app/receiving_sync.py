@@ -89,13 +89,16 @@ def _full_shipment(session: Session, so_part: str) -> bool:
 
 
 def _so_batches(session: Session, so_part: str) -> list[Batch]:
-    """Every planner receiving batch this SO ever had, any status - the
-    booked total must count closed batches too, or a receive after the
-    first batch closed would re-book the whole order."""
+    """Every planner receiving batch this SO ever had, open or done - the
+    booked total must count finished batches too, or a receive after the
+    first batch closed would re-book the whole order. ABANDONED batches
+    stay out (2026-10-06, SO 969): abandoning is how a duplicate batch
+    is thrown away, so its units and labels must stop counting."""
     out = []
     for b in session.scalars(
         select(Batch).where(
             Batch.kind == "receiving",
+            Batch.status != "abandoned",
             Batch.created_by.like("TC-Planner ·%"),
         ).order_by(Batch.id)
     ):
@@ -139,17 +142,19 @@ def _so_status(session: Session, batches: list[Batch]) -> list[dict]:
     per: dict[str, dict] = {}
     for b in batches:
         open_batch = b.status not in ("done", "abandoned")
+        # Printed labels count on finished batches too (2026-10-06, SO
+        # 965: a closed batch reported 0 queued, so the planner drew a
+        # dead "Print 0" instead of "8 printed").
         have_by_variant: dict[str, int] = {}
-        if open_batch:
-            for vid, n in session.execute(
-                select(PrintJob.shopify_variant_id, func.count())
-                .where(
-                    PrintJob.batch_id == b.id,
-                    PrintJob.status.in_(("pending", "printing", "done")),
-                )
-                .group_by(PrintJob.shopify_variant_id)
-            ):
-                have_by_variant[vid or ""] = n
+        for vid, n in session.execute(
+            select(PrintJob.shopify_variant_id, func.count())
+            .where(
+                PrintJob.batch_id == b.id,
+                PrintJob.status.in_(("pending", "printing", "done")),
+            )
+            .group_by(PrintJob.shopify_variant_id)
+        ):
+            have_by_variant[vid or ""] = n
         for r in M._batch_items(session, b.id):
             key = M._up(r.sku) or M._up(r.scanned_code)
             d = per.setdefault(key, {
@@ -164,11 +169,13 @@ def _so_status(session: Session, batches: list[Batch]) -> list[dict]:
             if r.skip_reason:
                 d["problem"] = r.skip_reason
                 continue
-            if not open_batch or not r.shopify_variant_id:
+            if not r.shopify_variant_id:
                 continue
             want = (r.qty_scanned or 0) + (r.case_count or 0)
             have = have_by_variant.get(r.shopify_variant_id, 0)
             d["labels_queued"] += min(want, have)
+            if not open_batch:
+                continue   # a finished batch owes nothing more
             owed = max(0, want - have)
             d["labels_owed"] += owed
             bin_ = (r.bin_location or "").strip()
@@ -278,9 +285,21 @@ def _lower_bookings(session: Session, payload: ReceivingSyncIn,
 def receiving_sync(
     payload: ReceivingSyncIn, session: Session = Depends(M.get_session)
 ):
+    """One sync per stock order AT A TIME (2026-10-06, SO 969): the
+    planner's Save books in the background while the user can already
+    press Print all - two overlapping syncs each saw no batch, each made
+    one, and the order's 69 labels queued twice. The second caller now
+    waits for the first to commit, then sees its batch and books
+    nothing new."""
     ref, so_part = _so_ref(payload.reference)
     if not so_part.startswith("SO"):
         raise HTTPException(422, "The reference must start with the SO number.")
+    with M.so_serialized(session, so_part):
+        return _receiving_sync_body(payload, session, ref, so_part)
+
+
+def _receiving_sync_body(payload: ReceivingSyncIn, session: Session,
+                         ref: str, so_part: str) -> dict:
     if _full_shipment(session, so_part):
         return {
             "full_shipment": True,

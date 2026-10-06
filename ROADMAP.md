@@ -451,6 +451,43 @@ open pointed at prod. Once 4.18 is confirmed on the gun, delete the
    explicit sessions (lean rolling); barcode scans allowed but
    badged "no tag" (no retirement precision).
 
+## 🖨 SO 969 post-mortem: double booking + lost-status reprints — ✅ DEPLOYED 2026-10-06
+
+A 69-label ZWO order queued 219 labels. Three faults, three fixes:
+- **Overlapping syncs** - the planner's Save books in the background
+  (slow: a Shopify lookup per line) and Print all 24 s later ran a
+  second sync; neither saw the other's uncommitted batch, both booked
+  the whole order, then the print step queued 69 labels on EACH. Now
+  one sync per stock order at a time: a process lock plus a SQL Server
+  `sp_getapplock` (transaction-owned - prod runs 2 gunicorn workers) in
+  `M.so_serialized`, also taken inside `_receiving_intake` for the
+  legacy /prints and /unprinted paths. The planner serializes its own
+  callers per order too (asyncio.Lock around `_rfid_sync`).
+- **Lost printer status failed printed labels** - the ZD621's ~HS went
+  quiet mid-run six times (new since v9; cause still open) and the
+  agent failed the whole burst, labels it had itself confirmed
+  included; `/fail` happily flipped 90 done rows to error and the next
+  pass printed them again. Agent v10 reconciles against the odometer
+  after a mid-run fault (counted = printed, only the rest fail) and
+  logs each missed status reply; `/fail` refuses done/canceled/voided
+  jobs with a 409.
+- **Abandoned batches counted** - `_so_batches` skips them now, so
+  abandoning the duplicate batch (#356) is the cleanup. Finished
+  batches still report their printed labels, so the planner shows
+  "8 printed" instead of a dead "Print 0" (SO 965).
+- **Clear stopped** (Nick): Queue tab button next to Resume - stopped
+  labels stay canceled, leave the list, Resume switches off
+  (`POST /api/print-jobs/clear-stopped`, History "stopped-cleared").
+- **OPEN - Unicode SKUs:** "ZWO FS-Ⅱ" is stored as "ZWO FS-?" (all SKU
+  and title columns are VARCHAR under a Latin-1 collation), which is
+  why the planner's Print button did nothing on SO 969: the total said
+  9 owed, no line matched. Planner matches through a cp1252 fold for
+  now; the real fix is NVARCHAR columns + a repair of the "?" rows.
+  Needs a quiet window on prod (indexes drop/recreate).
+- **OPEN - why ~HS goes quiet under v9/v10's continuous feed.** Watch
+  the agent log for "no ~HS answer"; if it recurs, make the mid-run
+  refill opt-out and fall back to v8 pacing.
+
 ## 📦 Shipment sorter polish — ✅ DEPLOYED 2026-10-06
 
 Four quick asks while receiving: scans QUEUE while a lookup runs

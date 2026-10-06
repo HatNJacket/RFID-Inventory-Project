@@ -1296,6 +1296,8 @@
                 title="Cancels every label still waiting to print - at most the handful already claimed by the printer still come out. Resume printing brings the whole run back in order.">⏹ Stop printing</button>
         <button class="reset queue-resume" id="printer-resume" type="button" disabled
                 title="Puts every label a Stop press canceled back in the queue - same labels, same original order, printed ahead of anything queued since. Labels from batches that have since finished stay canceled.">▶ Resume printing</button>
+        <button class="reset queue-clear" id="printer-clear-stopped" type="button" disabled
+                title="Lets the stopped run go for good: the stopped labels stay canceled, leave this list, and Resume printing switches off. Nothing printed is touched; a label still wanted reprints from its batch.">✕ Clear stopped</button>
         <button class="reset" id="printer-purge" type="button" disabled
                 title="Deletes every job sitting in the warehouse PC's WINDOWS print queue - the fix when the printer wedges and labels pile up behind a stuck head. Server-side those jobs already read done, so reprint anything that never came out from this tab. Needs print agent v4 on the warehouse PC.">🧹 Clear stuck jobs</button>
         <label class="pill" id="strip-mode-wrap"

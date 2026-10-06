@@ -357,6 +357,23 @@ check("v9 never refills behind an unconfirmed (swallowed) label",
           b"SKU-9" not in (z if isinstance(z, bytes) else z.encode())
           for z in ag.tr.sent), ag.client.completed)
 
+# v10 (2026-10-06, SO 969): the printer's status channel dies mid-run.
+# v9 failed the whole burst, printed labels included. Now the odometer
+# decides: statuses go OK (ready), BUSY (one poll: label 1 confirmed),
+# then silence; the counter says both labels came out.
+ag = mk_agent(FakeTr([HS_OK, HS_BUSY, b""], [100, 101, 102]))
+ag._print_burst([mk_job(1), mk_job(2)])
+check("v10 status lost mid-run: labels the odometer counted stay printed",
+      ag.client.completed == [1, 2] and not ag.client.failed,
+      str(ag.client.__dict__)[:250])
+# Same silence, but the counter stopped at one: only label 2 fails.
+ag = mk_agent(FakeTr([HS_OK, HS_BUSY, b""], [100, 101]))
+ag._print_burst([mk_job(1), mk_job(2)])
+check("v10 status lost mid-run: only the uncounted label fails",
+      ag.client.completed == [1] and [f[0] for f in ag.client.failed] == [2]
+      and "stopped answering" in ag.client.failed[0][1],
+      str(ag.client.__dict__)[:250])
+
 print()
 print(f"{'FAIL' if fails else 'OK'}  {len(fails)} failing")
 sys.exit(1 if fails else 0)

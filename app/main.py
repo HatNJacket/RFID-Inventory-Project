@@ -17,7 +17,7 @@ import threading
 import time
 import unicodedata
 from collections import OrderedDict
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from functools import lru_cache
@@ -3641,6 +3641,40 @@ def resume_printing(
     }
 
 
+STOPPED_CLEARED = "stopped by operator - cleared"
+
+
+@app.post("/api/print-jobs/clear-stopped", dependencies=[Depends(require_user)])
+def clear_stopped_printing(
+    payload: StopPrintingIn, session: Session = Depends(get_session)
+):
+    """Let a stopped run go for good (Nick, 2026-10-06): the stopped
+    labels stay canceled, leave the Queue tab, and Resume printing has
+    nothing left to offer. Nothing printed is touched; a label still
+    wanted reprints from its batch like any other canceled one."""
+    rows = _resumable_stopped_jobs(session)
+    if not rows:
+        raise HTTPException(422, "No stopped labels to clear.")
+    for job in rows:
+        job.error = STOPPED_CLEARED
+    _log_change(
+        session,
+        title="Print queue",
+        field="print-clear",
+        old=f"{_count(len(rows), 'stopped job', 'stopped jobs')} cleared",
+        new="nothing left to resume",
+        by=(payload.requested_by or "").strip() or None,
+    )
+    session.commit()
+    return {
+        "cleared": len(rows),
+        "message": (
+            f"{_count(len(rows), 'stopped label', 'stopped labels')} cleared - "
+            "they stay canceled and Resume printing is off."
+        ),
+    }
+
+
 # --- Whole-strip printing ---------------------------------------------------
 # One strip per batch (Nick, 2026-09-16). OFF (the default) is the old
 # behavior: a side trip's labels print the moment the trip is created,
@@ -4145,6 +4179,14 @@ def fail_print_job(
     job = session.get(PrintJob, job_id)
     if job is None:
         raise HTTPException(404, "No such print job.")
+    # A label the printer already confirmed stays printed (2026-10-06,
+    # SO 969: the agent lost the printer's status mid-run and reported
+    # the whole burst failed, flipping 90 printed labels to error - the
+    # next print pass then printed them all again).
+    if job.status in ("done", "canceled", "voided"):
+        raise HTTPException(
+            409, f"Job {job_id} is already {job.status} - not marking it "
+                 "failed.")
     job.status = "error"
     job.error = payload.error
     session.commit()
@@ -14803,6 +14845,60 @@ def _normalize_so_reference(ref: str) -> str:
     return re.sub(r"\bSO\s+(\d{2,6})\b", swap, ref)
 
 
+# One stock order's receiving work runs serialized (2026-10-06, SO 969:
+# the planner's Save-time booking and a Print all pressed 24 s later
+# overlapped, neither saw the other's uncommitted batch, both booked the
+# whole order and 138 labels queued for 69 boxes). Two layers: a process
+# lock for the threads of one worker, and a SQL Server application lock
+# (sp_getapplock, transaction-owned, released at commit) so prod's
+# second gunicorn worker queues behind the first. sqlite (tests) has
+# only the process lock.
+_so_locks: dict[str, threading.Lock] = {}
+_so_locks_guard = threading.Lock()
+SO_LOCK_WAIT_S = 120
+
+
+def _so_applock(session: Session, so_part: str) -> None:
+    """Take the SO's database-wide lock inside the session's transaction
+    (no-op off SQL Server). Blocks up to SO_LOCK_WAIT_S, then 409."""
+    try:
+        if session.get_bind().dialect.name != "mssql":
+            return
+    except Exception:  # noqa: BLE001 - no bind yet means no DB lock
+        return
+    code = session.execute(
+        text(
+            "DECLARE @r int; "
+            "EXEC @r = sp_getapplock @Resource = :res, "
+            "@LockMode = 'Exclusive', @LockOwner = 'Transaction', "
+            "@LockTimeout = :ms; SELECT @r;"
+        ),
+        {"res": f"rfid-receiving:{so_part.upper()}"[:255],
+         "ms": SO_LOCK_WAIT_S * 1000},
+    ).scalar()
+    if code is None or int(code) < 0:
+        raise HTTPException(
+            409, f"Another receiving update for {so_part} is still "
+                 "running - try again in a moment.")
+
+
+@contextmanager
+def so_serialized(session: Session, so_part: str):
+    """Hold both locks for one stock order across a request body."""
+    key = (so_part or "").strip().upper()
+    with _so_locks_guard:
+        lock = _so_locks.setdefault(key, threading.Lock())
+    if not lock.acquire(timeout=SO_LOCK_WAIT_S):
+        raise HTTPException(
+            409, f"Another receiving update for {so_part} is still "
+                 "running - try again in a moment.")
+    try:
+        _so_applock(session, key)
+        yield
+    finally:
+        lock.release()
+
+
 def _receiving_intake(
     session: Session, payload: ReceivingPrintsIn, queue_labels: bool,
     tag_prefix: str = "TC-Planner", merge_order: bool = True,
@@ -14828,6 +14924,11 @@ def _receiving_intake(
         pass
     parts = [p.strip() for p in ref.split("·")] if ref else []
     so_part = parts[0] if parts else ""
+    if so_part:
+        # The legacy paths (/prints, /unprinted) get the DB lock too;
+        # /sync already holds it, and a re-take in the same transaction
+        # is free.
+        _so_applock(session, so_part)
     batch = None
     if merge_order and so_part:
         # One receiving batch per STOCK ORDER (Nick, 2026-09-23 - this
@@ -20431,6 +20532,7 @@ _CHANGE_TYPE_LABELS = {
     "batch-reprint": "batch-reprinted",
     "print-stop": "printing-stopped",
     "print-resume": "printing-resumed",
+    "print-clear": "stopped-cleared",
     "print-strip": "strip-mode",
     "case-declared": "case-declared",
     "return-processed": "return-processed",
