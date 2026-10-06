@@ -639,9 +639,9 @@ intentional session, not a pass inside a big batch.
     paper agent's exclusive claims; RFID agents skip them; no tag
     record, never owed pairing; per-printer agent status with a "paper"
     summary; the web picker hides the paper printer. Warehouse laptop:
-    C:fid\paper\ holds its own print_agent.py copy (self-updates
+    C:\rfid\paper\ holds its own print_agent.py copy (self-updates
     separately), run_paper_agent.cmd (--paper --printer-id
-    warehouse-paper, log C:fid\paper\paper_agent.log), started from
+    warehouse-paper, log C:\rfid\paper\paper_agent.log), started from
     the TCWarehouse Startup folder ("RFID Paper Agent.cmd") exactly like
     the Zebra agent. Pillow installed there by Steve. FINDING: the Zebra
     agent also runs from that Startup folder as the non-admin tcwarehouse
