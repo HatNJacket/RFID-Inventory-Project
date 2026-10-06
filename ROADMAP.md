@@ -603,7 +603,11 @@ intentional session, not a pass inside a big batch.
   disagreeing = yellow), so the bar always matches the row's dot and
   summary. Sizes: up to 5 units one line, 6-10 two lines of 5,
   11-20 two lines of 10 half-size blocks, over 20 numbers only with
-  "expected N" underneath (units = max of heard, expected, Shopify). "Also heard":
+  "expected N" underneath (units = max of heard, expected, Shopify).
+  A full match reads green: "✓ 3/3" in green, and the line under the
+  name says "Heard 3 of 3 · Shopify and the last count agree" (the
+  detail panel's Heard number turns green with the check too). Mock:
+  board "B v2" on the canvas. "Also heard":
   NO per-tag list or Move here (racks are too close; nearly every
   sweep hears more strays than expected tags) - just the chip, with
   the hover note "Tags heard in this sweep that belong in other
