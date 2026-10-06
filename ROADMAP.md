@@ -581,6 +581,22 @@ intentional session, not a pass inside a big batch.
   cleanup, batch-tagged record) but NOT in a side "Desk tools" box -
   fold them into the product cards/list. Nick dislikes the preview's bin
   page as drawn; ★ redo it with SEVERAL preview variants.
+  **Web bin page session 2026-10-06** (canvas "Web Bin Audit Previews"
+  https://claude.ai/artifact/HmrEXbU4ozEwPNp3B6Lds8, 4 layouts at the
+  real 1334 px width): Steve picked **B, list + detail panel**. Left:
+  the bin's products grouped To resolve / Match / Count by hand (matches
+  listed in full, as in B); right: the selected product's numbers,
+  its problem rows with their buttons + Resolve all + Count instead,
+  then tags on file here, bundles and connected inventory, and "since
+  the last count" timeline (the desk-only powers live here, no Desk
+  tools box). Top bar: bin arrows, sweep picker (replaces Pull latest
+  sweep & check), bin ⋯ menu, Log audit. The list's count column is
+  reduced to Heard/Shopify ("2/3") with Expected underneath and a
+  header indicator - 4 versions drawn, choice pending. "Also heard":
+  NO per-tag list or Move here (racks are too close; nearly every
+  sweep hears more strays than expected tags) - just the chip, with
+  the hover note "Tags heard in this sweep that belong in other
+  racks".
 - Gun ⋯ menu: Pull latest / Pick + merge / Send sweep GONE (sweeps save
   as the trigger stops). Clear becomes a main-screen button. ★ Plan the
   menu around what users do there 90% of the time: pick/clear/switch
