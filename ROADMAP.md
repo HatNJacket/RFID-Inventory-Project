@@ -659,7 +659,26 @@ intentional session, not a pass inside a big batch.
   the tags heard -> yellow "re-sweep this product before logging";
   count = expected = Shopify -> green match (notes boxes with silent
   tags); count != Shopify -> yellow "Logging the audit sets on-hand to
-  N"; count = Shopify but != expected -> yellow, Log records N. "Also heard":
+  N"; count = Shopify but != expected -> yellow, Log records N.
+  **Audits are DRAFTS that save themselves (Steve, 2026-10-06, "like
+  TC-Planner"):** opening a bin starts/continues its audit; every
+  resolution and count SAVES TO THE AUDIT immediately (server-side, so
+  it survives a reload and other devices and people see it: "Saved to
+  this audit" + Undo on the row), but NOTHING changes in Shopify or the
+  tag records until someone presses "Review changes (N)" and applies.
+  The review window groups the saved changes (Shopify inventory / Tag
+  records / Counts logged for this bin), each with a tickbox and who
+  saved it; "Apply N changes" writes the ticked ones in one go and
+  logs the counts as the bin's new last count; "Discard all" drops the
+  draft. Locate and Print act at once (nothing to stage). This
+  REPLACES the "Log audit" button and the per-action confirms (the
+  apply step is the confirm), keeps the hard rule (on-hand writes only
+  at operator confirmation), and lets one apply cover many products.
+  A blue strip under the top bar reads "N changes saved to this audit
+  · nothing changes in Shopify or the tag records until you apply
+  them". IMPLICATION: the gun's Resolve buttons (4.35) write
+  immediately today; when this is built the gun must save to the same
+  server-side draft (one draft per bin, shared by gun and web). "Also heard":
   NO per-tag list or Move here (racks are too close; nearly every
   sweep hears more strays than expected tags) - just the chip, with
   the hover note "Tags heard in this sweep that belong in other
