@@ -121,12 +121,16 @@
       <!-- Product preview card: filled by JS after a lookup from the
            global search box. Hidden = the tiles lead. -->
       <section class="pcard" id="pcard" hidden>
+        <button class="reset pcard__refresh" id="pcard-refresh" type="button"
+                aria-label="Refresh from Shopify"
+                title="Refresh from Shopify: re-read this product's listing (SKU, barcode, title, bin) and look it up again, so a change made in Shopify shows here straight away"><span class="rf-glyph">&#8635;</span></button>
         <button class="reset pcard__close" id="pcard-close" type="button"
                 title="Close and return to the menu">&#10005;</button>
         <div class="pcard__id">
           <div class="pcard__img" id="pcard-img"></div>
           <div class="pcard__name" id="pcard-name"></div>
           <div class="pcard__codes" id="pcard-codes"></div>
+          <div class="pcard__note pcard__refreshmsg" id="pcard-refresh-msg" hidden></div>
           <div class="pcard__stats">
             <div class="pstat__col">
               <button class="pstat" id="pcard-onhand" type="button" hidden

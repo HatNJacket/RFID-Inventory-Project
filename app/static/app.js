@@ -19622,6 +19622,99 @@ document.getElementById("pcard-close").addEventListener("click", () => {
   homeEls.lookup.focus();
 });
 
+// Refresh from Shopify (Steve, 2026-10-06, SO 969: open-box listings
+// wore the new products' SKUs as barcodes; after fixing them in Shopify
+// the card kept opening the open-box twin until the next catalog
+// rebuild). One press re-reads the listing on screen straight from
+// Shopify (the shared /api/products/refresh: catalog row, tag records
+// and open batch rows follow), drops the card's cached lookup and looks
+// the same term up again. When the term now opens a DIFFERENT listing,
+// that one is refreshed too and the card says so.
+var pcardLastTerm = ""; // var: openProductCard may run before this line is reached
+
+function pcardRefreshSay(text, kind) {
+  const el = document.getElementById("pcard-refresh-msg");
+  if (!el) return;
+  el.textContent = text;
+  el.className =
+    "pcard__note pcard__refreshmsg" +
+    (kind ? ` pcard__refreshmsg--${kind}` : "");
+  el.hidden = !text;
+}
+
+async function pcardRefreshVariant(gid) {
+  const body = { variant_gid: gid, changed_by: operatorEl.value || null };
+  try {
+    return await postJson("/api/products/refresh", body);
+  } catch (err) {
+    if (/Confirm to refresh anyway/.test(err.message) && confirm(err.message)) {
+      try {
+        return await postJson("/api/products/refresh", {
+          ...body,
+          confirmed: true,
+        });
+      } catch (e2) {
+        pcardRefreshSay(e2.message, "err");
+        return null;
+      }
+    }
+    pcardRefreshSay(err.message, "err");
+    return null;
+  }
+}
+
+function pcardLabel(p) {
+  return (p && (p.sku || p.product_title)) || "another listing";
+}
+
+async function pcardRefreshFromShopify(btn) {
+  const term = (pcardLastTerm || "").trim();
+  if (!term) return;
+  await spinRefresh(btn, async () => {
+    const before =
+      pcardState && pcardState.term === pcardLastTerm ? pcardState.product : null;
+    let first = null;
+    if (before && before.shopify_variant_id) {
+      first = await pcardRefreshVariant(before.shopify_variant_id);
+      if (!first) return;
+    }
+    const key = term.toUpperCase();
+    pcardLookupCache.delete(key);
+    await openProductCard(term);
+    const after =
+      pcardState && pcardState.term === term ? pcardState.product : null;
+    if (!after) {
+      pcardRefreshSay(
+        `Still nothing in Shopify for "${term}". Check the SKU or barcode there.`,
+        "err"
+      );
+      return;
+    }
+    if (!before) {
+      pcardRefreshSay(`Found in Shopify after refreshing ✓`, "ok");
+      return;
+    }
+    if (after.shopify_variant_id !== before.shopify_variant_id) {
+      const second = await pcardRefreshVariant(after.shopify_variant_id);
+      if (second && (second.changed || []).length) {
+        pcardLookupCache.delete(key);
+        await openProductCard(term);
+      }
+      pcardRefreshSay(
+        `Refreshed from Shopify ✓ "${term}" now opens ${pcardLabel(after)}, ` +
+          `not ${pcardLabel(before)}.`,
+        "ok"
+      );
+      return;
+    }
+    pcardRefreshSay(first ? first.message : "Refreshed from Shopify ✓", "ok");
+  });
+}
+
+document
+  .getElementById("pcard-refresh")
+  .addEventListener("click", (e) => pcardRefreshFromShopify(e.currentTarget));
+
 function pcardShowTab(name) {
   document.querySelectorAll(".pcard__tabbtn").forEach((b) =>
     b.classList.toggle("pcard__tabbtn--active", b.dataset.ptab === name));
@@ -21100,6 +21193,9 @@ document.getElementById("pcard-bundle").addEventListener("click", (e) => {
 async function openProductCard(term) {
   goTab("home");
   homeEls.pcard.hidden = false;
+  pcardLastTerm = term;
+  const refreshMsg = document.getElementById("pcard-refresh-msg");
+  if (refreshMsg) refreshMsg.hidden = true;
   pcardHistFilters = new Set();
   homeEls.pcardImg.innerHTML = "";
   homeEls.pcardName.textContent = "Looking up " + term + "…";

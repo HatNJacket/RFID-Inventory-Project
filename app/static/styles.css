@@ -1824,6 +1824,31 @@ body {
   cursor: pointer;
 }
 .pcard__close:hover { color: var(--ink); border-color: var(--accent); }
+/* Refresh from Shopify sits just left of the close button, same size. */
+.pcard__refresh {
+  position: absolute;
+  top: 10px;
+  right: 46px;
+  z-index: 5;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  line-height: 1;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--ink-dim);
+  font-size: 16px;
+  cursor: pointer;
+}
+.pcard__refresh:hover { color: var(--ink); border-color: var(--accent); }
+.pcard__refresh .rf-glyph { display: inline-block; }
+.pcard__refreshmsg { font-size: 12px; }
+.pcard__refreshmsg--ok { color: var(--ok-ink); }
+.pcard__refreshmsg--err { color: var(--bad-ink); }
 .pcard__id {
   flex: 0 0 340px;
   padding: 18px;
@@ -1872,7 +1897,7 @@ body {
   display: flex;
   gap: 2px;
   border-bottom: 1px solid var(--line);
-  padding: 8px 44px 0 16px;
+  padding: 8px 82px 0 16px; /* clear of the refresh + close buttons */
   flex-wrap: wrap;
 }
 .pcard__tabbtn {
