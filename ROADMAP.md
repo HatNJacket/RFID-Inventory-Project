@@ -451,7 +451,18 @@ open pointed at prod. Once 4.18 is confirmed on the gun, delete the
    explicit sessions (lean rolling); barcode scans allowed but
    badged "no tag" (no retirement precision).
 
-## 🧭 Audit UI overhaul — PLANNING (Nick, 2026-10-05) — nothing built yet
+## 📦 Shipment sorter polish — ✅ DEPLOYED 2026-10-06
+
+Four quick asks while receiving: scans QUEUE while a lookup runs
+(1cb5aba, no more "sorter was busy"); a "Recently scanned" list under
+the status line, newest first with time/code/outcome, kept with the
+pile (851e74d); a loud blip/buzz per result via the sorter's own tones
+(audio context warmed on any keystroke/click - f2ebb23, 43dbe44); and
+"Print N labels + clear" on the unexplained group, each SKU recorded as
+History "sorter-leftover" and listed in a small "Leftovers printed"
+fold under the sorter (c6008a1, POST/GET /api/sorter/leftovers).
+
+## 🧭 Audit UI overhaul — PLANNING (Nick, 2026-10-05) — stages 1-2 of the verdicts BUILT
 
 Trigger: bins like K4-2 hold solid-metal products that block RFID and
 need box-by-box sweeping. An AUTOMATIC scan-difficulty score was
