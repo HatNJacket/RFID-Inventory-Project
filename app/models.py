@@ -2067,6 +2067,14 @@ class BoxPhoto(Base):
     box_uid: Mapped[str | None] = mapped_column(String(40), index=True)
     # The operator's verdict: good | blurry | angle (training data).
     quality: Mapped[str | None] = mapped_column(String(12))
+    # Where each line and word sat in the photo, with Azure's confidence
+    # (JSON) - for cutting out SKU lines to train a reader on the gun.
+    ocr_layout: Mapped[str | None] = mapped_column(Text)
+    # The reader's first answer at upload, kept apart from corrections.
+    read_status: Mapped[str | None] = mapped_column(String(12))
+    read_sku: Mapped[str | None] = mapped_column(String(100))
+    torch: Mapped[bool | None] = mapped_column(Boolean)
+    app_version: Mapped[str | None] = mapped_column(String(20))
 
 
 class BoxPhotoHandoff(Base):

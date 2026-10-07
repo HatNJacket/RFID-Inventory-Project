@@ -153,6 +153,13 @@ _COLUMN_UPGRADES = [
     # operator's verdict on it: good | blurry | angle.
     ("rfid_box_photos", "box_uid", "VARCHAR(40) NULL"),
     ("rfid_box_photos", "quality", "VARCHAR(12) NULL"),
+    # The reader's layout + confidences, its first answer, and capture
+    # conditions (2026-10-07) - the training set's raw material.
+    ("rfid_box_photos", "ocr_layout", "NVARCHAR(MAX) NULL"),
+    ("rfid_box_photos", "read_status", "VARCHAR(12) NULL"),
+    ("rfid_box_photos", "read_sku", "VARCHAR(100) NULL"),
+    ("rfid_box_photos", "torch", "BIT NULL"),
+    ("rfid_box_photos", "app_version", "VARCHAR(20) NULL"),
 ]
 
 

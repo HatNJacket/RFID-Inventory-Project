@@ -75,6 +75,44 @@ m = bp.match_skus(["F9172"], cat, {"F9172A"})
 check("between two close SKUs the batch's product ranks first",
       m["status"] == "ask" and m["guesses"][0]["sku"] == "F9172A", str(m))
 
+# ------------------------------------------------ reader upgrades (A) ----
+cat2 = cat + [
+    {"sku": "F9184D", "product_title": "Svbony SV113 1.25\" 60 Degree Eyepieces - F9184", "variant_title": "10mm"},
+    {"sku": "F9382C", "product_title": "Svbony Telescope MK127 Maksutov - F9382C", "variant_title": None},
+    {"sku": "W9198B", "product_title": "Svbony SV220 Dual-Band Nebula Filter", "variant_title": "2\""},
+    {"sku": "W9198A", "product_title": "Svbony SV220 Dual-Band Nebula Filter", "variant_title": "1.25\""},
+    {"sku": "W9132B", "product_title": "Svbony SV172 Dew Heater Strip", "variant_title": "320mm"},
+    {"sku": "W9132A", "product_title": "Svbony SV172 Dew Heater Strip", "variant_title": "240mm"},
+    {"sku": "W9151B", "product_title": "Svbony SV192 Dew Heater", "variant_title": None},
+    {"sku": "W9151A", "product_title": "Svbony SV192 Dew Heater", "variant_title": None},
+    {"sku": "F9358A", "product_title": "Svbony SV302 Monocular", "variant_title": None},
+]
+m = bp.match_skus(["SVBONY", "W9184D"], cat2, aliases={"W9184D": "F9184D"})
+check("a box code people confirmed (W9184D on F9184D's box) files to our SKU",
+      m["status"] == "auto" and m["sku"] == "F9184D", str(m))
+m = bp.match_skus(["SKU #9382C"], cat2)
+check("a dropped first letter (#9382C) still finds the one SKU ending that way",
+      m["guesses"] and m["guesses"][0]["sku"] == "F9382C", str(m))
+m = bp.match_skus(["SVBONY", "Monocular", "Model: SV302"], cat2)
+check("a clean model number for a one-variant product files it",
+      m["status"] == "auto" and m["sku"] == "F9358A", str(m))
+m = bp.match_skus(["Dew Heater Strip", "Model: SV172", "L=320mm"], cat2)
+check("model + spec ranks the right variant first (asks, doesn't guess)",
+      m["status"] == "ask" and m["guesses"][0]["sku"] == "W9132B", str(m))
+lay = [{"text": "SKU:F9172B", "box": [1300, 40, 1550, 40, 1550, 80, 1300, 80], "pw": 1600, "ph": 1200,
+        "words": [{"text": "SKU:F9172B", "conf": 0.99}]}]
+m = bp.match_skus(["SKU:F9172B"], cat, layout=lay)
+check("a SKU read at the photo's edge (a box behind) asks instead of filing",
+      m["status"] == "ask" and m["guesses"][0]["sku"] == "F9172B", str(m))
+lay = [{"text": "W9151A", "box": [700, 500, 900, 500, 900, 560, 700, 560], "pw": 1600, "ph": 1200,
+        "words": [{"text": "W9151A", "conf": 0.55}]}]
+m = bp.match_skus(["W9151A"], cat2, layout=lay)
+check("an unsure variant letter with a sibling SKU asks",
+      m["status"] == "ask" and m["guesses"][0]["sku"] == "W9151A", str(m))
+lay[0]["words"][0]["conf"] = 0.98
+m = bp.match_skus(["W9151A"], cat2, layout=lay)
+check("a confident read in the middle still files", m["status"] == "auto" and m["sku"] == "W9151A", str(m))
+
 # ------------------------------------------------- ticked multi-SKU label --
 import io
 from PIL import Image, ImageDraw
@@ -123,6 +161,26 @@ check("a tick on a SKU we don't stock asks instead",
       v["status"] == "ask" and "W9132C" in v["note"], str(v))
 v = bp.apply_tick({"status": "auto", "sku": "F9172B", "guesses": []}, ["F9172B"], None, b"", cm)
 check("a one-SKU label is left alone", v["status"] == "auto" and v["sku"] == "F9172B", str(v))
+
+cat3 = cat2 + [{"sku": "W9161A", "product_title": "SVBONY SV209 1.0x Flattener for SV550 - W9161A",
+                "variant_title": None}]
+lines120 = ["SVBONY", "Dow iisaler Strip", "Model SV192", "Specification",
+            "[>IL=450mm(W9161A)", "[L=560mm(W9151B)"]
+m = bp.match_skus(lines120, cat3)
+check("a SKU belonging to a different model than the label's can't file itself",
+      {g["sku"]: g["score"] for g in m["guesses"]}.get("W9161A") == 0.85, str(m))
+cm3 = {p["sku"].upper(): p for p in cat3}
+img120, lay120 = label("W9132A")  # tick on the first line
+lay120 = [{"text": "[>IL=450mm(W9161A)", "box": lay120[0]["box"]},
+          {"text": "[L=560mm(W9151B)", "box": lay120[1]["box"]}]
+v = bp.apply_tick(m, lines120, lay120, img120, cm3)
+check("a tick on a misread SKU moves to the look-alike that fits the model",
+      v["status"] == "auto" and v["sku"] == "W9151A", str(v))
+
+img0b, lay0b = label(None)
+v = bp.apply_tick(m, lines120, [{"text": lines120[4], "box": lay0b[0]["box"]},
+                                {"text": lines120[5], "box": lay0b[1]["box"]}], img0b, cm3)
+check("the same label with no clear tick asks", v["status"] == "ask", str(v))
 
 # --------------------------------------------------------------- server --
 with Session(get_engine()) as s:

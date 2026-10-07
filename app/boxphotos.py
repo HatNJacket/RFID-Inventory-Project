@@ -98,8 +98,15 @@ def azure_read(image: bytes) -> tuple:
                     for line in page.get("lines") or []:
                         if line.get("text"):
                             lines.append(line["text"])
-                            layout.append({"text": line["text"],
-                                           "box": line.get("boundingBox") or []})
+                            layout.append({
+                                "text": line["text"],
+                                "box": line.get("boundingBox") or [],
+                                "pw": page.get("width"), "ph": page.get("height"),
+                                "words": [{"text": w.get("text"),
+                                           "box": w.get("boundingBox"),
+                                           "conf": w.get("confidence")}
+                                          for w in line.get("words") or []],
+                            })
                 return lines, None, layout
             if state == "failed":
                 return [], "The text reader couldn't read this photo."
@@ -184,6 +191,19 @@ def apply_tick(verdict: dict, lines: list[str], layout: list[dict] | None,
         return verdict
     tick = find_ticked(image, layout or [])
     winner = tick["sku"]
+    strong = {_model(m) for m in STRONG_MODEL_RE.findall("\n".join(lines).upper())}
+
+    def fits(code: str) -> bool:
+        own = {_model(m) for m in MODEL_RE.findall(
+            (cmap.get(code, {}).get("product_title") or "").upper())}
+        return not strong or not own or bool(own & strong)
+
+    if winner and winner in cmap and not fits(winner):
+        # The ticked line was misread as another product's SKU: take the
+        # look-alike SKU whose product matches the label's model.
+        look = [c for c in cmap if fits(c) and len(c) == len(winner)
+                and _one_edit(_fold(c), _fold(winner))]
+        winner = look[0] if len(look) == 1 else None
     if winner and winner in cmap:
         p = cmap[winner]
         others = [g for g in verdict["guesses"] if (g.get("sku") or "").upper() != winner]
@@ -247,25 +267,95 @@ def ocr_tokens(lines: list[str]) -> list[str]:
     return keep
 
 
+MODEL_RE = re.compile(r"\bS[VY]\s?\d{2,4}(?:\s?PRO)?[A-Z]?\b")
+STRONG_MODEL_RE = re.compile(r"MODEL\s*[:.]?\s*(S[VY]\s?\d{2,4}(?:\s?PRO)?[A-Z]?)\b")
+
+
+def _model(s: str) -> str:
+    return re.sub(r"\s", "", s.upper()).replace("SY", "SV", 1)
+
+
+def _line_tokens(line: str) -> list[str]:
+    words = [_norm(w) for w in re.split(r"[^A-Za-z0-9]+", line or "")]
+    words = [w for w in words if w]
+    out = list(words)
+    out.extend(a + b for a, b in zip(words, words[1:]))
+    whole = _norm(line)
+    if 5 <= len(whole) <= 12:
+        out.append(whole)
+    return [t for t in dict.fromkeys(out)
+            if len(t) >= 4 and re.search(r"\d", t) and re.search(r"[A-Z]", t)]
+
+
+def _line_factor(item: dict | None) -> float:
+    """The label being photographed is aimed at the middle; a SKU read
+    near the edge is more likely a box in the background (photo 126:
+    a sharp F9198J behind a blurry W9196A)."""
+    if not item:
+        return 1.0
+    box, pw, ph = item.get("box") or [], item.get("pw"), item.get("ph")
+    if len(box) != 8 or not pw or not ph:
+        return 1.0
+    cx, cy = sum(box[0::2]) / 4 / pw, sum(box[1::2]) / 4 / ph
+    return 0.85 if abs(cx - 0.5) > 0.35 or abs(cy - 0.5) > 0.35 else 1.0
+
+
+def _token_conf(item: dict | None, tok: str) -> float:
+    """Azure's lowest word confidence for the words making up a token."""
+    if not item:
+        return 1.0
+    confs = []
+    for w in item.get("words") or []:
+        wn = _norm(w.get("text"))
+        if len(wn) >= 2 and (wn in tok or tok in wn) and w.get("conf") is not None:
+            confs.append(float(w["conf"]))
+    return min(confs) if confs else 1.0
+
+
 def match_skus(lines: list[str], catalog: list[dict],
-               batch_skus: set[str] | None = None) -> dict:
+               batch_skus: set[str] | None = None,
+               layout: list[dict] | None = None,
+               aliases: dict[str, str] | None = None) -> dict:
     """Score catalog SKUs against what was read.
 
     Returns {status, sku, guesses}: "auto" with the SKU when one match is
     clearly best, "ask" with up to three guesses when it's close or only
     a product family matched (F9301A -> F9301AA/AB/AC), "none" when
-    nothing looked like one of our SKUs."""
+    nothing looked like one of our SKUs.
+
+    Signals, strongest first: the SKU itself (exact, or with OCR's usual
+    letter/digit swaps), a box code people confirmed means one of our
+    SKUs (aliases: Svbony prints W9184D on F9184D's box), a dropped or
+    misread first letter (#9382C), the model number (SV220) with the
+    spec words that pick the variant (320mm), product families, one
+    typo. With the reader's layout: a SKU near the photo's edge counts
+    less (background box), and an unsure variant letter asks."""
     batch_skus = {s.upper() for s in (batch_skus or set())}
+    aliases = aliases or {}
+    layout = layout if layout and len(layout) == len(lines) else None
     by_norm: dict[str, list[dict]] = {}
     by_fold: dict[str, list[dict]] = {}
+    by_model: dict[str, list[dict]] = {}
     for p in catalog:
         n = _norm(p.get("sku"))
         if len(n) < 4:
             continue
         by_norm.setdefault(n, []).append(p)
         by_fold.setdefault(_fold(n), []).append(p)
-    words = {_norm(w) for line in lines for w in re.split(r"\s+", line or "")}
-    words.discard("")
+        for m in MODEL_RE.findall((p.get("product_title") or "").upper()):
+            if p not in by_model.setdefault(_model(m), []):
+                by_model[_model(m)].append(p)
+    stems = {}
+    for n in by_norm:
+        stems[n[:-1]] = stems.get(n[:-1], 0) + 1
+    words = set()
+    for line in lines:
+        for w in re.split(r"[^A-Za-z0-9]+|\s+", line or ""):
+            if _norm(w):
+                words.add(_norm(w))
+        for w in re.split(r"\s+", line or ""):
+            if _norm(w):
+                words.add(_norm(w))
     scores: dict[str, float] = {}
     info: dict[str, dict] = {}
 
@@ -275,33 +365,63 @@ def match_skus(lines: list[str], catalog: list[dict],
             scores[key] = score
             info[key] = p
 
-    for tok in ocr_tokens(lines):
-        for p in by_norm.get(tok, []):
-            offer(p, 1.0)
-        for p in by_fold.get(_fold(tok), []):
-            offer(p, 0.92)
-        if len(tok) >= 5:
-            family = [p for n, ps in by_norm.items()
-                      if n.startswith(tok) and 1 <= len(n) - len(tok) <= 2
-                      for p in ps]
-            for p in family:
-                offer(p, 0.85 if len(family) == 1 else 0.6)
-        if len(tok) >= 6:
-            ft = _fold(tok)
-            for n, ps in by_fold.items():
-                # A longer SKU that STARTS with the read is a family
-                # member, scored above - one extra letter isn't a typo.
-                if n.startswith(ft) or ft.startswith(n):
-                    continue
-                if abs(len(n) - len(ft)) <= 1 and _one_edit(ft, n):
-                    for p in ps:
-                        offer(p, 0.7)
+    for i, line in enumerate(lines):
+        item = layout[i] if layout else None
+        f = _line_factor(item)
+        for tok in _line_tokens(line):
+            # An unsure last letter where a sibling variant exists asks.
+            cap = 1.0
+            if _token_conf(item, tok) < 0.8 and stems.get(tok[:-1], 0) > 1:
+                cap = 0.85
+            for p in by_norm.get(tok, []):
+                offer(p, min(1.0 * f, cap))
+            for p in by_fold.get(_fold(tok), []):
+                offer(p, min(0.92 * f, cap))
+            if tok in aliases and tok not in by_norm:
+                for p in by_norm.get(_norm(aliases[tok]), []):
+                    offer(p, 0.93 * f)
+            if re.fullmatch(r"\d{4}[A-Z]{1,2}", tok):
+                tail = [p for n, ps in by_norm.items()
+                        if len(n) == len(tok) + 1 and n.endswith(tok) for p in ps]
+                for p in tail:
+                    offer(p, (0.85 if len(tail) == 1 else 0.6) * f)
+            if len(tok) >= 5:
+                family = [p for n, ps in by_norm.items()
+                          if n.startswith(tok) and 1 <= len(n) - len(tok) <= 2
+                          for p in ps]
+                for p in family:
+                    offer(p, 0.85 if len(family) == 1 else 0.6)
+            if len(tok) >= 6:
+                ft = _fold(tok)
+                for n, ps in by_fold.items():
+                    # A longer SKU that STARTS with the read is a family
+                    # member, scored above - one extra letter isn't a typo.
+                    if n.startswith(ft) or ft.startswith(n):
+                        continue
+                    if abs(len(n) - len(ft)) <= 1 and _one_edit(ft, n):
+                        for p in ps:
+                            offer(p, 0.7)
+    text = "\n".join(lines).upper()
+    strong = {_model(m) for m in STRONG_MODEL_RE.findall(text)}
+    for m in strong | {_model(m) for m in MODEL_RE.findall(text)}:
+        cands = by_model.get(m, [])
+        for p in cands:
+            if len(cands) == 1:
+                offer(p, 0.9 if m in strong else 0.75)
+            else:
+                offer(p, 0.6)
     for key, p in info.items():
         variant = _norm(p.get("variant_title"))
         if variant and variant != "DEFAULTTITLE" and variant in words:
             scores[key] += 0.25
         if key in batch_skus:
             scores[key] += 0.08
+        # A clearly read model number that isn't this product's: never
+        # file on the SKU alone (photo 120 read W9151A as W9161A, a real
+        # SKU for a different product, on an SV192 label).
+        own = {_model(m) for m in MODEL_RE.findall((p.get("product_title") or "").upper())}
+        if strong and own and not (own & strong):
+            scores[key] = min(scores[key], 0.85)
     ranked = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))
     guesses = [
         {"sku": info[k].get("sku"), "title": _title(info[k]),
@@ -356,6 +476,40 @@ def catalog(session: Session) -> list[dict]:
 
 def _catalog_map(session: Session) -> dict[str, dict]:
     return {p["sku"].upper(): p for p in catalog(session)}
+
+
+_alias_lock = threading.Lock()
+_alias_cache: dict = {"at": 0.0, "map": {}}
+
+
+def learned_aliases(session: Session) -> dict[str, str]:
+    """Box codes people confirmed mean one of our SKUs: a SKU-shaped code
+    printed on a confirmed photo that isn't itself in the catalog (W9184D
+    on F9184D's box). Kept when at least 80% of its photos agree; cached
+    ten minutes."""
+    with _alias_lock:
+        if time.time() - _alias_cache["at"] < 600:
+            return _alias_cache["map"]
+    known = {_norm(p["sku"]) for p in catalog(session)}
+    rows = session.execute(
+        select(BoxPhoto.sku, BoxPhoto.ocr_text)
+        .where(BoxPhoto.status == "confirmed", BoxPhoto.sku.is_not(None))
+    ).all()
+    votes: dict[str, dict[str, int]] = {}
+    for sku, text in rows:
+        for code in label_skus((text or "").split("\n")):
+            if code in known or code == _norm(sku):
+                continue
+            v = votes.setdefault(code, {})
+            v[sku] = v.get(sku, 0) + 1
+    out = {}
+    for code, v in votes.items():
+        best = max(v.items(), key=lambda kv: kv[1])
+        if best[1] / sum(v.values()) >= 0.8:
+            out[code] = best[0]
+    with _alias_lock:
+        _alias_cache.update(at=time.time(), map=out)
+    return out
 
 
 def batch_products(session: Session, batch_id: int | None) -> list[dict]:
@@ -448,6 +602,8 @@ class BoxPhotoIn(BaseModel):
     af_result: str | None = Field(default=None, max_length=16)
     focus_mode: str | None = Field(default=None, max_length=16)
     box_uid: str | None = Field(default=None, max_length=40)
+    torch: bool | None = None
+    app_version: str | None = Field(default=None, max_length=20)
 
 
 @router.post("")
@@ -474,7 +630,9 @@ def upload_photo(payload: BoxPhotoIn, request: Request,
                    ocr_text="\n".join(lines)[:4000], ocr_error=error,
                    focus_diopters=payload.focus_diopters, af_ms=payload.af_ms,
                    af_result=payload.af_result, focus_mode=payload.focus_mode,
-                   box_uid=payload.box_uid)
+                   box_uid=payload.box_uid, torch=payload.torch,
+                   app_version=payload.app_version,
+                   ocr_layout=json.dumps(layout)[:200000] if layout else None)
     pin = (payload.pin_sku or "").strip()
     if pin:
         p = cmap.get(pin.upper())
@@ -488,8 +646,13 @@ def upload_photo(payload: BoxPhotoIn, request: Request,
         row.guesses = "[]"
     else:
         skus = {p["sku"] for p in batch_products(session, payload.batch_id)}
-        verdict = match_skus(lines, catalog(session), skus)
+        verdict = match_skus(lines, catalog(session), skus, layout,
+                             learned_aliases(session))
         verdict = apply_tick(verdict, lines, layout, image, cmap)
+        # The reader's own first answer, kept apart from any correction,
+        # so its accuracy can be tracked over time.
+        row.read_status = verdict["status"]
+        row.read_sku = verdict["sku"]
         row.status = verdict["status"]
         row.sku = verdict["sku"]
         row.guesses = json.dumps(verdict["guesses"])
@@ -835,4 +998,8 @@ def export_photos(session: Session = Depends(get_session)):
     rows = session.scalars(select(BoxPhoto).order_by(BoxPhoto.id)).all()
     return {"photos": [{**_photo_dict(r, cmap), "file": r.file_name,
                         "handoff_id": r.handoff_id,
-                        "confirmed_by": r.confirmed_by} for r in rows]}
+                        "confirmed_by": r.confirmed_by,
+                        "read_status": r.read_status, "read_sku": r.read_sku,
+                        "torch": r.torch, "app_version": r.app_version,
+                        "layout": json.loads(r.ocr_layout) if r.ocr_layout else None}
+                       for r in rows]}
