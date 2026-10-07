@@ -451,6 +451,54 @@ open pointed at prod. Once 4.18 is confirmed on the gun, delete the
    explicit sessions (lean rolling); barcode scans allowed but
    badged "no tag" (no retirement precision).
 
+## 📷 Camera SKU reader on the C72 (Steve, 2026-10-07) — PLANNING, collector first
+
+Trigger: Svbony boxes carry no barcode, only the SKU in plain text, so
+receiving them means typing or picking. The C72 has a good camera on
+the front (the Chainway SDK has no OCR; the built-in barcode imager is
+absent). Goal: read the SKU off the box live, on the gun.
+
+**Order of work (Steve):** 1) data collector, 2) ML Kit spike,
+3) live reader, 4) learning layers. The collector comes first so the
+reader is designed from real Svbony photos, not guesses.
+
+- **1. Data collector** (dev mode, off by default): a camera with a
+  built-in file sorter, not a capture form. Folder bar of SKU folders
+  (search the catalog, or the open batch's lines) + "Unsorted"; trigger
+  = shutter; per-folder thumbnail tray to move/delete; photos stored on
+  the gun per SKU and synced to the server when online. Plain Camera2,
+  no ML Kit needed. Questions the photos answer: is the text on the box
+  the Shopify SKU or a model name/item code; do all boxes have the white
+  SKU sticker; glare, curve, print size.
+- **2. Spike:** bundled ML Kit Text Recognition (no Play services, ~4 MB,
+  offline) wired into build.py by hand (no Gradle: AARs + transitive
+  deps + ML Kit's manifest component entries). Bare viewfinder outlining
+  text live; measure frames/second on the C72. Main risk of the plan.
+- **3. Live reader:** its own tab, camera runs nonstop while the tab is
+  open (no start-up lag), focus LOCKED to a narrow hand-to-box range so
+  it never hunts; torch toggle. Finds the SKU sticker first (white
+  sticker on brown cardboard = cheap contrast cue, no AI) and reads only
+  that strip. Each frame's lines are fuzzy-matched to candidate SKUs
+  (O/0, S/5, B/8, I/1 tolerated); scores build with ~1 s decay; a SKU
+  locks at a threshold with a clear margin over the runner-up (beep),
+  and the trigger captures it. A clean exact match in a small candidate
+  set can lock on frame one. Candidates = the gun's SKU list, narrowed
+  by context (e.g. the shipment's lines). Captured SKU behaves like the
+  BT barcode scanner (same capture box) so every barcode screen gets
+  it free; what else a capture does is still open (Steve undecided).
+- **4. Learning:** (a) a counting matcher that learns from every
+  confirmed capture (box wording -> SKU, common misreads), shared to
+  all guns through the server, inspectable and editable; (b) later, if
+  ML Kit misreads Svbony print, a small SKU-line reader trained OFF the
+  gun on confirmed crops (10-20 frames per box) + synthetic renders in
+  Svbony's font, retrained monthly on a schedule, promoted only if it
+  beats the current one on held-out photos, downloaded by the gun as a
+  model file (no APK release). ML Kit itself can't be retrained.
+  Collection costs the user nothing (confirming a read IS the label)
+  and tapers off once accuracy is good (keep ~1 box in 20 to catch
+  packaging changes). ~100 Svbony boxes/month: matcher useful at once,
+  a trained reader worth it around 300-500 confirmed boxes.
+
 ## 🎞 Pair-at-print reader on the Zebra (Nick + team, 2026-10-06) — PLANNED, hardware first
 
 Labels print barcode-only (no encoding printer), so every tag is paired
