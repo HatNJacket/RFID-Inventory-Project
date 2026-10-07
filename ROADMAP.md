@@ -770,6 +770,24 @@ each tag belongs to. Design as agreed before the team meeting:
   (swallowed-label retries and reprints reorder the tail), which is why
   the SKU-boundary barcode check stays.
 
+## 🖨 SO 965 post-mortem: 18 labels became 29 — ✅ DEPLOYED 2026-10-07 (f1e4d99)
+
+The planner received 18 units on SO 965 and the RFID app printed 29.
+Sep 23's 8 F9152A + 3 F9147A were booked on batch 230 ("SO 943, SO
+965", abandoned Sep 28); the SO 969 fix had made the sync ignore every
+abandoned batch, so the cumulative totals (11, 4) printed in full.
+Abandoned batches count again unless they are a race twin (a live batch
+for the same SO made within 2 minutes). Dry run after deploy: SO 965,
+969 and 945 would book nothing new.
+- **OPEN - batch 366** still books F9152A 11 / F9147A 4 (should be 3 /
+  1); 8 + 3 spare labels on its strip. Repair = an allow_lower sync for
+  just those two SKUs (voids the newest labels: F9152A strip positions
+  4-11, F9147A 13-15). NOT a whole-order undo sync - see next point.
+- **OPEN - multi-SO batches** (only 230 today) count each row toward
+  every SO they name: F9123A/F9127B/F9177A on 230 were mostly SO 943's,
+  so a later SO 965 receipt of those can under-book, and a whole-order
+  undo would wrongly lower batch 366.
+
 ## 🖨 SO 969 post-mortem: double booking + lost-status reprints — ✅ DEPLOYED 2026-10-06
 
 A 69-label ZWO order queued 219 labels. Three faults, three fixes:
