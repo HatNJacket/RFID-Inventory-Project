@@ -58,7 +58,9 @@ final class DevLink {
     private static SharedPreferences prefs;
     private static File crashFile;
     private static Thread worker;
-    private static volatile long lastPong = System.currentTimeMillis();
+    // Uptime, not wall time: it stops while the gun sleeps, so a dark
+    // screen isn't reported as a frozen one.
+    private static volatile long lastPong = android.os.SystemClock.uptimeMillis();
     private static volatile boolean stallReported;
 
     private DevLink() {
@@ -129,7 +131,7 @@ final class DevLink {
                 if (!enabled()) {
                     // The watchdog only runs while on: don't call the time
                     // it was off a frozen screen.
-                    lastPong = System.currentTimeMillis();
+                    lastPong = android.os.SystemClock.uptimeMillis();
                     continue;
                 }
                 watchdog();
@@ -150,7 +152,7 @@ final class DevLink {
     /** The main thread answers a ping every round; if it hasn't for 6 s
      *  the screen is frozen - send what it's stuck on. */
     private static void watchdog() {
-        long now = System.currentTimeMillis();
+        long now = android.os.SystemClock.uptimeMillis();
         if (now - lastPong > 6000 && !stallReported) {
             stallReported = true;
             StringBuilder sb = new StringBuilder("MAIN THREAD STALLED "
@@ -162,7 +164,7 @@ final class DevLink {
             log("stall", sb.toString());
         }
         main.post(() -> {
-            lastPong = System.currentTimeMillis();
+            lastPong = android.os.SystemClock.uptimeMillis();
             stallReported = false;
         });
     }
@@ -355,7 +357,10 @@ final class DevLink {
         Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(bmp);
         root.draw(c);
-        paintTextures(root, c);
+        // The camera picture only where it shows (a panel can cover it).
+        if (!(a instanceof CameraActivity) || !((CameraActivity) a).panelOpen()) {
+            paintTextures(root, c);
+        }
         float s = Math.min(1f, 720f / w);
         Bitmap small = s < 1f ? Bitmap.createScaledBitmap(bmp,
                 Math.round(w * s), Math.round(h * s), true) : bmp;

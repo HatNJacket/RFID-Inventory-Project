@@ -1162,6 +1162,11 @@ public class CameraActivity extends Activity {
                 + " Tap to try again; hold for details."));
     }
 
+    /** For the debug link's screenshot: a panel covers the camera. */
+    boolean panelOpen() {
+        return panel != null;
+    }
+
     /** For the debug link: restart the camera from scratch. */
     void restartCamera() {
         camStep("Restart requested remotely");
@@ -2408,7 +2413,10 @@ public class CameraActivity extends Activity {
             FlowLayout words = new FlowLayout(this, dp(6));
             for (String w : seen.optString("ocr_text").split("[\\n ]+")) {
                 if (w.trim().isEmpty()) continue;
-                boolean hit = norm(w).equals(norm(sku));
+                // "SKU:W9181B" counts too (the label's own prefix).
+                String nw = norm(w);
+                boolean hit = nw.equals(norm(sku))
+                        || nw.equals("SKU" + norm(sku));
                 TextView c = mono(w, 13, hit ? OK_TEXT : TEXT);
                 c.setBackground(bg(hit ? OK_BG : CHIP, 6, 0));
                 c.setPadding(dp(8), dp(3), dp(8), dp(3));
@@ -2544,6 +2552,17 @@ public class CameraActivity extends Activity {
                 }
                 Button ok = primary("Looks right (" + autos + ")");
                 ok.setOnClickListener(v -> {
+                    // Show it confirmed at once (the server catches up),
+                    // so a second tap can't look like it did nothing.
+                    for (JSONObject p : photos) {
+                        if (autoIds.contains(p.optInt("id"))) {
+                            try {
+                                p.put("status", "confirmed");
+                            } catch (Exception ignored) {
+                            }
+                        }
+                    }
+                    renderPanel();
                     try {
                         JSONObject b = workerBody().put("ids",
                                 new JSONArray(autoIds));
