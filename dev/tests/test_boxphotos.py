@@ -206,8 +206,26 @@ with patch("app.main._maybe_refresh_bin_map", return_value=False):
         h2 = cl.post("/api/boxphotos/send", json={"items": [{"sku": "W2578A", "qty": 1}]}).json()["handoff"]
         cl.post(f"/api/boxphotos/handoffs/{h2['id']}/dismiss")
         check("a dismissed list stops showing", cl.get("/api/boxphotos/handoffs").json()["handoffs"] == [])
+        f1 = upload(cl, "uid-0009-f", ["F9146A"], focus_diopters=4.0, af_ms=400,
+                    af_result="locked", focus_mode="trigger")
+        upload(cl, "uid-0010-f", ["F9146A"], focus_diopters=5.0, af_ms=900,
+               af_result="locked", focus_mode="trigger")
+        upload(cl, "uid-0011-f", ["F9146A"], focus_diopters=9.0, af_ms=1500,
+               af_result="timeout", focus_mode="trigger")
+        fs = cl.get("/api/boxphotos/focus").json()
+        check("each photo keeps its focus, and the summary uses locked ones",
+              f1["focus_diopters"] == 4.0 and fs["n"] == 3
+              and fs["median_diopters"] == 4.5 and fs["median_cm"] == 22
+              and fs["results"] == {"locked": 2, "timeout": 1}, str(fs))
+        check("the current shipment carries the focus summary for the gun",
+              cl.get("/api/boxphotos/current").json()["focus"]["median_diopters"] == 4.5)
+        for u in ("uid-0009-f", "uid-0010-f", "uid-0011-f"):
+            with Session(get_engine()) as s:
+                row = s.scalar(select(BoxPhoto).where(BoxPhoto.uid == u))
+                row.status = "deleted"
+                s.commit()
         exp = cl.get("/api/boxphotos/export").json()["photos"]
-        check("export lists every photo with its file", len(exp) == 6 and all(e["file"] for e in exp))
+        check("export lists every photo with its file", len(exp) == 9 and all(e["file"] for e in exp))
 
 print()
 print(f"{len(fails)} failed" if fails else "all passed")

@@ -181,6 +181,44 @@ public class CameraActivity extends Activity {
     private android.media.ToneGenerator tone;
     private Button stripNext;
 
+    // ---- focus (Steve, 2026-10-07: "sometimes it takes 5 seconds") ----
+    // Trigger mode: the lens rests at the distance most scans use; a
+    // trigger press runs one centre-weighted autofocus, release shoots
+    // once it locks (1.5 s at most). Continuous mode is the fallback for
+    // cameras without a movable lens / AUTO focus.
+    private boolean triggerMode;
+    private float minFocus;
+    private android.graphics.Rect activeArray;
+    private int maxAfRegions;
+    private float parkDiopters = 4f; // 25 cm until the gun learns
+    private float serverPark = -1f;
+    private volatile Integer lastAf;
+    private volatile Float lastLens;
+    private volatile boolean focusing;
+    private volatile String focusResult; // locked | not_locked | timeout
+    private volatile Float focusLens;
+    private volatile int focusMs = -1;
+    private long focusStartAt;
+    private boolean shootAfterFocus;
+    private Runnable focusTimeout;
+    private Integer loggedAf;
+    // Captured when the shutter fires, sent with the photo.
+    private Float shotLens;
+    private int shotAfMs = -1;
+    private String shotAfResult;
+    private String shotFocusMode;
+    private final CameraCaptureSession.CaptureCallback previewCb =
+            new CameraCaptureSession.CaptureCallback() {
+                @Override
+                public void onCaptureCompleted(CameraCaptureSession session,
+                        CaptureRequest request,
+                        android.hardware.camera2.TotalCaptureResult r) {
+                    onAf(r.get(android.hardware.camera2.CaptureResult
+                            .CONTROL_AF_STATE), r.get(android.hardware
+                            .camera2.CaptureResult.LENS_FOCUS_DISTANCE));
+                }
+            };
+
     // ---- camera -----------------------------------------------------------
     private TextureView texture;
     private CameraDevice camera;
@@ -329,6 +367,8 @@ public class CameraActivity extends Activity {
                     // A quick pull takes a photo on release; a hold
                     // (0.6 s, it beeps) is Next box.
                     triggerDownAt = System.currentTimeMillis();
+                    // Pressing starts focusing; releasing shoots.
+                    startFocus();
                     if (holdCue != null) ui.removeCallbacks(holdCue);
                     holdCue = () -> {
                         beep(true);
@@ -353,9 +393,10 @@ public class CameraActivity extends Activity {
                     triggerDownAt = 0;
                     if (held >= 600) {
                         hint.setText(READY_HINT);
+                        cancelFocus();
                         nextBox();
                     } else {
-                        takePhoto();
+                        shootWhenFocused();
                     }
                 }
                 return true;
@@ -644,7 +685,7 @@ public class CameraActivity extends Activity {
                 Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
         hl.setMargins(dp(12), 0, dp(12), dp(16));
         finder.addView(hint, hl);
-        finder.setOnClickListener(v -> takePhoto());
+        finder.setOnClickListener(v -> shootWhenFocused());
         finder.setOnLongClickListener(v -> {
             showCamLog();
             return true;
@@ -730,7 +771,7 @@ public class CameraActivity extends Activity {
         shutterCol.setGravity(Gravity.CENTER_HORIZONTAL);
         ShutterView shutter = new ShutterView(this);
         shutter.setContentDescription("Take photo");
-        shutter.setOnClickListener(v -> takePhoto());
+        shutter.setOnClickListener(v -> shootWhenFocused());
         shutterCol.addView(shutter, lp(dp(78), dp(78)));
         TextView sh = text("Trigger or tap", 12, MUTED, false);
         sh.setGravity(Gravity.CENTER);
@@ -1081,6 +1122,17 @@ public class CameraActivity extends Activity {
                     photos = list;
                     batch = b;
                     readerReady = ready;
+                    JSONObject fs = r.optJSONObject("focus");
+                    if (fs != null && !fs.isNull("median_diopters")) {
+                        serverPark = (float) fs.optDouble("median_diopters", -1);
+                        float np = learnedPark();
+                        if (Math.abs(np - parkDiopters) > 0.05f) {
+                            parkDiopters = np;
+                            if (camHandler != null && !focusing) {
+                                camHandler.post(this::applyPreview);
+                            }
+                        }
+                    }
                     for (JSONObject p : photos) absorbTitles(p);
                     if (batch != null) {
                         JSONArray pr = batch.optJSONArray("products");
@@ -1261,6 +1313,33 @@ public class CameraActivity extends Activity {
                     CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
             Integer so = chars.get(CameraCharacteristics.SENSOR_ORIENTATION);
             sensorOrientation = so == null ? 90 : so;
+            Float mf = chars.get(
+                    CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE);
+            minFocus = mf == null ? 0f : mf;
+            int[] afModes = chars.get(
+                    CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES);
+            boolean hasAuto = false, hasOff = false;
+            StringBuilder am = new StringBuilder();
+            for (int m : afModes == null ? new int[0] : afModes) {
+                am.append(m).append(' ');
+                if (m == CameraMetadata.CONTROL_AF_MODE_AUTO) hasAuto = true;
+                if (m == CameraMetadata.CONTROL_AF_MODE_OFF) hasOff = true;
+            }
+            Integer cal = chars.get(
+                    CameraCharacteristics.LENS_INFO_FOCUS_DISTANCE_CALIBRATION);
+            Float hyper = chars.get(
+                    CameraCharacteristics.LENS_INFO_HYPERFOCAL_DISTANCE);
+            activeArray = chars.get(
+                    CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE);
+            Integer mr = chars.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF);
+            maxAfRegions = mr == null ? 0 : mr;
+            triggerMode = hasAuto && hasOff && minFocus > 0;
+            parkDiopters = learnedPark();
+            camStep("Lens: min focus " + minFocus + " dpt, hyperfocal "
+                    + hyper + ", calibration " + cal + ", AF modes " + am
+                    + "AF regions " + maxAfRegions + " -> "
+                    + (triggerMode ? "trigger focus, parked at "
+                    + parkDiopters + " dpt" : "continuous focus"));
             previewSize = pick(map.getOutputSizes(SurfaceTexture.class),
                     smallSizes ? 1280 : 1600);
             Size jpeg = pick(map.getOutputSizes(ImageFormat.JPEG),
@@ -1370,18 +1449,190 @@ public class CameraActivity extends Activity {
         try {
             previewReq.set(CaptureRequest.CONTROL_MODE,
                     CameraMetadata.CONTROL_MODE_AUTO);
-            previewReq.set(CaptureRequest.CONTROL_AF_MODE,
-                    CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
+            android.hardware.camera2.params.MeteringRectangle centre =
+                    centreRegion();
+            if (centre != null && maxAfRegions > 0) {
+                previewReq.set(CaptureRequest.CONTROL_AF_REGIONS,
+                        new android.hardware.camera2.params.MeteringRectangle[]{
+                                centre});
+            }
+            previewReq.set(CaptureRequest.CONTROL_AF_TRIGGER,
+                    CameraMetadata.CONTROL_AF_TRIGGER_IDLE);
+            if (!triggerMode) {
+                previewReq.set(CaptureRequest.CONTROL_AF_MODE,
+                        CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
+            } else if (focusing || focusResult != null) {
+                previewReq.set(CaptureRequest.CONTROL_AF_MODE,
+                        CaptureRequest.CONTROL_AF_MODE_AUTO);
+            } else {
+                // Resting: lens parked where most scans focus.
+                previewReq.set(CaptureRequest.CONTROL_AF_MODE,
+                        CaptureRequest.CONTROL_AF_MODE_OFF);
+                previewReq.set(CaptureRequest.LENS_FOCUS_DISTANCE,
+                        Math.min(parkDiopters, minFocus));
+            }
             previewReq.set(CaptureRequest.CONTROL_AE_MODE,
                     CaptureRequest.CONTROL_AE_MODE_ON);
             previewReq.set(CaptureRequest.FLASH_MODE, torchOn
                     ? CaptureRequest.FLASH_MODE_TORCH
                     : CaptureRequest.FLASH_MODE_OFF);
-            capSession.setRepeatingRequest(previewReq.build(), null,
+            capSession.setRepeatingRequest(previewReq.build(), previewCb,
                     camHandler);
         } catch (Exception e) {
             camFail("The camera stopped: " + e.getMessage());
         }
+    }
+
+    /** The middle 40% of the frame, where the sticker is aimed. */
+    private android.hardware.camera2.params.MeteringRectangle centreRegion() {
+        if (activeArray == null) return null;
+        int w = activeArray.width(), h = activeArray.height();
+        int rw = (int) (w * 0.4f), rh = (int) (h * 0.4f);
+        return new android.hardware.camera2.params.MeteringRectangle(
+                activeArray.left + (w - rw) / 2, activeArray.top + (h - rh) / 2,
+                rw, rh,
+                android.hardware.camera2.params.MeteringRectangle
+                        .METERING_WEIGHT_MAX);
+    }
+
+    /** Camera thread: every preview frame's AF state and lens position. */
+    private void onAf(Integer af, Float lens) {
+        lastAf = af;
+        if (lens != null) lastLens = lens;
+        if (af != null && !af.equals(loggedAf)) {
+            loggedAf = af;
+            DevLink.log("af", "state " + af + " lens " + lens
+                    + (focusing ? " +" + (android.os.SystemClock.uptimeMillis()
+                    - focusStartAt) + " ms" : ""));
+        }
+        if (!focusing || af == null) return;
+        boolean locked = af == CameraMetadata.CONTROL_AF_STATE_FOCUSED_LOCKED;
+        boolean failed = af == CameraMetadata.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED;
+        if (!locked && !failed) return;
+        focusing = false;
+        focusResult = locked ? "locked" : "not_locked";
+        focusLens = lens;
+        focusMs = (int) (android.os.SystemClock.uptimeMillis() - focusStartAt);
+        ui.post(this::onFocusDone);
+    }
+
+    /** Trigger pressed (or a tap): one centre-weighted autofocus. */
+    private void startFocus() {
+        if (!triggerMode || capSession == null || previewReq == null
+                || focusing || shooting) {
+            return;
+        }
+        focusing = true;
+        focusResult = null;
+        focusLens = null;
+        focusMs = -1;
+        focusStartAt = android.os.SystemClock.uptimeMillis();
+        if (camHandler == null) return;
+        camHandler.post(() -> {
+            try {
+                applyPreview(); // AUTO mode, centre region
+                previewReq.set(CaptureRequest.CONTROL_AF_TRIGGER,
+                        CameraMetadata.CONTROL_AF_TRIGGER_START);
+                capSession.capture(previewReq.build(), previewCb, camHandler);
+                previewReq.set(CaptureRequest.CONTROL_AF_TRIGGER,
+                        CameraMetadata.CONTROL_AF_TRIGGER_IDLE);
+            } catch (Exception e) {
+                focusing = false;
+                camStep("Focus start failed: " + e);
+            }
+        });
+    }
+
+    /** Released (or tapped): shoot now if focused, else when it locks. */
+    private void shootWhenFocused() {
+        if (!triggerMode) {
+            takePhoto();
+            return;
+        }
+        if (focusResult != null) {
+            takePhoto();
+            return;
+        }
+        if (!focusing) startFocus();
+        if (!focusing) {
+            takePhoto(); // couldn't focus (camera not ready): try anyway
+            return;
+        }
+        shootAfterFocus = true;
+        hint.setText("Focusing…");
+        if (focusTimeout != null) ui.removeCallbacks(focusTimeout);
+        focusTimeout = () -> {
+            if (!shootAfterFocus) return;
+            focusing = false;
+            focusResult = "timeout";
+            focusLens = lastLens;
+            focusMs = (int) (android.os.SystemClock.uptimeMillis()
+                    - focusStartAt);
+            shootAfterFocus = false;
+            takePhoto();
+        };
+        ui.postDelayed(focusTimeout, 1500);
+    }
+
+    private void onFocusDone() {
+        if (!shootAfterFocus) return; // still held: shoot on release
+        shootAfterFocus = false;
+        if (focusTimeout != null) ui.removeCallbacks(focusTimeout);
+        takePhoto();
+    }
+
+    private void cancelFocus() {
+        focusing = false;
+        focusResult = null;
+        shootAfterFocus = false;
+        if (focusTimeout != null) ui.removeCallbacks(focusTimeout);
+        if (camHandler != null) camHandler.post(this::releaseFocus);
+    }
+
+    /** Camera thread: drop the AF lock and park the lens again. */
+    private void releaseFocus() {
+        if (capSession == null || previewReq == null) return;
+        try {
+            previewReq.set(CaptureRequest.CONTROL_AF_TRIGGER,
+                    CameraMetadata.CONTROL_AF_TRIGGER_CANCEL);
+            capSession.capture(previewReq.build(), previewCb, camHandler);
+            previewReq.set(CaptureRequest.CONTROL_AF_TRIGGER,
+                    CameraMetadata.CONTROL_AF_TRIGGER_IDLE);
+        } catch (Exception ignored) {
+        }
+        applyPreview();
+    }
+
+    /** Where to park: the median of this gun's last locked focuses, or
+     *  the server's median across all photos, or 25 cm. */
+    private float learnedPark() {
+        List<Float> hist = new ArrayList<>();
+        for (String x : prefs.getString("focus_hist", "").split(",")) {
+            try {
+                if (!x.isEmpty()) hist.add(Float.parseFloat(x));
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        float park;
+        if (hist.size() >= 3) {
+            java.util.Collections.sort(hist);
+            park = hist.get(hist.size() / 2);
+        } else if (serverPark > 0) {
+            park = serverPark;
+        } else {
+            park = 4f;
+        }
+        return minFocus > 0 ? Math.min(park, minFocus) : park;
+    }
+
+    private void rememberFocus(float diopters) {
+        String old = prefs.getString("focus_hist", "");
+        List<String> parts = new ArrayList<>();
+        for (String x : old.split(",")) if (!x.isEmpty()) parts.add(x);
+        parts.add(String.format(Locale.US, "%.2f", diopters));
+        while (parts.size() > 30) parts.remove(0);
+        prefs.edit().putString("focus_hist", String.join(",", parts)).apply();
+        parkDiopters = learnedPark();
     }
 
     private void setTorch(boolean on) {
@@ -1431,14 +1682,34 @@ public class CameraActivity extends Activity {
         box.shots++;
         shotPin = pinSku != null ? pinSku : box.sku;
         shotPinAuto = pinSku == null && box.sku != null;
+        shotFocusMode = triggerMode ? "trigger" : "continuous";
+        shotAfResult = triggerMode ? (focusResult != null ? focusResult
+                : "none") : "continuous";
+        shotAfMs = triggerMode ? focusMs : -1;
+        shotLens = triggerMode && focusLens != null ? focusLens : lastLens;
+        if ("locked".equals(shotAfResult) && shotLens != null && shotLens > 0) {
+            rememberFocus(shotLens);
+        }
+        DevLink.log("af", "shot: " + shotAfResult + " in " + shotAfMs
+                + " ms at " + shotLens + " dpt");
+        hint.setText(READY_HINT);
         // Never stay stuck if a capture silently produces nothing.
         ui.postDelayed(() -> shooting = false, 5000);
         try {
             CaptureRequest.Builder still = camera.createCaptureRequest(
                     CameraDevice.TEMPLATE_STILL_CAPTURE);
             still.addTarget(jpegReader.getSurface());
-            still.set(CaptureRequest.CONTROL_AF_MODE,
-                    CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
+            // Trigger mode keeps the lens where AF locked it.
+            still.set(CaptureRequest.CONTROL_AF_MODE, triggerMode
+                    ? CaptureRequest.CONTROL_AF_MODE_AUTO
+                    : CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE);
+            android.hardware.camera2.params.MeteringRectangle centre =
+                    centreRegion();
+            if (centre != null && maxAfRegions > 0) {
+                still.set(CaptureRequest.CONTROL_AF_REGIONS,
+                        new android.hardware.camera2.params.MeteringRectangle[]{
+                                centre});
+            }
             still.set(CaptureRequest.CONTROL_AE_MODE,
                     CaptureRequest.CONTROL_AE_MODE_ON);
             still.set(CaptureRequest.FLASH_MODE, torchOn
@@ -1446,7 +1717,18 @@ public class CameraActivity extends Activity {
                     : CaptureRequest.FLASH_MODE_OFF);
             still.set(CaptureRequest.JPEG_ORIENTATION, sensorOrientation);
             still.set(CaptureRequest.JPEG_QUALITY, (byte) 90);
-            capSession.capture(still.build(), null, camHandler);
+            capSession.capture(still.build(),
+                    new CameraCaptureSession.CaptureCallback() {
+                        @Override
+                        public void onCaptureCompleted(CameraCaptureSession ss,
+                                CaptureRequest rq,
+                                android.hardware.camera2.TotalCaptureResult r) {
+                            if (triggerMode) {
+                                focusResult = null;
+                                releaseFocus();
+                            }
+                        }
+                    }, camHandler);
             shutterSound.play(MediaActionSound.SHUTTER_CLICK);
             flash.setVisibility(View.VISIBLE);
             ui.postDelayed(() -> flash.setVisibility(View.GONE), 120);
@@ -1475,6 +1757,10 @@ public class CameraActivity extends Activity {
         final String pin = shotPin;
         final boolean pinAuto = shotPinAuto;
         final boolean newBox = shotNewBox;
+        final Float fLens = shotLens;
+        final int fMs = shotAfMs;
+        final String fResult = shotAfResult;
+        final String fMode = shotFocusMode;
         final Box inBox = shotBox;
         final String uid = new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US)
                 .format(new Date()) + "-" + Integer.toHexString(
@@ -1490,6 +1776,11 @@ public class CameraActivity extends Activity {
                     .put("new_box", newBox)
                     .put("pin_sku", pin == null ? JSONObject.NULL : pin)
                     .put("pin_auto", pinAuto)
+                    .put("focus_diopters", fLens == null ? JSONObject.NULL
+                            : (double) fLens)
+                    .put("af_ms", fMs < 0 ? JSONObject.NULL : fMs)
+                    .put("af_result", fResult == null ? JSONObject.NULL : fResult)
+                    .put("focus_mode", fMode == null ? JSONObject.NULL : fMode)
                     .put("worker", prefs.getString("worker_name", ""));
             write(new File(dir, uid + ".json"),
                     meta.toString().getBytes(StandardCharsets.UTF_8));
@@ -1636,6 +1927,12 @@ public class CameraActivity extends Activity {
                 if (!meta.isNull("pin_sku")) {
                     body.put("pin_sku", meta.optString("pin_sku"));
                     body.put("pin_auto", meta.optBoolean("pin_auto", false));
+                }
+                for (String fk : new String[]{"focus_diopters", "af_ms",
+                        "af_result", "focus_mode"}) {
+                    if (meta.has(fk) && !meta.isNull(fk)) {
+                        body.put(fk, meta.get(fk));
+                    }
                 }
                 JSONObject r = api("POST", "/api/boxphotos", body);
                 JSONObject photo = r.getJSONObject("photo");

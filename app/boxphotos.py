@@ -302,6 +302,9 @@ def _photo_dict(row: BoxPhoto, cmap: dict[str, dict]) -> dict:
         "worker": row.worker,
         "batch_id": row.batch_id,
         "created_at": row.created_at.isoformat() if row.created_at else None,
+        "focus_diopters": row.focus_diopters,
+        "af_ms": row.af_ms,
+        "af_result": row.af_result,
     }
 
 
@@ -345,6 +348,10 @@ class BoxPhotoIn(BaseModel):
     # chosen by a person: file it as "auto" until someone confirms.
     pin_auto: bool = False
     worker: str | None = Field(default=None, max_length=100)
+    focus_diopters: float | None = Field(default=None, ge=0, le=100)
+    af_ms: int | None = Field(default=None, ge=0, le=120000)
+    af_result: str | None = Field(default=None, max_length=16)
+    focus_mode: str | None = Field(default=None, max_length=16)
 
 
 @router.post("")
@@ -366,7 +373,9 @@ def upload_photo(payload: BoxPhotoIn, request: Request,
     by = _auth.actor_name(request, payload.worker)
     row = BoxPhoto(uid=payload.uid, worker=by, batch_id=payload.batch_id,
                    file_name=name, new_box=payload.new_box,
-                   ocr_text="\n".join(lines)[:4000], ocr_error=error)
+                   ocr_text="\n".join(lines)[:4000], ocr_error=error,
+                   focus_diopters=payload.focus_diopters, af_ms=payload.af_ms,
+                   af_result=payload.af_result, focus_mode=payload.focus_mode)
     pin = (payload.pin_sku or "").strip()
     if pin:
         p = cmap.get(pin.upper())
@@ -417,7 +426,46 @@ def current_photos(batch_id: int | None = None,
                   if batch else None),
         "reader_ready": bool(config.VISION_ENDPOINT and config.VISION_KEY),
         "handoffs_pending": len(pending),
+        "focus": focus_summary(session, 60),
     }
+
+
+def _median(xs: list) -> float | None:
+    xs = sorted(xs)
+    if not xs:
+        return None
+    mid = len(xs) // 2
+    return xs[mid] if len(xs) % 2 else (xs[mid - 1] + xs[mid]) / 2
+
+
+def focus_summary(session: Session, last: int = 200) -> dict:
+    """Where the recent photos focused and how fast: the gun parks its
+    lens at the median so focusing starts close to right."""
+    rows = session.execute(
+        select(BoxPhoto.focus_diopters, BoxPhoto.af_ms, BoxPhoto.af_result)
+        .where(BoxPhoto.focus_diopters.is_not(None))
+        .order_by(BoxPhoto.id.desc()).limit(last)
+    ).all()
+    locked = [r.focus_diopters for r in rows
+              if r.af_result in ("locked", "continuous") and r.focus_diopters]
+    times = sorted(r.af_ms for r in rows if r.af_ms is not None)
+    med = _median(locked)
+    results: dict[str, int] = {}
+    for r in rows:
+        results[r.af_result or "?"] = results.get(r.af_result or "?", 0) + 1
+    return {
+        "n": len(rows),
+        "median_diopters": round(med, 2) if med else None,
+        "median_cm": round(100 / med) if med else None,
+        "af_ms_median": int(_median(times)) if times else None,
+        "af_ms_p90": times[int(len(times) * 0.9)] if times else None,
+        "results": results,
+    }
+
+
+@router.get("/focus")
+def focus_stats(last: int = 200, session: Session = Depends(get_session)):
+    return focus_summary(session, max(1, min(last, 2000)))
 
 
 class WorkerIn(BaseModel):

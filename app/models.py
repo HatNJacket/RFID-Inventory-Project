@@ -2055,6 +2055,13 @@ class BoxPhoto(Base):
         DateTime(timezone=True)
     )
     confirmed_by: Mapped[str | None] = mapped_column(String(100))
+    # Focus telemetry from the gun: the lens distance in diopters
+    # (1 / metres; 4.0 = 25 cm), ms from focus start to lock, and
+    # locked | not_locked | timeout | continuous.
+    focus_diopters: Mapped[float | None] = mapped_column(Float)
+    af_ms: Mapped[int | None] = mapped_column(Integer)
+    af_result: Mapped[str | None] = mapped_column(String(16))
+    focus_mode: Mapped[str | None] = mapped_column(String(16))
 
 
 class BoxPhotoHandoff(Base):

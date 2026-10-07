@@ -143,6 +143,12 @@ _COLUMN_UPGRADES = [
     # tag sweep", "packing scan", "locate" - the verdict ladder's "heard
     # elsewhere" row reads it.
     ("rfid_assignments", "last_heard_ctx", "NVARCHAR(120) NULL"),
+    # Box photos focus telemetry (2026-10-07): where the lens focused,
+    # how long it took and how it ended, to tune the gun's focus.
+    ("rfid_box_photos", "focus_diopters", "FLOAT NULL"),
+    ("rfid_box_photos", "af_ms", "INTEGER NULL"),
+    ("rfid_box_photos", "af_result", "VARCHAR(16) NULL"),
+    ("rfid_box_photos", "focus_mode", "VARCHAR(16) NULL"),
 ]
 
 
