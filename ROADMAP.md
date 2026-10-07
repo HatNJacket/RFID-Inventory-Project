@@ -451,6 +451,22 @@ open pointed at prod. Once 4.18 is confirmed on the gun, delete the
    explicit sessions (lean rolling); barcode scans allowed but
    badged "no tag" (no retirement precision).
 
+## 🏷 FIND A LABEL: which strip, which position — ✅ DEPLOYED 2026-10-07 (C72 4.44)
+
+Steve: three batches' strips on the bench, no way to tell which label
+goes with which box. Every print job carries strip_id + strip_pos
+(app/labelstrips.py before_flush listener: all jobs queued in one
+transaction = one strip, numbered in the order added = print order, the
+agent claims by id; existing 4,805 jobs backfilled into 855 strips by
+dev/backfill_print_strips.py). GET /api/labels/locate?code= (barcode or
+SKU) -> per strip, open batches first: batch ("Receiving SO 976 ·
+Svbony" / "Bin G2-1"), strip label count (failed labels excluded),
+this product's positions ("39" / "7-9"), paired so far, the batch item.
+Gun: FIND A LABEL in the menu -> scan the label (BT Enter submits) ->
+cards "Labels 7-9 of 22 on its strip" -> OPEN BATCH selects that product
+as the pairing target. Label barcodes are product barcodes, so a scan
+names the product's positions, not one sticker. test_labelstrips.py.
+
 ## 📷 Box photos collector — ✅ DEPLOYED 2026-10-07 (C72 4.36)
 
 Step 1 of the camera SKU reader below, built from the approved canvas.
