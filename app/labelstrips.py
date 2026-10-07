@@ -76,6 +76,15 @@ def _codes_for(session: Session, code: str) -> tuple[set[str], set[str]]:
     return barcodes, skus
 
 
+def _batch_label(batch: Batch) -> str:
+    """Receiving batches all share the RECEIVING bin; their stock order
+    rides created_by ("TC-Planner · SO 1042"), so name them by that."""
+    if batch.kind == "receiving":
+        ref = (batch.created_by or "").replace("TC-Planner", "").strip(" ·")
+        return f"Receiving {ref}".strip()
+    return f"Bin {batch.bin_name}"
+
+
 def _ranges(nums: list[int]) -> str:
     """[7, 8, 9, 12] -> "7-9, 12"."""
     out, start, prev = [], None, None
@@ -148,7 +157,7 @@ def locate_label(code: str, days: int = 30,
             "pending": sum(1 for j in whole if j.status != "done"),
             "sku": first.sku,
             "title": first.product_title,
-            "batch": ({"id": batch.id, "label": batch.bin_name,
+            "batch": ({"id": batch.id, "label": _batch_label(batch),
                        "status": batch.status, "kind": batch.kind}
                       if batch else None),
             "item": ({"id": item.id, "paired": item.paired_count}

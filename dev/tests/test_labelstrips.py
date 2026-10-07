@@ -47,7 +47,7 @@ with patch("app.main._maybe_refresh_bin_map", return_value=False):
     with TestClient(app) as cl:
         with Session(get_engine()) as s:
             s.add(BinMapEntry(sku="W9139B", barcode="111222333", product_title="Red dot", bin="I2-3"))
-            b1 = Batch(bin_name="SO 1042 Svbony", status="pairing", kind="receiving")
+            b1 = Batch(bin_name="RECEIVING", status="pairing", kind="receiving", created_by="TC-Planner · SO 1042")
             b2 = Batch(bin_name="SO 1040 Svbony", status="done", kind="receiving")
             s.add_all([b1, b2])
             s.flush()
@@ -77,6 +77,8 @@ with patch("app.main._maybe_refresh_bin_map", return_value=False):
         check("a scanned label names its batch, strip size and positions",
               top.get("batch", {}).get("id") == b1_id and top.get("strip_labels") == 6
               and top.get("positions") == [3, 4, 5] and top.get("positions_text") == "3-5", str(top))
+        check("a receiving batch is named by its stock order",
+              top.get("batch", {}).get("label") == "Receiving SO 1042", str(top.get("batch")))
         check("the batch item to select comes back with its pairing progress",
               top.get("item") and top["item"]["paired"] == 1, str(top.get("item")))
         check("an open batch is listed before a finished one",
