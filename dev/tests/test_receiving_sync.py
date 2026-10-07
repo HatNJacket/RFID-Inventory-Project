@@ -154,19 +154,43 @@ with patch("app.shopify.lookup_barcode", return_value=None), \
     check("a closed batch still reports its printed labels",
           a["booked_units"] == 9 and a["labels_queued"] == 8 and a["labels_owed"] == 1, a)
 
-    # 2026-10-06 (SO 969): ABANDONING a batch throws its units away for
-    # good - they stop counting as booked, so they book again elsewhere.
+    # 2026-10-06 (SO 969): an abandoned RACE TWIN (made within seconds of
+    # another batch for the SO) throws its units away - they stop counting
+    # as booked, so they book again elsewhere.
     with Session(get_engine()) as s:
         fresh = s.scalar(select(Batch).where(Batch.kind == "receiving",
                                              Batch.status != "done"))
         fresh.status = "abandoned"
         s.commit()
     st = cl.get("/api/receiving/so-labels", params={"reference": "SO 964"}).json()
-    check("an abandoned batch's units stop counting",
+    check("an abandoned race twin's units stop counting",
           sku_row(st, "93230")["booked_units"] == 8 and st["labels_owed"] == 0, st)
     out = cl.post("/api/receiving/sync", json={"reference": ref, "items": items}).json()
     check("  ...so the late unit books again on a new batch",
           sum(x["quantity"] for x in out["booked"]) == 1, out["booked"])
+
+    # 2026-10-07 (SO 965): an abandoned batch that is NOT a twin was a real
+    # receipt - 8 F9152A booked and printed on Sep 23, batch abandoned
+    # later. When 3 more arrive, only those 3 book and print, not 11.
+    from datetime import datetime, timedelta, timezone
+    sv = [{"sku": "93230", "barcode": "050234932301", "received_total": 8}]
+    cl.post("/api/receiving/sync", json={
+        "reference": "SO 995 · Svbony", "items": sv, "print": True})
+    with Session(get_engine()) as s:
+        old = s.scalar(select(Batch).where(
+            Batch.created_by == "TC-Planner · SO 995 · Svbony"))
+        old.created_at = datetime.now(timezone.utc) - timedelta(days=14)
+        old.status = "abandoned"
+        s.commit()
+    before = jobs_for("93230")
+    sv[0]["received_total"] = 11
+    out = cl.post("/api/receiving/sync", json={
+        "reference": "SO 995 · Svbony", "items": sv, "print": True}).json()
+    check("an abandoned real receipt still counts: 3 new units, not 11",
+          sum(x["quantity"] for x in out["booked"]) == 3, out["booked"])
+    check("  ...and only 3 labels print",
+          out["queued"] == 3 and jobs_for("93230") - before == 3,
+          (out["queued"], jobs_for("93230") - before))
 
     # 2026-10-06 (SO 969): two syncs for one SO at the same moment - the
     # planner's Save booking and a Print all 24 s later overlapped and

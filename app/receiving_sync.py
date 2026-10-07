@@ -28,6 +28,8 @@ An order received through "Receive entire shipment" already printed and
 paired everything here; both calls answer full_shipment and do nothing.
 Shopify is never touched from this module.
 """
+from datetime import datetime, timedelta, timezone
+
 from fastapi import Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
@@ -88,17 +90,28 @@ def _full_shipment(session: Session, so_part: str) -> bool:
     ) is not None
 
 
+# A race twin is born within seconds of the batch it copies (SO 969:
+# 6 s and 24 s apart); real receipts of one order land hours or weeks
+# apart.
+_TWIN_WINDOW = timedelta(minutes=2)
+
+
 def _so_batches(session: Session, so_part: str) -> list[Batch]:
-    """Every planner receiving batch this SO ever had, open or done - the
-    booked total must count finished batches too, or a receive after the
-    first batch closed would re-book the whole order. ABANDONED batches
-    stay out (2026-10-06, SO 969): abandoning is how a duplicate batch
-    is thrown away, so its units and labels must stop counting."""
-    out = []
+    """Every planner receiving batch this SO ever had, open, done or
+    abandoned - the booked total must count finished batches too, or a
+    receive after the first batch closed would re-book the whole order.
+
+    The one exception is an abandoned RACE TWIN (2026-10-06, SO 969):
+    two overlapping syncs each booked the whole order on its own batch
+    within seconds, and abandoning one was the cleanup. Any other
+    abandoned batch was a real receipt whose labels got printed and used
+    (2026-10-07, SO 965: batch 230 held the 8 F9152A received Sep 23;
+    once abandoned batches stopped counting, the next receive printed
+    all 11 again instead of the 3 that arrived)."""
+    mine = []
     for b in session.scalars(
         select(Batch).where(
             Batch.kind == "receiving",
-            Batch.status != "abandoned",
             Batch.created_by.like("TC-Planner ·%"),
         ).order_by(Batch.id)
     ):
@@ -107,8 +120,22 @@ def _so_batches(session: Session, so_part: str) -> list[Batch]:
             continue
         sos = {s.strip().upper() for s in parts[1].split(",") if s.strip()}
         if so_part in sos:
-            out.append(b)
-    return out
+            mine.append(b)
+    live = [b for b in mine if b.status != "abandoned"]
+
+    def twin(b: Batch) -> bool:
+        if not b.created_at:
+            return False
+        at = _aware(b.created_at)
+        return any(o.created_at and abs(_aware(o.created_at) - at) <= _TWIN_WINDOW
+                   for o in live)
+
+    return [b for b in mine if b.status != "abandoned" or not twin(b)]
+
+
+def _aware(dt: datetime) -> datetime:
+    """sqlite hands back naive datetimes; prod hands back aware ones."""
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
 def _row_matches(row: BatchItem, sku: str, barcode: str | None) -> bool:
