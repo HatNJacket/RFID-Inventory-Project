@@ -250,6 +250,9 @@ app.add_middleware(GZipMiddleware, minimum_size=1024)
 # Box photos collector (the gun's developer-mode camera, 2026-10-07).
 from app import boxphotos as _boxphotos  # noqa: E402
 app.include_router(_boxphotos.router)
+# The gun's remote debug link (developer mode, 2026-10-07).
+from app import devlog as _devlog  # noqa: E402
+app.include_router(_devlog.router)
 
 
 @app.middleware("http")

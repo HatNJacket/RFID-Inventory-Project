@@ -670,6 +670,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        DevLink.init(this);
         // A crash while building the UI used to mean an app that simply
         // wouldn't open, with nothing to go on. Show the fault instead.
         try {
@@ -919,6 +920,8 @@ public class MainActivity extends Activity {
         boxPhotosBtn.setMinimumHeight(dp(46));
         boxPhotosBtn.setOnClickListener(v -> {
             closeDrawer();
+            DevLink.log("menu", "BOX PHOTOS tapped, batch "
+                    + (inBatch() ? batchId : -1));
             android.content.Intent cam = new android.content.Intent(
                     this, CameraActivity.class);
             if (inBatch()) cam.putExtra("batch_id", batchId);
@@ -20868,6 +20871,12 @@ public class MainActivity extends Activity {
                 + "boxes. The server reads each SKU and sorts the photos "
                 + "into folders, to build the camera SKU reader.",
                 swBoxPhotos));
+        final Switch swRemote =
+                mkToggle(prefs.getBoolean("dev_remote", false));
+        box.addView(toggleRow("Remote debugging",
+                "Sends this gun's app log, crash reports and (when asked) "
+                + "screenshots to the server so problems can be fixed "
+                + "remotely. Turn it off when you're done.", swRemote));
 
         dlg()
                 .setTitle("Settings")
@@ -20889,6 +20898,7 @@ public class MainActivity extends Activity {
                                     swReturns.isChecked())
                             .putBoolean("dev_box_photos",
                                     swBoxPhotos.isChecked())
+                            .putBoolean("dev_remote", swRemote.isChecked())
                             .apply();
                     boxPhotosBtn.setVisibility(swBoxPhotos.isChecked()
                             ? View.VISIBLE : View.GONE);
@@ -21875,8 +21885,15 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        DevLink.resumed(this);
+    }
+
+    @Override
     protected void onPause() {
         super.onPause();
+        DevLink.paused(this);
         saveMap("saved_tags", tags);
     }
 

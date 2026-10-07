@@ -2079,3 +2079,39 @@ class BoxPhotoHandoff(Base):
     dismissed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
     )
+
+
+class DevLogLine(Base):
+    """A line the gun's remote debug link sent (Settings > DEVELOPER >
+    Remote debugging, 2026-10-07): app events, camera steps, crashes,
+    stalls. Pruned to the newest few thousand."""
+
+    __tablename__ = "rfid_dev_log"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    device: Mapped[str | None] = mapped_column(String(100), index=True)
+    line: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class DevCommand(Base):
+    """A command queued for the gun's debug link (screenshot, logcat,
+    view dump, camera restart). The gun claims it, runs it and posts
+    the result; a screenshot lands on disk beside the photos."""
+
+    __tablename__ = "rfid_dev_commands"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    # "*" = whichever gun asks first.
+    device: Mapped[str] = mapped_column(String(100), nullable=False)
+    cmd: Mapped[str] = mapped_column(String(40), nullable=False)
+    taken_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    taken_by: Mapped[str | None] = mapped_column(String(100))
+    done_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    result: Mapped[str | None] = mapped_column(Text)
+    has_shot: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

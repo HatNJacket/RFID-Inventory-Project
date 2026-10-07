@@ -213,6 +213,9 @@ public class CameraActivity extends Activity {
     @Override
     protected void onCreate(Bundle saved) {
         super.onCreate(saved);
+        DevLink.init(this);
+        DevLink.log("cam", "Box photos onCreate, batch "
+                + getIntent().getIntExtra("batch_id", -1));
         prefs = getSharedPreferences("sweep", MODE_PRIVATE);
         batchId = getIntent().getIntExtra("batch_id", -1);
         getWindow().setStatusBarColor(BG);
@@ -220,7 +223,19 @@ public class CameraActivity extends Activity {
         if (getActionBar() != null) getActionBar().hide();
         shutterSound = new MediaActionSound();
         shutterSound.load(MediaActionSound.SHUTTER_CLICK);
-        buildUi();
+        try {
+            buildUi();
+        } catch (Throwable t) {
+            // Never a blank screen: show the fault and send it.
+            DevLink.log("cam", "buildUi FAILED\n" + DevLink.trace(t));
+            TextView err = new TextView(this);
+            err.setText("Box photos failed to open.\n\n" + DevLink.trace(t));
+            err.setTextColor(Color.WHITE);
+            err.setTextSize(12);
+            err.setPadding(24, 24, 24, 24);
+            setContentView(err);
+            return;
+        }
         loadQueued();
         refresh();
         drainUploads();
@@ -229,6 +244,8 @@ public class CameraActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        DevLink.resumed(this);
+        if (texture == null) return; // buildUi failed; the fault is showing
         startCamThread();
         if (checkSelfPermission(Manifest.permission.CAMERA)
                 != PackageManager.PERMISSION_GRANTED) {
@@ -250,6 +267,7 @@ public class CameraActivity extends Activity {
 
     @Override
     protected void onPause() {
+        DevLink.paused(this);
         closeCamera();
         stopCamThread();
         super.onPause();
@@ -480,6 +498,7 @@ public class CameraActivity extends Activity {
         texture.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
             @Override
             public void onSurfaceTextureAvailable(SurfaceTexture st, int w, int h) {
+                camStep("Viewfinder surface ready " + w + "x" + h);
                 if (checkSelfPermission(Manifest.permission.CAMERA)
                         == PackageManager.PERMISSION_GRANTED) {
                     openCamera();
@@ -1020,6 +1039,7 @@ public class CameraActivity extends Activity {
     private void camStep(String msg) {
         String line = new SimpleDateFormat("HH:mm:ss", Locale.US)
                 .format(new Date()) + "  " + msg;
+        DevLink.log("cam", msg);
         synchronized (camLog) {
             camLog.append(line).append('\n');
             if (camLog.length() > 6000) {
@@ -1035,7 +1055,31 @@ public class CameraActivity extends Activity {
                 + " Tap to try again; hold for details."));
     }
 
+    /** For the debug link: restart the camera from scratch. */
+    void restartCamera() {
+        camStep("Restart requested remotely");
+        closeCamera();
+        if (camHandler == null) startCamThread();
+        openCamera();
+    }
+
     private void showCamLog() {
+        TextView t = text(camLogText(), 12, TEXT, false);
+        t.setTypeface(Typeface.MONOSPACE);
+        t.setTextIsSelectable(true);
+        t.setPadding(dp(16), dp(8), dp(16), dp(8));
+        ScrollView sv = new ScrollView(this);
+        sv.addView(t);
+        new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle("Camera details")
+                .setView(sv)
+                .setPositiveButton("Close", null)
+                .setNeutralButton("Restart camera", (d, w) -> restartCamera())
+                .show();
+    }
+
+    /** Permission, surface, cameras and the step log, as text. */
+    String camLogText() {
         StringBuilder sb = new StringBuilder();
         sb.append("Permission: ").append(checkSelfPermission(
                 Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
@@ -1064,22 +1108,7 @@ public class CameraActivity extends Activity {
         synchronized (camLog) {
             sb.append('\n').append(camLog);
         }
-        TextView t = text(sb.toString(), 12, TEXT, false);
-        t.setTypeface(Typeface.MONOSPACE);
-        t.setTextIsSelectable(true);
-        t.setPadding(dp(16), dp(8), dp(16), dp(8));
-        ScrollView sv = new ScrollView(this);
-        sv.addView(t);
-        new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
-                .setTitle("Camera details")
-                .setView(sv)
-                .setPositiveButton("Close", null)
-                .setNeutralButton("Restart camera", (d, w) -> {
-                    closeCamera();
-                    if (camHandler == null) startCamThread();
-                    openCamera();
-                })
-                .show();
+        return sb.toString();
     }
 
     private void openCamera() {
