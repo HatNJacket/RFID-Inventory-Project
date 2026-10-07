@@ -451,6 +451,84 @@ open pointed at prod. Once 4.18 is confirmed on the gun, delete the
    explicit sessions (lean rolling); barcode scans allowed but
    badged "no tag" (no retirement precision).
 
+## 📷 NEXT: Sort a shipment by photos (Svbony) — PLANNED 2026-10-07, start after compact
+
+Steve asked to plan this for the next session. Goal: receive/sort a
+Svbony delivery by photographing boxes on the gun (Svbony boxes have no
+barcodes), with each box's verdict on the spot, and a home for products
+no open stock order expects.
+
+**Facts from the first Svbony shipment (2026-10-07):** 146 photos, 60
+boxes, 37 products. Sent as sorter list #1 and loaded: 28 products went
+into SO 965 (batch 364, 45 labels) and SO 976 (batch 365, 4 labels).
+**9 products were on NO open order** (F9184D F9198K F9198M F9198N
+F9359D W9152D W9181B W9198B W9317B) - about a quarter. Note: GET
+/api/planner/on-order only lists lines with remaining > 0, so a line
+received earlier the same day looks like "no order" - check receiving
+batches too before calling a product unordered.
+
+**DECISION NEEDED FROM STEVE before item 4** (asked, not answered):
+products on no open order go where?
+- A: planner creates an "unplanned receipt" stock order for them (keeps
+  cost/PO history in the planner; work in the planner repo too - see
+  memory tc-planner-rfid-bridge: PULL FIRST, work on `development`).
+- B: receive from the RFID app: print labels + raise Shopify on-hand on
+  operator confirm, History + undo, inside SHOPIFY_WRITE_MODE (allowed
+  by the hard rules: operator-confirmed writes only). Not in planner.
+- C: held list for the desk (labels print now; mostly exists:
+  sorter "Print N labels + clear" + /api/sorter/leftovers).
+Steve's lean unknown; recommend A if leftovers stay ~25%, B if Nick
+doesn't need PO records for unordered stock.
+
+**Build plan (items 1-3 approved in principle, ~1.5 sessions):**
+
+1. **Camera as an input to the gun's own SORT A SHIPMENT** (not the dev
+   screen). The barcode sort pass lives in MainActivity: sortStart()
+   (~line 10514), sortScan(code) (codes may be SKUs - the server folds
+   codes to products), sortMatchPost() -> POST /api/receiving/
+   sort-match (main.py ~15626; vendor-scoped, read-only, verdict:
+   one covering order / split / one_order_alternative / unmatched),
+   sortRender(), pile mode (pileScan). "SORT A SHIPMENT…" button ~line
+   11473. Plan:
+   - Add "SORT BY PHOTOS (Svbony)" beside SORT A SHIPMENT; launches
+     CameraActivity with extras mode=sort, vendor=Svbony.
+   - In sort mode CameraActivity keeps its own per-SKU box counts
+     (one per Next box, from confirmed/auto filings - reuse boxHomes()/
+     boxesFor()) and calls /api/receiving/sort-match after each closed
+     box to show the box's verdict on the strip ("SO 965 · 2 left",
+     "No open order"), green/amber.
+   - DONE returns the counts to MainActivity (startActivityForResult
+     or a static hand-off) -> sortCounts filled -> sortMatchPost(true)
+     -> the existing verdict / pile-sorter flow continues unchanged.
+     Keep Send to sorter (web) as the alternative.
+   - Photos still upload as training data (box_uid, tags, layout).
+2. **Svbony scope in the reader** (app/boxphotos.py match_skus):
+   upload gains `vendor` (and optional `order_skus`); candidates =
+   catalog filtered to that vendor (titles contain "SVBONY"; better:
+   bin map / Shopify vendor field if available) with open-order lines
+   +0.1 (like the batch bonus). Cuts cross-vendor false hits.
+3. **Faster per box (gun, CameraActivity):** "Sticker read ✓" flash +
+   beep when a box's first photo files (stop shooting that box); offer
+   Next box automatically when a photo files to a DIFFERENT SKU than
+   the open box (one-tap, never silent); refocus once if the AF lock
+   lands < 1 dpt (background) - from the focus telemetry, 2 of 42
+   locks did; optional macro AF A/B (CONTROL_AF_MODE_MACRO, focus_mode
+   is recorded per photo so af_ms can be compared).
+4. **Leftovers** per the decision above.
+5. Later: on-gun OCR spike (RapidOCR/PaddleOCR-mobile matched Azure at
+   box level, 40-41/60 vs 41/60, ~0.65 s/frame laptop) reading the
+   aiming area live; would also cut the Azure free-tier pressure.
+
+**Working notes for the session:** gun is at 4.44 (code 162); bump
+versionCode/Name per release; build `py c72-app/build.py`; deploy
+`py dev/deploy.py` and confirm /static/apk-version.json. Edit Java with
+small Python scripts written via the Write tool (bash heredocs mangle
+backslashes in this harness). Free Vision tier = 20 calls/min including
+polls (azure_read waits out 429s). Gun problems: Settings > DEVELOPER >
+Remote debugging + app/devlog.py (shot, views, logcat, camlog; helper
+script pattern in this session: queue a command, poll its result).
+Tests: dev/tests/test_boxphotos.py, test_labelstrips.py, run_all.py.
+
 ## 🏷 FIND A LABEL: which strip, which position — ✅ DEPLOYED 2026-10-07 (C72 4.44)
 
 Steve: three batches' strips on the bench, no way to tell which label
