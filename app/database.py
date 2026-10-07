@@ -149,6 +149,10 @@ _COLUMN_UPGRADES = [
     ("rfid_box_photos", "af_ms", "INTEGER NULL"),
     ("rfid_box_photos", "af_result", "VARCHAR(16) NULL"),
     ("rfid_box_photos", "focus_mode", "VARCHAR(16) NULL"),
+    # Which physical box a photo is of (one per Next box), and the
+    # operator's verdict on it: good | blurry | angle.
+    ("rfid_box_photos", "box_uid", "VARCHAR(40) NULL"),
+    ("rfid_box_photos", "quality", "VARCHAR(12) NULL"),
 ]
 
 

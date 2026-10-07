@@ -164,6 +164,7 @@ public class CameraActivity extends Activity {
      *  several photos per box). The first read that names a SKU files
      *  the box-mates too, as "auto". */
     private static final class Box {
+        final String uid = java.util.UUID.randomUUID().toString();
         final List<String> uids = new ArrayList<>();
         int shots;
         String sku;
@@ -430,10 +431,7 @@ public class CameraActivity extends Activity {
         box = new Box();
         beep(true);
         if (sku != null) {
-            int n = 0;
-            for (JSONObject p : folderPhotos(sku)) {
-                if (p.optBoolean("new_box", true)) n++;
-            }
+            int n = boxesFor(sku);
             toast("Box done: " + sku + (n > 0 ? " (box " + n + ")" : "")
                     + ". Shoot the next one.", null, null);
         } else {
@@ -1776,6 +1774,7 @@ public class CameraActivity extends Activity {
                     .put("new_box", newBox)
                     .put("pin_sku", pin == null ? JSONObject.NULL : pin)
                     .put("pin_auto", pinAuto)
+                    .put("box_uid", inBox == null ? JSONObject.NULL : inBox.uid)
                     .put("focus_diopters", fLens == null ? JSONObject.NULL
                             : (double) fLens)
                     .put("af_ms", fMs < 0 ? JSONObject.NULL : fMs)
@@ -1929,7 +1928,7 @@ public class CameraActivity extends Activity {
                     body.put("pin_auto", meta.optBoolean("pin_auto", false));
                 }
                 for (String fk : new String[]{"focus_diopters", "af_ms",
-                        "af_result", "focus_mode"}) {
+                        "af_result", "focus_mode", "box_uid"}) {
                     if (meta.has(fk) && !meta.isNull(fk)) {
                         body.put(fk, meta.get(fk));
                     }
@@ -2509,7 +2508,7 @@ public class CameraActivity extends Activity {
         });
 
         int boxes = 0;
-        for (List<JSONObject> l : fs.values()) boxes += defaultBoxes(l);
+        for (String k : fs.keySet()) boxes += boxesFor(k);
         LinearLayout bar = row();
         bar.setPadding(dp(12), dp(10), dp(12), dp(14));
         Button send = primary(fs.isEmpty() ? "Send to sorter"
@@ -2669,9 +2668,8 @@ public class CameraActivity extends Activity {
         List<JSONObject> ps = folderPhotos(sku);
         page.addView(panelHeader(sku, titleFor(sku), true,
                 () -> openPanel("folders", null)));
-        int boxes = 0, autos = 0;
+        int boxes = boxesFor(sku), autos = 0;
         for (JSONObject p : ps) {
-            if (p.optBoolean("new_box", true)) boxes++;
             if ("auto".equals(p.optString("status"))) autos++;
         }
         LinearLayout chips = row();
@@ -2727,79 +2725,51 @@ public class CameraActivity extends Activity {
             body.addView(card, cl);
         }
 
-        GridLayout grid = new GridLayout(this);
-        grid.setColumnCount(3);
+        // One group per physical box, oldest first.
+        LinkedHashMap<String, List<JSONObject>> groups = new LinkedHashMap<>();
+        List<JSONObject> oldestFirst = new ArrayList<>(ps);
+        java.util.Collections.reverse(oldestFirst);
+        for (JSONObject p : oldestFirst) {
+            String b = boxUidOf(p);
+            String key = b != null ? b : "photo-" + p.optInt("id");
+            List<JSONObject> g = groups.get(key);
+            if (g == null) {
+                g = new ArrayList<>();
+                groups.put(key, g);
+            }
+            g.add(p);
+        }
+        Map<String, String> homes = boxHomes();
         int screenW = getResources().getDisplayMetrics().widthPixels;
         int tile = (screenW - dp(24) - dp(24)) / 3;
-        for (JSONObject p : ps) {
-            final int id = p.optInt("id");
-            boolean sel = selected.contains(id);
-            boolean auto = "auto".equals(p.optString("status"));
-            FrameLayout cell = new FrameLayout(this);
-            cell.setBackground(bg(KRAFT, 10, 0));
-            cell.setClipToOutline(true);
-            ImageView iv = new ImageView(this);
-            iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
-            loadThumb(iv, p);
-            cell.addView(iv, new FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT));
-            TextView badge = auto ? chip("AUTO", WARN_BG, WARN)
-                    : chip("✓", OK_BG, OK_TEXT);
-            badge.setTextSize(10);
-            FrameLayout.LayoutParams bl = new FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    Gravity.TOP | Gravity.START);
-            bl.setMargins(dp(6), dp(6), 0, 0);
-            cell.addView(badge, bl);
-            if (!p.optBoolean("new_box", true)) {
-                TextView ang = chip("Angle", 0xCC16181A, TEXT);
-                ang.setTextSize(10);
-                FrameLayout.LayoutParams al = new FrameLayout.LayoutParams(
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        Gravity.BOTTOM | Gravity.START);
-                al.setMargins(dp(6), 0, 0, dp(6));
-                cell.addView(ang, al);
+        int boxNo = 0;
+        for (Map.Entry<String, List<JSONObject>> grp : groups.entrySet()) {
+            String home = homes.get(grp.getKey());
+            boolean counted = home == null || sku.equalsIgnoreCase(home);
+            if (counted) boxNo++;
+            LinearLayout gh = row();
+            gh.setPadding(dp(2), dp(4), dp(2), dp(6));
+            TextView gt = text(counted ? "Box " + boxNo : "Part of a "
+                    + home + " box", 13, TEXT, true);
+            gh.addView(gt);
+            TextView gn = text("  ·  " + plural(grp.getValue().size(),
+                    "photo", "photos"), 13, MUTED, false);
+            gh.addView(gn);
+            body.addView(gh, fillW());
+            GridLayout grid = new GridLayout(this);
+            grid.setColumnCount(3);
+            for (JSONObject p : grp.getValue()) {
+                grid.addView(photoTile(p, tile), tileParams(tile));
             }
-            if (sel) {
-                View ring = new View(this);
-                GradientDrawable rd = new GradientDrawable();
-                rd.setColor(0x332F7DE1);
-                rd.setStroke(dp(3), BLUE);
-                rd.setCornerRadius(dp(10));
-                ring.setBackground(rd);
-                cell.addView(ring, new FrameLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.MATCH_PARENT));
-                TextView tick = chip("✓", BLUE_FILL, Color.WHITE);
-                FrameLayout.LayoutParams tl = new FrameLayout.LayoutParams(
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        Gravity.TOP | Gravity.END);
-                tl.setMargins(0, dp(6), dp(6), 0);
-                cell.addView(tick, tl);
-            }
-            cell.setOnClickListener(v -> {
-                if (!selected.remove(id)) selected.add(id);
-                renderPanel();
-            });
-            cell.setOnLongClickListener(v -> {
-                showFull(p);
-                return true;
-            });
-            GridLayout.LayoutParams gl = new GridLayout.LayoutParams();
-            gl.width = tile;
-            gl.height = tile;
-            gl.setMargins(0, 0, dp(8), dp(8));
-            grid.addView(cell, gl);
+            LinearLayout.LayoutParams gl = fillW();
+            gl.bottomMargin = dp(8);
+            body.addView(grid, gl);
         }
-        body.addView(grid);
-        TextView help = text("Tap photos to select them for moving or "
-                + "deleting; hold one to see it big. AUTO photos were sorted "
-                + "by the reader and aren't used for training until you "
-                + "confirm them.", 13, MUTED, false);
+        TextView help = text("Hold a photo to see it big and tag it Good, "
+                + "Blurry or Angle. Tap photos to select several to tag, "
+                + "move or delete. AUTO photos were sorted by the reader and "
+                + "aren't used for training until you confirm them.", 13,
+                MUTED, false);
         help.setPadding(dp(2), dp(4), dp(2), 0);
         body.addView(help);
         page.addView(sv, new LinearLayout.LayoutParams(
@@ -2809,6 +2779,23 @@ public class CameraActivity extends Activity {
         bar.setPadding(dp(12), dp(10), dp(12), dp(14));
         if (!selected.isEmpty()) {
             final List<Integer> ids = new ArrayList<>(selected);
+            LinearLayout tags = row();
+            tags.setPadding(dp(12), dp(10), dp(12), 0);
+            String[][] opts = {{"good", "Good"}, {"blurry", "Blurry"},
+                    {"angle", "Angle"}, {null, "No tag"}};
+            for (int i = 0; i < opts.length; i++) {
+                final String q = opts[i][0];
+                Button tb = ghost(opts[i][1]);
+                tb.setTextSize(13);
+                tb.setOnClickListener(v -> {
+                    selected.clear();
+                    setQuality(ids, q);
+                });
+                LinearLayout.LayoutParams tl = weight1();
+                if (i > 0) tl.leftMargin = dp(6);
+                tags.addView(tb, tl);
+            }
+            page.addView(tags, fillW());
             bar.addView(text(selected.size() + " selected", 14, TEXT, true),
                     weight1());
             Button move = ghost("Move");
@@ -2878,16 +2865,157 @@ public class CameraActivity extends Activity {
         return page;
     }
 
+    private GridLayout.LayoutParams tileParams(int tile) {
+        GridLayout.LayoutParams gl = new GridLayout.LayoutParams();
+        gl.width = tile;
+        gl.height = tile;
+        gl.setMargins(0, 0, dp(8), dp(8));
+        return gl;
+    }
+
+    private TextView qualityChip(String q) {
+        if ("good".equals(q)) return chip("GOOD", OK_BG, OK_TEXT);
+        if ("blurry".equals(q)) return chip("BLURRY", 0xFF3A1F1B, BAD_TEXT);
+        if ("angle".equals(q)) return chip("ANGLE", 0xCC16181A, TEXT);
+        return null;
+    }
+
+    private View photoTile(JSONObject p, int tile) {
+        final int id = p.optInt("id");
+        boolean sel = selected.contains(id);
+        boolean auto = "auto".equals(p.optString("status"));
+        FrameLayout cell = new FrameLayout(this);
+        cell.setBackground(bg(KRAFT, 10, 0));
+        cell.setClipToOutline(true);
+        ImageView iv = new ImageView(this);
+        iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        loadThumb(iv, p);
+        cell.addView(iv, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT));
+        TextView badge = auto ? chip("AUTO", WARN_BG, WARN)
+                : chip("✓", OK_BG, OK_TEXT);
+        badge.setTextSize(10);
+        FrameLayout.LayoutParams bl = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP | Gravity.START);
+        bl.setMargins(dp(6), dp(6), 0, 0);
+        cell.addView(badge, bl);
+        String q = p.isNull("quality") ? null : p.optString("quality", null);
+        TextView qc = qualityChip(q);
+        if (qc != null) {
+            qc.setTextSize(10);
+            FrameLayout.LayoutParams ql = new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.BOTTOM | Gravity.START);
+            ql.setMargins(dp(6), 0, 0, dp(6));
+            cell.addView(qc, ql);
+        }
+        if (sel) {
+            View ring = new View(this);
+            GradientDrawable rd = new GradientDrawable();
+            rd.setColor(0x332F7DE1);
+            rd.setStroke(dp(3), BLUE);
+            rd.setCornerRadius(dp(10));
+            ring.setBackground(rd);
+            cell.addView(ring, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT));
+            TextView tick = chip("✓", BLUE_FILL, Color.WHITE);
+            FrameLayout.LayoutParams tl = new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.TOP | Gravity.END);
+            tl.setMargins(0, dp(6), dp(6), 0);
+            cell.addView(tick, tl);
+        }
+        cell.setOnClickListener(v -> {
+            if (!selected.remove(id)) selected.add(id);
+            renderPanel();
+        });
+        cell.setOnLongClickListener(v -> {
+            showFull(p);
+            return true;
+        });
+        return cell;
+    }
+
+    /** Tag photos good / blurry / angle (null clears): on screen at once,
+     *  then saved. */
+    private void setQuality(List<Integer> ids, String q) {
+        for (JSONObject p : photos) {
+            if (ids.contains(p.optInt("id"))) {
+                try {
+                    p.put("quality", q == null ? JSONObject.NULL : q);
+                } catch (Exception ignored) {
+                }
+            }
+        }
+        renderPanel();
+        final List<Integer> todo = new ArrayList<>(ids);
+        netExec.execute(() -> {
+            int failed = 0;
+            for (int id : todo) {
+                try {
+                    api("POST", "/api/boxphotos/" + id + "/quality",
+                            new JSONObject().put("quality",
+                                    q == null ? JSONObject.NULL : q));
+                } catch (Exception e) {
+                    failed++;
+                }
+            }
+            final int f = failed;
+            ui.post(() -> {
+                if (f > 0) {
+                    toast(plural(f, "tag", "tags") + " didn't save. "
+                            + "Check the connection.", "Retry",
+                            () -> setQuality(todo, q));
+                    refresh();
+                } else {
+                    toast(q == null ? "Tag cleared"
+                            : plural(todo.size(), "photo", "photos")
+                            + " tagged " + q, null, null);
+                }
+            });
+        });
+    }
+
     private void showFull(JSONObject p) {
+        LinearLayout box = col();
+        box.setBackgroundColor(Color.BLACK);
         ImageView iv = new ImageView(this);
         iv.setAdjustViewBounds(true);
         iv.setBackgroundColor(Color.BLACK);
         loadThumb(iv, p);
+        box.addView(iv, fillW());
+        LinearLayout tags = row();
+        tags.setPadding(dp(12), dp(10), dp(12), dp(4));
+        box.addView(tags, fillW());
         AlertDialog d = new AlertDialog.Builder(this,
                 android.R.style.Theme_Material_Dialog_Alert)
-                .setView(iv)
+                .setView(box)
                 .setPositiveButton("Close", null)
                 .create();
+        String cur = p.isNull("quality") ? null : p.optString("quality", null);
+        String[][] opts = {{"good", "Good"}, {"blurry", "Blurry"},
+                {"angle", "Angle"}};
+        for (int i = 0; i < opts.length; i++) {
+            final String q = opts[i][0];
+            boolean on = q.equals(cur);
+            Button tb = button(opts[i][1], on ? SOFT : Color.TRANSPARENT,
+                    on ? TEXT : MUTED, on ? BLUE : LINE);
+            tb.setOnClickListener(v -> {
+                d.dismiss();
+                List<Integer> one = new ArrayList<>();
+                one.add(p.optInt("id"));
+                setQuality(one, on ? null : q);
+            });
+            LinearLayout.LayoutParams tl = weight1();
+            if (i > 0) tl.leftMargin = dp(6);
+            tags.addView(tb, tl);
+        }
         d.show();
         thumbExec.execute(() -> {
             try {
@@ -3077,12 +3205,62 @@ public class CameraActivity extends Activity {
     }
 
     // ---- Send to sorter ---------------------------------------------------
-    /** Boxes a folder counts as by default: every "Read the box" shot is
-     *  a box, "Keep in" shots are extra angles; at least one. */
-    private static int defaultBoxes(List<JSONObject> ps) {
+    /** Box id -> the SKU most of its photos are filed in (a tie goes to
+     *  the box's first photo). A stray photo moved to another folder
+     *  doesn't move the box. */
+    private Map<String, String> boxHomes() {
+        Map<String, Map<String, Integer>> votes = new HashMap<>();
+        Map<String, String> first = new HashMap<>();
+        Map<String, Integer> firstId = new HashMap<>();
+        for (JSONObject p : photos) {
+            String st = p.optString("status");
+            if (!"auto".equals(st) && !"confirmed".equals(st)) continue;
+            String b = boxUidOf(p);
+            if (b == null) continue;
+            String sku = p.optString("sku");
+            Map<String, Integer> v = votes.get(b);
+            if (v == null) {
+                v = new HashMap<>();
+                votes.put(b, v);
+            }
+            v.put(sku, (v.containsKey(sku) ? v.get(sku) : 0) + 1);
+            int id = p.optInt("id");
+            if (!firstId.containsKey(b) || id < firstId.get(b)) {
+                firstId.put(b, id);
+                first.put(b, sku);
+            }
+        }
+        Map<String, String> homes = new HashMap<>();
+        for (Map.Entry<String, Map<String, Integer>> e : votes.entrySet()) {
+            String best = first.get(e.getKey());
+            int top = e.getValue().containsKey(best) ? e.getValue().get(best) : 0;
+            for (Map.Entry<String, Integer> c : e.getValue().entrySet()) {
+                if (c.getValue() > top) {
+                    best = c.getKey();
+                    top = c.getValue();
+                }
+            }
+            homes.put(e.getKey(), best);
+        }
+        return homes;
+    }
+
+    private static String boxUidOf(JSONObject p) {
+        String b = p.optString("box_uid", "");
+        return b.isEmpty() || "null".equals(b) ? null : b;
+    }
+
+    /** Boxes counted for a SKU: boxes whose photos are mostly in it,
+     *  plus untagged photos that started a box. */
+    private int boxesFor(String sku) {
         int n = 0;
-        for (JSONObject p : ps) if (p.optBoolean("new_box", true)) n++;
-        return Math.max(1, n);
+        for (String home : boxHomes().values()) {
+            if (sku.equalsIgnoreCase(home)) n++;
+        }
+        for (JSONObject p : folderPhotos(sku)) {
+            if (boxUidOf(p) == null && p.optBoolean("new_box", true)) n++;
+        }
+        return n;
     }
 
     private void showSend() {
@@ -3092,7 +3270,7 @@ public class CameraActivity extends Activity {
         int autos = 0;
         final List<Integer> ids = new ArrayList<>();
         for (Map.Entry<String, List<JSONObject>> e : fs.entrySet()) {
-            qty.put(e.getKey(), new int[]{defaultBoxes(e.getValue())});
+            qty.put(e.getKey(), new int[]{boxesFor(e.getKey())});
             for (JSONObject p : e.getValue()) {
                 ids.add(p.optInt("id"));
                 if ("auto".equals(p.optString("status"))) autos++;

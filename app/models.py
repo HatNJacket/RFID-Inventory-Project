@@ -2062,6 +2062,11 @@ class BoxPhoto(Base):
     af_ms: Mapped[int | None] = mapped_column(Integer)
     af_result: Mapped[str | None] = mapped_column(String(16))
     focus_mode: Mapped[str | None] = mapped_column(String(16))
+    # The physical box (one per Next box on the gun): box counts come
+    # from these, so deleting or moving a photo never changes them.
+    box_uid: Mapped[str | None] = mapped_column(String(40), index=True)
+    # The operator's verdict: good | blurry | angle (training data).
+    quality: Mapped[str | None] = mapped_column(String(12))
 
 
 class BoxPhotoHandoff(Base):

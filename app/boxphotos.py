@@ -25,6 +25,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 import requests
 from fastapi import APIRouter, Depends, HTTPException
@@ -305,6 +306,8 @@ def _photo_dict(row: BoxPhoto, cmap: dict[str, dict]) -> dict:
         "focus_diopters": row.focus_diopters,
         "af_ms": row.af_ms,
         "af_result": row.af_result,
+        "box_uid": row.box_uid,
+        "quality": row.quality,
     }
 
 
@@ -352,6 +355,7 @@ class BoxPhotoIn(BaseModel):
     af_ms: int | None = Field(default=None, ge=0, le=120000)
     af_result: str | None = Field(default=None, max_length=16)
     focus_mode: str | None = Field(default=None, max_length=16)
+    box_uid: str | None = Field(default=None, max_length=40)
 
 
 @router.post("")
@@ -375,7 +379,8 @@ def upload_photo(payload: BoxPhotoIn, request: Request,
                    file_name=name, new_box=payload.new_box,
                    ocr_text="\n".join(lines)[:4000], ocr_error=error,
                    focus_diopters=payload.focus_diopters, af_ms=payload.af_ms,
-                   af_result=payload.af_result, focus_mode=payload.focus_mode)
+                   af_result=payload.af_result, focus_mode=payload.focus_mode,
+                   box_uid=payload.box_uid)
     pin = (payload.pin_sku or "").strip()
     if pin:
         p = cmap.get(pin.upper())
@@ -512,6 +517,22 @@ def unfile_photo(photo_id: int, session: Session = Depends(get_session)):
     row.status = "ask" if has_guesses else "none"
     row.confirmed_at = None
     row.confirmed_by = None
+    session.commit()
+    return {"photo": _photo_dict(row, _catalog_map(session))}
+
+
+class QualityIn(BaseModel):
+    # None clears the tag.
+    quality: Literal["good", "blurry", "angle"] | None = None
+
+
+@router.post("/{photo_id}/quality")
+def tag_quality(photo_id: int, payload: QualityIn,
+                session: Session = Depends(get_session)):
+    """The operator's verdict on one photo: the sharp one, a blurry
+    one, or an angle without the sticker."""
+    row = _get_photo(session, photo_id)
+    row.quality = payload.quality
     session.commit()
     return {"photo": _photo_dict(row, _catalog_map(session))}
 

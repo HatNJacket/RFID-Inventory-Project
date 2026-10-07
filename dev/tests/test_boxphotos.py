@@ -224,8 +224,17 @@ with patch("app.main._maybe_refresh_bin_map", return_value=False):
                 row = s.scalar(select(BoxPhoto).where(BoxPhoto.uid == u))
                 row.status = "deleted"
                 s.commit()
+        bx = upload(cl, "uid-0012-b", ["F9146A"], box_uid="box-aaa")
+        r = cl.post(f"/api/boxphotos/{bx['id']}/quality", json={"quality": "blurry"})
+        check("a photo keeps its box and takes a quality tag",
+              bx["box_uid"] == "box-aaa" and r.json()["photo"]["quality"] == "blurry", r.text)
+        r = cl.post(f"/api/boxphotos/{bx['id']}/quality", json={"quality": "fuzzy"})
+        check("only good, blurry or angle are accepted", r.status_code == 422, r.status_code)
+        r = cl.post(f"/api/boxphotos/{bx['id']}/quality", json={"quality": None})
+        check("the tag can be cleared", r.json()["photo"]["quality"] is None, r.text)
+        cl.post(f"/api/boxphotos/{bx['id']}/delete")
         exp = cl.get("/api/boxphotos/export").json()["photos"]
-        check("export lists every photo with its file", len(exp) == 9 and all(e["file"] for e in exp))
+        check("export lists every photo with its file", len(exp) == 10 and all(e["file"] for e in exp))
 
 print()
 print(f"{len(fails)} failed" if fails else "all passed")
