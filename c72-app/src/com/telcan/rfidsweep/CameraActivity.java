@@ -634,7 +634,9 @@ public class CameraActivity extends Activity {
         });
         bottom.addView(lastBox, lp(dp(56), dp(56)));
         View spacerA = new View(this);
-        bottom.addView(spacerA, weight1());
+        // 1 px tall: a bare View asked to WRAP_CONTENT fills the whole
+        // height, which squeezed the viewfinder to nothing (4.38).
+        bottom.addView(spacerA, new LinearLayout.LayoutParams(0, 1, 1f));
         LinearLayout shutterCol = col();
         shutterCol.setGravity(Gravity.CENTER_HORIZONTAL);
         ShutterView shutter = new ShutterView(this);
@@ -648,7 +650,7 @@ public class CameraActivity extends Activity {
         shutterCol.addView(sh, shl);
         bottom.addView(shutterCol);
         View spacerB = new View(this);
-        bottom.addView(spacerB, weight1());
+        bottom.addView(spacerB, new LinearLayout.LayoutParams(0, 1, 1f));
         FrameLayout inBox = new FrameLayout(this);
         Button inBtn = button("In", CHIP, TEXT, 0);
         inBtn.setText("Incoming");

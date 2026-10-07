@@ -126,7 +126,12 @@ final class DevLink {
         while (true) {
             try {
                 Thread.sleep(2000);
-                if (!enabled()) continue;
+                if (!enabled()) {
+                    // The watchdog only runs while on: don't call the time
+                    // it was off a frozen screen.
+                    lastPong = System.currentTimeMillis();
+                    continue;
+                }
                 watchdog();
                 sendCrash();
                 flush();
