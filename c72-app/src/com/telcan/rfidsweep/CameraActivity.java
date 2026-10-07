@@ -173,6 +173,12 @@ public class CameraActivity extends Activity {
     private boolean torchOn;
     private boolean shooting;
     private MediaActionSound shutterSound;
+    // What the camera did, step by step (hold the viewfinder to see it).
+    private final StringBuilder camLog = new StringBuilder();
+    private boolean smallSizes; // second try after a failed session
+    private boolean askedPermission;
+    private static final String READY_HINT =
+            "Point at the SKU sticker and press the trigger";
 
     // ---- views ------------------------------------------------------------
     private FrameLayout root;
@@ -226,10 +232,19 @@ public class CameraActivity extends Activity {
         startCamThread();
         if (checkSelfPermission(Manifest.permission.CAMERA)
                 != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.CAMERA},
-                    REQ_CAMERA);
+            camStep("No camera permission yet");
+            if (!askedPermission) {
+                askedPermission = true;
+                requestPermissions(new String[]{Manifest.permission.CAMERA},
+                        REQ_CAMERA);
+            } else {
+                hint.setText("The camera permission is off. Allow it in "
+                        + "Android Settings > Apps > TC RFID Sweep.");
+            }
         } else if (texture.isAvailable()) {
             openCamera();
+        } else {
+            camStep("Waiting for the viewfinder surface");
         }
     }
 
@@ -257,8 +272,10 @@ public class CameraActivity extends Activity {
         if (code != REQ_CAMERA) return;
         if (results.length > 0
                 && results[0] == PackageManager.PERMISSION_GRANTED) {
+            camStep("Permission granted");
             if (texture.isAvailable()) openCamera();
         } else {
+            camStep("Permission refused");
             hint.setText("The camera permission is off. Allow it in Android "
                     + "Settings > Apps > TC RFID Sweep.");
         }
@@ -525,6 +542,10 @@ public class CameraActivity extends Activity {
         hl.setMargins(dp(12), 0, dp(12), dp(16));
         finder.addView(hint, hl);
         finder.setOnClickListener(v -> takePhoto());
+        finder.setOnLongClickListener(v -> {
+            showCamLog();
+            return true;
+        });
         LinearLayout.LayoutParams fl = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
         fl.leftMargin = dp(12);
@@ -995,13 +1016,88 @@ public class CameraActivity extends Activity {
         return best != null ? best : sizes[0];
     }
 
+    /** Record a camera step (main thread or camera thread). */
+    private void camStep(String msg) {
+        String line = new SimpleDateFormat("HH:mm:ss", Locale.US)
+                .format(new Date()) + "  " + msg;
+        synchronized (camLog) {
+            camLog.append(line).append('\n');
+            if (camLog.length() > 6000) {
+                camLog.delete(0, camLog.length() - 6000);
+            }
+        }
+    }
+
+    /** A failure the operator must see: on the viewfinder and in the log. */
+    private void camFail(String msg) {
+        camStep("FAILED: " + msg);
+        ui.post(() -> hint.setText(msg
+                + " Tap to try again; hold for details."));
+    }
+
+    private void showCamLog() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Permission: ").append(checkSelfPermission(
+                Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+                ? "granted" : "NOT granted").append('\n');
+        sb.append("Viewfinder surface: ").append(texture.isAvailable()
+                ? texture.getWidth() + "x" + texture.getHeight() : "not ready")
+                .append('\n');
+        sb.append("Camera open: ").append(camera != null)
+                .append(", session: ").append(capSession != null)
+                .append("\n\n");
+        try {
+            CameraManager mgr = (CameraManager) getSystemService(CAMERA_SERVICE);
+            for (String c : mgr.getCameraIdList()) {
+                CameraCharacteristics ch = mgr.getCameraCharacteristics(c);
+                Integer f = ch.get(CameraCharacteristics.LENS_FACING);
+                Integer lvl = ch.get(
+                        CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL);
+                sb.append("Camera ").append(c).append(": ")
+                        .append(f == null ? "?" : f == 0 ? "front"
+                                : f == 1 ? "back" : "external")
+                        .append(", level ").append(lvl).append('\n');
+            }
+        } catch (Exception e) {
+            sb.append("Camera list failed: ").append(e).append('\n');
+        }
+        synchronized (camLog) {
+            sb.append('\n').append(camLog);
+        }
+        TextView t = text(sb.toString(), 12, TEXT, false);
+        t.setTypeface(Typeface.MONOSPACE);
+        t.setTextIsSelectable(true);
+        t.setPadding(dp(16), dp(8), dp(16), dp(8));
+        ScrollView sv = new ScrollView(this);
+        sv.addView(t);
+        new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle("Camera details")
+                .setView(sv)
+                .setPositiveButton("Close", null)
+                .setNeutralButton("Restart camera", (d, w) -> {
+                    closeCamera();
+                    if (camHandler == null) startCamThread();
+                    openCamera();
+                })
+                .show();
+    }
+
     private void openCamera() {
-        if (camera != null || camHandler == null) return;
+        if (camera != null) return;
+        if (camHandler == null) {
+            camStep("openCamera: no camera thread yet (screen paused)");
+            return;
+        }
+        hint.setText("Starting the camera…");
+        camStep("Opening the camera");
         CameraManager mgr = (CameraManager) getSystemService(CAMERA_SERVICE);
         try {
             String id = null;
             CameraCharacteristics chars = null;
-            for (String c : mgr.getCameraIdList()) {
+            String[] ids = mgr.getCameraIdList();
+            camStep("Cameras reported: " + ids.length);
+            // The back camera; any camera at all when none says "back".
+            for (String c : ids) {
                 CameraCharacteristics ch = mgr.getCameraCharacteristics(c);
                 Integer facing = ch.get(CameraCharacteristics.LENS_FACING);
                 if (facing != null
@@ -1011,22 +1107,32 @@ public class CameraActivity extends Activity {
                     break;
                 }
             }
+            if (id == null && ids.length > 0) {
+                id = ids[0];
+                chars = mgr.getCameraCharacteristics(id);
+                camStep("No back camera; using camera " + id);
+            }
             if (id == null) {
-                hint.setText("No camera found on this device.");
+                camFail("Android reports no camera on this device.");
                 return;
             }
             StreamConfigurationMap map = chars.get(
                     CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
             Integer so = chars.get(CameraCharacteristics.SENSOR_ORIENTATION);
             sensorOrientation = so == null ? 90 : so;
-            previewSize = pick(map.getOutputSizes(SurfaceTexture.class), 1600);
-            Size jpeg = pick(map.getOutputSizes(ImageFormat.JPEG), 3300);
+            previewSize = pick(map.getOutputSizes(SurfaceTexture.class),
+                    smallSizes ? 1280 : 1600);
+            Size jpeg = pick(map.getOutputSizes(ImageFormat.JPEG),
+                    smallSizes ? 1920 : 3300);
+            camStep("Camera " + id + ": preview " + previewSize + ", photo "
+                    + jpeg + ", sensor " + sensorOrientation + " deg");
             jpegReader = ImageReader.newInstance(jpeg.getWidth(),
                     jpeg.getHeight(), ImageFormat.JPEG, 2);
             jpegReader.setOnImageAvailableListener(this::onJpeg, camHandler);
             mgr.openCamera(id, new CameraDevice.StateCallback() {
                 @Override
                 public void onOpened(CameraDevice d) {
+                    camStep("Camera opened");
                     camera = d;
                     startPreview();
                 }
@@ -1035,25 +1141,43 @@ public class CameraActivity extends Activity {
                 public void onDisconnected(CameraDevice d) {
                     d.close();
                     camera = null;
+                    capSession = null;
+                    camFail("Another app took the camera (the scanner's QR "
+                            + "mode, maybe).");
                 }
 
                 @Override
                 public void onError(CameraDevice d, int error) {
                     d.close();
                     camera = null;
-                    ui.post(() -> hint.setText("The camera stopped (error "
-                            + error + "). Leave and reopen Box photos."));
+                    capSession = null;
+                    String why = error == ERROR_CAMERA_IN_USE
+                            ? "another app is using the camera"
+                            : error == ERROR_MAX_CAMERAS_IN_USE
+                            ? "too many cameras are open"
+                            : error == ERROR_CAMERA_DISABLED
+                            ? "the camera is disabled by a device policy"
+                            : error == ERROR_CAMERA_DEVICE
+                            ? "the camera hardware reported a fault"
+                            : "the camera service failed";
+                    camFail("The camera wouldn't open: " + why + " (error "
+                            + error + ").");
                 }
             }, camHandler);
-        } catch (SecurityException | CameraAccessException e) {
-            hint.setText("The camera isn't available: " + e.getMessage());
+        } catch (SecurityException e) {
+            camFail("Android refused the camera: " + e.getMessage());
+        } catch (Exception e) {
+            camFail("The camera isn't available: " + e);
         }
     }
 
     private void startPreview() {
         try {
             SurfaceTexture st = texture.getSurfaceTexture();
-            if (st == null || camera == null) return;
+            if (st == null || camera == null) {
+                camFail("The viewfinder wasn't ready when the camera opened.");
+                return;
+            }
             st.setDefaultBufferSize(previewSize.getWidth(),
                     previewSize.getHeight());
             Surface surface = new Surface(st);
@@ -1067,19 +1191,33 @@ public class CameraActivity extends Activity {
                         public void onConfigured(CameraCaptureSession s) {
                             if (camera == null) return;
                             capSession = s;
+                            camStep("Preview session ready");
                             applyPreview();
-                            ui.post(CameraActivity.this::fitPreview);
+                            ui.post(() -> {
+                                fitPreview();
+                                hint.setText(READY_HINT);
+                            });
                         }
 
                         @Override
                         public void onConfigureFailed(CameraCaptureSession s) {
-                            ui.post(() -> hint.setText(
-                                    "The camera couldn't start. Leave and "
-                                    + "reopen Box photos."));
+                            if (!smallSizes) {
+                                // Some camera drivers refuse the big
+                                // photo size alongside the preview.
+                                camStep("Session refused; retrying smaller");
+                                smallSizes = true;
+                                ui.post(() -> {
+                                    closeCamera();
+                                    openCamera();
+                                });
+                            } else {
+                                camFail("The camera refused the preview "
+                                        + "set-up.");
+                            }
                         }
                     }, camHandler);
-        } catch (CameraAccessException e) {
-            hint.setText("The camera isn't available: " + e.getMessage());
+        } catch (Exception e) {
+            camFail("The preview couldn't start: " + e);
         }
     }
 
@@ -1101,7 +1239,7 @@ public class CameraActivity extends Activity {
             capSession.setRepeatingRequest(previewReq.build(), null,
                     camHandler);
         } catch (Exception e) {
-            ui.post(() -> hint.setText("The camera stopped: " + e.getMessage()));
+            camFail("The camera stopped: " + e.getMessage());
         }
     }
 
@@ -1139,7 +1277,11 @@ public class CameraActivity extends Activity {
     private void takePhoto() {
         if (shooting) return;
         if (camera == null || capSession == null || jpegReader == null) {
-            toast("The camera isn't ready yet.", null, null);
+            toast("The camera isn't ready. Trying to start it again; hold "
+                    + "the viewfinder for details.", null, null);
+            closeCamera();
+            if (camHandler == null) startCamThread();
+            openCamera();
             return;
         }
         shooting = true;
