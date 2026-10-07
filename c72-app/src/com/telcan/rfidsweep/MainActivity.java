@@ -410,6 +410,8 @@ public class MainActivity extends Activity {
     // ------------------------------------------------------------ widgets ---
     private final Button[] tabBtns = new Button[TAB_COUNT];
     private Button gearBtn;
+    // Box photos collector (4.36): developer mode only (Settings).
+    private Button boxPhotosBtn;
     private FrameLayout drawerScrim;
     private FrameLayout loadingOverlay;
     private TextView loadingText;
@@ -908,6 +910,27 @@ public class MainActivity extends Activity {
         tabScroll.addView(tabList);
         drawerPanel.addView(tabScroll, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        // Box photos (Steve, 2026-10-07): the developer-mode camera that
+        // photographs Svbony boxes and sorts them by the SKU it reads.
+        // Its own screen (CameraActivity); the open batch rides along so
+        // the reader checks that batch's products first.
+        boxPhotosBtn = smallBtn("BOX PHOTOS");
+        boxPhotosBtn.setTextSize(14);
+        boxPhotosBtn.setMinimumHeight(dp(46));
+        boxPhotosBtn.setOnClickListener(v -> {
+            closeDrawer();
+            android.content.Intent cam = new android.content.Intent(
+                    this, CameraActivity.class);
+            if (inBatch()) cam.putExtra("batch_id", batchId);
+            startActivity(cam);
+        });
+        LinearLayout.LayoutParams bpl = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        bpl.topMargin = dp(8);
+        drawerPanel.addView(boxPhotosBtn, bpl);
+        boxPhotosBtn.setVisibility(prefs.getBoolean("dev_box_photos", false)
+                ? View.VISIBLE : View.GONE);
         // Who's scanning (Nick, 2026-10-05): the name every record this
         // gun writes is stamped with. Asked once at launch, switchable
         // here mid-shift. Documentation only - never access.
@@ -20837,6 +20860,15 @@ public class MainActivity extends Activity {
                 mkToggle(prefs.getBoolean("tab_returns", true));
         box.addView(toggleRow("Returns", null, swReturns));
 
+        box.addView(sectionLabel("DEVELOPER"));
+        final Switch swBoxPhotos =
+                mkToggle(prefs.getBoolean("dev_box_photos", false));
+        box.addView(toggleRow("Box photos",
+                "Adds BOX PHOTOS to the menu: a camera for photographing "
+                + "boxes. The server reads each SKU and sorts the photos "
+                + "into folders, to build the camera SKU reader.",
+                swBoxPhotos));
+
         dlg()
                 .setTitle("Settings")
                 .setView(scroll)
@@ -20855,7 +20887,11 @@ public class MainActivity extends Activity {
                             .putBoolean("tab_link", swLink.isChecked())
                             .putBoolean("tab_returns",
                                     swReturns.isChecked())
+                            .putBoolean("dev_box_photos",
+                                    swBoxPhotos.isChecked())
                             .apply();
+                    boxPhotosBtn.setVisibility(swBoxPhotos.isChecked()
+                            ? View.VISIBLE : View.GONE);
                     if (!tabVisible(activeTab)) activeTab = TAB_BATCH;
                     selectTab(activeTab);
                     status.setText(prefs.getString("key", "").isEmpty()

@@ -187,3 +187,12 @@ def require_shopify_env() -> None:
     missing = check_shopify_env()
     if missing:
         sys.exit(f"Missing .env variables: {', '.join(missing)}")
+
+# Box photos collector (Steve, 2026-10-07): Azure AI Vision reads the
+# SKU off each photo (resource telcan-rfid-vision, free F0 tier). Unset
+# = photos still save and sort by hand, nothing is read.
+VISION_ENDPOINT = (os.getenv("VISION_ENDPOINT") or "").strip().rstrip("/")
+VISION_KEY = (os.getenv("VISION_KEY") or "").strip()
+# Where the photo files live. App Service keeps /home across restarts
+# and deploys (wwwroot is replaced by every zip deploy - never there).
+BOX_PHOTO_DIR = (os.getenv("BOX_PHOTO_DIR") or "").strip()

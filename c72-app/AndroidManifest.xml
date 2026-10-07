@@ -1,14 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.telcan.rfidsweep"
-    android:versionCode="153"
-    android:versionName="4.35">
+    android:versionCode="154"
+    android:versionName="4.36">
 
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="33" />
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- Self-update: the app downloads its own new APK from the server and
          hands it to the system installer (one-time user grant on-device). -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Box photos collector (4.36, developer mode). -->
+    <uses-permission android:name="android.permission.CAMERA" />
 
     <application
         android:label="TC RFID Sweep"
@@ -24,6 +26,12 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- Box photos collector: its own full-screen camera. -->
+        <activity
+            android:name=".CameraActivity"
+            android:exported="false"
+            android:configChanges="keyboard|keyboardHidden"
+            android:screenOrientation="portrait" />
         <!-- PackageInstaller status callback for the self-update flow -->
         <receiver
             android:name=".MainActivity$InstallReceiver"

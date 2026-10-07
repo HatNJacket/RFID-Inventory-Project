@@ -2014,3 +2014,68 @@ class LinkScan(Base):
             "ok": self.ok,
             "outcome": self.outcome,
         }
+
+
+class BoxPhoto(Base):
+    """One photo from the gun's Box photos collector (Steve, 2026-10-07):
+    a Svbony box with its SKU printed in plain text, read by Azure on
+    upload and filed into a SKU folder. The photos are the training set
+    for the camera SKU reader, so an "auto" filing only counts as a
+    label once a person confirms it. Files live on disk (BOX_PHOTO_DIR);
+    this row is the folder record."""
+
+    __tablename__ = "rfid_box_photos"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # The gun's own id for the shot, so a retried upload never doubles.
+    uid: Mapped[str] = mapped_column(
+        String(40), unique=True, index=True, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    worker: Mapped[str | None] = mapped_column(String(100))
+    batch_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    file_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    # auto | ask | none | confirmed | deleted
+    status: Mapped[str] = mapped_column(String(12), index=True, nullable=False)
+    sku: Mapped[str | None] = mapped_column(String(100), index=True)
+    # JSON list of {sku, title, score} the reader offered.
+    guesses: Mapped[str | None] = mapped_column(Text)
+    ocr_text: Mapped[str | None] = mapped_column(Text)
+    ocr_error: Mapped[str | None] = mapped_column(String(255))
+    # A "Read the box" shot is a new box; a "Keep in SKU" shot is
+    # another angle of one already counted.
+    new_box: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True
+    )
+    # Set once the folder went to the web sorter (Send to sorter).
+    handoff_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    confirmed_by: Mapped[str | None] = mapped_column(String(100))
+
+
+class BoxPhotoHandoff(Base):
+    """A shipment's confirmed boxes sent from the gun to the web sorter
+    (Batch tab > Sort a shipment), which loads them like scans. Svbony
+    rarely ships what the stock order says, so the sorter decides which
+    order each box belongs to."""
+
+    __tablename__ = "rfid_box_photo_handoffs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    worker: Mapped[str | None] = mapped_column(String(100))
+    batch_id: Mapped[int | None] = mapped_column(Integer)
+    # JSON list of {sku, title, qty}.
+    items: Mapped[str] = mapped_column(Text, nullable=False)
+    boxes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    loaded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    loaded_by: Mapped[str | None] = mapped_column(String(100))
+    dismissed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )

@@ -451,6 +451,37 @@ open pointed at prod. Once 4.18 is confirmed on the gun, delete the
    explicit sessions (lean rolling); barcode scans allowed but
    badged "no tag" (no retirement precision).
 
+## 📷 Box photos collector — ✅ DEPLOYED 2026-10-07 (C72 4.36)
+
+Step 1 of the camera SKU reader below, built from the approved canvas.
+Settings > DEVELOPER > Box photos (off by default) adds BOX PHOTOS to
+the gun's menu, opening CameraActivity (its own file; the open batch id
+rides along). Camera2 back camera, continuous AF (a hard focus lock at
+box distance only keeps ~2 cm sharp - revisit for the live reader),
+torch, trigger or tap = shutter. Shots are straightened/shrunk to
+1600 px + a 320 px thumb, queued in files/boxq and uploaded in order
+(retry every 10 s; a retried upload never doubles - uid). Server
+(app/boxphotos.py, tables rfid_box_photos + rfid_box_photo_handoffs,
+created by init_db): Azure Read 3.2 (VISION_ENDPOINT/VISION_KEY app
+settings, resource telcan-rfid-vision F0), then match_skus: exact /
+OCR-fold (O0 I1 S5 B8 Z2) / family prefix (F9301A -> AA/AB/AC, the
+size word ranks) / one-edit; batch products +0.08. auto = top >= 0.9
+and 0.15 clear; ask = top >= 0.5; else none. Files under
+/home/data/boxphotos (survives deploys). Screens: camera (Read the box
+/ Keep in SKU, result strip with Undo), Incoming (guess buttons,
+Another folder, Delete), Folders (batch progress, search incl.
+barcode, other products), folder grid (AUTO / ✓ / Angle badges,
+select to Move/Delete, hold to view big, Looks right (N), Shoot into
+this folder). **Send to sorter (Steve: Svbony ignores stock orders):**
+a review of box counts per SKU (one per Read-the-box shot, Keep shots
+are angles, editable) -> POST /api/boxphotos/send -> a hand-off the web
+sorter (Batch > Sort a shipment) shows as "Box photos from the gun:
+N boxes" with Load into the sorter (claims it once, then runs each box
+through sortShipScan) / Dismiss; History "box-photos-sent". Sent photos
+leave the gun's folders (next shipment starts fresh) and stay on the
+server for training; GET /api/boxphotos/export lists them all.
+dev/tests/test_boxphotos.py (32 checks).
+
 ## 📷 Camera SKU reader on the C72 (Steve, 2026-10-07) — PLANNING, collector first
 
 Trigger: Svbony boxes carry no barcode, only the SKU in plain text, so

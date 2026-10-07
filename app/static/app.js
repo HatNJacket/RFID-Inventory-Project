@@ -568,6 +568,7 @@ const EVENT_META = {
   "rfid-flag-changed": ["RFID Flag", "#d72c0d"],
   "user-added": ["User Added", "#0b6e99"],
   "sorter-leftover": ["Sorter Leftover", "#8a6116"],
+  "box-photos-sent": ["Box Photos Sent", "#0e7a8a"],
   "user-removed": ["User Removed", "#d72c0d"],
   "user-renamed": ["User Renamed", "#5c5f62"],
   "non-taggable": ["Non-taggable", "#8a6116"],
@@ -19056,11 +19057,87 @@ document.getElementById("sortship-groups").addEventListener("click", (e) => {
   if (e.target.closest("#sortship-unx-print")) sortShipPrintLeftovers();
 });
 
+// Box photos (2026-10-07): the gun photographs Svbony boxes (no barcodes
+// on them), reads the SKUs and sends the shipment's confirmed boxes here
+// as a list. Loading one runs every box through the sorter like a scan.
+let sortShipPhotoLists = [];
+
+async function sortShipLoadPhotoLists() {
+  try {
+    sortShipPhotoLists = (await apiJson("/api/boxphotos/handoffs")).handoffs || [];
+  } catch (err) {
+    sortShipPhotoLists = [];
+  }
+  sortShipRenderPhotoLists();
+}
+
+function sortShipRenderPhotoLists() {
+  const box = document.getElementById("sortship-photos");
+  if (!box) return;
+  box.hidden = !sortShipPhotoLists.length;
+  box.innerHTML = sortShipPhotoLists
+    .map((h) => {
+      const t = new Date(h.created_at);
+      const when = isNaN(t)
+        ? ""
+        : t.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+      const products = (h.items || []).length;
+      const skus = (h.items || [])
+        .map((it) => `${escapeHtml(it.sku)}${it.qty > 1 ? " ×" + it.qty : ""}`)
+        .join(", ");
+      return `<div class="sortphotos__row">` +
+        `<div class="sortphotos__text"><b>Box photos from the gun: ${countNoun(h.boxes, "box", "boxes")} of ${countNoun(products, "product", "products")}</b>` +
+        `<span class="sortphotos__meta">Sent ${escapeHtml(when)}${h.worker ? " by " + escapeHtml(h.worker) : ""} · ${skus}</span></div>` +
+        `<button class="print__btn" type="button" data-photolist-load="${h.id}">Load into the sorter</button>` +
+        `<button class="reset" type="button" data-photolist-dismiss="${h.id}">Dismiss</button></div>`;
+    })
+    .join("");
+}
+
+async function sortShipLoadPhotoList(id) {
+  let h;
+  try {
+    h = (await postJson(`/api/boxphotos/handoffs/${id}/load`, {
+      worker: operatorEl.value || null,
+    })).handoff;
+  } catch (err) {
+    setSortShipStatus(`Couldn't load the list: ${err.message}`);
+    sortShipLoadPhotoLists();
+    return;
+  }
+  sortShipPhotoLists = sortShipPhotoLists.filter((x) => x.id !== id);
+  sortShipRenderPhotoLists();
+  for (const it of h.items || []) {
+    for (let i = 0; i < (it.qty || 0); i++) await sortShipScan(it.sku);
+  }
+  setSortShipStatus(
+    `Loaded ${countNoun(h.boxes, "box", "boxes")} from the gun's box photos into the pile.`
+  );
+}
+
+document.getElementById("sortship-photos").addEventListener("click", async (e) => {
+  const load = e.target.closest("[data-photolist-load]");
+  const dismiss = e.target.closest("[data-photolist-dismiss]");
+  if (load) {
+    load.disabled = true;
+    await sortShipLoadPhotoList(Number(load.dataset.photolistLoad));
+  } else if (dismiss) {
+    if (!confirm("Dismiss this list? The photos stay on the server; the boxes just won't load into the sorter.")) return;
+    try {
+      await postJson(`/api/boxphotos/handoffs/${dismiss.dataset.photolistDismiss}/dismiss`, {});
+    } catch (err) {
+      /* it reappears on the next open */
+    }
+    sortShipLoadPhotoLists();
+  }
+});
+
 document.getElementById("sortship-open").addEventListener("click", async () => {
   document.getElementById("sortship").hidden = false;
   sortShipRestore();
   renderSortShip();
   sortShipLoadLeftovers();
+  sortShipLoadPhotoLists();
   if (sortShipSeq.length) {
     setSortShipStatus("Picked up the pile from last time - Clear pile starts fresh.");
   }

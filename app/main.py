@@ -247,6 +247,9 @@ app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="stat
 # Compress everything sizeable: the cold page load (app.js + styles.css +
 # index.html) drops from ~915 KB to ~230 KB over the warehouse Wi-Fi.
 app.add_middleware(GZipMiddleware, minimum_size=1024)
+# Box photos collector (the gun's developer-mode camera, 2026-10-07).
+from app import boxphotos as _boxphotos  # noqa: E402
+app.include_router(_boxphotos.router)
 
 
 @app.middleware("http")

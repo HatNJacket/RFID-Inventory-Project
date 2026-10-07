@@ -4861,3 +4861,9 @@ tr.bvx-fam .chip { margin-left: 6px; }
 .sortleft__row { display: grid; grid-template-columns: 48px minmax(70px, 120px) minmax(0, 1fr) auto; gap: 8px; font-size: 11px; color: var(--ink-dim); align-items: baseline; }
 .sortleft__sku { font-family: var(--mono); color: var(--ink); }
 .sortleft__title { color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Box photo lists sent from the gun, waiting to load into the sorter. */
+.sortphotos { display: flex; flex-direction: column; gap: 8px; margin: 8px 0 12px; }
+.sortphotos__row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--accent); background: var(--accent-soft); }
+.sortphotos__text { flex: 1 1 260px; min-width: 0; display: flex; flex-direction: column; gap: 2px; font-size: 13px; color: var(--ink); }
+.sortphotos__meta { font-size: 12px; color: var(--ink-dim); overflow-wrap: anywhere; }
