@@ -68,9 +68,11 @@ def photo_dir() -> Path:
 
 # ---- reading the box --------------------------------------------------------
 
-def azure_read(image: bytes) -> tuple[list[str], str | None]:
+def azure_read(image: bytes) -> tuple:
     """Azure AI Vision Read 3.2: the text lines on the photo, top to
-    bottom. Returns (lines, error); never raises."""
+    bottom. Returns (lines, error, layout) where layout is each line's
+    {"text", "box": [x1, y1, ... x4, y4]} in the photo's pixels (the
+    tick finder needs where each SKU sits); never raises."""
     if not (config.VISION_ENDPOINT and config.VISION_KEY):
         return [], "The text reader isn't set up on the server."
     headers = {"Ocp-Apim-Subscription-Key": config.VISION_KEY}
@@ -91,18 +93,108 @@ def azure_read(image: bytes) -> tuple[list[str], str | None]:
             g = requests.get(loc, headers=headers, timeout=20).json()
             state = g.get("status")
             if state == "succeeded":
-                lines = []
+                lines, layout = [], []
                 for page in (g.get("analyzeResult") or {}).get("readResults") or []:
                     for line in page.get("lines") or []:
                         if line.get("text"):
                             lines.append(line["text"])
-                return lines, None
+                            layout.append({"text": line["text"],
+                                           "box": line.get("boundingBox") or []})
+                return lines, None, layout
             if state == "failed":
                 return [], "The text reader couldn't read this photo."
         return [], "The text reader took too long."
     except Exception as error:  # noqa: BLE001
         log.warning("vision read failed: %s", error)
         return [], "The text reader couldn't be reached."
+
+
+# ---- the ticked box on a multi-SKU label -----------------------------------
+# Some Svbony labels print every variant with an empty box beside each
+# SKU and the factory ticks one by hand (a pen stroke, a filled dot).
+# The reader reads all the SKUs and none of the ticks, so the server
+# looks at the square left of each SKU's line and measures its ink: an
+# empty box is a thin outline, a ticked one is far darker.
+
+SKU_LIKE = re.compile(r"(?<![A-Z0-9])([A-Z]\d{4}[A-Z]{1,2})(?![A-Z0-9])")
+
+
+def label_skus(lines: list[str]) -> list[str]:
+    """SKU-shaped codes printed on the photo (W9132B, F9171D), in order."""
+    out: list[str] = []
+    for line in lines:
+        for m in SKU_LIKE.findall((line or "").upper()):
+            if m not in out:
+                out.append(m)
+    return out
+
+
+def find_ticked(image: bytes, layout: list[dict]) -> dict:
+    """Which printed SKU has the ticked box beside it.
+
+    Returns {"sku": the winner or None, "ink": {sku: dark fraction}}.
+    A winner needs real ink (>= 6% dark) and at least 1.6x the next
+    box, else None (ask a person). Never raises."""
+    rows = []
+    for item in layout or []:
+        codes = SKU_LIKE.findall((item.get("text") or "").upper())
+        box = item.get("box") or []
+        if len(codes) == 1 and len(box) == 8:
+            rows.append((codes[0], box))
+    if len(rows) < 2:
+        return {"sku": None, "ink": {}}
+    try:
+        from io import BytesIO
+
+        from PIL import Image
+        img = Image.open(BytesIO(image)).convert("L")
+    except Exception as error:  # noqa: BLE001 - no Pillow, or a bad image
+        log.warning("tick finder unavailable: %s", error)
+        return {"sku": None, "ink": {}}
+    ink: dict[str, float] = {}
+    for code, box in rows:
+        xs, ys = box[0::2], box[1::2]
+        left, top, bottom = min(xs), min(ys), max(ys)
+        h = max(1.0, bottom - top)
+        region = (int(max(0, left - 1.6 * h)), int(max(0, top - 0.15 * h)),
+                  int(max(1, left - 0.05 * h)), int(min(img.height, bottom + 0.15 * h)))
+        if region[2] - region[0] < 3 or region[3] - region[1] < 3:
+            continue
+        px = sorted(img.crop(region).getdata())
+        if not px:
+            continue
+        paper = px[int(len(px) * 0.8)] or 1
+        dark = sum(1 for v in px if v < paper * 0.55)
+        ink[code] = max(ink.get(code, 0.0), dark / len(px))
+    ranked = sorted(ink.items(), key=lambda kv: -kv[1])
+    if len(ranked) < 2:
+        return {"sku": None, "ink": ink}
+    (best, top_ink), (_, next_ink) = ranked[0], ranked[1]
+    if top_ink >= 0.06 and top_ink >= 1.6 * max(next_ink, 0.005):
+        return {"sku": best, "ink": ink}
+    return {"sku": None, "ink": ink}
+
+
+def apply_tick(verdict: dict, lines: list[str], layout: list[dict] | None,
+               image: bytes, cmap: dict[str, dict]) -> dict:
+    """A label printing several SKUs never files itself on the reader's
+    say-so: the ticked box decides, or a person does."""
+    printed = label_skus(lines)
+    if len(printed) < 2:
+        return verdict
+    tick = find_ticked(image, layout or [])
+    winner = tick["sku"]
+    if winner and winner in cmap:
+        p = cmap[winner]
+        others = [g for g in verdict["guesses"] if (g.get("sku") or "").upper() != winner]
+        guess = {"sku": p["sku"], "title": _title(p), "score": 1.0, "note": "ticked"}
+        return {"status": "auto", "sku": p["sku"], "guesses": [guess] + others[:2],
+                "note": f"Ticked box: {p['sku']}"}
+    note = (f"The ticked box is {winner}, which isn't in the catalog."
+            if winner else
+            "Several SKUs are printed on this label. Pick the ticked one.")
+    return {"status": "ask" if verdict["guesses"] else "none", "sku": None,
+            "guesses": verdict["guesses"], "note": note}
 
 
 # ---- matching what was read to a SKU ---------------------------------------
@@ -373,7 +465,9 @@ def upload_photo(payload: BoxPhotoIn, request: Request,
     (photo_dir() / name).write_bytes(image)
     (photo_dir() / f"{folder}/{payload.uid}_t.jpg").write_bytes(thumb)
 
-    lines, error = azure_read(image)
+    read = azure_read(image)
+    lines, error = read[0], read[1]
+    layout = read[2] if len(read) > 2 else None
     by = _auth.actor_name(request, payload.worker)
     row = BoxPhoto(uid=payload.uid, worker=by, batch_id=payload.batch_id,
                    file_name=name, new_box=payload.new_box,
@@ -395,9 +489,13 @@ def upload_photo(payload: BoxPhotoIn, request: Request,
     else:
         skus = {p["sku"] for p in batch_products(session, payload.batch_id)}
         verdict = match_skus(lines, catalog(session), skus)
+        verdict = apply_tick(verdict, lines, layout, image, cmap)
         row.status = verdict["status"]
         row.sku = verdict["sku"]
         row.guesses = json.dumps(verdict["guesses"])
+        if verdict.get("note") and not error:
+            # Shown on the gun where the reader's error would be.
+            row.ocr_error = verdict["note"][:255]
     session.add(row)
     session.commit()
     return {"photo": _photo_dict(row, cmap)}

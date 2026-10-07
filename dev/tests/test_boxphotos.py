@@ -75,6 +75,55 @@ m = bp.match_skus(["F9172"], cat, {"F9172A"})
 check("between two close SKUs the batch's product ranks first",
       m["status"] == "ask" and m["guesses"][0]["sku"] == "F9172A", str(m))
 
+# ------------------------------------------------- ticked multi-SKU label --
+import io
+from PIL import Image, ImageDraw
+
+
+def label(ticked):
+    """A drawn label: four SKU lines, each with a box to its left, one
+    filled in; returns (jpeg bytes, the reader's layout)."""
+    img = Image.new("L", (800, 500), 235)
+    d = ImageDraw.Draw(img)
+    layout = []
+    for i, code in enumerate(["W9132A", "W9132B", "W9132C", "W9132D"]):
+        y = 80 + i * 90
+        d.rectangle([100, y, 140, y + 40], outline=30, width=3)
+        if code == ticked:
+            d.ellipse([106, y + 6, 134, y + 34], fill=20)
+        d.rectangle([160, y + 8, 420, y + 32], fill=60)  # the printed text
+        layout.append({"text": f"L=240mm ({code})",
+                       "box": [160, y, 430, y, 430, y + 40, 160, y + 40]})
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=90)
+    return buf.getvalue(), layout
+
+
+img, lay = label("W9132C")
+t = bp.find_ticked(img, lay)
+check("the ticked box is found by its ink", t["sku"] == "W9132C", str(t))
+img0, lay0 = label(None)
+check("no tick, no winner", bp.find_ticked(img0, lay0)["sku"] is None)
+cm = {p["sku"].upper(): p for p in cat}
+cm["W9132B"] = {"sku": "W9132B", "product_title": "Dew strip", "variant_title": "320mm"}
+cm["W9132C"] = {"sku": "W9132C", "product_title": "Dew strip", "variant_title": "400mm"}
+lines = [x["text"] for x in lay]
+v = bp.apply_tick({"status": "ask", "sku": None, "guesses": [{"sku": "W9132B"}, {"sku": "W9132C"}]},
+                  lines, lay, img, cm)
+check("a ticked label files itself to the ticked SKU, as auto",
+      v["status"] == "auto" and v["sku"] == "W9132C" and v["guesses"][0]["note"] == "ticked", str(v))
+only_b = {"W9132B": cm["W9132B"]}
+v = bp.apply_tick({"status": "auto", "sku": "W9132B", "guesses": [{"sku": "W9132B"}]},
+                  lines, lay0, img0, only_b)
+check("a multi-SKU label never auto-files without a tick, even with one SKU we stock",
+      v["status"] == "ask" and v["sku"] is None and "Pick the ticked one" in v["note"], str(v))
+v = bp.apply_tick({"status": "auto", "sku": "W9132B", "guesses": [{"sku": "W9132B"}]},
+                  lines, lay, img, only_b)
+check("a tick on a SKU we don't stock asks instead",
+      v["status"] == "ask" and "W9132C" in v["note"], str(v))
+v = bp.apply_tick({"status": "auto", "sku": "F9172B", "guesses": []}, ["F9172B"], None, b"", cm)
+check("a one-SKU label is left alone", v["status"] == "auto" and v["sku"] == "F9172B", str(v))
+
 # --------------------------------------------------------------- server --
 with Session(get_engine()) as s:
     pass  # engine up; tables come from the app's startup
