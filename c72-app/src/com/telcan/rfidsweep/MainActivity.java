@@ -626,6 +626,10 @@ public class MainActivity extends Activity {
     private final List<CheckEntry> checkEntries = new ArrayList<>();
     private final HashMap<Integer, String> checkFlagText = new HashMap<>();
     private BItem previewItem = null;   // last scanned / pair target
+    // FIND A LABEL (4.44): the item to select once a batch finishes
+    // loading, and what to say about it.
+    private int pendingFocusItem = 0;
+    private String pendingFocusNote = null;
     private BItem pairActive = null;
     private final ArrayDeque<String[]> pairHistory = new ArrayDeque<>();
 
@@ -911,6 +915,21 @@ public class MainActivity extends Activity {
         tabScroll.addView(tabList);
         drawerPanel.addView(tabScroll, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        // FIND A LABEL (Steve, 2026-10-07): three batches' strips on the
+        // bench and no way to tell which label is which - scan one and
+        // the gun names its batch, strip and position, then opens it.
+        Button findLabelBtn = smallBtn("FIND A LABEL");
+        findLabelBtn.setTextSize(14);
+        findLabelBtn.setMinimumHeight(dp(46));
+        findLabelBtn.setOnClickListener(v -> {
+            closeDrawer();
+            showFindLabel();
+        });
+        LinearLayout.LayoutParams flp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        flp.topMargin = dp(8);
+        drawerPanel.addView(findLabelBtn, flp);
         // Box photos (Steve, 2026-10-07): the developer-mode camera that
         // photographs Svbony boxes and sorts them by the SKU it reads.
         // Its own screen (CameraActivity); the open batch rides along so
@@ -11561,12 +11580,223 @@ public class MainActivity extends Activity {
                     verifySkuState.clear();
                     autoTripEntry();
                     applyBatchUi();
+                    applyPendingFocus();
                 });
             } catch (Exception e) {
                 ui.post(() -> status.setText("Could not load batch: "
                         + e.getMessage()));
             }
         }).start();
+    }
+
+    // ------------------------------------------------------ find a label --
+    /** Scan a label (its barcode, or type the SKU): which batch, how many
+     *  labels on its strip, where this product's labels sit on it. */
+    private void showFindLabel() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(18), dp(6), dp(18), 0);
+        TextView hint = new TextView(this);
+        hint.setText("Scan the label's barcode with the scanner, or type "
+                + "the SKU.");
+        hint.setTextColor(C_MUTED);
+        hint.setTextSize(13);
+        box.addView(hint);
+        final EditText code = themedEdit();
+        code.setSingleLine(true);
+        code.setHint("Barcode or SKU");
+        code.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH);
+        box.addView(code);
+        final AlertDialog d = dlg()
+                .setTitle("Find a label")
+                .setView(box)
+                .setPositiveButton("FIND", null)
+                .setNegativeButton("CANCEL", null)
+                .create();
+        final Runnable go = () -> {
+            String c = code.getText().toString().trim();
+            if (c.isEmpty()) return;
+            d.dismiss();
+            findLabel(c);
+        };
+        // The BT scanner types the code and presses Enter.
+        code.setOnEditorActionListener((v, actionId, ev) -> {
+            go.run();
+            return true;
+        });
+        d.setOnShowListener(x -> {
+            d.getButton(AlertDialog.BUTTON_POSITIVE)
+                    .setOnClickListener(v -> go.run());
+            code.requestFocus();
+        });
+        d.show();
+    }
+
+    private void findLabel(String code) {
+        showLoading("Finding the label…");
+        new Thread(() -> {
+            try {
+                JSONObject r = api("GET", "/api/labels/locate?code="
+                        + URLEncoder.encode(code, "UTF-8"), null);
+                JSONArray res = r.optJSONArray("results");
+                ui.post(() -> {
+                    hideLoading();
+                    showFoundLabels(code, res == null ? new JSONArray() : res);
+                });
+            } catch (Exception e) {
+                ui.post(() -> {
+                    hideLoading();
+                    beep(SOUND_ERR);
+                    status.setText("Couldn't look up " + code + ": "
+                            + e.getMessage());
+                });
+            }
+        }).start();
+    }
+
+    private void showFoundLabels(String code, JSONArray res) {
+        if (res.length() == 0) {
+            beep(SOUND_ERR);
+            dlg().setTitle("No label found")
+                    .setMessage("Nothing printed in the last 30 days has the "
+                            + "barcode or SKU " + code + ".")
+                    .setPositiveButton("SCAN ANOTHER", (x, w) -> showFindLabel())
+                    .setNegativeButton("CLOSE", null)
+                    .show();
+            return;
+        }
+        beep(SOUND_OK);
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        list.setPadding(dp(16), dp(6), dp(16), dp(6));
+        final AlertDialog[] holder = new AlertDialog[1];
+        for (int i = 0; i < res.length(); i++) {
+            final JSONObject o = res.optJSONObject(i);
+            if (o == null) continue;
+            JSONObject b = o.optJSONObject("batch");
+            JSONObject it = o.optJSONObject("item");
+            JSONArray pos = o.optJSONArray("positions");
+            int nPos = pos == null ? 0 : pos.length();
+            int total = o.optInt("strip_labels");
+            String status = b == null ? "" : b.optString("status");
+            boolean closed = "done".equals(status) || "abandoned".equals(status);
+            LinearLayout card = new LinearLayout(this);
+            card.setOrientation(LinearLayout.VERTICAL);
+            card.setPadding(dp(12), dp(10), dp(12), dp(10));
+            card.setBackground(btnBg(C_CARD, C_LINE, C_PRESS, 8));
+            TextView head = new TextView(this);
+            head.setText(b == null ? "Not from a batch"
+                    : "Batch #" + b.optInt("id") + " · "
+                      + b.optString("label") + (closed ? " · finished" : ""));
+            head.setTextColor(C_TEXT);
+            head.setTextSize(15);
+            head.setTypeface(null, Typeface.BOLD);
+            card.addView(head);
+            TextView where = new TextView(this);
+            String posText = o.optString("positions_text");
+            where.setText((nPos == 1 ? "Label " : "Labels ") + posText
+                    + " of " + total + " on its strip"
+                    + (nPos > 1 ? " (" + nPos + " labels)" : ""));
+            where.setTextColor(C_BLUE);
+            where.setTextSize(20);
+            where.setTypeface(null, Typeface.BOLD);
+            where.setPadding(0, dp(4), 0, dp(2));
+            card.addView(where);
+            TextView meta = new TextView(this);
+            String when = o.optString("printed_at", "");
+            String printed = "";
+            try {
+                java.text.SimpleDateFormat in = new java.text.SimpleDateFormat(
+                        "yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US);
+                in.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));
+                java.util.Date dt = in.parse(when.substring(0, 19));
+                printed = "Printed " + new java.text.SimpleDateFormat(
+                        "MMM d, h:mm a", java.util.Locale.US).format(dt);
+            } catch (Exception ignored) {
+            }
+            StringBuilder m = new StringBuilder();
+            m.append(o.optString("sku", "")).append(" · ")
+                    .append(o.optString("title", ""));
+            if (it != null) {
+                m.append("\nPaired so far: ").append(it.optInt("paired"))
+                        .append(" of ").append(nPos);
+            }
+            if (!printed.isEmpty()) m.append("\n").append(printed);
+            if (o.optInt("pending") > 0) {
+                m.append(" · ").append(plural(o.optInt("pending"), "label",
+                        "labels")).append(" still printing");
+            }
+            meta.setText(m.toString());
+            meta.setTextColor(C_MUTED);
+            meta.setTextSize(12);
+            card.addView(meta);
+            if (b != null) {
+                Button open = smallBtn("OPEN BATCH #" + b.optInt("id"));
+                final int bid = b.optInt("id");
+                final int iid = it == null ? 0 : it.optInt("id");
+                final String note = (nPos == 1 ? "Label " : "Labels ")
+                        + posText + " of " + total + " on the strip";
+                open.setOnClickListener(v -> {
+                    if (holder[0] != null) holder[0].dismiss();
+                    openBatchAt(bid, iid, note);
+                });
+                LinearLayout.LayoutParams ol = new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT);
+                ol.topMargin = dp(8);
+                card.addView(open, ol);
+            }
+            LinearLayout.LayoutParams cl = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            cl.bottomMargin = dp(10);
+            list.addView(card, cl);
+        }
+        ScrollView sv = new ScrollView(this);
+        sv.addView(list);
+        holder[0] = dlg().setTitle(res.length() == 1 ? "Label found"
+                        : res.length() + " strips have this label")
+                .setView(sv)
+                .setPositiveButton("SCAN ANOTHER", (x, w) -> showFindLabel())
+                .setNegativeButton("CLOSE", null)
+                .create();
+        holder[0].show();
+    }
+
+    /** Open a batch (or stay in it) with one product selected. */
+    private void openBatchAt(int id, int itemId, String note) {
+        pendingFocusItem = itemId;
+        pendingFocusNote = note;
+        selectTab(TAB_BATCH);
+        if (inBatch() && batchId == id) {
+            applyPendingFocus();
+        } else {
+            enterBatch(id);
+        }
+    }
+
+    private void applyPendingFocus() {
+        int want = pendingFocusItem;
+        String note = pendingFocusNote;
+        pendingFocusItem = 0;
+        pendingFocusNote = null;
+        if (want <= 0) {
+            if (note != null) status.setText(note);
+            return;
+        }
+        for (BItem b : bItems) {
+            if (b.id != want) continue;
+            previewItem = b;
+            if (step == STEP_PAIR) pairActive = b;
+            updateBatchCard();
+            refreshBatchList();
+            beep(SOUND_OK);
+            status.setText((note != null ? note + ": " : "") + b.name()
+                    + (step == STEP_PAIR ? " - trigger on its stickers." : ""));
+            return;
+        }
+        status.setText((note != null ? note + ". " : "")
+                + "That product isn't in this batch's list.");
     }
 
     // Tell the server which step this device is on so the PC/iPad watching

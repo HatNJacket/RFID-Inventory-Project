@@ -160,6 +160,9 @@ _COLUMN_UPGRADES = [
     ("rfid_box_photos", "read_sku", "VARCHAR(100) NULL"),
     ("rfid_box_photos", "torch", "BIT NULL"),
     ("rfid_box_photos", "app_version", "VARCHAR(20) NULL"),
+    # Which printed strip a label came off and where on it (2026-10-07).
+    ("rfid_print_jobs", "strip_id", "VARCHAR(24) NULL"),
+    ("rfid_print_jobs", "strip_pos", "INTEGER NULL"),
 ]
 
 

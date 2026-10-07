@@ -746,6 +746,12 @@ class PrintJob(Base):
     # jobs and on jobs from before the column existed. Prod needs
     # dev/alter_add_print_session.py once.
     print_session: Mapped[str | None] = mapped_column(String(24))
+    # The physical strip this label came off (Steve, 2026-10-07): every
+    # job queued in one request shares a strip id, numbered in print
+    # order, so the gun can say "label 7 of 22 in batch 243's strip".
+    # Stamped by app/labelstrips.py at flush.
+    strip_id: Mapped[str | None] = mapped_column(String(24), index=True)
+    strip_pos: Mapped[int | None] = mapped_column(Integer)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

@@ -253,6 +253,9 @@ app.include_router(_boxphotos.router)
 # The gun's remote debug link (developer mode, 2026-10-07).
 from app import devlog as _devlog  # noqa: E402
 app.include_router(_devlog.router)
+# Which strip a label came off (FIND A LABEL on the gun, 2026-10-07).
+from app import labelstrips as _labelstrips  # noqa: E402
+app.include_router(_labelstrips.router)
 
 
 @app.middleware("http")
