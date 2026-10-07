@@ -182,6 +182,30 @@ v = bp.apply_tick(m, lines120, [{"text": lines120[4], "box": lay0b[0]["box"]},
                                 {"text": lines120[5], "box": lay0b[1]["box"]}], img0b, cm3)
 check("the same label with no clear tick asks", v["status"] == "ask", str(v))
 
+# --------------------------------------------------- busy reader retries --
+class _Resp:
+    def __init__(self, code, body=None, headers=None):
+        self.status_code, self._body, self.headers = code, body or {}, headers or {}
+
+    def json(self):
+        return self._body
+
+
+posts = [_Resp(429, headers={"Retry-After": "1"}),
+         _Resp(202, headers={"Operation-Location": "https://op"})]
+gets = [_Resp(429, headers={"Retry-After": "1"}),
+        _Resp(200, {"status": "succeeded", "analyzeResult": {"readResults": [
+            {"width": 1600, "height": 1200, "lines": [
+                {"text": "F9172B", "boundingBox": [1, 2, 3, 4, 5, 6, 7, 8],
+                 "words": [{"text": "F9172B", "confidence": 0.99}]}]}]}})]
+with patch("app.boxphotos.requests.post", side_effect=lambda *a, **k: posts.pop(0)), \
+        patch("app.boxphotos.requests.get", side_effect=lambda *a, **k: gets.pop(0)), \
+        patch("app.boxphotos.time.sleep"):
+    read = bp.azure_read(b"jpeg")
+check("a busy reader is waited out instead of failing the photo",
+      read[0] == ["F9172B"] and read[1] is None
+      and read[2][0]["words"][0]["conf"] == 0.99 and read[2][0]["pw"] == 1600, str(read))
+
 # --------------------------------------------------------------- server --
 with Session(get_engine()) as s:
     pass  # engine up; tables come from the app's startup

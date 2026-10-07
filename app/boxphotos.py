@@ -76,22 +76,47 @@ def azure_read(image: bytes) -> tuple:
     if not (config.VISION_ENDPOINT and config.VISION_KEY):
         return [], "The text reader isn't set up on the server."
     headers = {"Ocp-Apim-Subscription-Key": config.VISION_KEY}
+    # The free tier allows 20 calls a minute, polls included. A busy
+    # answer waits out Retry-After and tries again (25 s in all) rather
+    # than failing the photo; polls start after 1 s, when most reads
+    # are done, so a photo usually costs two or three calls.
+    give_up = time.time() + 25
+
+    def wait_busy(resp) -> bool:
+        try:
+            pause = float(resp.headers.get("Retry-After") or 2)
+        except ValueError:
+            pause = 2.0
+        if time.time() + pause > give_up:
+            return False
+        time.sleep(min(max(pause, 1.0), 10.0))
+        return True
+
     try:
-        r = requests.post(
-            f"{config.VISION_ENDPOINT}/vision/v3.2/read/analyze",
-            headers={**headers, "Content-Type": "application/octet-stream"},
-            data=image, timeout=20,
-        )
+        while True:
+            r = requests.post(
+                f"{config.VISION_ENDPOINT}/vision/v3.2/read/analyze",
+                headers={**headers, "Content-Type": "application/octet-stream"},
+                data=image, timeout=20,
+            )
+            if r.status_code != 429 or not wait_busy(r):
+                break
         if r.status_code == 429:
             return [], "The text reader is busy (free tier limit). Try again in a minute."
         if r.status_code != 202:
             return [], f"The text reader answered {r.status_code}."
         loc = r.headers.get("Operation-Location")
-        deadline = time.time() + 15
-        while loc and time.time() < deadline:
-            time.sleep(0.5)
-            g = requests.get(loc, headers=headers, timeout=20).json()
+        time.sleep(1.0)
+        while loc and time.time() < give_up:
+            resp = requests.get(loc, headers=headers, timeout=20)
+            if resp.status_code == 429:
+                if not wait_busy(resp):
+                    break
+                continue
+            g = resp.json()
             state = g.get("status")
+            if state not in ("succeeded", "failed"):
+                time.sleep(0.8)
             if state == "succeeded":
                 lines, layout = [], []
                 for page in (g.get("analyzeResult") or {}).get("readResults") or []:
