@@ -121,6 +121,10 @@ with patch("app.main._maybe_refresh_bin_map", return_value=False):
         p2 = upload(cl, "uid-0002-a", ["SVBONY"], pin_sku="f9172b", new_box=False)
         check("Keep in SKU files straight into the folder as confirmed",
               p2["status"] == "confirmed" and p2["sku"] == "F9172B" and p2["new_box"] is False, str(p2))
+        pa = upload(cl, "uid-0002-b", ["SVBONY"], pin_sku="F9172B", pin_auto=True, new_box=False)
+        check("a photo filed by its box-mate's read stays auto (not a label yet)",
+              pa["status"] == "auto" and pa["sku"] == "F9172B", str(pa))
+        cl.post(f"/api/boxphotos/{pa['id']}/delete")
         p3 = upload(cl, "uid-0003-a", ["F9301A", "10mm"], batch_id=batch_id)
         p4 = upload(cl, "uid-0004-a", ["SVBONY", "svbony.com"], batch_id=batch_id)
         check("unsure and unreadable photos wait for a person",
@@ -142,6 +146,9 @@ with patch("app.main._maybe_refresh_bin_map", return_value=False):
         r = cl.post(f"/api/boxphotos/{p3['id']}/file", json={"sku": "F9301AB", "worker": "Steve"})
         check("picking a guess files the photo as confirmed",
               r.json()["photo"]["status"] == "confirmed" and r.json()["photo"]["sku"] == "F9301AB", r.text)
+        r = cl.post(f"/api/boxphotos/{p3['id']}/file", json={"sku": "F9301AB", "auto": True})
+        check("filing by inference keeps the photo auto",
+              r.json()["photo"]["status"] == "auto", r.text)
         r = cl.post(f"/api/boxphotos/{p3['id']}/unfile")
         check("undo puts it back with its guesses",
               r.json()["photo"]["status"] == "ask" and r.json()["photo"]["sku"] is None, r.text)
@@ -200,7 +207,7 @@ with patch("app.main._maybe_refresh_bin_map", return_value=False):
         cl.post(f"/api/boxphotos/handoffs/{h2['id']}/dismiss")
         check("a dismissed list stops showing", cl.get("/api/boxphotos/handoffs").json()["handoffs"] == [])
         exp = cl.get("/api/boxphotos/export").json()["photos"]
-        check("export lists every photo with its file", len(exp) == 5 and all(e["file"] for e in exp))
+        check("export lists every photo with its file", len(exp) == 6 and all(e["file"] for e in exp))
 
 print()
 print(f"{len(fails)} failed" if fails else "all passed")

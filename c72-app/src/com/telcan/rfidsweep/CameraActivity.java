@@ -160,6 +160,27 @@ public class CameraActivity extends Activity {
     private String lastFiledSku;
     private String pinSku; // non-null = "Keep in SKU" mode
 
+    /** One physical box: every photo until Next box (Steve, 2026-10-07:
+     *  several photos per box). The first read that names a SKU files
+     *  the box-mates too, as "auto". */
+    private static final class Box {
+        final List<String> uids = new ArrayList<>();
+        int shots;
+        String sku;
+    }
+
+    private Box box = new Box();
+    private final Map<String, Box> boxOf = new HashMap<>();
+    // Captured when the shutter fires, used when the JPEG arrives.
+    private Box shotBox;
+    private boolean shotNewBox;
+    private String shotPin;
+    private boolean shotPinAuto;
+    private long triggerDownAt;
+    private Runnable holdCue;
+    private android.media.ToneGenerator tone;
+    private Button stripNext;
+
     // ---- camera -----------------------------------------------------------
     private TextureView texture;
     private CameraDevice camera;
@@ -276,6 +297,7 @@ public class CameraActivity extends Activity {
     @Override
     protected void onDestroy() {
         destroyed = true;
+        if (tone != null) tone.release();
         // Let an upload in flight finish; the rest resume next time.
         uploadExec.shutdown();
         netExec.shutdownNow();
@@ -304,7 +326,15 @@ public class CameraActivity extends Activity {
         for (int k : TRIGGER_KEYS) {
             if (keyCode == k) {
                 if (event.getRepeatCount() == 0 && panel == null) {
-                    takePhoto();
+                    // A quick pull takes a photo on release; a hold
+                    // (0.6 s, it beeps) is Next box.
+                    triggerDownAt = System.currentTimeMillis();
+                    if (holdCue != null) ui.removeCallbacks(holdCue);
+                    holdCue = () -> {
+                        beep(true);
+                        hint.setText("Release for Next box");
+                    };
+                    ui.postDelayed(holdCue, 600);
                 }
                 return true;
             }
@@ -314,8 +344,62 @@ public class CameraActivity extends Activity {
 
     @Override
     public boolean onKeyUp(int keyCode, KeyEvent event) {
-        for (int k : TRIGGER_KEYS) if (keyCode == k) return true;
+        for (int k : TRIGGER_KEYS) {
+            if (keyCode == k) {
+                if (holdCue != null) ui.removeCallbacks(holdCue);
+                holdCue = null;
+                if (panel == null && triggerDownAt > 0) {
+                    long held = System.currentTimeMillis() - triggerDownAt;
+                    triggerDownAt = 0;
+                    if (held >= 600) {
+                        hint.setText(READY_HINT);
+                        nextBox();
+                    } else {
+                        takePhoto();
+                    }
+                }
+                return true;
+            }
+        }
         return super.onKeyUp(keyCode, event);
+    }
+
+    private void beep(boolean ok) {
+        try {
+            if (tone == null) {
+                tone = new android.media.ToneGenerator(
+                        android.media.AudioManager.STREAM_NOTIFICATION, 90);
+            }
+            tone.startTone(ok ? android.media.ToneGenerator.TONE_PROP_ACK
+                    : android.media.ToneGenerator.TONE_PROP_NACK, 150);
+        } catch (Exception ignored) {
+        }
+    }
+
+    /** Close the current box: its SKU's box count goes up by one. */
+    private void nextBox() {
+        if (box.shots == 0) {
+            toast("Take a photo of this box first.", null, null);
+            beep(false);
+            return;
+        }
+        String sku = box.sku != null ? box.sku : pinSku;
+        DevLink.log("cam", "Next box after " + box.shots + " photos, sku "
+                + sku);
+        box = new Box();
+        beep(true);
+        if (sku != null) {
+            int n = 0;
+            for (JSONObject p : folderPhotos(sku)) {
+                if (p.optBoolean("new_box", true)) n++;
+            }
+            toast("Box done: " + sku + (n > 0 ? " (box " + n + ")" : "")
+                    + ". Shoot the next one.", null, null);
+        } else {
+            toast("Box done. Its photos wait in Incoming until one is "
+                    + "sorted.", null, null);
+        }
+        paintCamera();
     }
 
     @Override
@@ -604,6 +688,11 @@ public class CameraActivity extends Activity {
         LinearLayout.LayoutParams ul = wrap();
         ul.leftMargin = dp(6);
         strip.addView(stripUndo, ul);
+        stripNext = button("Next box", BLUE_FILL, Color.WHITE, 0);
+        stripNext.setOnClickListener(v -> nextBox());
+        LinearLayout.LayoutParams nl = wrap();
+        nl.leftMargin = dp(6);
+        strip.addView(stripNext, nl);
         LinearLayout.LayoutParams stl = fillW();
         stl.setMargins(dp(12), dp(10), dp(12), 0);
         cam.addView(strip, stl);
@@ -809,6 +898,22 @@ public class CameraActivity extends Activity {
     }
 
     private void paintStrip() {
+        paintStripPhoto();
+        // A box in progress: say so, and offer Next box instead of Sort.
+        boolean inBox = box.shots > 0;
+        stripNext.setVisibility(inBox ? View.VISIBLE : View.GONE);
+        if (inBox) {
+            stripOpen.setVisibility(View.GONE);
+            String sku = box.sku != null ? box.sku : pinSku;
+            stripSub.setVisibility(View.VISIBLE);
+            stripSub.setTextColor(MUTED);
+            stripSub.setText("This box: " + plural(box.shots, "photo",
+                    "photos") + (sku != null ? " · " + sku : " · not read yet")
+                    + " · hold the trigger for Next box");
+        }
+    }
+
+    private void paintStripPhoto() {
         stripBar.setVisibility(View.GONE);
         stripUndo.setVisibility(View.GONE);
         stripOpen.setVisibility(View.GONE);
@@ -1316,6 +1421,11 @@ public class CameraActivity extends Activity {
             return;
         }
         shooting = true;
+        shotBox = box;
+        shotNewBox = box.shots == 0;
+        box.shots++;
+        shotPin = pinSku != null ? pinSku : box.sku;
+        shotPinAuto = pinSku == null && box.sku != null;
         // Never stay stuck if a capture silently produces nothing.
         ui.postDelayed(() -> shooting = false, 5000);
         try {
@@ -1337,6 +1447,7 @@ public class CameraActivity extends Activity {
             ui.postDelayed(() -> flash.setVisibility(View.GONE), 120);
         } catch (Exception e) {
             shooting = false;
+            if (shotBox != null && shotBox.shots > 0) shotBox.shots--;
             toast("The photo didn't take: " + e.getMessage(), null, null);
         }
     }
@@ -1356,7 +1467,10 @@ public class CameraActivity extends Activity {
             });
             return;
         }
-        final String pin = pinSku;
+        final String pin = shotPin;
+        final boolean pinAuto = shotPinAuto;
+        final boolean newBox = shotNewBox;
+        final Box inBox = shotBox;
         final String uid = new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US)
                 .format(new Date()) + "-" + Integer.toHexString(
                 0x100000 + new Random().nextInt(0xEFFFFF));
@@ -1368,8 +1482,9 @@ public class CameraActivity extends Activity {
             JSONObject meta = new JSONObject()
                     .put("uid", uid)
                     .put("batch_id", batchId)
-                    .put("new_box", pin == null)
+                    .put("new_box", newBox)
                     .put("pin_sku", pin == null ? JSONObject.NULL : pin)
+                    .put("pin_auto", pinAuto)
                     .put("worker", prefs.getString("worker_name", ""));
             write(new File(dir, uid + ".json"),
                     meta.toString().getBytes(StandardCharsets.UTF_8));
@@ -1381,6 +1496,10 @@ public class CameraActivity extends Activity {
                 p.thumb = thumb;
                 p.pinSku = pin;
                 pending.add(0, p);
+                if (inBox != null) {
+                    inBox.uids.add(uid);
+                    boxOf.put(uid, inBox);
+                }
                 thumbs.put("u:" + uid, thumb);
                 lastUid = uid;
                 shooting = false;
@@ -1391,6 +1510,7 @@ public class CameraActivity extends Activity {
         } catch (Exception e) {
             ui.post(() -> {
                 shooting = false;
+                if (inBox != null && inBox.shots > 0) inBox.shots--;
                 toast("The photo didn't save: " + e.getMessage(), null, null);
             });
         }
@@ -1510,6 +1630,7 @@ public class CameraActivity extends Activity {
                 if (b >= 0) body.put("batch_id", b);
                 if (!meta.isNull("pin_sku")) {
                     body.put("pin_sku", meta.optString("pin_sku"));
+                    body.put("pin_auto", meta.optBoolean("pin_auto", false));
                 }
                 JSONObject r = api("POST", "/api/boxphotos", body);
                 JSONObject photo = r.getJSONObject("photo");
@@ -1573,16 +1694,52 @@ public class CameraActivity extends Activity {
         }
         photos = list;
         String s = photo.optString("status");
+        Box b = boxOf.get(uid);
         if ("auto".equals(s) || "confirmed".equals(s)) {
             lastFiledSku = photo.optString("sku");
+            if (b != null && b.sku == null) {
+                b.sku = photo.optString("sku");
+                fileBoxMates(b);
+            }
+        } else if (b != null && b.sku != null) {
+            // This box was already read: follow it.
+            fileQuietly(photo.optInt("id"), b.sku);
         }
         paintCamera();
         renderPanel();
     }
 
+    /** File every unsorted photo of the box into its SKU, as "auto". */
+    private void fileBoxMates(Box b) {
+        for (String u : b.uids) {
+            JSONObject ph = photoByUid(u);
+            if (ph == null) continue; // still uploading: follows on arrival
+            String st = ph.optString("status");
+            if ("ask".equals(st) || "none".equals(st)) {
+                fileQuietly(ph.optInt("id"), b.sku);
+            }
+        }
+    }
+
+    private void fileQuietly(int photoId, String sku) {
+        netExec.execute(() -> {
+            try {
+                api("POST", "/api/boxphotos/" + photoId + "/file",
+                        workerBody().put("sku", sku).put("auto", true));
+                ui.post(this::refresh);
+            } catch (Exception ignored) {
+            }
+        });
+    }
+
     private void undoLast() {
         if (lastUid == null) return;
         String uid = lastUid;
+        Box b = boxOf.remove(uid);
+        if (b != null) {
+            b.uids.remove(uid);
+            if (b.shots > 0) b.shots--;
+        }
         Pending p = pendingByUid(uid);
         if (p != null) {
             new File(queueDir(), uid + ".json").delete();
@@ -1731,6 +1888,19 @@ public class CameraActivity extends Activity {
                             "/api/boxphotos/" + photoId + "/unfile",
                             new JSONObject(), "Back in Incoming", null, null));
             lastFiledSku = sku;
+            JSONObject ph = photoById(photoId);
+            Box bx = ph == null ? null : boxOf.get(ph.optString("uid"));
+            if (bx != null && bx.sku == null) {
+                bx.sku = sku;
+                for (String u : bx.uids) {
+                    JSONObject mate = photoByUid(u);
+                    if (mate == null || mate.optInt("id") == photoId) continue;
+                    String st = mate.optString("status");
+                    if ("ask".equals(st) || "none".equals(st)) {
+                        fileQuietly(mate.optInt("id"), sku);
+                    }
+                }
+            }
         } catch (Exception ignored) {
         }
     }
@@ -2615,8 +2785,8 @@ public class CameraActivity extends Activity {
         LinearLayout box = col();
         box.setPadding(dp(16), dp(4), dp(16), 0);
         TextView intro = text("Check the box count for each product. It "
-                + "starts at one per Read the box photo; fix it if you shot "
-                + "a box more than once.", 13, MUTED, false);
+                + "counts each box you closed with Next box; fix it if one "
+                + "was missed.", 13, MUTED, false);
         box.addView(intro);
         if (autos > 0) {
             TextView w = text(plural(autos, "photo is", "photos are")

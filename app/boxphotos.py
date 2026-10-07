@@ -341,6 +341,9 @@ class BoxPhotoIn(BaseModel):
     new_box: bool = True
     # "Keep in SKU" mode: file straight into this folder, still read.
     pin_sku: str | None = Field(default=None, max_length=100)
+    # The pin was inferred (another photo of the same box was read), not
+    # chosen by a person: file it as "auto" until someone confirms.
+    pin_auto: bool = False
     worker: str | None = Field(default=None, max_length=100)
 
 
@@ -368,9 +371,12 @@ def upload_photo(payload: BoxPhotoIn, request: Request,
     if pin:
         p = cmap.get(pin.upper())
         row.sku = p["sku"] if p else pin
-        row.status = "confirmed"
-        row.confirmed_at = _now()
-        row.confirmed_by = by
+        if payload.pin_auto:
+            row.status = "auto"
+        else:
+            row.status = "confirmed"
+            row.confirmed_at = _now()
+            row.confirmed_by = by
         row.guesses = "[]"
     else:
         skus = {p["sku"] for p in batch_products(session, payload.batch_id)}
@@ -420,6 +426,8 @@ class WorkerIn(BaseModel):
 
 class FileIn(WorkerIn):
     sku: str = Field(min_length=1, max_length=100)
+    # Filed by inference (a box-mate's read), not by a person.
+    auto: bool = False
 
 
 @router.post("/{photo_id}/file")
@@ -432,9 +440,14 @@ def file_photo(photo_id: int, payload: FileIn, request: Request,
     if p is None:
         raise HTTPException(404, f"{payload.sku} isn't in the catalog.")
     row.sku = p["sku"]
-    row.status = "confirmed"
-    row.confirmed_at = _now()
-    row.confirmed_by = _auth.actor_name(request, payload.worker)
+    if payload.auto:
+        row.status = "auto"
+        row.confirmed_at = None
+        row.confirmed_by = None
+    else:
+        row.status = "confirmed"
+        row.confirmed_at = _now()
+        row.confirmed_by = _auth.actor_name(request, payload.worker)
     session.commit()
     return {"photo": _photo_dict(row, cmap)}
 
