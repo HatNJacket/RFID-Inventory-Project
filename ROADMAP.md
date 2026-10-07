@@ -467,7 +467,20 @@ reader is designed from real Svbony photos, not guesses.
   (search the catalog, or the open batch's lines) + "Unsorted"; trigger
   = shutter; per-folder thumbnail tray to move/delete; photos stored on
   the gun per SKU and synced to the server when online. Plain Camera2,
-  no ML Kit needed. Questions the photos answer: is the text on the box
+  no ML Kit needed. Primitive auto-sort (Steve, 2026-10-07): each
+  photo is read SERVER-side by Azure AI Vision Read (resource
+  `telcan-rfid-vision`, F0 free tier, 5,000/month, canadacentral,
+  created 2026-10-07; NOT the planner's shopify-docint-di) and matched
+  to batch lines first, then the catalog. Confident = files itself as
+  "Auto"; unsure = Incoming with top-3 guesses (variant families like
+  F9301AA/AB/AC = "pick the size"); none = sort by hand. Auto photos
+  are NOT training labels until confirmed ("Looks right (N)" per
+  folder); raw OCR text kept per photo. Mockups: canvas "Box Photo
+  Collector Previews" https://claude.ai/artifact/47YGNbssrdQwhbGuvA4bfK
+  (camera with Read the box / Keep in SKU, Incoming, Folders with batch
+  progress, folder grid, Settings > Developer).
+  Svbony = 246 variants, SKUs F9xxxA / W9xxxA / W2xxxA, bins I1/I2.
+  Questions the photos answer: is the text on the box
   the Shopify SKU or a model name/item code; do all boxes have the white
   SKU sticker; glare, curve, print size.
 - **2. Spike:** bundled ML Kit Text Recognition (no Play services, ~4 MB,
