@@ -482,6 +482,47 @@ leave the gun's folders (next shipment starts fresh) and stay on the
 server for training; GET /api/boxphotos/export lists them all.
 dev/tests/test_boxphotos.py (32 checks).
 
+### Box photos, first shipment results + follow-ups (2026-10-07, C72 4.37-4.43)
+
+- **Live tuning that day:** viewfinder had 0 height (4.39, found over the
+  new debug link, Settings > DEVELOPER > Remote debugging, app/devlog.py);
+  several photos per box + Next box (4.40; hold trigger 0.6 s); trigger-
+  to-focus with the lens parked at the learned median, centre AF region
+  (4.42: typical 1.3 s, worst ~1.7 s, was 5 s+; lens min focus 20 dpt,
+  UNCALIBRATED); box ids + Good/Blurry/Angle tags (4.43; counts = boxes
+  whose photos are mostly in the folder); ticked-box reader for multi-SKU
+  labels (server, Pillow ink measure, 3/3 real labels right).
+- **First shipment (3 of 4 large boxes):** 146 photos, 60 boxes, 37
+  products, ~72 s/box, sent as sorter list #1 (60 boxes) - nothing
+  deleted, photos stay for training. No receiving batch was open (no
+  candidate narrowing); the gun was mostly on 4.42 (no box ids;
+  backfilled by dev/backfill_box_uids.py).
+- **Reader analysis (128 labelled photos):** Azure + matcher auto-filed
+  41/60 boxes right, 19 asks with the right guess, 2 wrong (a background
+  box; a misread multi-SKU line). Misses: 8 boxes never showed a
+  readable SKU (angles), Svbony box codes that aren't our SKU (W9184D on
+  F9184D), background boxes and even the laptop screen, A/B and D/E
+  variant misreads (B->8 most common, already folded), dropped first
+  letter (#9382C). "Model: SVxxx" named the product 33/37 times.
+- **Built (server, 2d59ccc/8a857b9):** learned box codes (aliases from
+  confirmed photos), model + spec matching, dropped-first-letter
+  match, edge-of-photo SKUs ask, unsure variant letters ask, model
+  mismatch caps a SKU (and moves a tick to the fitting look-alike);
+  keeps ocr_layout (lines/words, boxes, confidence), read_status/
+  read_sku (first answer), torch/app_version; Azure 429s are waited out
+  (free tier = 20 calls/min incl. polls). dev/backfill_layout.py re-read
+  the old photos for layouts.
+- **On-gun OCR benchmark (D):** RapidOCR (PaddleOCR mobile models, the
+  family that runs on Android) on the same 128 photos: 40-41/60 boxes
+  auto-right vs Azure's 41/60; centre crop at 640 px 38/60; ~0.65 s per
+  frame on the laptop CPU (expect slower on the C72). On-device reading
+  is viable - the next step is the ML Kit / PaddleOCR-mobile spike on
+  the gun, reading the aiming area.
+- **Open / next:** gun "Sticker read" signal + auto Next box offer +
+  refocus on background locks (C); macro AF A/B; open the receiving
+  batch before shooting; 4th large box; Steve to confirm F9359D vs the
+  F9359E printed on one label.
+
 ## 📷 Camera SKU reader on the C72 (Steve, 2026-10-07) — PLANNING, collector first
 
 Trigger: Svbony boxes carry no barcode, only the SKU in plain text, so
