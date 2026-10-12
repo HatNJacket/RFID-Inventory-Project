@@ -568,6 +568,7 @@ const EVENT_META = {
   "rfid-flag-changed": ["RFID Flag", "#d72c0d"],
   "user-added": ["User Added", "#0b6e99"],
   "sorter-leftover": ["Sorter Leftover", "#8a6116"],
+  "sort-batch": ["Sort Batch", "#0e7a8a"],
   "box-photos-sent": ["Box Photos Sent", "#0e7a8a"],
   "user-removed": ["User Removed", "#d72c0d"],
   "user-renamed": ["User Renamed", "#5c5f62"],

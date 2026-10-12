@@ -9,6 +9,7 @@ denormalized copies captured at assignment time. They're a snapshot for fast
 display and offline resilience, not the source of truth -- Shopify remains
 authoritative and you can re-sync them later if a product is renamed.
 """
+import json
 from datetime import datetime
 
 from sqlalchemy import (  # noqa: F401
@@ -1157,11 +1158,31 @@ class BatchItem(Base):
     set_mark_master: Mapped[str | None] = mapped_column(String(100))
     set_mark_box: Mapped[int | None] = mapped_column(Integer)
     set_mark_total: Mapped[int | None] = mapped_column(Integer)
+    # Which stock order each booked unit belongs to (Steve, 2026-10-07:
+    # one batch per Sort a shipment holds several orders plus products
+    # no order expects). JSON {"SO 965": 3, "": 8}; "" = no order. Rows
+    # booked before this existed have none and count toward every SO the
+    # batch names (the old behaviour).
+    so_units: Mapped[str | None] = mapped_column(String(400))
+    # No-order units whose Shopify on-hand was raised at the rack
+    # (operator-confirmed, History + undo). Never above so_units[""].
+    onhand_added: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+
+    def no_order_units(self) -> int:
+        try:
+            return int(json.loads(self.so_units or "{}").get("", 0))
+        except (ValueError, AttributeError):
+            return 0
 
     def as_dict(self) -> dict:
         return {
             "id": self.id,
             "batch_id": self.batch_id,
+            "so_units": self.so_units,
+            "no_order_units": self.no_order_units(),
+            "onhand_added": self.onhand_added or 0,
             "scanned_code": self.scanned_code,
             "resolved": self.resolved,
             "shopify_variant_id": self.shopify_variant_id,

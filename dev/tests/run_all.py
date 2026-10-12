@@ -20,6 +20,10 @@ import subprocess
 import sys
 import tempfile
 
+# A failing suite's output can hold "⚠" or "→"; the Windows console
+# codepage can't print them and the crash used to hide WHICH suite failed.
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 suites = sorted(
     p for p in glob.glob(os.path.join(HERE, "test_*.py"))

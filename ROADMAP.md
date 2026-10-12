@@ -451,6 +451,53 @@ open pointed at prod. Once 4.18 is confirmed on the gun, delete the
    explicit sessions (lean rolling); barcode scans allowed but
    badged "no tag" (no retirement precision).
 
+## 🧺 IN PROGRESS: One batch per Sort a shipment + photo sort — 2026-10-07 (UNCOMMITTED, not deployed)
+
+Steve's decisions (2026-10-07): every label from one sort (each order's
+planner page prints its own lines, plus the no-order boxes) lands in ONE
+batch; no-order boxes skip the planner records; each paired no-order
+box counts +1 but on-hand goes to Shopify only when the task is
+CONFIRMED (one raise per product, History + Undo); photo sort = gun
+shows per-box verdicts, web sorter finishes. Supersedes item 4 (A/B/C)
+of the photo-sort plan below.
+
+**Done (server, in the working tree, NOT committed - commit first):**
+app/sortbatch.py (new: POST /api/sorter/batch claim/extend, POST
+/api/sorter/batch/{id}/no-order, GET+POST /api/sorter/batch/{id}/finish,
+undo_hook), BatchItem.so_units + onhand_added (models.py, database.py
+upgrades), _so_units/_add_so_units + intake `into`/`so_key` (main.py),
+per-SO units in receiving_sync.py, sort batches (bin_name "SORT") never
+auto-close (_maybe_close_receiving), undo frees units, EVENT_META
+"sort-batch". dev/tests/test_sortbatch.py 24/24 PASS,
+test_receiving_sync.py PASS; full run_all NOT yet run.
+
+**Next, in order:**
+1. `py dev/tests/run_all.py`, commit, push.
+2. Web sorter (app.js ~18629 sortShipOpenPlanner, ~18986
+   sortShipPrintLeftovers): claim the batch (POST /api/sorter/batch with
+   the pile's orders + vendor; keep batch_id in the localStorage pile;
+   Clear forgets it) before opening a planner page; no-order print ->
+   /api/sorter/batch/{id}/no-order instead of loose /api/print-jobs.
+   Show "Sort batch #N" in the sorter. Verify in rfid-uiverify.
+3. Gun (MainActivity): BItem parses no_order_units/onhand_added; pair
+   status notes "no order: on-hand +1 at confirm"; for bin "SORT":
+   receiving_done and CHECK ✓ CONFIRM open a finish dialog from GET
+   /finish (old -> new per product, untagged count) -> POST /finish
+   {confirmed:true}. Bump to 4.45.
+4. Photo sort (CameraActivity sort mode): per-box verdict on the strip
+   (GET /api/planner/on-order/{sku}, allocate like the web sorter),
+   Svbony-scoped matching (BinMapEntry.vendor), faster-per-box items
+   from the plan below; DONE = Send to sorter.
+5. Deploy, then CLEANUP: today's no-order boxes were paired (loose,
+   batch None) but on-hand never raised - F9184D 1, F9198K 1, F9198M 1,
+   F9198N 1 (no pairing found today - ask), F9359D 1, W9152D 1, W9181B 1,
+   W9196A 1, W9198B 2, W9317B 1, F9108A 1, plus F9152A 8 + F9147A 3
+   (paired on batch 366 as SO 965). Steve chose: raise them through the
+   new confirm (e.g. a one-off sort batch holding them as paired
+   no-order rows, qty_scanned 0 for the 366 extras so nothing prints).
+   F9123A's second box on 366: SO 965 still expects 1 - receive it in
+   the planner, not as no-order.
+
 ## 📷 NEXT: Sort a shipment by photos (Svbony) — PLANNED 2026-10-07, start after compact
 
 Steve asked to plan this for the next session. Goal: receive/sort a

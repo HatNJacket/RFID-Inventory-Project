@@ -5801,6 +5801,8 @@ def undo_on_hand(
     except RuntimeError as error:
         raise HTTPException(502, f"Shopify on-hand write failed: {error}")
     _refresh_binmap_onhand(session, row.sku, old)
+    # A sort's no-order raise frees its units for another raise.
+    _sortbatch.undo_hook(session, row)
     _log_change(
         session,
         sku=row.sku,
@@ -9913,6 +9915,12 @@ def _maybe_close_receiving(session: Session, batch: Batch) -> bool:
     if receipt is not None:
         if receipt.settled_at is None:
             receipt.settled_at = datetime.now(timezone.utc)
+        return True
+    # A Sort a shipment batch (2026-10-07) holds several orders' prints
+    # plus the no-order boxes: it stays open for the next order's print
+    # and closes on the operator's confirm, which also raises the
+    # no-order on-hand (app/sortbatch.py).
+    if batch.bin_name == "SORT":
         return True
     batch.status = "done"
     _audit_q_invalidate()   # a finished batch changes the queue
@@ -14986,9 +14994,28 @@ def so_serialized(session: Session, so_part: str):
         lock.release()
 
 
+def _so_units(row: BatchItem) -> dict[str, int]:
+    """A row's units per stock order ({"SO 965": 3, "": 8}; "" = no
+    order). Empty for rows booked before the split existed."""
+    try:
+        raw = json.loads(row.so_units or "{}")
+        return {str(k): int(v) for k, v in raw.items() if int(v) > 0}
+    except (ValueError, TypeError, AttributeError):
+        return {}
+
+
+def _add_so_units(row: BatchItem, so_key: str, units: int) -> None:
+    split = _so_units(row)
+    split[so_key] = max(0, split.get(so_key, 0) + units)
+    row.so_units = json.dumps(
+        {k: v for k, v in split.items() if v > 0}, separators=(",", ":")
+    )[:400]
+
+
 def _receiving_intake(
     session: Session, payload: ReceivingPrintsIn, queue_labels: bool,
     tag_prefix: str = "TC-Planner", merge_order: bool = True,
+    into: Batch | None = None, so_key: str | None = None,
 ) -> dict:
     """Shared body of the planner bridge: create/reuse the stock order's
     receiving batch, add the received quantities to its rows (problem
@@ -15016,8 +15043,10 @@ def _receiving_intake(
         # /sync already holds it, and a re-take in the same transaction
         # is free.
         _so_applock(session, so_part)
-    batch = None
-    if merge_order and so_part:
+    batch = into
+    if batch is not None:
+        tag = batch.created_by or tag_prefix
+    elif merge_order and so_part:
         # One receiving batch per STOCK ORDER (Nick, 2026-09-23 - this
         # REPLACES the 2026-08-31 per-vendor merge: a brand-new order
         # kept landing on an old open same-vendor batch, burying it.
@@ -15058,6 +15087,9 @@ def _receiving_intake(
                       created_by=tag)
         session.add(batch)
         session.flush()
+    # Whose units these are, so one batch can hold several stock orders
+    # and the no-order boxes of a sort (2026-10-07).
+    unit_key = (so_key if so_key is not None else so_part).strip().upper()
 
     no_tag = _non_taggable_skus(session)
     items = _batch_items(session, batch.id)
@@ -15096,6 +15128,7 @@ def _receiving_intake(
             items.append(row)
         row.qty_scanned += qty
         row.expected_qty = (row.expected_qty or 0) + qty
+        _add_so_units(row, unit_key, qty)
         row.skip_reason = reason[:120]
         row.skipped = True
 
@@ -15173,6 +15206,7 @@ def _receiving_intake(
             boxes = entry.quantity * _item_box_slots(item)
             item.qty_scanned += boxes
             item.expected_qty += boxes
+            _add_so_units(item, unit_key, entry.quantity)
             if item.first_scanned_at is None:
                 item.first_scanned_at = datetime.now(timezone.utc)
             added.append({
@@ -20776,7 +20810,7 @@ def product_history(
             not in ("rfid-scan", "locate-list", "tag-sold", "scan-note",
                     "audit-unsure", "unavailable-noted", "stock-confirmed",
                     "user-added", "user-removed", "user-renamed",
-                    "sorter-leftover",
+                    "sorter-leftover", "sort-batch",
                     "tag-retired", "tag-unretired", "tag-released",
                     "tag-reapplied", "ledger-cleared", "non-taggable",
                     "unlabelable-box", "mislabel-flag", "box-set",
@@ -21801,3 +21835,4 @@ def _oneleft_detail(oc: OneLeftCheck) -> str:
 # TC-Planner receiving sync (2026-09-29) - its own module; registers its
 # routes on this app when imported.
 from app import receiving_sync as _receiving_sync  # noqa: E402,F401
+from app import sortbatch as _sortbatch  # noqa: E402

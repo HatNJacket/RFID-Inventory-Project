@@ -148,12 +148,22 @@ def _row_matches(row: BatchItem, sku: str, barcode: str | None) -> bool:
     )
 
 
-def _row_units(row: BatchItem) -> int:
-    """Units the planner booked on this row (expected_qty holds the
-    planner's number in boxes; a multi-box product books slots per
-    unit)."""
+def _row_units(row: BatchItem, so_part: str | None = None) -> int:
+    """Units booked on this row (expected_qty holds the planner's number
+    in boxes; a multi-box product books slots per unit). With so_part,
+    only that stock order's share: a Sort a shipment batch carries
+    several orders plus no-order units on one row (so_units). Units
+    booked before so_units existed count toward every SO the batch
+    names, as they always did."""
     slots = 1 if row.skip_reason else M._item_box_slots(row)
-    return (row.expected_qty or 0) // max(1, slots)
+    total = (row.expected_qty or 0) // max(1, slots)
+    if so_part is None:
+        return total
+    split = M._so_units(row)
+    if not split:
+        return total
+    legacy = max(0, total - sum(split.values()))
+    return min(total, split.get(so_part, 0) + legacy)
 
 
 def _rows(session: Session, batches: list[Batch]) -> list[BatchItem]:
@@ -163,9 +173,12 @@ def _rows(session: Session, batches: list[Batch]) -> list[BatchItem]:
     return rows
 
 
-def _so_status(session: Session, batches: list[Batch]) -> list[dict]:
+def _so_status(session: Session, batches: list[Batch],
+               so_part: str | None = None) -> list[dict]:
     """Per SKU: units booked, labels queued, labels owed (open batches
-    only - a closed batch owes nothing), and why a label can't print."""
+    only - a closed batch owes nothing), and why a label can't print.
+    With so_part, a shared Sort a shipment row reports only that order's
+    share."""
     per: dict[str, dict] = {}
     for b in batches:
         open_batch = b.status not in ("done", "abandoned")
@@ -192,7 +205,8 @@ def _so_status(session: Session, batches: list[Batch]) -> list[dict]:
                 "labels_owed": 0,
                 "problem": None,
             })
-            d["booked_units"] += _row_units(r)
+            mine = _row_units(r, so_part)
+            d["booked_units"] += mine
             if r.skip_reason:
                 d["problem"] = r.skip_reason
                 continue
@@ -200,10 +214,14 @@ def _so_status(session: Session, batches: list[Batch]) -> list[dict]:
                 continue
             want = (r.qty_scanned or 0) + (r.case_count or 0)
             have = have_by_variant.get(r.shopify_variant_id, 0)
-            d["labels_queued"] += min(want, have)
+            # This order's slice of a shared row: its own boxes, never
+            # the other orders' or the no-order boxes.
+            share = want if so_part is None or mine >= _row_units(r) \
+                else mine * M._item_box_slots(r)
+            d["labels_queued"] += min(share, have)
             if not open_batch:
                 continue   # a finished batch owes nothing more
-            owed = max(0, want - have)
+            owed = min(share, max(0, want - have))
             d["labels_owed"] += owed
             bin_ = (r.bin_location or "").strip()
             if owed and (not bin_ or bin_.lower() == "no bin assigned"):
@@ -214,7 +232,8 @@ def _so_status(session: Session, batches: list[Batch]) -> list[dict]:
 
 def _lower_bookings(session: Session, payload: ReceivingSyncIn,
                     batches: list[Batch], rows: list[BatchItem],
-                    by: str | None) -> tuple[list[dict], int]:
+                    by: str | None,
+                    so_part: str | None = None) -> tuple[list[dict], int]:
     """The undo half of the sync: for each line whose planner total is
     now BELOW what's booked, take the difference off the OPEN batches'
     rows (newest batch first), never below the boxes already paired to
@@ -226,7 +245,7 @@ def _lower_bookings(session: Session, payload: ReceivingSyncIn,
     voided_total = 0
     for it in payload.items:
         mine = [r for r in rows if _row_matches(r, it.sku, it.barcode)]
-        excess = sum(_row_units(r) for r in mine) - it.received_total
+        excess = sum(_row_units(r, so_part) for r in mine) - it.received_total
         if excess <= 0:
             continue
         took_line = 0
@@ -246,11 +265,14 @@ def _lower_bookings(session: Session, payload: ReceivingSyncIn,
                 ) or 0
             # Boxes already tagged stay booked - they physically exist.
             floor_units = -(-tagged // max(1, slots))
-            can = max(0, _row_units(r) - floor_units)
+            can = min(_row_units(r, so_part),
+                      max(0, _row_units(r) - floor_units))
             take = min(can, excess)
             if take <= 0:
                 continue
             boxes = take * slots
+            if so_part:
+                M._add_so_units(r, so_part, -take)
             r.expected_qty = max(0, (r.expected_qty or 0) - boxes)
             r.qty_scanned = max(0, (r.qty_scanned or 0) - boxes)
             excess -= take
@@ -343,7 +365,7 @@ def _receiving_sync_body(payload: ReceivingSyncIn, session: Session,
     # 1) Book whatever the planner has received that isn't booked yet.
     deltas: list[M.ReceivingPrintItemIn] = []
     for it in payload.items:
-        have = sum(_row_units(r) for r in rows
+        have = sum(_row_units(r, so_part) for r in rows
                    if _row_matches(r, it.sku, it.barcode))
         need = it.received_total - have
         while need > 0:   # the intake caps one line at 500 units
@@ -376,7 +398,8 @@ def _receiving_sync_body(payload: ReceivingSyncIn, session: Session,
 
     # 1b) Undo: lower the booking to the planner's total and take the
     # labels with it.
-    unbooked, voided = _lower_bookings(session, payload, batches, rows, by) \
+    unbooked, voided = _lower_bookings(session, payload, batches, rows, by,
+                                       so_part) \
         if payload.allow_lower else ([], 0)
     if unbooked:
         rows = _rows(session, batches)
@@ -432,7 +455,7 @@ def _receiving_sync_body(payload: ReceivingSyncIn, session: Session,
             queued.extend(keep)
             no_bin.extend(t for t in nb if t in titles)
     session.commit()
-    status = _so_status(session, _so_batches(session, so_part))
+    status = _so_status(session, _so_batches(session, so_part), so_part)
     units_booked = sum(a["quantity"] for a in booked)
     msg = []
     if units_booked:
@@ -474,7 +497,7 @@ def receiving_so_labels(
     ref, so_part = _so_ref(reference)
     if _full_shipment(session, so_part):
         return {"full_shipment": True, "skus": [], "labels_owed": 0}
-    status = _so_status(session, _so_batches(session, so_part))
+    status = _so_status(session, _so_batches(session, so_part), so_part)
     return {
         "full_shipment": False,
         "reference": so_part,

@@ -163,6 +163,10 @@ _COLUMN_UPGRADES = [
     # Which printed strip a label came off and where on it (2026-10-07).
     ("rfid_print_jobs", "strip_id", "VARCHAR(24) NULL"),
     ("rfid_print_jobs", "strip_pos", "INTEGER NULL"),
+    # One batch per Sort a shipment (2026-10-07): units per stock order
+    # on each row, and no-order units raised in Shopify at the rack.
+    ("rfid_batch_items", "so_units", "NVARCHAR(400) NULL"),
+    ("rfid_batch_items", "onhand_added", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
 
