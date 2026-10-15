@@ -451,7 +451,7 @@ open pointed at prod. Once 4.18 is confirmed on the gun, delete the
    explicit sessions (lean rolling); barcode scans allowed but
    badged "no tag" (no retirement precision).
 
-## 🧺 IN PROGRESS: One batch per Sort a shipment + photo sort — 2026-10-07 (UNCOMMITTED, not deployed)
+## 🧺 IN PROGRESS: One batch per Sort a shipment + photo sort — 2026-10-07 (server committed 148b2c2, not deployed)
 
 Steve's decisions (2026-10-07): every label from one sort (each order's
 planner page prints its own lines, plus the no-order boxes) lands in ONE
@@ -461,7 +461,7 @@ CONFIRMED (one raise per product, History + Undo); photo sort = gun
 shows per-box verdicts, web sorter finishes. Supersedes item 4 (A/B/C)
 of the photo-sort plan below.
 
-**Done (server, in the working tree, NOT committed - commit first):**
+**Done (server, committed 148b2c2 on 2026-10-12, 96/96 suites):**
 app/sortbatch.py (new: POST /api/sorter/batch claim/extend, POST
 /api/sorter/batch/{id}/no-order, GET+POST /api/sorter/batch/{id}/finish,
 undo_hook), BatchItem.so_units + onhand_added (models.py, database.py
@@ -472,7 +472,7 @@ auto-close (_maybe_close_receiving), undo frees units, EVENT_META
 test_receiving_sync.py PASS; full run_all NOT yet run.
 
 **Next, in order:**
-1. `py dev/tests/run_all.py`, commit, push.
+1. ~~run_all, commit, push~~ DONE 2026-10-12.
 2. Web sorter (app.js ~18629 sortShipOpenPlanner, ~18986
    sortShipPrintLeftovers): claim the batch (POST /api/sorter/batch with
    the pile's orders + vendor; keep batch_id in the localStorage pile;
