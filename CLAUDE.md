@@ -99,10 +99,22 @@ change log; commit messages here are written to be read later.
   (`collecting` → `printing`); `tagged_before` boxes count as units but
   never labels.
 
-## Session workflow (Steve's multi-window structure)
+## Session workflow (one main session)
 
-One session per task, scoped to a feature area. When significant work
-lands: commit with a detailed message, deploy if appropriate, update
-ROADMAP.md (status/TODOs/decisions), and update auto-memory if a durable
-decision changed. Keep THIS file small and stable — never append change
-history here.
+Work happens in ONE main session that owns every design and architecture
+decision (UI layout, copy, flows, data model, anything touching Shopify
+writes, deploys or the C72). Splitting features across parallel sessions
+was tried and dropped (2026-10): each session re-decided design questions
+and the app drifted. Don't propose it by default.
+
+Delegating is fine only for work with no design choice left in it:
+read-only research (codebase or the planner repo), running the test
+suites and reporting failures, and mechanical edits with an exact spec.
+Helpers report facts back; the main session decides and checks their
+work before it's committed. Cheaper/faster models are fine for those
+helpers; never route design or write-path work to them.
+
+When significant work lands: commit with a detailed message, deploy if
+appropriate, update ROADMAP.md (status/TODOs/decisions), and update
+auto-memory if a durable decision changed. Keep THIS file small and
+stable — never append change history here.
